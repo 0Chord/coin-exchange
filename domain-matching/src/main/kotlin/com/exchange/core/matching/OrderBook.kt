@@ -110,6 +110,12 @@ class OrderBook {
     fun bestAsk(): Price? = asks.firstEntry()?.key
 
     /**
+     * book에 해당 주문이 남아 있는지 확인한다.
+     */
+    fun contains(orderId: OrderId): Boolean =
+        orderIndex.containsKey(orderId)
+
+    /**
      * 현재 가장 높은 매수 가격 레벨.
      *
      * MatchingEngine은 매도 주문을 처리할 때 이 PriceLevel의 첫 주문부터 체결한다.

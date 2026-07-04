@@ -1,6 +1,7 @@
 package com.exchange.core.matching
 
 import com.exchange.core.common.MarketId
+import com.exchange.core.common.OrderId
 import com.exchange.core.common.Price
 import com.exchange.core.common.Quantity
 import com.exchange.core.order.OrderType
@@ -17,17 +18,27 @@ import com.exchange.core.order.TimeInForce
  */
 class MatchingEngine {
     /**
-     * 현재 마켓의 in-memory order book.
+     * 마켓별 in-memory order book.
+     *
+     * 서로 다른 marketId의 주문이 같은 book에서 체결되면 안 되므로
+     * marketId마다 독립된 OrderBook을 둔다.
      */
-    private val orderBook = OrderBook()
+    private val orderBooks = HashMap<MarketId, OrderBook>()
 
     /**
-     * event에 붙일 다음 engine sequence.
+     * market별 event sequence.
      *
-     * 같은 command 순서라면 같은 event 순서가 나와야 하므로
-     * 엔진 내부에서 단조 증가시킨다.
+     * engineSequence는 market 안에서 단조 증가해야 한다.
      */
-    private var nextEngineSequence = 1L
+    private val nextEngineSequences = HashMap<MarketId, Long>()
+
+    /**
+     * market별로 이미 처리한 submit orderId.
+     *
+     * 같은 orderId를 다시 받아 새 주문처럼 처리하면 retry나 중복 요청이
+     * 별도 주문으로 체결될 수 있으므로, 한 market 안에서는 submit orderId를 재사용하지 않는다.
+     */
+    private val seenOrderIds = HashMap<MarketId, MutableSet<OrderId>>()
 
     /**
      * 매칭 엔진의 단일 진입점.
@@ -48,6 +59,8 @@ class MatchingEngine {
      */
     private fun processSubmit(command: SubmitOrderCommand): List<MatchingEvent> {
         validateSupportedSubmit(command)
+        validateNewOrderId(command)
+        rememberOrderId(command)
 
         val events = mutableListOf<MatchingEvent>()
         var takerRemaining = command.quantity
@@ -66,7 +79,7 @@ class MatchingEngine {
             )
 
             if (maker.isFilled()) {
-                orderBook.removeFilledOrder(maker)
+                orderBook(command.marketId).removeFilledOrder(maker)
             }
         }
 
@@ -76,7 +89,7 @@ class MatchingEngine {
                 remainingQuantity = takerRemaining,
             )
 
-            orderBook.addRestingOrder(restingOrder)
+            orderBook(command.marketId).addRestingOrder(restingOrder)
 
             events += orderEnteredBookEvent(
                 order = restingOrder,
@@ -91,12 +104,12 @@ class MatchingEngine {
      * book에 남아 있는 주문을 취소한다.
      */
     private fun processCancel(command: CancelOrderCommand): List<MatchingEvent> {
-        val cancelledOrder = orderBook.cancel(command.orderId)
+        val cancelledOrder = orderBook(command.marketId).cancel(command.orderId)
 
         val event = if (cancelledOrder == null) {
             OrderCancelRejected(
                 marketId = command.marketId,
-                engineSequence = nextSequence(),
+                engineSequence = nextSequence(command.marketId),
                 orderId = command.orderId,
                 userId = command.userId,
                 reason = "order not found",
@@ -104,7 +117,7 @@ class MatchingEngine {
         } else {
             OrderCancelled(
                 marketId = command.marketId,
-                engineSequence = nextSequence(),
+                engineSequence = nextSequence(command.marketId),
                 orderId = cancelledOrder.orderId,
                 userId = cancelledOrder.userId,
                 remainingQuantity = cancelledOrder.remainingQuantity,
@@ -130,6 +143,23 @@ class MatchingEngine {
     }
 
     /**
+     * 같은 마켓에서 이미 처리한 orderId는 다시 등록할 수 없다.
+     *
+     * 중복 orderId를 허용하면 retry나 중복 요청이 별도 주문처럼 체결될 수 있다.
+     */
+    private fun validateNewOrderId(command: SubmitOrderCommand) {
+        require(command.orderId !in seenOrderIds.getOrDefault(command.marketId, emptySet())) {
+            "order already exists"
+        }
+    }
+
+    private fun rememberOrderId(command: SubmitOrderCommand) {
+        seenOrderIds.getOrPut(command.marketId) {
+            HashSet()
+        }.add(command.orderId)
+    }
+
+    /**
      * 현재 taker 주문과 체결 가능한 다음 maker 주문을 찾는다.
      *
      * BUY taker는 가장 낮은 ask level에서,
@@ -138,6 +168,7 @@ class MatchingEngine {
      * 반대편 book이 비었거나 가격이 crossing 되지 않으면 null을 반환한다.
      */
     private fun nextMatchableMaker(command: SubmitOrderCommand): BookOrder? {
+        val orderBook = orderBook(command.marketId)
         val bestLevel = when (command.side) {
             Side.BUY -> orderBook.bestAskLevel()
             Side.SELL -> orderBook.bestBidLevel()
@@ -165,7 +196,7 @@ class MatchingEngine {
     ): TradeExecuted =
         TradeExecuted(
             marketId = command.marketId,
-            engineSequence = nextSequence(),
+            engineSequence = nextSequence(command.marketId),
             makerOrderId = maker.orderId,
             takerOrderId = command.orderId,
             makerUserId = maker.userId,
@@ -200,7 +231,7 @@ class MatchingEngine {
     ): OrderEnteredBook =
         OrderEnteredBook(
             marketId = marketId,
-            engineSequence = nextSequence(),
+            engineSequence = nextSequence(marketId),
             orderId = order.orderId,
             userId = order.userId,
             side = order.side,
@@ -224,6 +255,14 @@ class MatchingEngine {
             Side.SELL -> makerPrice >= takerPrice
         }
 
-    private fun nextSequence(): Long =
-        nextEngineSequence++
+    private fun orderBook(marketId: MarketId): OrderBook =
+        orderBooks.getOrPut(marketId) {
+            OrderBook()
+        }
+
+    private fun nextSequence(marketId: MarketId): Long {
+        val nextSequence = nextEngineSequences.getOrDefault(marketId, 1L)
+        nextEngineSequences[marketId] = nextSequence + 1
+        return nextSequence
+    }
 }
