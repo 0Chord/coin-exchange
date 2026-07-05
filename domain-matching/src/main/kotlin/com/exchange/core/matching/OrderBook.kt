@@ -116,6 +116,16 @@ class OrderBook {
         orderIndex.containsKey(orderId)
 
     /**
+     * book에 남아 있는 주문을 조회한다.
+     */
+    fun find(orderId: OrderId): BookOrder? {
+        val orderRef = orderIndex[orderId] ?: return null
+        val priceLevel = bookSide(orderRef.side)[orderRef.price] ?: return null
+
+        return priceLevel.get(orderId)
+    }
+
+    /**
      * 현재 가장 높은 매수 가격 레벨.
      *
      * MatchingEngine은 매도 주문을 처리할 때 이 PriceLevel의 첫 주문부터 체결한다.

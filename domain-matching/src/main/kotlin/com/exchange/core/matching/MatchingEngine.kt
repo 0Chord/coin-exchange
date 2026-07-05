@@ -104,24 +104,35 @@ class MatchingEngine {
      * book에 남아 있는 주문을 취소한다.
      */
     private fun processCancel(command: CancelOrderCommand): List<MatchingEvent> {
-        val cancelledOrder = orderBook(command.marketId).cancel(command.orderId)
+        val orderBook = orderBook(command.marketId)
+        val existingOrder = orderBook.find(command.orderId)
 
-        val event = if (cancelledOrder == null) {
-            OrderCancelRejected(
+        val event = when {
+            existingOrder == null -> OrderCancelRejected(
                 marketId = command.marketId,
                 engineSequence = nextSequence(command.marketId),
                 orderId = command.orderId,
                 userId = command.userId,
                 reason = "order not found",
             )
-        } else {
-            OrderCancelled(
+            existingOrder.userId != command.userId -> OrderCancelRejected(
                 marketId = command.marketId,
                 engineSequence = nextSequence(command.marketId),
-                orderId = cancelledOrder.orderId,
-                userId = cancelledOrder.userId,
-                remainingQuantity = cancelledOrder.remainingQuantity,
+                orderId = command.orderId,
+                userId = command.userId,
+                reason = "order owner mismatch",
             )
+            else -> {
+                val cancelledOrder = orderBook.cancel(command.orderId) ?: error("order disappeared while cancelling")
+
+                OrderCancelled(
+                    marketId = command.marketId,
+                    engineSequence = nextSequence(command.marketId),
+                    orderId = cancelledOrder.orderId,
+                    userId = cancelledOrder.userId,
+                    remainingQuantity = cancelledOrder.remainingQuantity,
+                )
+            }
         }
 
         return listOf(event)

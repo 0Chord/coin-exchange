@@ -69,6 +69,13 @@ class PriceLevel(
     fun contains(orderId: OrderId): Boolean = orders.containsKey(orderId)
 
     /**
+     * 특정 주문을 조회한다.
+     *
+     * 취소 요청자가 주문 주인인지 확인할 때 사용한다.
+     */
+    fun get(orderId: OrderId): BookOrder? = orders[orderId]
+
+    /**
      * 현재 가격 레벨의 주문 목록을 복사해서 반환한다.
      *
      * 내부 LinkedHashMap을 직접 노출하지 않기 위해 List로 변환한다.

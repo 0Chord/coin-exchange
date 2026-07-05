@@ -77,7 +77,7 @@ data class OrderCancelled(
 ) : MatchingEvent
 
 /**
- * 취소할 주문을 찾지 못한 결과.
+ * 취소 요청을 처리할 수 없었던 결과.
  */
 data class OrderCancelRejected(
     override val marketId: MarketId,

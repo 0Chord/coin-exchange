@@ -16,7 +16,7 @@ class MatchingEngineTest {
     private val marketId = MarketId("BTC-KRW")
 
     @Test
-    fun `empty buy limit order enters bid book`() {
+    fun `빈 book에 매수 지정가 주문을 넣으면 bid book에 남는다`() {
         val events = MatchingEngine().process(
             submit(orderId = "b1", side = Side.BUY, price = 100, quantity = 10),
         )
@@ -28,7 +28,7 @@ class MatchingEngineTest {
     }
 
     @Test
-    fun `empty sell limit order enters ask book`() {
+    fun `빈 book에 매도 지정가 주문을 넣으면 ask book에 남는다`() {
         val events = MatchingEngine().process(
             submit(orderId = "s1", side = Side.SELL, price = 100, quantity = 10),
         )
@@ -40,7 +40,7 @@ class MatchingEngineTest {
     }
 
     @Test
-    fun `non crossing limit order enters book`() {
+    fun `가격이 교차하지 않는 지정가 주문은 book에 남는다`() {
         val engine = MatchingEngine()
 
         engine.process(submit(orderId = "b1", side = Side.BUY, price = 100, quantity = 10))
@@ -53,7 +53,7 @@ class MatchingEngineTest {
     }
 
     @Test
-    fun `buy below best ask does not match`() {
+    fun `best ask보다 낮은 매수 주문은 체결되지 않는다`() {
         val engine = MatchingEngine()
 
         engine.process(submit(orderId = "a1", side = Side.SELL, price = 101, quantity = 3))
@@ -66,7 +66,7 @@ class MatchingEngineTest {
     }
 
     @Test
-    fun `buy limit matches lowest ask first at maker price`() {
+    fun `매수 지정가 주문은 가장 낮은 ask부터 maker 가격으로 체결한다`() {
         val engine = MatchingEngine()
 
         engine.process(submit(orderId = "a100", side = Side.SELL, price = 100, quantity = 1))
@@ -80,7 +80,7 @@ class MatchingEngineTest {
     }
 
     @Test
-    fun `sell limit matches highest bid first at maker price`() {
+    fun `매도 지정가 주문은 가장 높은 bid부터 maker 가격으로 체결한다`() {
         val engine = MatchingEngine()
 
         engine.process(submit(orderId = "b100", side = Side.BUY, price = 100, quantity = 1))
@@ -94,7 +94,7 @@ class MatchingEngineTest {
     }
 
     @Test
-    fun `orders match when prices are exactly equal`() {
+    fun `주문 가격이 정확히 같으면 체결된다`() {
         val buyEngine = MatchingEngine()
         buyEngine.process(submit(orderId = "a1", side = Side.SELL, price = 100, quantity = 1))
 
@@ -113,7 +113,67 @@ class MatchingEngineTest {
     }
 
     @Test
-    fun `same ask price uses fifo order`() {
+    fun `가장 낮은 ask 레벨이 비면 다음 ask 레벨로 넘어간다`() {
+        val engine = MatchingEngine()
+
+        engine.process(submit(orderId = "a90", side = Side.SELL, price = 90, quantity = 1))
+        engine.process(submit(orderId = "a100", side = Side.SELL, price = 100, quantity = 1))
+
+        assertEquals(
+            listOf(
+                trade(seq = 3, maker = "a90", taker = "b1", side = Side.BUY, price = 90, quantity = 1),
+                trade(seq = 4, maker = "a100", taker = "b1", side = Side.BUY, price = 100, quantity = 1),
+            ),
+            engine.process(submit(orderId = "b1", side = Side.BUY, price = 100, quantity = 2)),
+        )
+    }
+
+    @Test
+    fun `가장 높은 bid 레벨이 비면 다음 bid 레벨로 넘어간다`() {
+        val engine = MatchingEngine()
+
+        engine.process(submit(orderId = "b110", side = Side.BUY, price = 110, quantity = 1))
+        engine.process(submit(orderId = "b100", side = Side.BUY, price = 100, quantity = 1))
+
+        assertEquals(
+            listOf(
+                trade(seq = 3, maker = "b110", taker = "s1", side = Side.SELL, price = 110, quantity = 1),
+                trade(seq = 4, maker = "b100", taker = "s1", side = Side.SELL, price = 100, quantity = 1),
+            ),
+            engine.process(submit(orderId = "s1", side = Side.SELL, price = 100, quantity = 2)),
+        )
+    }
+
+    @Test
+    fun `ask 최우선 레벨을 취소하면 다음 ask 레벨이 체결된다`() {
+        val engine = MatchingEngine()
+
+        engine.process(submit(orderId = "a90", side = Side.SELL, price = 90, quantity = 1))
+        engine.process(submit(orderId = "a100", side = Side.SELL, price = 100, quantity = 1))
+        engine.process(cancel(orderId = "a90"))
+
+        assertEquals(
+            listOf(trade(seq = 4, maker = "a100", taker = "b1", side = Side.BUY, price = 100, quantity = 1)),
+            engine.process(submit(orderId = "b1", side = Side.BUY, price = 100, quantity = 1)),
+        )
+    }
+
+    @Test
+    fun `bid 최우선 레벨을 취소하면 다음 bid 레벨이 체결된다`() {
+        val engine = MatchingEngine()
+
+        engine.process(submit(orderId = "b110", side = Side.BUY, price = 110, quantity = 1))
+        engine.process(submit(orderId = "b100", side = Side.BUY, price = 100, quantity = 1))
+        engine.process(cancel(orderId = "b110"))
+
+        assertEquals(
+            listOf(trade(seq = 4, maker = "b100", taker = "s1", side = Side.SELL, price = 100, quantity = 1)),
+            engine.process(submit(orderId = "s1", side = Side.SELL, price = 100, quantity = 1)),
+        )
+    }
+
+    @Test
+    fun `같은 ask 가격에서는 먼저 들어온 주문부터 체결한다`() {
         val engine = MatchingEngine()
 
         engine.process(submit(orderId = "a1", side = Side.SELL, price = 100, quantity = 1))
@@ -130,7 +190,7 @@ class MatchingEngineTest {
     }
 
     @Test
-    fun `same bid price uses fifo order`() {
+    fun `같은 bid 가격에서는 먼저 들어온 주문부터 체결한다`() {
         val engine = MatchingEngine()
 
         engine.process(submit(orderId = "b1", side = Side.BUY, price = 100, quantity = 1))
@@ -147,7 +207,7 @@ class MatchingEngineTest {
     }
 
     @Test
-    fun `cancelled middle order is skipped while same price fifo is preserved`() {
+    fun `같은 가격의 중간 주문을 취소해도 FIFO 순서가 유지된다`() {
         val engine = MatchingEngine()
 
         engine.process(submit(orderId = "a1", side = Side.SELL, price = 100, quantity = 1))
@@ -168,7 +228,7 @@ class MatchingEngineTest {
     }
 
     @Test
-    fun `partially filled maker remains cancellable with remaining quantity`() {
+    fun `부분 체결된 maker는 남은 수량으로 취소할 수 있다`() {
         val engine = MatchingEngine()
 
         engine.process(submit(orderId = "a1", side = Side.SELL, price = 100, quantity = 5))
@@ -183,7 +243,65 @@ class MatchingEngineTest {
     }
 
     @Test
-    fun `taker consumes multiple makers and remaining gtc quantity enters book`() {
+    fun `첫 maker가 부분 체결되면 다음 maker로 넘어가지 않는다`() {
+        val engine = MatchingEngine()
+
+        engine.process(submit(orderId = "a1", side = Side.SELL, price = 100, quantity = 5))
+        engine.process(submit(orderId = "a2", side = Side.SELL, price = 100, quantity = 5))
+
+        assertEquals(
+            listOf(trade(seq = 3, maker = "a1", taker = "b1", side = Side.BUY, price = 100, quantity = 3)),
+            engine.process(submit(orderId = "b1", side = Side.BUY, price = 100, quantity = 3)),
+        )
+        assertEquals(
+            listOf(cancelled(seq = 4, orderId = "a1", quantity = 2)),
+            engine.process(cancel(orderId = "a1")),
+        )
+        assertEquals(
+            listOf(cancelled(seq = 5, orderId = "a2", quantity = 5)),
+            engine.process(cancel(orderId = "a2")),
+        )
+    }
+
+    @Test
+    fun `부분 체결된 maker는 다음 taker에게 남은 수량만 체결된다`() {
+        val engine = MatchingEngine()
+
+        engine.process(submit(orderId = "a1", side = Side.SELL, price = 100, quantity = 5))
+        engine.process(submit(orderId = "b1", side = Side.BUY, price = 100, quantity = 2))
+
+        assertEquals(
+            listOf(trade(seq = 3, maker = "a1", taker = "b2", side = Side.BUY, price = 100, quantity = 3)),
+            engine.process(submit(orderId = "b2", side = Side.BUY, price = 100, quantity = 3)),
+        )
+        assertEquals(
+            listOf(cancelRejected(seq = 4, orderId = "a1")),
+            engine.process(cancel(orderId = "a1")),
+        )
+    }
+
+    @Test
+    fun `여러 maker를 정확히 전량 체결하면 taker는 book에 남지 않는다`() {
+        val engine = MatchingEngine()
+
+        engine.process(submit(orderId = "a1", side = Side.SELL, price = 100, quantity = 2))
+        engine.process(submit(orderId = "a2", side = Side.SELL, price = 101, quantity = 3))
+
+        assertEquals(
+            listOf(
+                trade(seq = 3, maker = "a1", taker = "b1", side = Side.BUY, price = 100, quantity = 2),
+                trade(seq = 4, maker = "a2", taker = "b1", side = Side.BUY, price = 101, quantity = 3),
+            ),
+            engine.process(submit(orderId = "b1", side = Side.BUY, price = 101, quantity = 5)),
+        )
+        assertEquals(
+            listOf(cancelRejected(seq = 5, orderId = "b1")),
+            engine.process(cancel(orderId = "b1")),
+        )
+    }
+
+    @Test
+    fun `매수 taker는 여러 maker를 체결하고 남은 GTC 수량을 book에 넣는다`() {
         val engine = MatchingEngine()
 
         engine.process(submit(orderId = "a1", side = Side.SELL, price = 100, quantity = 2))
@@ -204,7 +322,7 @@ class MatchingEngineTest {
     }
 
     @Test
-    fun `sell taker consumes multiple bids and remaining gtc quantity enters book`() {
+    fun `매도 taker는 여러 bid를 체결하고 남은 GTC 수량을 book에 넣는다`() {
         val engine = MatchingEngine()
 
         engine.process(submit(orderId = "b1", side = Side.BUY, price = 101, quantity = 2))
@@ -224,7 +342,47 @@ class MatchingEngineTest {
     }
 
     @Test
-    fun `remaining taker gtc quantity can be cancelled`() {
+    fun `매수 taker는 가격 조건을 만족하는 ask까지만 체결한다`() {
+        val engine = MatchingEngine()
+
+        engine.process(submit(orderId = "a100", side = Side.SELL, price = 100, quantity = 1))
+        engine.process(submit(orderId = "a101", side = Side.SELL, price = 101, quantity = 1))
+
+        assertEquals(
+            listOf(
+                trade(seq = 3, maker = "a100", taker = "b1", side = Side.BUY, price = 100, quantity = 1),
+                entered(seq = 4, orderId = "b1", side = Side.BUY, price = 100, quantity = 4),
+            ),
+            engine.process(submit(orderId = "b1", side = Side.BUY, price = 100, quantity = 5)),
+        )
+        assertEquals(
+            listOf(trade(seq = 5, maker = "a101", taker = "b2", side = Side.BUY, price = 101, quantity = 1)),
+            engine.process(submit(orderId = "b2", side = Side.BUY, price = 101, quantity = 1)),
+        )
+    }
+
+    @Test
+    fun `매도 taker는 가격 조건을 만족하는 bid까지만 체결한다`() {
+        val engine = MatchingEngine()
+
+        engine.process(submit(orderId = "b101", side = Side.BUY, price = 101, quantity = 1))
+        engine.process(submit(orderId = "b100", side = Side.BUY, price = 100, quantity = 1))
+
+        assertEquals(
+            listOf(
+                trade(seq = 3, maker = "b101", taker = "s1", side = Side.SELL, price = 101, quantity = 1),
+                entered(seq = 4, orderId = "s1", side = Side.SELL, price = 101, quantity = 4),
+            ),
+            engine.process(submit(orderId = "s1", side = Side.SELL, price = 101, quantity = 5)),
+        )
+        assertEquals(
+            listOf(trade(seq = 5, maker = "b100", taker = "s2", side = Side.SELL, price = 100, quantity = 1)),
+            engine.process(submit(orderId = "s2", side = Side.SELL, price = 100, quantity = 1)),
+        )
+    }
+
+    @Test
+    fun `book에 남은 taker GTC 잔량은 취소할 수 있다`() {
         val engine = MatchingEngine()
 
         engine.process(submit(orderId = "a1", side = Side.SELL, price = 100, quantity = 2))
@@ -238,7 +396,7 @@ class MatchingEngineTest {
     }
 
     @Test
-    fun `cancel removes resting order from future matching`() {
+    fun `취소된 resting 주문은 이후 체결되지 않는다`() {
         val engine = MatchingEngine()
 
         engine.process(submit(orderId = "a1", side = Side.SELL, price = 100, quantity = 5))
@@ -253,7 +411,7 @@ class MatchingEngineTest {
     }
 
     @Test
-    fun `duplicate resting order id is rejected without mutating book or sequence`() {
+    fun `resting 상태의 중복 orderId는 book과 sequence 변경 없이 거절된다`() {
         val engine = MatchingEngine()
 
         engine.process(submit(orderId = "b1", side = Side.BUY, price = 100, quantity = 5))
@@ -270,7 +428,7 @@ class MatchingEngineTest {
     }
 
     @Test
-    fun `duplicate resting order id at another price is rejected without ghost order`() {
+    fun `다른 가격의 중복 resting orderId도 ghost order 없이 거절된다`() {
         val engine = MatchingEngine()
 
         engine.process(submit(orderId = "a1", side = Side.SELL, price = 100, quantity = 5))
@@ -288,7 +446,7 @@ class MatchingEngineTest {
     }
 
     @Test
-    fun `filled order id cannot be reused in same market`() {
+    fun `체결 완료된 orderId는 같은 마켓에서 재사용할 수 없다`() {
         val engine = MatchingEngine()
 
         engine.process(submit(orderId = "a1", side = Side.SELL, price = 100, quantity = 1))
@@ -306,7 +464,7 @@ class MatchingEngineTest {
     }
 
     @Test
-    fun `cancelled order id cannot be reused in same market`() {
+    fun `취소된 orderId는 같은 마켓에서 재사용할 수 없다`() {
         val engine = MatchingEngine()
 
         engine.process(submit(orderId = "b1", side = Side.BUY, price = 100, quantity = 1))
@@ -324,7 +482,7 @@ class MatchingEngineTest {
     }
 
     @Test
-    fun `cancel unknown order returns rejected event`() {
+    fun `없는 주문 취소는 reject event를 반환한다`() {
         val events = MatchingEngine().process(cancel(orderId = "missing"))
 
         assertEquals(
@@ -334,7 +492,83 @@ class MatchingEngineTest {
     }
 
     @Test
-    fun `cancel filled order returns rejected event`() {
+    fun `존재하지 않는 주문 취소는 book 상태를 바꾸지 않는다`() {
+        val engine = MatchingEngine()
+
+        engine.process(submit(orderId = "a1", side = Side.SELL, price = 100, quantity = 1))
+        assertEquals(
+            listOf(cancelRejected(seq = 2, orderId = "missing")),
+            engine.process(cancel(orderId = "missing")),
+        )
+        assertEquals(
+            listOf(trade(seq = 3, maker = "a1", taker = "b1", side = Side.BUY, price = 100, quantity = 1)),
+            engine.process(submit(orderId = "b1", side = Side.BUY, price = 100, quantity = 1)),
+        )
+    }
+
+    @Test
+    fun `존재하지 않는 주문 취소는 submit orderId를 선점하지 않는다`() {
+        val engine = MatchingEngine()
+
+        assertEquals(
+            listOf(cancelRejected(seq = 1, orderId = "b1")),
+            engine.process(cancel(orderId = "b1")),
+        )
+        assertEquals(
+            listOf(entered(seq = 2, orderId = "b1", side = Side.BUY, price = 100, quantity = 1)),
+            engine.process(submit(orderId = "b1", side = Side.BUY, price = 100, quantity = 1)),
+        )
+    }
+
+    @Test
+    fun `다른 유저가 주문을 취소하면 reject되고 주문은 그대로 남는다`() {
+        val engine = MatchingEngine()
+
+        engine.process(submit(orderId = "a1", side = Side.SELL, price = 100, quantity = 5, userId = "seller"))
+
+        assertEquals(
+            listOf(
+                cancelRejected(
+                    seq = 2,
+                    orderId = "a1",
+                    userId = "attacker",
+                    reason = "order owner mismatch",
+                ),
+            ),
+            engine.process(cancel(orderId = "a1", userId = "attacker")),
+        )
+        assertEquals(
+            listOf(cancelled(seq = 3, orderId = "a1", quantity = 5, userId = "seller")),
+            engine.process(cancel(orderId = "a1", userId = "seller")),
+        )
+    }
+
+    @Test
+    fun `다른 유저가 부분 체결된 주문을 취소해도 남은 수량은 유지된다`() {
+        val engine = MatchingEngine()
+
+        engine.process(submit(orderId = "a1", side = Side.SELL, price = 100, quantity = 5, userId = "seller"))
+        engine.process(submit(orderId = "b1", side = Side.BUY, price = 100, quantity = 2, userId = "buyer"))
+
+        assertEquals(
+            listOf(
+                cancelRejected(
+                    seq = 3,
+                    orderId = "a1",
+                    userId = "attacker",
+                    reason = "order owner mismatch",
+                ),
+            ),
+            engine.process(cancel(orderId = "a1", userId = "attacker")),
+        )
+        assertEquals(
+            listOf(cancelled(seq = 4, orderId = "a1", quantity = 3, userId = "seller")),
+            engine.process(cancel(orderId = "a1", userId = "seller")),
+        )
+    }
+
+    @Test
+    fun `완전 체결된 maker 주문 취소는 reject event를 반환한다`() {
         val engine = MatchingEngine()
 
         engine.process(submit(orderId = "a1", side = Side.SELL, price = 100, quantity = 1))
@@ -347,7 +581,7 @@ class MatchingEngineTest {
     }
 
     @Test
-    fun `cancel fully filled taker returns rejected event`() {
+    fun `완전 체결된 taker 주문 취소는 reject event를 반환한다`() {
         val engine = MatchingEngine()
 
         engine.process(submit(orderId = "a1", side = Side.SELL, price = 100, quantity = 1))
@@ -360,7 +594,7 @@ class MatchingEngineTest {
     }
 
     @Test
-    fun `fully crossing order does not enter book`() {
+    fun `전량 체결된 crossing 주문은 book에 남지 않는다`() {
         val engine = MatchingEngine()
 
         engine.process(submit(orderId = "b1", side = Side.BUY, price = 100, quantity = 1))
@@ -373,7 +607,7 @@ class MatchingEngineTest {
     }
 
     @Test
-    fun `different markets keep independent books and sequences`() {
+    fun `서로 다른 마켓은 book과 sequence를 독립적으로 유지한다`() {
         val engine = MatchingEngine()
         val ethMarket = MarketId("ETH-KRW")
 
@@ -409,7 +643,7 @@ class MatchingEngineTest {
     }
 
     @Test
-    fun `same order id in different markets is isolated`() {
+    fun `서로 다른 마켓에서는 같은 orderId가 격리된다`() {
         val engine = MatchingEngine()
         val ethMarket = MarketId("ETH-KRW")
 
@@ -445,7 +679,23 @@ class MatchingEngineTest {
     }
 
     @Test
-    fun `unsupported market order fails before event creation`() {
+    fun `다른 마켓의 취소 실패는 원래 마켓 sequence와 book에 영향을 주지 않는다`() {
+        val engine = MatchingEngine()
+        val ethMarket = MarketId("ETH-KRW")
+
+        engine.process(submit(orderId = "b1", side = Side.BUY, price = 100, quantity = 1))
+        assertEquals(
+            listOf(cancelRejected(market = ethMarket, seq = 1, orderId = "b1")),
+            engine.process(cancel(market = ethMarket, orderId = "b1")),
+        )
+        assertEquals(
+            listOf(cancelled(seq = 2, orderId = "b1", quantity = 1)),
+            engine.process(cancel(orderId = "b1")),
+        )
+    }
+
+    @Test
+    fun `지원하지 않는 시장가 주문은 event 생성 전에 실패한다`() {
         val engine = MatchingEngine()
 
         val exception = assertFailsWith<IllegalArgumentException> {
@@ -468,7 +718,7 @@ class MatchingEngineTest {
     }
 
     @Test
-    fun `unsupported ioc order fails before event creation`() {
+    fun `지원하지 않는 IOC 주문은 event 생성 전에 실패한다`() {
         val engine = MatchingEngine()
 
         val exception = assertFailsWith<IllegalArgumentException> {
@@ -491,7 +741,44 @@ class MatchingEngineTest {
     }
 
     @Test
-    fun `zero submit quantity is rejected by command`() {
+    fun `지원하지 않는 submit 실패는 orderId와 sequence를 사용하지 않는다`() {
+        val engine = MatchingEngine()
+
+        assertFailsWith<IllegalArgumentException> {
+            engine.process(
+                submit(
+                    orderId = "m1",
+                    side = Side.BUY,
+                    price = 100,
+                    quantity = 1,
+                    orderType = OrderType.MARKET,
+                ),
+            )
+        }
+        assertEquals(
+            listOf(entered(seq = 1, orderId = "m1", side = Side.BUY, price = 100, quantity = 1)),
+            engine.process(submit(orderId = "m1", side = Side.BUY, price = 100, quantity = 1)),
+        )
+
+        assertFailsWith<IllegalArgumentException> {
+            engine.process(
+                submit(
+                    orderId = "ioc1",
+                    side = Side.BUY,
+                    price = 100,
+                    quantity = 1,
+                    timeInForce = TimeInForce.IOC,
+                ),
+            )
+        }
+        assertEquals(
+            listOf(entered(seq = 2, orderId = "ioc1", side = Side.BUY, price = 101, quantity = 1)),
+            engine.process(submit(orderId = "ioc1", side = Side.BUY, price = 101, quantity = 1)),
+        )
+    }
+
+    @Test
+    fun `수량이 0인 submit command는 생성 시점에 거절된다`() {
         val exception = assertFailsWith<IllegalArgumentException> {
             submit(orderId = "b1", side = Side.BUY, price = 100, quantity = 0)
         }
@@ -500,7 +787,34 @@ class MatchingEngineTest {
     }
 
     @Test
-    fun `same command stream produces identical event stream`() {
+    fun `수량이 음수인 submit command는 생성 시점에 거절된다`() {
+        val exception = assertFailsWith<IllegalArgumentException> {
+            submit(orderId = "b1", side = Side.BUY, price = 100, quantity = -1)
+        }
+
+        assertEquals("quantity must be positive", exception.message)
+    }
+
+    @Test
+    fun `가격이 0인 submit command는 생성 시점에 거절된다`() {
+        val exception = assertFailsWith<IllegalArgumentException> {
+            submit(orderId = "b1", side = Side.BUY, price = 0, quantity = 1)
+        }
+
+        assertEquals("price must be positive", exception.message)
+    }
+
+    @Test
+    fun `가격이 음수인 submit command는 생성 시점에 거절된다`() {
+        val exception = assertFailsWith<IllegalArgumentException> {
+            submit(orderId = "b1", side = Side.BUY, price = -1, quantity = 1)
+        }
+
+        assertEquals("price must be positive", exception.message)
+    }
+
+    @Test
+    fun `같은 command stream은 같은 event stream을 만든다`() {
         val commands = listOf(
             submit(orderId = "a1", side = Side.SELL, price = 100, quantity = 2),
             submit(orderId = "a2", side = Side.SELL, price = 101, quantity = 3),
@@ -519,7 +833,7 @@ class MatchingEngineTest {
     }
 
     @Test
-    fun `longer deterministic command stream produces identical event stream`() {
+    fun `긴 command stream도 같은 event stream을 만든다`() {
         val commands = buildList {
             for (index in 1..50) {
                 add(submit(orderId = "ask-$index", side = Side.SELL, price = 100L + (index % 5), quantity = 2))
@@ -542,7 +856,7 @@ class MatchingEngineTest {
     }
 
     @Test
-    fun `generated multi market command stream is deterministic and keeps per market sequences`() {
+    fun `여러 마켓 command stream도 결정성과 마켓별 sequence를 유지한다`() {
         val markets = listOf(
             MarketId("BTC-KRW"),
             MarketId("ETH-KRW"),
@@ -702,12 +1016,13 @@ class MatchingEngineTest {
         seq: Long,
         orderId: String,
         userId: String = "user-$orderId",
+        reason: String = "order not found",
     ): OrderCancelRejected =
         OrderCancelRejected(
             marketId = market,
             engineSequence = seq,
             orderId = OrderId(orderId),
             userId = UserId(userId),
-            reason = "order not found",
+            reason = reason,
         )
 }
