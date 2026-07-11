@@ -18,13 +18,13 @@ internal object BenchmarkCommands {
 
     private val markets = listOf(btcKrw, ethKrw, solKrw)
 
-    fun singleMarketReplayCommands(): List<MatchingCommand> =
+    fun singleMarketReplayCommands(prefix: String = "replay"): List<MatchingCommand> =
         buildList {
             for (index in 1..500) {
                 add(
                     submit(
                         market = btcKrw,
-                        orderId = "ask-$index",
+                        orderId = "$prefix-ask-$index",
                         side = Side.SELL,
                         price = 100L + (index % 20),
                         quantity = 2L,
@@ -36,7 +36,7 @@ internal object BenchmarkCommands {
                 add(
                     submit(
                         market = btcKrw,
-                        orderId = "bid-$index",
+                        orderId = "$prefix-bid-$index",
                         side = Side.BUY,
                         price = 105L + (index % 25),
                         quantity = 3L,
@@ -45,14 +45,14 @@ internal object BenchmarkCommands {
             }
         }
 
-    fun multiMarketReplayCommands(): List<MatchingCommand> =
+    fun multiMarketReplayCommands(prefix: String = "replay"): List<MatchingCommand> =
         buildList {
             markets.forEach { market ->
                 for (index in 1..200) {
                     add(
                         submit(
                             market = market,
-                            orderId = "${market.value}-ask-$index",
+                            orderId = "$prefix-${market.value}-ask-$index",
                             side = Side.SELL,
                             price = 100L + (index % 20),
                             quantity = 2L,
@@ -66,10 +66,68 @@ internal object BenchmarkCommands {
                     add(
                         submit(
                             market = market,
-                            orderId = "${market.value}-bid-$index",
+                            orderId = "$prefix-${market.value}-bid-$index",
                             side = Side.BUY,
                             price = 105L + (index % 25),
                             quantity = 3L,
+                        ),
+                    )
+                }
+            }
+        }
+
+    fun balancedSingleMarketReplayCommands(prefix: String): List<MatchingCommand> =
+        buildList {
+            for (index in 1..500) {
+                add(
+                    submit(
+                        market = btcKrw,
+                        orderId = "$prefix-balanced-ask-$index",
+                        side = Side.SELL,
+                        price = 100L + (index % 20),
+                        quantity = 1L,
+                    ),
+                )
+            }
+
+            for (index in 1..500) {
+                add(
+                    submit(
+                        market = btcKrw,
+                        orderId = "$prefix-balanced-bid-$index",
+                        side = Side.BUY,
+                        price = 130L,
+                        quantity = 1L,
+                    ),
+                )
+            }
+        }
+
+    fun balancedMultiMarketReplayCommands(prefix: String): List<MatchingCommand> =
+        buildList {
+            markets.forEach { market ->
+                for (index in 1..200) {
+                    add(
+                        submit(
+                            market = market,
+                            orderId = "$prefix-balanced-${market.value}-ask-$index",
+                            side = Side.SELL,
+                            price = 100L + (index % 20),
+                            quantity = 1L,
+                        ),
+                    )
+                }
+            }
+
+            markets.asReversed().forEach { market ->
+                for (index in 1..200) {
+                    add(
+                        submit(
+                            market = market,
+                            orderId = "$prefix-balanced-${market.value}-bid-$index",
+                            side = Side.BUY,
+                            price = 130L,
+                            quantity = 1L,
                         ),
                     )
                 }
