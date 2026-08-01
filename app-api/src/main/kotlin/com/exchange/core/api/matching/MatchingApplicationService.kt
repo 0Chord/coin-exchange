@@ -16,23 +16,24 @@ import java.util.concurrent.TimeUnit
 @Service
 class MatchingApplicationService(
     private val processor: MarketCommandProcessor,
-    private val publisher: MatchingEventPublisher
+    private val publisher: MatchingEventPublisher,
 ) {
     /**
      * 하나의 matching command를 처리하고 발생한 event를 반환한다.
      */
     fun process(command: MatchingCommand): List<MatchingEvent> {
-        val events = try {
-            processor.submit(command).get(3, TimeUnit.SECONDS)
+        return try {
+            processor.submit(command) { events ->
+                publisher.publish(events)
+            }.get(3, TimeUnit.SECONDS)
         } catch (error: ExecutionException) {
             throw error.cause ?: error
         } catch (error: InterruptedException) {
             Thread.currentThread().interrupt()
-            throw IllegalStateException("matching command interrupted", error)
+            throw IllegalStateException(
+                "matching command interrupted",
+                error,
+            )
         }
-
-        publisher.publish(events)
-
-        return events
     }
 }

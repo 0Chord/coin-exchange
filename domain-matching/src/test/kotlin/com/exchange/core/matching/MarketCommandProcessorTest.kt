@@ -14,6 +14,7 @@ import java.util.concurrent.ExecutionException
 import java.util.concurrent.Executors
 import java.util.concurrent.RejectedExecutionException
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicInteger
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
@@ -498,6 +499,74 @@ class MarketCommandProcessorTest {
             )
         } finally {
             callerPool.shutdownNow()
+            processor.close()
+        }
+    }
+
+    @Test
+    fun `event handler 실패 전에 queue에 들어온 같은 market command도 거부한다`() {
+        val processor = InMemoryMarketCommandProcessor()
+        val firstHandlerStarted = CountDownLatch(1)
+        val releaseFirstHandler = CountDownLatch(1)
+        val secondHandlerCalls = AtomicInteger(0)
+
+        try {
+            val firstFuture = processor.submit(
+                submit(
+                    orderId = "a1",
+                    side = Side.SELL,
+                    price = 100,
+                    quantity = 1,
+                ),
+            ) {
+                firstHandlerStarted.countDown()
+
+                if (!releaseFirstHandler.await(5, TimeUnit.SECONDS)) {
+                    error("first event handler release timed out")
+                }
+
+                throw IllegalStateException(
+                    "event persistence failed",
+                )
+            }
+
+            assertTrue(
+                firstHandlerStarted.await(
+                    5,
+                    TimeUnit.SECONDS,
+                ),
+            )
+
+            val secondFuture = processor.submit(
+                submit(
+                    orderId = "b1",
+                    side = Side.BUY,
+                    price = 100,
+                    quantity = 1,
+                ),
+            ) {
+                secondHandlerCalls.incrementAndGet()
+            }
+
+            releaseFirstHandler.countDown()
+
+            val firstFailure = firstFuture.awaitFailure()
+
+            assertEquals(
+                "event persistence failed",
+                firstFailure.message,
+            )
+
+            val secondFailure = secondFuture.awaitFailure()
+
+            assertIs<RejectedExecutionException>(secondFailure)
+            assertEquals(
+                "event persistence failed",
+                secondFailure.cause?.message,
+            )
+            assertEquals(0, secondHandlerCalls.get())
+        } finally {
+            releaseFirstHandler.countDown()
             processor.close()
         }
     }
