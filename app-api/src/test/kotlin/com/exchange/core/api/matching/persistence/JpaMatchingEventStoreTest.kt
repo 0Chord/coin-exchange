@@ -35,7 +35,7 @@ import kotlin.test.assertTrue
     ],
 )
 @AutoConfigureTestDatabase(replace = AutoConfigureTestDatabase.Replace.NONE)
-@Testcontainers(disabledWithoutDocker = true)
+@Testcontainers
 class JpaMatchingEventStoreTest {
     @Autowired
     private lateinit var repository: MatchingEventRepository
