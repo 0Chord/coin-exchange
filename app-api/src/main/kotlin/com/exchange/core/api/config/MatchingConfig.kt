@@ -4,6 +4,7 @@ import com.exchange.core.api.matching.publish.MatchingEventPublisher
 import com.exchange.core.api.matching.publish.NoOpMatchingEventPublisher
 import com.exchange.core.matching.InMemoryMarketCommandProcessor
 import com.exchange.core.matching.MarketCommandProcessor
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty
 import org.springframework.context.annotation.Bean
 import org.springframework.context.annotation.Configuration
 
@@ -23,5 +24,10 @@ class MatchingConfig {
      * 지금은 NoOp이고, 이후 outbox/Kafka/Redis/WS 구현으로 교체한다.
      */
     @Bean
+    @ConditionalOnProperty(
+        name = ["exchange.matching.persistence.enabled"],
+        havingValue = "false",
+        matchIfMissing = true,
+    )
     fun matchingEventPublisher(): MatchingEventPublisher = NoOpMatchingEventPublisher()
 }
