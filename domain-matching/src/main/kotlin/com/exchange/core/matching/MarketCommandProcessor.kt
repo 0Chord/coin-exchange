@@ -7,6 +7,7 @@ import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.Executors
 import java.util.concurrent.RejectedExecutionException
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicReference
 
 /**
  * 매칭 엔진 앞단의 command 처리 입구.
@@ -25,7 +26,10 @@ interface MarketCommandProcessor : AutoCloseable {
      * 반환값은 즉시 완성된 결과가 아니라 worker가 나중에 채워 넣을 future다.
      * 성공하면 MatchingEvent 목록이 들어가고, 처리 중 예외가 나면 future가 실패 상태가 된다.
      */
-    fun submit(command: MatchingCommand): CompletableFuture<List<MatchingEvent>>
+    fun submit(
+        command: MatchingCommand,
+        eventHandler: (List<MatchingEvent>) -> Unit = {},
+    ): CompletableFuture<List<MatchingEvent>>
 }
 
 /**
@@ -50,7 +54,10 @@ class InMemoryMarketCommandProcessor : MarketCommandProcessor {
     private val workers = ConcurrentHashMap<MarketId, MarketWorker>()
     private val closed = AtomicBoolean(false)
 
-    override fun submit(command: MatchingCommand): CompletableFuture<List<MatchingEvent>> {
+    override fun submit(
+        command: MatchingCommand,
+        eventHandler: (List<MatchingEvent>) -> Unit,
+    ): CompletableFuture<List<MatchingEvent>> {
         if (closed.get()) {
             return failedFuture(RejectedExecutionException("market command processor is closed"))
         }
@@ -66,7 +73,7 @@ class InMemoryMarketCommandProcessor : MarketCommandProcessor {
             return failedFuture(RejectedExecutionException("market command processor is closed"))
         }
 
-        return worker.submit(command)
+        return worker.submit(command, eventHandler)
     }
 
     override fun close() {
@@ -87,7 +94,7 @@ class InMemoryMarketCommandProcessor : MarketCommandProcessor {
  */
 private class MarketWorker(
     private val marketId: MarketId,
-    private val engine: MatchingEngine = MatchingEngine()
+    private val engine: MatchingEngine = MatchingEngine(),
 ) : AutoCloseable {
 
     /**
@@ -103,7 +110,12 @@ private class MarketWorker(
     }
     private val closed = AtomicBoolean(false)
 
-    fun submit(command: MatchingCommand): CompletableFuture<List<MatchingEvent>> {
+    private val failure = AtomicReference<Throwable?>(null)
+
+    fun submit(
+        command: MatchingCommand,
+        eventHandler: (List<MatchingEvent>) -> Unit,
+    ): CompletableFuture<List<MatchingEvent>> {
         // worker가 담당하는 market과 command market이 다르면 processor 구현 버그다.
         require(command.marketId == marketId) {
             "command marketId must match worker marketId"
@@ -113,15 +125,35 @@ private class MarketWorker(
             return failedFuture(RejectedExecutionException("market worker is closed"))
         }
 
+        failure.get()?.let { cause ->
+            return failedFuture(marketUnavailable(cause))
+        }
+
         // submit을 호출한 thread는 matching을 직접 수행하지 않는다.
         // 결과를 담을 future만 만들고, 실제 처리는 executor에 맡긴다.
         val future = CompletableFuture<List<MatchingEvent>>()
 
         try {
             executor.execute {
+                val previousFailure = failure.get()
+
+                if (previousFailure != null) {
+                    future.completeExceptionally(
+                        marketUnavailable(previousFailure),
+                    )
+                    return@execute
+                }
+
                 try {
                     // 이 블록은 worker의 single thread에서 실행된다.
                     val events = engine.process(command)
+                    try {
+                        eventHandler(events)
+                    } catch (error: Throwable) {
+                        failure.compareAndSet(null, error)
+                        future.completeExceptionally(error)
+                        return@execute
+                    }
                     future.complete(events)
                 } catch (error: Throwable) {
                     // worker thread 안에서 난 예외를 submit 호출자에게 전달한다.
@@ -134,6 +166,14 @@ private class MarketWorker(
 
         return future
     }
+
+    private fun marketUnavailable(
+        cause: Throwable,
+    ): RejectedExecutionException =
+        RejectedExecutionException(
+            "market ${marketId.value} is unavailable after event handling failure",
+            cause,
+        )
 
     override fun close() {
         // executor가 가진 worker thread를 정리한다.
