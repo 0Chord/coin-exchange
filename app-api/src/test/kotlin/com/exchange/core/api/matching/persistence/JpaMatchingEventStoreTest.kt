@@ -30,7 +30,8 @@ import kotlin.test.assertTrue
 
 @DataJpaTest(
     properties = [
-        "spring.jpa.hibernate.ddl-auto=create-drop",
+        "spring.jpa.hibernate.ddl-auto=validate",
+        "spring.flyway.enabled=true",
     ],
 )
 @AutoConfigureTestDatabase(replace = AutoConfigureTestDatabase.Replace.NONE)
@@ -194,13 +195,12 @@ class JpaMatchingEventStoreTest {
         )
         repository.flush()
 
-        store.append(
-            listOf(
-                enteredBook(marketId = "BTC-KRW", engineSequence = 1, orderId = "bid-duplicate"),
-            ),
-        )
-
         assertFailsWith<DataIntegrityViolationException> {
+            store.append(
+                listOf(
+                    enteredBook(marketId = "BTC-KRW", engineSequence = 1, orderId = "bid-duplicate"),
+                ),
+            )
             repository.flush()
         }
     }
