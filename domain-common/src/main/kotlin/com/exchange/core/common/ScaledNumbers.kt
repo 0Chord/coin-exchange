@@ -56,3 +56,31 @@ value class Quantity(val value: Long) : Comparable<Quantity> {
         val ZERO = Quantity(0)
     }
 }
+
+/**
+ * 특정 자산의 최소 단위 기준 금액.
+ *
+ * 실제 자산 종류는 Amount 자체가 아니라 AssetId와 함께 표현한다.
+ * 잔고가 0인 상태도 필요하므로 0을 허용한다.
+ */
+@JvmInline
+value class Amount(
+    val value: Long,
+) : Comparable<Amount> {
+    init {
+        require(value >= 0) {
+            "amount must not be negative"
+        }
+    }
+
+    fun isZero(): Boolean = value == 0L
+
+    override fun compareTo(other: Amount): Int =
+        value.compareTo(other.value)
+
+    override fun toString(): String = value.toString()
+
+    companion object {
+        val ZERO = Amount(0)
+    }
+}

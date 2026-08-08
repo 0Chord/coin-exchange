@@ -48,3 +48,16 @@ value class UserId(val value: String) {
 
     override fun toString(): String = value
 }
+
+@JvmInline
+value class AssetId(
+    val value: String,
+) {
+    init {
+        require(value.isNotBlank()) {
+            "assetId must not be blank"
+        }
+    }
+
+    override fun toString(): String = value
+}
