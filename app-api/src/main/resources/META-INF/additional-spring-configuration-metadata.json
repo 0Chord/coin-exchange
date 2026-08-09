@@ -1,0 +1,16 @@
+{
+  "properties": [
+    {
+      "name": "exchange.matching.persistence.enabled",
+      "type": "java.lang.Boolean",
+      "description": "Whether matching events are persisted to the database.",
+      "defaultValue": false
+    },
+    {
+      "name": "exchange.ledger.persistence.enabled",
+      "type": "java.lang.Boolean",
+      "description": "Whether ledger balances are persisted to the database.",
+      "defaultValue": false
+    }
+  ]
+}

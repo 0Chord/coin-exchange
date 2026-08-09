@@ -104,3 +104,12 @@ class InsufficientHoldException(
         "hold=${hold.value}, " +
         "requested=${requested.value}",
 )
+
+class BalanceNotFoundException(
+    val userId: UserId,
+    val assetId: AssetId,
+) : IllegalStateException(
+    "balance not found: " +
+        "userId=${userId.value}, " +
+        "assetId=${assetId.value}",
+)
