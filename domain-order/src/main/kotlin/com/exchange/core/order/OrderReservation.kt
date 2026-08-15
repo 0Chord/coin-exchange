@@ -3,8 +3,10 @@ package com.exchange.core.order
 import com.exchange.core.common.Amount
 import com.exchange.core.common.AssetId
 import com.exchange.core.common.MarketId
+import com.exchange.core.common.OrderId
 import com.exchange.core.common.Price
 import com.exchange.core.common.Quantity
+import com.exchange.core.common.UserId
 import java.math.BigInteger
 
 /**
@@ -38,6 +40,96 @@ data class ReservationRequirement(
     val assetId: AssetId,
     val amount: Amount,
 )
+
+enum class OrderReservationStatus {
+    ACTIVE,
+    SETTLED,
+    RELEASED,
+}
+
+data class OrderReservation(
+    val marketId: MarketId,
+    val orderId: OrderId,
+    val userId: UserId,
+    val side: Side,
+    val assetId: AssetId,
+    val limitPrice: Price,
+    val initialQuantity: Quantity,
+    val remainingQuantity: Quantity,
+    val reservedAmount: Amount,
+    val remainingAmount: Amount,
+    val status: OrderReservationStatus,
+) {
+    init {
+        require(initialQuantity.value > 0) {
+            "initialQuantity must be positive"
+        }
+
+        require(remainingQuantity <= initialQuantity) {
+            "remaining quantity must not exceed initial quantity"
+        }
+        require(reservedAmount.value > 0) {
+            "reserved amount must be positive"
+        }
+
+        require(remainingAmount <= reservedAmount) {
+            "remaining amount must not exceed reserved amount"
+        }
+
+        when (status) {
+            OrderReservationStatus.ACTIVE -> {
+                require(!remainingQuantity.isZero()) {
+                    "active reservation must have remaining quantity"
+                }
+
+                require(!remainingAmount.isZero()) {
+                    "active reservation must have remaining amount"
+                }
+            }
+
+            OrderReservationStatus.SETTLED -> {
+                require(remainingQuantity.isZero()) {
+                    "settled reservation must not have remaining quantity"
+                }
+
+                require(remainingAmount.isZero()) {
+                    "settled reservation must not have remaining amount"
+                }
+            }
+
+            OrderReservationStatus.RELEASED -> {
+                require(remainingAmount.isZero()) {
+                    "released reservation must not have remaining amount"
+                }
+            }
+        }
+    }
+
+    companion object {
+        fun create(
+            marketId: MarketId,
+            orderId: OrderId,
+            userId: UserId,
+            side: Side,
+            limitPrice: Price,
+            quantity: Quantity,
+            requirement: ReservationRequirement,
+        ): OrderReservation =
+            OrderReservation(
+                marketId = marketId,
+                orderId = orderId,
+                userId = userId,
+                side = side,
+                assetId = requirement.assetId,
+                limitPrice = limitPrice,
+                initialQuantity = quantity,
+                remainingQuantity = quantity,
+                reservedAmount = requirement.amount,
+                remainingAmount = requirement.amount,
+                status = OrderReservationStatus.ACTIVE,
+            )
+    }
+}
 
 class OrderReservationCalculator {
     fun calculate(
