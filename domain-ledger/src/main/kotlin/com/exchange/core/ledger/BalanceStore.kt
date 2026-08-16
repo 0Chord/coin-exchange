@@ -16,4 +16,16 @@ interface BalanceStore {
         assetId: AssetId,
         amount: Amount,
     ): Balance
+
+    fun consumeHold(
+        userId: UserId,
+        assetId: AssetId,
+        amount: Amount,
+    ): Balance
+
+    fun credit(
+        userId: UserId,
+        assetId: AssetId,
+        amount: Amount,
+    ): Balance
 }

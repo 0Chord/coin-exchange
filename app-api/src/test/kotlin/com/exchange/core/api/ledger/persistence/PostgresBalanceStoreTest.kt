@@ -238,6 +238,169 @@ class PostgresBalanceStoreTest {
         )
     }
 
+    @Test
+    fun `consumeHold는 hold만 줄인다`() {
+        setBalance(
+            available = 600,
+            hold = 400,
+        )
+
+        val consumed =
+            store.consumeHold(
+                userId = USER_ID,
+                assetId = ASSET_ID,
+                amount = Amount(150),
+            )
+
+        assertEquals(Amount(600), consumed.available)
+        assertEquals(Amount(250), consumed.hold)
+
+        assertPersistedBalance(
+            available = 600,
+            hold = 250,
+        )
+    }
+
+    @Test
+    fun `hold보다 큰 금액은 consumeHold할 수 없다`() {
+        setBalance(
+            available = 600,
+            hold = 100,
+        )
+
+        val error =
+            assertFailsWith<InsufficientHoldException> {
+                store.consumeHold(
+                    userId = USER_ID,
+                    assetId = ASSET_ID,
+                    amount = Amount(200),
+                )
+            }
+
+        assertEquals(USER_ID, error.userId)
+        assertEquals(ASSET_ID, error.assetId)
+        assertEquals(Amount(100), error.hold)
+        assertEquals(Amount(200), error.requested)
+
+        assertPersistedBalance(
+            available = 600,
+            hold = 100,
+        )
+    }
+
+    @Test
+    fun `존재하지 않는 balance는 consumeHold할 수 없다`() {
+        val missingUserId = UserId("missing-user")
+
+        val error =
+            assertFailsWith<BalanceNotFoundException> {
+                store.consumeHold(
+                    userId = missingUserId,
+                    assetId = ASSET_ID,
+                    amount = Amount(100),
+                )
+            }
+
+        assertEquals(missingUserId, error.userId)
+        assertEquals(ASSET_ID, error.assetId)
+    }
+
+    @Test
+    fun `credit은 available만 늘린다`() {
+        setBalance(
+            available = 10,
+            hold = 5,
+        )
+
+        val credited =
+            store.credit(
+                userId = USER_ID,
+                assetId = ASSET_ID,
+                amount = Amount(3),
+            )
+
+        assertEquals(Amount(13), credited.available)
+        assertEquals(Amount(5), credited.hold)
+
+        assertPersistedBalance(
+            available = 13,
+            hold = 5,
+        )
+    }
+
+    @Test
+    fun `존재하지 않는 balance는 credit할 수 없다`() {
+        val missingUserId = UserId("missing-user")
+
+        val error =
+            assertFailsWith<BalanceNotFoundException> {
+                store.credit(
+                    userId = missingUserId,
+                    assetId = ASSET_ID,
+                    amount = Amount(100),
+                )
+            }
+
+        assertEquals(missingUserId, error.userId)
+        assertEquals(ASSET_ID, error.assetId)
+    }
+
+    @Test
+    @Transactional(propagation = Propagation.NOT_SUPPORTED)
+    fun `동시에 hold보다 많은 금액을 consumeHold하면 하나만 성공한다`() {
+        setBalance(
+            available = 900,
+            hold = 100,
+        )
+
+        val results =
+            runConcurrently {
+                store.consumeHold(
+                    userId = USER_ID,
+                    assetId = ASSET_ID,
+                    amount = Amount(70),
+                )
+            }
+
+        assertEquals(1, results.count { it.isSuccess })
+        assertEquals(
+            1,
+            results.count {
+                it.exceptionOrNull() is InsufficientHoldException
+            },
+        )
+
+        assertPersistedBalance(
+            available = 900,
+            hold = 30,
+        )
+    }
+
+    @Test
+    @Transactional(propagation = Propagation.NOT_SUPPORTED)
+    fun `동시에 credit해도 available 증가분을 잃지 않는다`() {
+        setBalance(
+            available = 100,
+            hold = 0,
+        )
+
+        val results =
+            runConcurrently {
+                store.credit(
+                    userId = USER_ID,
+                    assetId = ASSET_ID,
+                    amount = Amount(100),
+                )
+            }
+
+        assertEquals(2, results.count { it.isSuccess })
+
+        assertPersistedBalance(
+            available = 300,
+            hold = 0,
+        )
+    }
+
     private fun setBalance(
         available: Long,
         hold: Long,

@@ -85,6 +85,68 @@ open class PostgresBalanceStore(
         )
     }
 
+    @Transactional
+    override fun consumeHold(
+        userId: UserId,
+        assetId: AssetId,
+        amount: Amount,
+    ): Balance {
+        val updatedBalance =
+            jdbcTemplate
+                .query(
+                    """
+                    update balance_projection
+                    set hold = hold - :amount,
+                        updated_at = current_timestamp
+                    where user_id = :userId
+                      and asset_id = :assetId
+                      and hold >= :amount
+                    returning user_id, asset_id, available, hold
+                    """.trimIndent(),
+                    mutationParameters(userId, assetId, amount),
+                    balanceRowMapper,
+                ).singleOrNull()
+
+        if (updatedBalance != null) return updatedBalance
+
+        val currentBalance =
+            findRequiredBalance(
+                userId = userId,
+                assetId = assetId,
+            )
+
+        throw InsufficientHoldException(
+            userId = userId,
+            assetId = assetId,
+            hold = currentBalance.hold,
+            requested = amount,
+        )
+    }
+
+    @Transactional
+    override fun credit(
+        userId: UserId,
+        assetId: AssetId,
+        amount: Amount,
+    ): Balance =
+        jdbcTemplate
+            .query(
+                """
+                update balance_projection
+                set available = available + :amount,
+                    updated_at = current_timestamp
+                where user_id = :userId
+                  and asset_id = :assetId
+                returning user_id, asset_id, available, hold
+                """.trimIndent(),
+                mutationParameters(userId, assetId, amount),
+                balanceRowMapper,
+            ).singleOrNull()
+            ?: throw BalanceNotFoundException(
+                userId = userId,
+                assetId = assetId,
+            )
+
     private fun findRequiredBalance(
         userId: UserId,
         assetId: AssetId,
