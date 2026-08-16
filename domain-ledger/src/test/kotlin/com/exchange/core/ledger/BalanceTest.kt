@@ -96,4 +96,94 @@ class BalanceTest {
         assertEquals(Amount(600), balance.available)
         assertEquals(Amount(100), balance.hold)
     }
+
+    @Test
+    fun `consumeHold는 hold만 감소시킨다`() {
+        val balance =
+            Balance(
+                userId = UserId("user-1"),
+                assetId = AssetId("KRW"),
+                available = Amount(600),
+                hold = Amount(400),
+            )
+
+        val consumed =
+            balance.consumeHold(
+                amount = Amount(150),
+            )
+
+        assertEquals(Amount(600), consumed.available)
+        assertEquals(Amount(250), consumed.hold)
+
+        assertEquals(Amount(600), balance.available)
+        assertEquals(Amount(400), balance.hold)
+    }
+
+    @Test
+    fun `hold보다 큰 금액은 consumeHold할 수 없다`() {
+        val balance =
+            Balance(
+                userId = UserId("user-1"),
+                assetId = AssetId("KRW"),
+                available = Amount(600),
+                hold = Amount(100),
+            )
+
+        val error =
+            assertFailsWith<InsufficientHoldException> {
+                balance.consumeHold(
+                    amount = Amount(200),
+                )
+            }
+
+        assertEquals(UserId("user-1"), error.userId)
+        assertEquals(AssetId("KRW"), error.assetId)
+        assertEquals(Amount(100), error.hold)
+        assertEquals(Amount(200), error.requested)
+
+        assertEquals(Amount(600), balance.available)
+        assertEquals(Amount(100), balance.hold)
+    }
+
+    @Test
+    fun `credit은 available만 증가시킨다`() {
+        val balance =
+            Balance(
+                userId = UserId("user-1"),
+                assetId = AssetId("BTC"),
+                available = Amount(10),
+                hold = Amount(5),
+            )
+
+        val credited =
+            balance.credit(
+                amount = Amount(3),
+            )
+
+        assertEquals(Amount(13), credited.available)
+        assertEquals(Amount(5), credited.hold)
+
+        assertEquals(Amount(10), balance.available)
+        assertEquals(Amount(5), balance.hold)
+    }
+
+    @Test
+    fun `credit 결과가 Long 범위를 초과하면 실패한다`() {
+        val balance =
+            Balance(
+                userId = UserId("user-1"),
+                assetId = AssetId("KRW"),
+                available = Amount(Long.MAX_VALUE),
+                hold = Amount.ZERO,
+            )
+
+        assertFailsWith<ArithmeticException> {
+            balance.credit(
+                amount = Amount(1),
+            )
+        }
+
+        assertEquals(Amount(Long.MAX_VALUE), balance.available)
+        assertEquals(Amount.ZERO, balance.hold)
+    }
 }
