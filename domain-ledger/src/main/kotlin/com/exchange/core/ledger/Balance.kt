@@ -77,6 +77,47 @@ data class Balance(
             hold = nextHold,
         )
     }
+
+    fun consumeHold(
+        amount: Amount,
+    ): Balance {
+        if (hold < amount) {
+            throw InsufficientHoldException(
+                userId = userId,
+                assetId = assetId,
+                hold = hold,
+                requested = amount,
+            )
+        }
+
+        val nextHold =
+            Amount(
+                Math.subtractExact(
+                    hold.value,
+                    amount.value,
+                ),
+            )
+
+        return copy(
+            hold = nextHold,
+        )
+    }
+
+    fun credit(
+        amount: Amount,
+    ): Balance {
+        val nextAvailable =
+            Amount(
+                Math.addExact(
+                    available.value,
+                    amount.value,
+                ),
+            )
+
+        return copy(
+            available = nextAvailable,
+        )
+    }
 }
 
 class InsufficientBalanceException(
