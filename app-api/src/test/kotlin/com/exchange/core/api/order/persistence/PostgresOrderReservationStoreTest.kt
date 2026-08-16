@@ -10,6 +10,7 @@ import com.exchange.core.common.Quantity
 import com.exchange.core.common.UserId
 import com.exchange.core.order.OrderReservation
 import com.exchange.core.order.OrderReservationAlreadyExistsException
+import com.exchange.core.order.OrderReservationNotFoundException
 import com.exchange.core.order.OrderReservationStore
 import com.exchange.core.order.ReservationRequirement
 import com.exchange.core.order.Side
@@ -125,6 +126,52 @@ class PostgresOrderReservationStoreTest {
                 orderId = ethReservation.orderId,
             ),
         )
+    }
+
+    @Test
+    fun `주문 동결 정보를 잠금 조회한다`() {
+        val reservation = reservation()
+
+        store.create(reservation)
+
+        val locked =
+            store.findForUpdate(
+                marketId = reservation.marketId,
+                orderId = reservation.orderId,
+            )
+
+        assertEquals(reservation, locked)
+    }
+
+    @Test
+    fun `주문 동결 정보를 업데이트한다`() {
+        val reservation = reservation()
+        store.create(reservation)
+
+        val released = reservation.release()
+
+        store.update(released)
+
+        assertEquals(
+            released,
+            store.find(
+                marketId = reservation.marketId,
+                orderId = reservation.orderId,
+            ),
+        )
+    }
+
+    @Test
+    fun `존재하지 않는 주문 동결 정보는 업데이트할 수 없다`() {
+        val reservation = reservation()
+
+        val error =
+            assertFailsWith<OrderReservationNotFoundException> {
+                store.update(reservation)
+            }
+
+        assertEquals(reservation.marketId, error.marketId)
+        assertEquals(reservation.orderId, error.orderId)
     }
 
     private fun reservation(

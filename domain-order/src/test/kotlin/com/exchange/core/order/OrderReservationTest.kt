@@ -123,6 +123,46 @@ class OrderReservationTest {
         assertEquals(OrderReservationStatus.RELEASED, released.status)
     }
 
+    @Test
+    fun `release는 ACTIVE reservation의 남은 동결 금액을 해제한다`() {
+        val reservation = activeReservation()
+
+        val released = reservation.release()
+
+        assertEquals(reservation.remainingQuantity, released.remainingQuantity)
+        assertEquals(Amount.ZERO, released.remainingAmount)
+        assertEquals(OrderReservationStatus.RELEASED, released.status)
+
+        assertEquals(Amount(500), reservation.remainingAmount)
+        assertEquals(OrderReservationStatus.ACTIVE, reservation.status)
+    }
+
+    @Test
+    fun `ACTIVE가 아닌 reservation은 release할 수 없다`() {
+        val active = activeReservation()
+
+        val settled =
+            active.copy(
+                remainingQuantity = Quantity.ZERO,
+                remainingAmount = Amount.ZERO,
+                status = OrderReservationStatus.SETTLED,
+            )
+
+        val released =
+            active.copy(
+                remainingAmount = Amount.ZERO,
+                status = OrderReservationStatus.RELEASED,
+            )
+
+        assertFailsWith<IllegalStateException> {
+            settled.release()
+        }
+
+        assertFailsWith<IllegalStateException> {
+            released.release()
+        }
+    }
+
     private fun activeReservation(): OrderReservation =
         OrderReservation.create(
             marketId = MarketId("BTC-KRW"),

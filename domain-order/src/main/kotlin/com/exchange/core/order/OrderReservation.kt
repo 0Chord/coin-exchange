@@ -105,6 +105,17 @@ data class OrderReservation(
         }
     }
 
+    fun release(): OrderReservation {
+        check(status == OrderReservationStatus.ACTIVE) {
+            "only active reservation can be released"
+        }
+
+        return copy(
+            remainingAmount = Amount.ZERO,
+            status = OrderReservationStatus.RELEASED,
+        )
+    }
+
     companion object {
         fun create(
             marketId: MarketId,

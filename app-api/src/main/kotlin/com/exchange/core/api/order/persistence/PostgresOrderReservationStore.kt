@@ -9,6 +9,7 @@ import com.exchange.core.common.Quantity
 import com.exchange.core.common.UserId
 import com.exchange.core.order.OrderReservation
 import com.exchange.core.order.OrderReservationAlreadyExistsException
+import com.exchange.core.order.OrderReservationNotFoundException
 import com.exchange.core.order.OrderReservationStatus
 import com.exchange.core.order.OrderReservationStore
 import com.exchange.core.order.Side
@@ -75,30 +76,91 @@ open class PostgresOrderReservationStore(
         marketId: MarketId,
         orderId: OrderId,
     ): OrderReservation? =
-        jdbcTemplate
-            .query(
+        queryReservation(
+            marketId = marketId,
+            orderId = orderId,
+            lockForUpdate = false,
+        )
+
+    override fun findForUpdate(
+        marketId: MarketId,
+        orderId: OrderId,
+    ): OrderReservation? =
+        queryReservation(
+            marketId = marketId,
+            orderId = orderId,
+            lockForUpdate = true,
+        )
+
+    override fun update(reservation: OrderReservation) {
+        val updatedRows =
+            jdbcTemplate.update(
                 """
-                select market_id,
-                       order_id,
-                       user_id,
-                       side,
-                       asset_id,
-                       limit_price,
-                       initial_quantity,
-                       remaining_quantity,
-                       reserved_amount,
-                       remaining_amount,
-                       status
-                from order_reservations
+                update order_reservations
+                set remaining_quantity = :remainingQuantity,
+                    remaining_amount = :remainingAmount,
+                    status = :status,
+                    updated_at = current_timestamp
                 where market_id = :marketId
                   and order_id = :orderId
                 """.trimIndent(),
+                mapOf(
+                    "marketId" to reservation.marketId.value,
+                    "orderId" to reservation.orderId.value,
+                    "remainingQuantity" to reservation.remainingQuantity.value,
+                    "remainingAmount" to reservation.remainingAmount.value,
+                    "status" to reservation.status.name,
+                ),
+            )
+
+        if (updatedRows != 1) {
+            throw OrderReservationNotFoundException(
+                marketId = reservation.marketId,
+                orderId = reservation.orderId,
+            )
+        }
+    }
+
+    private fun queryReservation(
+        marketId: MarketId,
+        orderId: OrderId,
+        lockForUpdate: Boolean,
+    ): OrderReservation? {
+        val lockingClause =
+            if (lockForUpdate) {
+                "\nfor update"
+            } else {
+                ""
+            }
+
+        val sql =
+            """
+            select market_id,
+                   order_id,
+                   user_id,
+                   side,
+                   asset_id,
+                   limit_price,
+                   initial_quantity,
+                   remaining_quantity,
+                   reserved_amount,
+                   remaining_amount,
+                   status
+            from order_reservations
+            where market_id = :marketId
+              and order_id = :orderId
+            """.trimIndent() + lockingClause
+
+        return jdbcTemplate
+            .query(
+                sql,
                 mapOf(
                     "marketId" to marketId.value,
                     "orderId" to orderId.value,
                 ),
                 orderReservationRowMapper,
             ).singleOrNull()
+    }
 
     private val orderReservationRowMapper =
         RowMapper<OrderReservation> { resultSet, _ ->
