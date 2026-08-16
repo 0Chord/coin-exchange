@@ -2,6 +2,7 @@ package com.exchange.core.api.config
 
 import com.exchange.core.api.ledger.persistence.PostgresBalanceStore
 import com.exchange.core.api.order.OrderFundingService
+import com.exchange.core.api.order.OrderReservationReleaseService
 import com.exchange.core.api.order.persistence.PostgresOrderReservationStore
 import com.exchange.core.ledger.BalanceStore
 import com.exchange.core.order.OrderReservationCalculator
@@ -36,6 +37,16 @@ class LedgerPersistenceConfig {
     ): OrderFundingService =
         OrderFundingService(
             calculator = OrderReservationCalculator(),
+            balanceStore = balanceStore,
+            reservationStore = orderReservationStore,
+        )
+
+    @Bean
+    fun orderReservationReleaseService(
+        balanceStore: BalanceStore,
+        orderReservationStore: OrderReservationStore,
+    ): OrderReservationReleaseService =
+        OrderReservationReleaseService(
             balanceStore = balanceStore,
             reservationStore = orderReservationStore,
         )

@@ -10,6 +10,13 @@ interface OrderReservationStore {
         marketId: MarketId,
         orderId: OrderId,
     ): OrderReservation?
+
+    fun findForUpdate(
+        marketId: MarketId,
+        orderId: OrderId,
+    ): OrderReservation?
+
+    fun update(reservation: OrderReservation)
 }
 
 class OrderReservationAlreadyExistsException(
@@ -17,6 +24,15 @@ class OrderReservationAlreadyExistsException(
     val orderId: OrderId,
 ) : IllegalStateException(
     "order reservation already exists: " +
+        "marketId=${marketId.value}, " +
+        "orderId=${orderId.value}",
+)
+
+class OrderReservationNotFoundException(
+    val marketId: MarketId,
+    val orderId: OrderId,
+) : IllegalStateException(
+    "order reservation not found: " +
         "marketId=${marketId.value}, " +
         "orderId=${orderId.value}",
 )
