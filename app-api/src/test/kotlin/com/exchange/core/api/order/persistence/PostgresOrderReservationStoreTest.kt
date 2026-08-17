@@ -174,6 +174,50 @@ class PostgresOrderReservationStoreTest {
         assertEquals(reservation.orderId, error.orderId)
     }
 
+    @Test
+    fun `부분 체결된 주문 동결 정보를 업데이트한다`() {
+        val reservation = reservation()
+        store.create(reservation)
+
+        val partiallyFilled =
+            reservation.applyFill(
+                filledQuantity = Quantity(2),
+                reservedAmountToReduce = Amount(200),
+            )
+
+        store.update(partiallyFilled)
+
+        val saved =
+            store.find(
+                marketId = reservation.marketId,
+                orderId = reservation.orderId,
+            )
+
+        assertEquals(partiallyFilled, saved)
+    }
+
+    @Test
+    fun `전량 체결된 주문 동결 정보를 SETTLED로 업데이트한다`() {
+        val reservation = reservation()
+        store.create(reservation)
+
+        val settled =
+            reservation.applyFill(
+                filledQuantity = Quantity(5),
+                reservedAmountToReduce = Amount(500),
+            )
+
+        store.update(settled)
+
+        val saved =
+            store.find(
+                marketId = reservation.marketId,
+                orderId = reservation.orderId,
+            )
+
+        assertEquals(settled, saved)
+    }
+
     private fun reservation(
         marketId: MarketId = MarketId("BTC-KRW"),
         orderId: OrderId = OrderId("order-1"),
