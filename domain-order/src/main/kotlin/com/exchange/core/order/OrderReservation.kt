@@ -116,6 +116,52 @@ data class OrderReservation(
         )
     }
 
+    fun applyFill(
+        filledQuantity: Quantity,
+        reservedAmountToReduce: Amount,
+    ): OrderReservation {
+        check(status == OrderReservationStatus.ACTIVE) {
+            "only active reservation can be filled"
+        }
+
+        require(filledQuantity.value > 0) {
+            "filled quantity must be positive"
+        }
+
+        require(filledQuantity <= remainingQuantity) {
+            "filled quantity must not exceed remaining quantity"
+        }
+
+        require(reservedAmountToReduce.value > 0) {
+            "reserved amount to reduce must be positive"
+        }
+
+        require(reservedAmountToReduce <= remainingAmount) {
+            "reserved amount to reduce must not exceed remaining amount"
+        }
+
+        val nextRemainingQuantity =
+            remainingQuantity - filledQuantity
+
+        val nextRemainingAmount =
+            Amount(
+                remainingAmount.value - reservedAmountToReduce.value,
+            )
+
+        val nextStatus =
+            if (nextRemainingQuantity.isZero()) {
+                OrderReservationStatus.SETTLED
+            } else {
+                OrderReservationStatus.ACTIVE
+            }
+
+        return copy(
+            remainingQuantity = nextRemainingQuantity,
+            remainingAmount = nextRemainingAmount,
+            status = nextStatus,
+        )
+    }
+
     companion object {
         fun create(
             marketId: MarketId,

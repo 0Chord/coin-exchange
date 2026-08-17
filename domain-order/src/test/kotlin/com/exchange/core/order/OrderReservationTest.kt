@@ -163,6 +163,126 @@ class OrderReservationTest {
         }
     }
 
+    @Test
+    fun `applyFill은 부분 체결 수량과 예약 금액을 차감한다`() {
+        val reservation = activeReservation()
+
+        val partiallyFilled =
+            reservation.applyFill(
+                filledQuantity = Quantity(2),
+                reservedAmountToReduce = Amount(200),
+            )
+
+        assertEquals(Quantity(3), partiallyFilled.remainingQuantity)
+        assertEquals(Amount(300), partiallyFilled.remainingAmount)
+        assertEquals(
+            OrderReservationStatus.ACTIVE,
+            partiallyFilled.status,
+        )
+
+        // 원본 객체는 변경되지 않는다.
+        assertEquals(Quantity(5), reservation.remainingQuantity)
+        assertEquals(Amount(500), reservation.remainingAmount)
+    }
+
+    @Test
+    fun `applyFill은 전량 체결되면 reservation을 SETTLED로 만든다`() {
+        val reservation = activeReservation()
+
+        val settled =
+            reservation.applyFill(
+                filledQuantity = Quantity(5),
+                reservedAmountToReduce = Amount(500),
+            )
+
+        assertEquals(Quantity.ZERO, settled.remainingQuantity)
+        assertEquals(Amount.ZERO, settled.remainingAmount)
+        assertEquals(
+            OrderReservationStatus.SETTLED,
+            settled.status,
+        )
+    }
+
+    @Test
+    fun `체결 수량은 0보다 커야 한다`() {
+        val reservation = activeReservation()
+
+        assertFailsWith<IllegalArgumentException> {
+            reservation.applyFill(
+                filledQuantity = Quantity.ZERO,
+                reservedAmountToReduce = Amount(100),
+            )
+        }
+    }
+
+    @Test
+    fun `남은 수량보다 많이 체결할 수 없다`() {
+        val reservation = activeReservation()
+
+        assertFailsWith<IllegalArgumentException> {
+            reservation.applyFill(
+                filledQuantity = Quantity(6),
+                reservedAmountToReduce = Amount(500),
+            )
+        }
+    }
+
+    @Test
+    fun `차감할 예약 금액은 0보다 커야 한다`() {
+        val reservation = activeReservation()
+
+        assertFailsWith<IllegalArgumentException> {
+            reservation.applyFill(
+                filledQuantity = Quantity(1),
+                reservedAmountToReduce = Amount.ZERO,
+            )
+        }
+    }
+
+    @Test
+    fun `남은 예약 금액보다 많이 차감할 수 없다`() {
+        val reservation = activeReservation()
+
+        assertFailsWith<IllegalArgumentException> {
+            reservation.applyFill(
+                filledQuantity = Quantity(1),
+                reservedAmountToReduce = Amount(501),
+            )
+        }
+    }
+
+    @Test
+    fun `ACTIVE가 아닌 reservation에는 체결을 반영할 수 없다`() {
+        val active = activeReservation()
+
+        val settled =
+            active.copy(
+                remainingQuantity = Quantity.ZERO,
+                remainingAmount = Amount.ZERO,
+                status = OrderReservationStatus.SETTLED,
+            )
+
+        val released =
+            active.copy(
+                remainingAmount = Amount.ZERO,
+                status = OrderReservationStatus.RELEASED,
+            )
+
+        assertFailsWith<IllegalStateException> {
+            settled.applyFill(
+                filledQuantity = Quantity(1),
+                reservedAmountToReduce = Amount(100),
+            )
+        }
+
+        assertFailsWith<IllegalStateException> {
+            released.applyFill(
+                filledQuantity = Quantity(1),
+                reservedAmountToReduce = Amount(100),
+            )
+        }
+    }
+
     private fun activeReservation(): OrderReservation =
         OrderReservation.create(
             marketId = MarketId("BTC-KRW"),
