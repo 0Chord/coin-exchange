@@ -57,6 +57,9 @@ class OrderBook {
 
     /**
      * 주문이 어느 book 위치에 있는지 나타내는 내부 참조값.
+     *
+     * @property side 주문이 들어 있는 bids 또는 asks를 고르는 방향
+     * @property price 주문이 들어 있는 가격 레벨의 key
      */
     private data class OrderRef(
         val side: Side,
@@ -65,6 +68,12 @@ class OrderBook {
 
     /**
      * 체결되지 않고 남은 주문을 book에 넣는다.
+     *
+     * 주문을 side·price에 맞는 [PriceLevel]에 추가하고, 취소 조회를 위한
+     * [orderIndex]에도 같은 주문의 위치를 기록한다.
+     *
+     * @param order 즉시 체결 후 잔량이 남은 주문
+     * @throws IllegalArgumentException 주문 가격과 선택된 가격 레벨이 일치하지 않는 경우
      */
     fun addRestingOrder(order: BookOrder) {
         val bookSide = bookSide(order.side)
@@ -84,14 +93,19 @@ class OrderBook {
      *
      * 주문이 있으면 제거된 BookOrder를 반환하고,
      * 없으면 null을 반환한다.
+     *
+     * @param orderId 취소할 주문 식별자
+     * @return book에서 제거된 주문. 존재하지 않으면 `null`
      */
     fun cancel(orderId: OrderId): BookOrder? {
+        // 인덱스를 먼저 제거해 이후 contains/find가 취소된 주문을 보지 않도록 한다.
         val orderRef = orderIndex.remove(orderId) ?: return null
         val bookSide = bookSide(orderRef.side)
         val priceLevel = bookSide[orderRef.price] ?: return null
 
         val removedOrder = priceLevel.remove(orderId)
 
+        // 마지막 주문까지 제거된 빈 가격 레벨은 best bid/ask 탐색에서 제외한다.
         if (priceLevel.isEmpty()) {
             bookSide.remove(orderRef.price)
         }
@@ -101,22 +115,32 @@ class OrderBook {
 
     /**
      * 현재 가장 높은 매수 가격.
+     *
+     * @return 가장 유리한 bid 가격. 매수 주문이 없으면 `null`
      */
     fun bestBid(): Price? = bids.firstEntry()?.key
 
     /**
      * 현재 가장 낮은 매도 가격.
+     *
+     * @return 가장 유리한 ask 가격. 매도 주문이 없으면 `null`
      */
     fun bestAsk(): Price? = asks.firstEntry()?.key
 
     /**
      * book에 해당 주문이 남아 있는지 확인한다.
+     *
+     * @param orderId 확인할 주문 식별자
+     * @return 취소 또는 추가 체결이 가능한 대기 주문이면 `true`
      */
     fun contains(orderId: OrderId): Boolean =
         orderIndex.containsKey(orderId)
 
     /**
      * book에 남아 있는 주문을 조회한다.
+     *
+     * @param orderId 조회할 주문 식별자
+     * @return 대기 중인 주문. 없으면 `null`
      */
     fun find(orderId: OrderId): BookOrder? {
         val orderRef = orderIndex[orderId] ?: return null
@@ -129,6 +153,8 @@ class OrderBook {
      * 현재 가장 높은 매수 가격 레벨.
      *
      * MatchingEngine은 매도 주문을 처리할 때 이 PriceLevel의 첫 주문부터 체결한다.
+     *
+     * @return 최고 bid의 가격 레벨. 매수 주문이 없으면 `null`
      */
     fun bestBidLevel(): PriceLevel? = bids.firstEntry()?.value
 
@@ -136,6 +162,8 @@ class OrderBook {
      * 현재 가장 낮은 매도 가격 레벨.
      *
      * MatchingEngine은 매수 주문을 처리할 때 이 PriceLevel의 첫 주문부터 체결한다.
+     *
+     * @return 최저 ask의 가격 레벨. 매도 주문이 없으면 `null`
      */
     fun bestAskLevel(): PriceLevel? = asks.firstEntry()?.value
 
@@ -143,6 +171,8 @@ class OrderBook {
      * 전량 체결된 주문을 book과 취소용 인덱스에서 제거한다.
      *
      * maker 주문의 remainingQuantity가 0이 되었을 때 호출한다.
+     *
+     * @param order [BookOrder.isFilled]가 `true`가 된 maker 주문
      */
     fun removeFilledOrder(order: BookOrder) {
         val bookSide = bookSide(order.side)
@@ -158,6 +188,9 @@ class OrderBook {
 
     /**
      * side에 맞는 book을 반환한다.
+     *
+     * @param side BUY면 bids, SELL이면 asks
+     * @return 해당 방향의 가격별 주문 map
      */
     private fun bookSide(side: Side): TreeMap<Price, PriceLevel> =
         when (side) {

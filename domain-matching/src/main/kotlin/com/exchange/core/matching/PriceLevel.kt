@@ -31,9 +31,12 @@ class PriceLevel(
     private val orders = LinkedHashMap<OrderId, BookOrder>()
 
     /**
-     * 이 가격 레벨에 주문을 추가한다.
-     *
-     * 다른 가격의 주문이 들어오면 잘못된 상태이므로 바로 예외를 낸다.
+ * 이 가격 레벨에 주문을 추가한다.
+ *
+ * 다른 가격의 주문이 들어오면 잘못된 상태이므로 바로 예외를 낸다.
+ *
+ * @param order 이 가격에서 대기시킬 주문
+ * @throws IllegalArgumentException [order]의 가격이 이 레벨의 [price]와 다른 경우
      */
     fun add(order: BookOrder) {
         require(order.price == price) {
@@ -47,6 +50,9 @@ class PriceLevel(
      * orderId에 해당하는 주문을 제거한다.
      *
      * 주문이 있으면 제거된 BookOrder를 반환하고, 없으면 null을 반환한다.
+     *
+     * @param orderId 제거할 주문 식별자
+     * @return 제거된 주문. 존재하지 않으면 `null`
      */
     fun remove(orderId: OrderId): BookOrder? = orders.remove(orderId)
 
@@ -55,16 +61,23 @@ class PriceLevel(
      *
      * 같은 가격에서는 이 주문이 가장 먼저 체결 대상이 된다.
      * 주문이 없으면 null을 반환한다.
+     *
+     * @return FIFO 순서의 첫 주문. 레벨이 비어 있으면 `null`
      */
     fun firstOrder(): BookOrder? = orders.values.firstOrNull()
 
     /**
      * 이 가격 레벨에 남은 주문이 없는지 확인한다.
+     *
+     * @return 주문이 하나도 없으면 `true`
      */
     fun isEmpty(): Boolean = orders.isEmpty()
 
     /**
      * 특정 주문이 이 가격 레벨에 있는지 확인한다.
+     *
+     * @param orderId 확인할 주문 식별자
+     * @return 주문이 이 레벨에 있으면 `true`
      */
     fun contains(orderId: OrderId): Boolean = orders.containsKey(orderId)
 
@@ -72,6 +85,9 @@ class PriceLevel(
      * 특정 주문을 조회한다.
      *
      * 취소 요청자가 주문 주인인지 확인할 때 사용한다.
+     *
+     * @param orderId 조회할 주문 식별자
+     * @return 주문이 있으면 BookOrder, 없으면 `null`
      */
     fun get(orderId: OrderId): BookOrder? = orders[orderId]
 
@@ -79,6 +95,8 @@ class PriceLevel(
      * 현재 가격 레벨의 주문 목록을 복사해서 반환한다.
      *
      * 내부 LinkedHashMap을 직접 노출하지 않기 위해 List로 변환한다.
+     *
+     * @return FIFO 입력 순서를 유지한 주문 목록 사본
      */
     fun snapshot(): List<BookOrder> = orders.values.toList()
 }
