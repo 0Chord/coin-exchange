@@ -7,7 +7,6 @@ import com.exchange.core.common.OrderId
 import com.exchange.core.common.Price
 import com.exchange.core.common.Quantity
 import com.exchange.core.common.UserId
-import java.math.BigInteger
 
 /**
  * 하나의 market을 구성하는 자산 정보.
@@ -216,37 +215,5 @@ class OrderReservationCalculator {
                     amount = Amount(quantity.value),
                 )
         }
-    }
-
-    private fun calculateQuoteAmount(
-        price: Price,
-        quantity: Quantity,
-        baseAssetScale: Int,
-    ): Amount {
-        val numerator = BigInteger.valueOf(price.value)
-            .multiply(BigInteger.valueOf(quantity.value))
-
-        val baseUnit = BigInteger.TEN.pow(baseAssetScale)
-
-        val quotientAndRemainder = numerator.divideAndRemainder(baseUnit)
-
-        val quotient = quotientAndRemainder[0]
-        val remainder = quotientAndRemainder[1]
-
-        require(remainder == BigInteger.ZERO) {
-            "reservation amount must align with base asset scale"
-        }
-
-        val amountValue =
-            try {
-                quotient.longValueExact()
-            } catch (error: ArithmeticException) {
-                throw IllegalArgumentException(
-                    "reservation amount overflow",
-                    error,
-                )
-            }
-
-        return Amount(amountValue)
     }
 }
