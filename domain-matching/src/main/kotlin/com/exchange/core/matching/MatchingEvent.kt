@@ -27,32 +27,40 @@ sealed interface MatchingEvent {
  * maker 주문과 taker 주문이 체결된 결과.
  *
  * 가격은 항상 maker 주문의 가격을 사용한다.
+ * [side]는 maker가 아니라 새로 들어온 taker 주문 기준이다.
+ *
+ * @property marketId 체결이 발생한 마켓
+ * @property engineSequence 해당 마켓 안에서 이 event의 순번
+ * @property makerOrderId book에 먼저 대기하던 주문 식별자
+ * @property takerOrderId 이번 command로 들어온 주문 식별자
+ * @property makerUserId maker 주문 소유자
+ * @property takerUserId taker 주문 소유자
+ * @property side taker 기준 BUY 또는 SELL 방향
+ * @property price maker 주문에서 가져온 실제 체결 가격
+ * @property quantity 두 주문에서 공통으로 차감할 체결 수량
  */
 data class TradeExecuted(
     override val marketId: MarketId,
     override val engineSequence: Long,
-    /**
-     * book에 먼저 걸려 있던 주문.
-     */
     val makerOrderId: OrderId,
-    /**
-     * 새로 들어와 체결을 발생시킨 주문.
-     */
     val takerOrderId: OrderId,
     val makerUserId: UserId,
     val takerUserId: UserId,
-
-    /**
-     * taker 기준 방향.
-     */
     val side: Side,
-
     val price: Price,
     val quantity: Quantity,
 ) : MatchingEvent
 
 /**
  * 체결되지 않은 잔량이 book에 들어간 결과.
+ *
+ * @property marketId 주문이 대기하게 된 마켓
+ * @property engineSequence 해당 마켓 안에서 이 event의 순번
+ * @property orderId book에 추가된 주문
+ * @property userId 주문 소유자
+ * @property side 주문 방향
+ * @property price 주문이 대기하는 가격 레벨
+ * @property remainingQuantity 즉시 체결 후 book에 남은 수량
  */
 data class OrderEnteredBook(
     override val marketId: MarketId,
@@ -63,10 +71,14 @@ data class OrderEnteredBook(
     val price: Price,
     val remainingQuantity: Quantity,
 ) : MatchingEvent
-
-
 /**
  * book에 있던 주문이 취소된 결과.
+ *
+ * @property marketId 취소가 발생한 마켓
+ * @property engineSequence 해당 마켓 안에서 이 event의 순번
+ * @property orderId 취소되어 book에서 제거된 주문
+ * @property userId 주문 소유자
+ * @property remainingQuantity 취소 시점에 아직 체결되지 않았던 수량
  */
 data class OrderCancelled(
     override val marketId: MarketId,
@@ -78,6 +90,14 @@ data class OrderCancelled(
 
 /**
  * 취소 요청을 처리할 수 없었던 결과.
+ *
+ * 이 event가 발생해도 book 상태는 바뀌지 않는다.
+ *
+ * @property marketId 취소를 요청한 마켓
+ * @property engineSequence 해당 마켓 안에서 이 event의 순번
+ * @property orderId 취소하려던 주문
+ * @property userId 취소 요청자
+ * @property reason 거절 이유. 예: 주문 없음 또는 소유자 불일치
  */
 data class OrderCancelRejected(
     override val marketId: MarketId,
