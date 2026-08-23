@@ -17,6 +17,7 @@ kotlin {
 
 dependencies {
 	api(project(":domain-common"))
+	api(project(":domain-fee"))
 
 	testImplementation(kotlin("test-junit5"))
 	testRuntimeOnly("org.junit.platform:junit-platform-launcher")
