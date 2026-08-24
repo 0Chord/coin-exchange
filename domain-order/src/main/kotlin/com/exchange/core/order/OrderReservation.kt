@@ -41,15 +41,60 @@ data class MarketDefinition(
 /**
  * 주문을 MatchingEngine에 넣기 전에 동결해야 하는 자산과 금액.
  *
- * BUY는 quote 자산을 지정가 기준으로 동결하고, SELL은 base 자산을 주문 수량만큼 동결한다.
+ * BUY는 quote 자산에서 주문 대금과 수수료 예약액을 함께 동결한다.
+ * SELL은 base 자산 수량만 동결하고 수수료 예약액은 0으로 둔다.
  *
- * @property assetId 주문을 위해 동결할 자산
- * @property amount 해당 자산에서 동결할 최소 단위 기준 금액
+ * @property assetId Balance에서 hold할 자산
+ * @property tradeReserveAmount 주문 대금 또는 SELL 수량을 위해 예약할 금액
+ * @property feeReserveAmount BUY 수수료를 위해 추가로 예약할 금액
  */
 data class ReservationRequirement(
     val assetId: AssetId,
-    val amount: Amount,
-)
+    val tradeReserveAmount: Amount,
+    val feeReserveAmount: Amount,
+) {
+    /**
+     * 기존 수수료 미지원 호출부에서 단일 예약 금액으로 생성한다.
+     *
+     * [amount] 전체를 거래 예약액으로 사용하고 수수료 예약액은 0으로 둔다.
+     */
+    constructor(
+        assetId: AssetId,
+        amount: Amount,
+    ) : this(
+        assetId = assetId,
+        tradeReserveAmount = amount,
+        feeReserveAmount = Amount.ZERO,
+    )
+
+    /**
+     * Balance의 available에서 hold로 이동해야 할 전체 금액.
+     *
+     * 거래 예약액과 수수료 예약액의 합이 Long 범위를 넘으면 생성에 실패한다.
+     */
+    val totalReserveAmount: Amount =
+        try {
+            Amount(
+                Math.addExact(
+                    tradeReserveAmount.value,
+                    feeReserveAmount.value,
+                ),
+            )
+        } catch (error: ArithmeticException) {
+            throw IllegalArgumentException(
+                "total reservation amount overflow",
+                error,
+            )
+        }
+
+    /**
+     * 기존 application 호출부가 사용하는 총 예약 금액.
+     *
+     * 호출부를 [totalReserveAmount]로 전환한 뒤 제거할 임시 호환 property다.
+     */
+    val amount: Amount
+        get() = totalReserveAmount
+}
 
 /**
  * 주문별 자산 예약의 생명주기 상태.
