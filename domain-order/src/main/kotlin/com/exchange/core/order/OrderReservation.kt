@@ -7,6 +7,7 @@ import com.exchange.core.common.OrderId
 import com.exchange.core.common.Price
 import com.exchange.core.common.Quantity
 import com.exchange.core.common.UserId
+import com.exchange.core.fee.TradingFeePolicySnapshot
 
 /**
  * 하나의 market을 구성하는 자산 정보.
@@ -87,13 +88,6 @@ data class ReservationRequirement(
             )
         }
 
-    /**
-     * 기존 application 호출부가 사용하는 총 예약 금액.
-     *
-     * 호출부를 [totalReserveAmount]로 전환한 뒤 제거할 임시 호환 property다.
-     */
-    val amount: Amount
-        get() = totalReserveAmount
 }
 
 /**
@@ -314,8 +308,8 @@ data class OrderReservation(
                 limitPrice = limitPrice,
                 initialQuantity = quantity,
                 remainingQuantity = quantity,
-                reservedAmount = requirement.amount,
-                remainingAmount = requirement.amount,
+                reservedAmount = requirement.totalReserveAmount,
+                remainingAmount = requirement.totalReserveAmount,
                 status = OrderReservationStatus.ACTIVE,
             )
     }
@@ -324,11 +318,15 @@ data class OrderReservation(
 /**
  * 주문을 MatchingEngine에 넣기 전에 필요한 예약 자산과 금액을 계산한다.
  *
- * BUY는 market의 quote 자산을
- * `지정가 × 최소 단위 주문 수량 ÷ 10^baseAssetScale`만큼 예약한다.
- * SELL은 market의 base 자산을 주문 수량만큼 예약한다.
+ * BUY는 market의 quote 자산에서 지정가 기준 거래 대금과 maker/taker 중 높은 요율의
+ * 수수료 예약액을 함께 계산한다. SELL은 market의 base 자산을 주문 수량만큼 예약하고
+ * 수수료는 체결 대금에서 차감하므로 주문 접수 시점에는 미리 예약하지 않는다.
+ *
+ * @property buyOrderFundingQuoteCalculator BUY 거래 대금과 최대 수수료 예약액을 계산하는 객체
  */
-class OrderReservationCalculator {
+class OrderReservationCalculator(
+    private val buyOrderFundingQuoteCalculator: BuyOrderFundingQuoteCalculator,
+) {
     /**
      * 주문 방향에 맞는 자산 예약 요구사항을 계산한다.
      *
@@ -336,6 +334,7 @@ class OrderReservationCalculator {
      * @param side BUY 또는 SELL 주문 방향
      * @param price 주문 지정가
      * @param quantity 주문할 base 자산 수량
+     * @param feePolicySnapshot 주문 접수 시점에 확정한 maker/taker 수수료 정책
      * @return Balance에서 hold로 이동해야 할 자산과 금액
      * @throws IllegalArgumentException 주문 수량이 0이거나 quote 금액을 정확히 표현할 수
      * 없는 경우
@@ -345,26 +344,40 @@ class OrderReservationCalculator {
         side: Side,
         price: Price,
         quantity: Quantity,
+        feePolicySnapshot: TradingFeePolicySnapshot,
     ): ReservationRequirement {
         require(quantity.value > 0) {
             "reservation quantity must be positive"
         }
 
         return when (side) {
-            Side.BUY ->
-                ReservationRequirement(
-                    assetId = market.quoteAssetId,
-                    amount = calculateQuoteAmount(
+            Side.BUY -> {
+                val tradeReserveAmount =
+                    calculateQuoteAmount(
                         price = price,
                         quantity = quantity,
                         baseAssetScale = market.baseAssetScale,
-                    ),
+                    )
+
+                val fundingQuote =
+                    buyOrderFundingQuoteCalculator.calculate(
+                        market = market,
+                        tradeBudgetAmount = tradeReserveAmount,
+                        feePolicySnapshot = feePolicySnapshot,
+                    )
+
+                ReservationRequirement(
+                    assetId = fundingQuote.quoteAssetId,
+                    tradeReserveAmount = fundingQuote.tradeBudgetAmount,
+                    feeReserveAmount = fundingQuote.feeReserveAmount,
                 )
+            }
 
             Side.SELL ->
                 ReservationRequirement(
                     assetId = market.baseAssetId,
-                    amount = Amount(quantity.value),
+                    tradeReserveAmount = Amount(quantity.value),
+                    feeReserveAmount = Amount.ZERO,
                 )
         }
     }

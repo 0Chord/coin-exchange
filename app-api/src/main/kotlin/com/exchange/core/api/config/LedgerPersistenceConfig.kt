@@ -4,7 +4,9 @@ import com.exchange.core.api.ledger.persistence.PostgresBalanceStore
 import com.exchange.core.api.order.OrderFundingService
 import com.exchange.core.api.order.OrderReservationReleaseService
 import com.exchange.core.api.order.persistence.PostgresOrderReservationStore
+import com.exchange.core.fee.TradingFeeReserveCalculator
 import com.exchange.core.ledger.BalanceStore
+import com.exchange.core.order.BuyOrderFundingQuoteCalculator
 import com.exchange.core.order.OrderReservationCalculator
 import com.exchange.core.order.OrderReservationStore
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty
@@ -63,7 +65,13 @@ class LedgerPersistenceConfig {
         orderReservationStore: OrderReservationStore,
     ): OrderFundingService =
         OrderFundingService(
-            calculator = OrderReservationCalculator(),
+            calculator =
+                OrderReservationCalculator(
+                    buyOrderFundingQuoteCalculator =
+                        BuyOrderFundingQuoteCalculator(
+                            feeReserveCalculator = TradingFeeReserveCalculator(),
+                        ),
+                ),
             balanceStore = balanceStore,
             reservationStore = orderReservationStore,
         )
