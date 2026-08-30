@@ -7,11 +7,28 @@ import com.exchange.core.common.OrderId
 import com.exchange.core.common.Price
 import com.exchange.core.common.Quantity
 import com.exchange.core.common.UserId
+import com.exchange.core.fee.FeeProductType
+import com.exchange.core.fee.FeeRate
+import com.exchange.core.fee.FeeTier
+import com.exchange.core.fee.MakerTakerFeeRates
+import com.exchange.core.fee.TradingFeePolicySnapshot
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 
 class OrderReservationTest {
+    private val feeFreePolicySnapshot =
+        TradingFeePolicySnapshot(
+            productType = FeeProductType.SPOT,
+            feeTier = FeeTier.NORMAL,
+            scheduleVersion = 1,
+            feeRates =
+                MakerTakerFeeRates(
+                    makerFeeRate = FeeRate.ZERO,
+                    takerFeeRate = FeeRate.ZERO,
+                ),
+        )
+
     @Test
     fun `create는 신규 reservation을 ACTIVE 상태로 만든다`() {
         val reservation = activeReservation()
@@ -44,6 +61,7 @@ class OrderReservationTest {
                         assetId = AssetId("KRW"),
                         amount = Amount(500),
                     ),
+                feePolicySnapshot = feeFreePolicySnapshot,
             )
         }
     }
@@ -283,6 +301,106 @@ class OrderReservationTest {
         }
     }
 
+    @Test
+    fun `create는 주문 당시 수수료 정책과 예약액을 보존한다`() {
+        val feePolicySnapshot =
+            TradingFeePolicySnapshot(
+                productType = FeeProductType.SPOT,
+                feeTier = FeeTier.NORMAL,
+                scheduleVersion = 1,
+                feeRates =
+                    MakerTakerFeeRates(
+                        makerFeeRate = FeeRate(5_000),
+                        takerFeeRate = FeeRate(10_000),
+                    ),
+            )
+
+        val reservation =
+            OrderReservation.create(
+                marketId = MarketId("BTC-KRW"),
+                orderId = OrderId("order-with-fee"),
+                userId = UserId("user-1"),
+                side = Side.BUY,
+                limitPrice = Price(100),
+                quantity = Quantity(5),
+                requirement =
+                    ReservationRequirement(
+                        assetId = AssetId("KRW"),
+                        tradeReserveAmount = Amount(500),
+                        feeReserveAmount = Amount(5),
+                    ),
+                feePolicySnapshot = feePolicySnapshot,
+            )
+
+        assertEquals(
+            feePolicySnapshot,
+            reservation.feePolicySnapshot,
+        )
+        assertEquals(
+            Amount(5),
+            reservation.initialFeeReserveAmount,
+        )
+        assertEquals(
+            Amount(5),
+            reservation.remainingFeeReserveAmount,
+        )
+        assertEquals(
+            Amount(505),
+            reservation.reservedAmount,
+        )
+        assertEquals(
+            Amount(505),
+            reservation.remainingAmount,
+        )
+    }
+
+    @Test
+    fun `release는 남은 수수료 예약액도 함께 해제한다`() {
+        val feePolicySnapshot =
+            TradingFeePolicySnapshot(
+                productType = FeeProductType.SPOT,
+                feeTier = FeeTier.NORMAL,
+                scheduleVersion = 1,
+                feeRates =
+                    MakerTakerFeeRates(
+                        makerFeeRate = FeeRate(5_000),
+                        takerFeeRate = FeeRate(10_000),
+                    ),
+            )
+
+        val reservation =
+            OrderReservation.create(
+                marketId = MarketId("BTC-KRW"),
+                orderId = OrderId("order-with-fee"),
+                userId = UserId("user-1"),
+                side = Side.BUY,
+                limitPrice = Price(100),
+                quantity = Quantity(5),
+                requirement =
+                    ReservationRequirement(
+                        assetId = AssetId("KRW"),
+                        tradeReserveAmount = Amount(500),
+                        feeReserveAmount = Amount(5),
+                    ),
+                feePolicySnapshot = feePolicySnapshot,
+            )
+
+        val released = reservation.release()
+
+        assertEquals(
+            Amount.ZERO,
+            released.remainingAmount,
+        )
+        assertEquals(
+            Amount.ZERO,
+            released.remainingFeeReserveAmount,
+        )
+        assertEquals(
+            OrderReservationStatus.RELEASED,
+            released.status,
+        )
+    }
+
     private fun activeReservation(): OrderReservation =
         OrderReservation.create(
             marketId = MarketId("BTC-KRW"),
@@ -296,5 +414,6 @@ class OrderReservationTest {
                     assetId = AssetId("KRW"),
                     amount = Amount(500),
                 ),
+            feePolicySnapshot = feeFreePolicySnapshot,
         )
 }

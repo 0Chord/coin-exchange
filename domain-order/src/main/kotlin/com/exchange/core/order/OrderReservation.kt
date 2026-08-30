@@ -126,10 +126,17 @@ enum class OrderReservationStatus {
  * @property limitPrice 주문자가 허용한 지정가
  * @property initialQuantity 주문 생성 시점의 최초 수량
  * @property remainingQuantity 아직 체결되지 않은 수량
- * @property reservedAmount 주문 생성 시점의 최초 예약 금액
- * @property remainingAmount 체결이나 취소 후에도 이 주문이 잡고 있는 남은 예약 금액
+ * @property reservedAmount 거래 금액과 수수료 예약액을 합한 주문 생성 시점의 최초 예약 금액
+ * @property remainingAmount 체결이나 취소 후에도 이 주문이 잡고 있는 거래·수수료 예약
+ * 금액의 합
+ * @property feePolicySnapshot 주문 접수 시점에 확정한 상품, 등급, 정책 버전과 maker/taker 요율.
+ * 이후 정책이 바뀌어도 이 주문의 체결 수수료는 이 snapshot을 기준으로 계산한다.
+ * @property initialFeeReserveAmount 주문 생성 시 [reservedAmount]에 포함해 최초로 예약한 최대
+ * 수수료
+ * @property remainingFeeReserveAmount 아직 체결에 사용하거나 사용자에게 반환하지 않은 수수료
+ * 예약액
  * @property status 예약의 현재 생명주기 상태
- * @throws IllegalArgumentException 최초/남은 수량 또는 최초/남은 금액과 [status]의 조합이
+ * @throws IllegalArgumentException 최초/남은 수량, 거래·수수료 예약 금액 또는 [status]의 조합이
  * 유효하지 않은 경우
  */
 data class OrderReservation(
@@ -143,6 +150,9 @@ data class OrderReservation(
     val remainingQuantity: Quantity,
     val reservedAmount: Amount,
     val remainingAmount: Amount,
+    val feePolicySnapshot: TradingFeePolicySnapshot,
+    val initialFeeReserveAmount: Amount,
+    val remainingFeeReserveAmount: Amount,
     val status: OrderReservationStatus,
 ) {
     init {
@@ -159,6 +169,18 @@ data class OrderReservation(
 
         require(remainingAmount <= reservedAmount) {
             "remaining amount must not exceed reserved amount"
+        }
+
+        require(initialFeeReserveAmount <= reservedAmount) {
+            "initial fee reserve must not exceed reserved amount"
+        }
+
+        require(remainingFeeReserveAmount <= initialFeeReserveAmount) {
+            "remaining fee reserve must not exceed initial fee reserve"
+        }
+
+        require(remainingFeeReserveAmount <= remainingAmount) {
+            "remaining fee reserve must not exceed remaining reserved amount"
         }
 
         when (status) {
@@ -194,9 +216,9 @@ data class OrderReservation(
      * 활성 주문의 남은 예약 금액을 모두 반환한 상태로 전환한다.
      *
      * 취소된 미체결 수량을 기록하기 위해 [remainingQuantity]는 그대로 유지하고,
-     * [remainingAmount]만 0으로 만든 뒤 상태를 [OrderReservationStatus.RELEASED]로 바꾼다.
-     * 실제 Balance의 hold 반환과 DB 저장은 애플리케이션 서비스가 같은 트랜잭션에서
-     * 처리한다.
+     * [remainingAmount]와 그 안에 포함된 [remainingFeeReserveAmount]를 모두 0으로 만든 뒤
+     * 상태를 [OrderReservationStatus.RELEASED]로 바꾼다. 실제 Balance의 hold 반환과 DB 저장은
+     * 애플리케이션 서비스가 같은 트랜잭션에서 처리한다.
      *
      * @return 남은 예약 금액이 0이고 상태가 RELEASED인 새 주문 예약
      * @throws IllegalStateException 현재 상태가 ACTIVE가 아닐 경우
@@ -208,6 +230,7 @@ data class OrderReservation(
 
         return copy(
             remainingAmount = Amount.ZERO,
+            remainingFeeReserveAmount = Amount.ZERO,
             status = OrderReservationStatus.RELEASED,
         )
     }
@@ -279,7 +302,8 @@ data class OrderReservation(
          * 주문 자금 예약 결과로 새로운 ACTIVE 주문 예약을 생성한다.
          *
          * 최초 값과 남은 값을 동일하게 시작하며, [requirement]의 자산과 금액은
-         * [OrderReservationCalculator]가 주문 방향에 맞게 계산한다.
+         * [OrderReservationCalculator]가 주문 방향에 맞게 계산한다. 수수료 정책과 수수료
+         * 예약액도 함께 보존해 이후 체결과 취소에서 주문 접수 시점의 기준을 사용한다.
          *
          * @param marketId 주문이 제출될 마켓
          * @param orderId 주문 식별자
@@ -287,7 +311,8 @@ data class OrderReservation(
          * @param side 주문 방향
          * @param limitPrice 주문 지정가
          * @param quantity 최초 주문 수량
-         * @param requirement 주문 제출 전에 동결할 자산과 금액
+         * @param requirement 주문 제출 전에 동결할 자산, 거래 금액과 수수료 예약액
+         * @param feePolicySnapshot 주문 접수 시점에 확정한 maker/taker 수수료 정책
          * @return 최초 수량과 예약 금액을 가진 ACTIVE 주문 예약
          */
         fun create(
@@ -298,6 +323,7 @@ data class OrderReservation(
             limitPrice: Price,
             quantity: Quantity,
             requirement: ReservationRequirement,
+            feePolicySnapshot: TradingFeePolicySnapshot,
         ): OrderReservation =
             OrderReservation(
                 marketId = marketId,
@@ -310,6 +336,9 @@ data class OrderReservation(
                 remainingQuantity = quantity,
                 reservedAmount = requirement.totalReserveAmount,
                 remainingAmount = requirement.totalReserveAmount,
+                feePolicySnapshot = feePolicySnapshot,
+                initialFeeReserveAmount = requirement.feeReserveAmount,
+                remainingFeeReserveAmount = requirement.feeReserveAmount,
                 status = OrderReservationStatus.ACTIVE,
             )
     }

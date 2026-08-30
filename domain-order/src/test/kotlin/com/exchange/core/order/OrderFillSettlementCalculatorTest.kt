@@ -7,11 +7,28 @@ import com.exchange.core.common.OrderId
 import com.exchange.core.common.Price
 import com.exchange.core.common.Quantity
 import com.exchange.core.common.UserId
+import com.exchange.core.fee.FeeProductType
+import com.exchange.core.fee.FeeRate
+import com.exchange.core.fee.FeeTier
+import com.exchange.core.fee.MakerTakerFeeRates
+import com.exchange.core.fee.TradingFeePolicySnapshot
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 
 class OrderFillSettlementCalculatorTest {
+    private val feeFreePolicySnapshot =
+        TradingFeePolicySnapshot(
+            productType = FeeProductType.SPOT,
+            feeTier = FeeTier.NORMAL,
+            scheduleVersion = 1,
+            feeRates =
+                MakerTakerFeeRates(
+                    makerFeeRate = FeeRate.ZERO,
+                    takerFeeRate = FeeRate.ZERO,
+                ),
+        )
+
     private val calculator =
         OrderFillSettlementCalculator()
 
@@ -221,6 +238,7 @@ class OrderFillSettlementCalculatorTest {
                     assetId = market.quoteAssetId,
                     amount = Amount(500),
                 ),
+            feePolicySnapshot = feeFreePolicySnapshot,
         )
 
     private fun sellReservation(): OrderReservation =
@@ -236,5 +254,6 @@ class OrderFillSettlementCalculatorTest {
                     assetId = market.baseAssetId,
                     amount = Amount(5),
                 ),
+            feePolicySnapshot = feeFreePolicySnapshot,
         )
 }

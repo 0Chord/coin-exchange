@@ -84,6 +84,7 @@ open class OrderFundingService(
                 limitPrice = limitPrice,
                 quantity = quantity,
                 requirement = requirement,
+                feePolicySnapshot = feePolicySnapshot,
             )
 
         reservationStore.create(reservation)

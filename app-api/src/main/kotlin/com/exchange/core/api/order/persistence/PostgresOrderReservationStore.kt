@@ -7,6 +7,11 @@ import com.exchange.core.common.OrderId
 import com.exchange.core.common.Price
 import com.exchange.core.common.Quantity
 import com.exchange.core.common.UserId
+import com.exchange.core.fee.FeeProductType
+import com.exchange.core.fee.FeeRate
+import com.exchange.core.fee.FeeTier
+import com.exchange.core.fee.MakerTakerFeeRates
+import com.exchange.core.fee.TradingFeePolicySnapshot
 import com.exchange.core.order.OrderReservation
 import com.exchange.core.order.OrderReservationAlreadyExistsException
 import com.exchange.core.order.OrderReservationNotFoundException
@@ -22,7 +27,7 @@ import org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate
  *
  * `(market_id, order_id)`를 주문 예약의 business key로 사용한다. 생성 시에는 최초 값 전체를
  * 저장하고, 이후 체결 또는 취소에서는 변경 가능한 `remaining_quantity`, `remaining_amount`,
- * `status`만 갱신한다.
+ * `remaining_fee_reserve_amount`, `status`만 갱신한다.
  *
  * @property jdbcTemplate 이름 기반 SQL parameter와 row mapping을 제공하는 Spring JDBC 도구
  */
@@ -50,6 +55,13 @@ open class PostgresOrderReservationStore(
                     remaining_quantity,
                     reserved_amount,
                     remaining_amount,
+                    fee_product_type,
+                    fee_tier,
+                    fee_schedule_version,
+                    maker_fee_rate_ppm,
+                    taker_fee_rate_ppm,
+                    initial_fee_reserve_amount,
+                    remaining_fee_reserve_amount,
                     status
                 ) values (
                     :marketId,
@@ -62,6 +74,13 @@ open class PostgresOrderReservationStore(
                     :remainingQuantity,
                     :reservedAmount,
                     :remainingAmount,
+                    :feeProductType,
+                    :feeTier,
+                    :feeScheduleVersion,
+                    :makerFeeRatePpm,
+                    :takerFeeRatePpm,
+                    :initialFeeReserveAmount,
+                    :remainingFeeReserveAmount,
                     :status
                 )
                 """.trimIndent(),
@@ -76,6 +95,15 @@ open class PostgresOrderReservationStore(
                     "remainingQuantity" to reservation.remainingQuantity.value,
                     "reservedAmount" to reservation.reservedAmount.value,
                     "remainingAmount" to reservation.remainingAmount.value,
+                    "feeProductType" to reservation.feePolicySnapshot.productType.name,
+                    "feeTier" to reservation.feePolicySnapshot.feeTier.name,
+                    "feeScheduleVersion" to reservation.feePolicySnapshot.scheduleVersion,
+                    "makerFeeRatePpm" to
+                        reservation.feePolicySnapshot.feeRates.makerFeeRate.partsPerMillion,
+                    "takerFeeRatePpm" to
+                        reservation.feePolicySnapshot.feeRates.takerFeeRate.partsPerMillion,
+                    "initialFeeReserveAmount" to reservation.initialFeeReserveAmount.value,
+                    "remainingFeeReserveAmount" to reservation.remainingFeeReserveAmount.value,
                     "status" to reservation.status.name,
                 ),
             )
@@ -127,8 +155,9 @@ open class PostgresOrderReservationStore(
     /**
      * 체결 또는 취소로 바뀐 잔량, 예약 잔액과 상태를 갱신한다.
      *
-     * 주문 소유자, 방향, 지정가, 최초 수량과 최초 예약 금액은 생성 후 불변이므로
-     * UPDATE하지 않는다.
+     * 주문 소유자, 방향, 지정가, 최초 수량과 최초 예약 금액, 최초 수수료 예약액과
+     * 수수료 정책 snapshot은 생성 후 불변이므로 UPDATE하지 않는다. 체결 또는 취소 후에도
+     * 남은 수수료 예약액만 변경한다.
      *
      * @param reservation 동일 business key의 새 상태
      * @throws OrderReservationNotFoundException UPDATE 대상 row가 정확히 1개가 아닌 경우
@@ -141,6 +170,7 @@ open class PostgresOrderReservationStore(
                 update order_reservations
                 set remaining_quantity = :remainingQuantity,
                     remaining_amount = :remainingAmount,
+                    remaining_fee_reserve_amount = :remainingFeeReserveAmount,
                     status = :status,
                     updated_at = current_timestamp
                 where market_id = :marketId
@@ -151,6 +181,7 @@ open class PostgresOrderReservationStore(
                     "orderId" to reservation.orderId.value,
                     "remainingQuantity" to reservation.remainingQuantity.value,
                     "remainingAmount" to reservation.remainingAmount.value,
+                    "remainingFeeReserveAmount" to reservation.remainingFeeReserveAmount.value,
                     "status" to reservation.status.name,
                 ),
             )
@@ -199,6 +230,13 @@ open class PostgresOrderReservationStore(
                    remaining_quantity,
                    reserved_amount,
                    remaining_amount,
+                   fee_product_type,
+                   fee_tier,
+                   fee_schedule_version,
+                   maker_fee_rate_ppm,
+                   taker_fee_rate_ppm,
+                   initial_fee_reserve_amount,
+                   remaining_fee_reserve_amount,
                    status
             from order_reservations
             where market_id = :marketId
@@ -230,6 +268,33 @@ open class PostgresOrderReservationStore(
                 remainingQuantity = Quantity(resultSet.getLong("remaining_quantity")),
                 reservedAmount = Amount(resultSet.getLong("reserved_amount")),
                 remainingAmount = Amount(resultSet.getLong("remaining_amount")),
+                feePolicySnapshot =
+                    TradingFeePolicySnapshot(
+                        productType =
+                            FeeProductType.valueOf(
+                                resultSet.getString("fee_product_type"),
+                            ),
+                        feeTier =
+                            FeeTier.valueOf(
+                                resultSet.getString("fee_tier"),
+                            ),
+                        scheduleVersion = resultSet.getLong("fee_schedule_version"),
+                        feeRates =
+                            MakerTakerFeeRates(
+                                makerFeeRate =
+                                    FeeRate(
+                                        resultSet.getLong("maker_fee_rate_ppm"),
+                                    ),
+                                takerFeeRate =
+                                    FeeRate(
+                                        resultSet.getLong("taker_fee_rate_ppm"),
+                                    ),
+                            ),
+                    ),
+                initialFeeReserveAmount =
+                    Amount(resultSet.getLong("initial_fee_reserve_amount")),
+                remainingFeeReserveAmount =
+                    Amount(resultSet.getLong("remaining_fee_reserve_amount")),
                 status = OrderReservationStatus.valueOf(resultSet.getString("status")),
             )
         }
