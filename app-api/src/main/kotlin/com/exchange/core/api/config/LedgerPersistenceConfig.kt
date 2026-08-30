@@ -3,10 +3,12 @@ package com.exchange.core.api.config
 import com.exchange.core.api.ledger.persistence.PostgresBalanceStore
 import com.exchange.core.api.order.OrderFundingService
 import com.exchange.core.api.order.OrderReservationReleaseService
+import com.exchange.core.api.order.TradeSettlementService
 import com.exchange.core.api.order.persistence.PostgresOrderReservationStore
 import com.exchange.core.fee.TradingFeeReserveCalculator
 import com.exchange.core.ledger.BalanceStore
 import com.exchange.core.order.BuyOrderFundingQuoteCalculator
+import com.exchange.core.order.OrderFillSettlementCalculator
 import com.exchange.core.order.OrderReservationCalculator
 import com.exchange.core.order.OrderReservationStore
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty
@@ -89,6 +91,24 @@ class LedgerPersistenceConfig {
         orderReservationStore: OrderReservationStore,
     ): OrderReservationReleaseService =
         OrderReservationReleaseService(
+            balanceStore = balanceStore,
+            reservationStore = orderReservationStore,
+        )
+
+    /**
+     * 매칭 엔진의 체결 결과를 양쪽 Reservation과 Balance에 반영하는 서비스를 등록한다.
+     *
+     * @param balanceStore 사용자·자산별 체결 잔고 변경 포트
+     * @param orderReservationStore maker와 taker의 주문별 예약 저장 포트
+     * @return 양쪽 정산을 하나의 트랜잭션으로 실행하는 application service
+     */
+    @Bean
+    fun tradeSettlementService(
+        balanceStore: BalanceStore,
+        orderReservationStore: OrderReservationStore,
+    ): TradeSettlementService =
+        TradeSettlementService(
+            calculator = OrderFillSettlementCalculator(),
             balanceStore = balanceStore,
             reservationStore = orderReservationStore,
         )
