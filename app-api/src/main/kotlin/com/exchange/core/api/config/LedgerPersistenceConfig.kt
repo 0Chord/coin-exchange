@@ -5,6 +5,7 @@ import com.exchange.core.api.order.OrderFundingService
 import com.exchange.core.api.order.OrderReservationReleaseService
 import com.exchange.core.api.order.TradeSettlementService
 import com.exchange.core.api.order.persistence.PostgresOrderReservationStore
+import com.exchange.core.fee.TradingFeeCalculator
 import com.exchange.core.fee.TradingFeeReserveCalculator
 import com.exchange.core.ledger.BalanceStore
 import com.exchange.core.order.BuyOrderFundingQuoteCalculator
@@ -108,7 +109,11 @@ class LedgerPersistenceConfig {
         orderReservationStore: OrderReservationStore,
     ): TradeSettlementService =
         TradeSettlementService(
-            calculator = OrderFillSettlementCalculator(),
+            calculator =
+                OrderFillSettlementCalculator(
+                    tradingFeeCalculator = TradingFeeCalculator(),
+                    tradingFeeReserveCalculator = TradingFeeReserveCalculator(),
+                ),
             balanceStore = balanceStore,
             reservationStore = orderReservationStore,
         )

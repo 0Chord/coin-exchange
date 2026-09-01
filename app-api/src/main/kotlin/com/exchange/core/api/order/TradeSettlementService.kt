@@ -1,6 +1,7 @@
 package com.exchange.core.api.order
 
 import com.exchange.core.common.OrderId
+import com.exchange.core.fee.LiquidityRole
 import com.exchange.core.ledger.BalanceStore
 import com.exchange.core.matching.TradeExecuted
 import com.exchange.core.order.MarketDefinition
@@ -86,6 +87,7 @@ open class TradeSettlementService(
                 reservation = makerReservation,
                 executionPrice = trade.price,
                 filledQuantity = trade.quantity,
+                liquidityRole = LiquidityRole.MAKER,
             )
 
         val takerPlan =
@@ -94,6 +96,7 @@ open class TradeSettlementService(
                 reservation = takerReservation,
                 executionPrice = trade.price,
                 filledQuantity = trade.quantity,
+                liquidityRole = LiquidityRole.TAKER,
             )
 
         applySettlement(
