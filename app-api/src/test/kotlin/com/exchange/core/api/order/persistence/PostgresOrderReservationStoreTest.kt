@@ -8,6 +8,11 @@ import com.exchange.core.common.OrderId
 import com.exchange.core.common.Price
 import com.exchange.core.common.Quantity
 import com.exchange.core.common.UserId
+import com.exchange.core.fee.FeeProductType
+import com.exchange.core.fee.FeeRate
+import com.exchange.core.fee.FeeTier
+import com.exchange.core.fee.MakerTakerFeeRates
+import com.exchange.core.fee.TradingFeePolicySnapshot
 import com.exchange.core.order.OrderReservation
 import com.exchange.core.order.OrderReservationAlreadyExistsException
 import com.exchange.core.order.OrderReservationNotFoundException
@@ -42,6 +47,18 @@ import kotlin.test.assertNull
 @Import(LedgerPersistenceConfig::class)
 @Testcontainers
 class PostgresOrderReservationStoreTest {
+    private val feeFreePolicySnapshot =
+        TradingFeePolicySnapshot(
+            productType = FeeProductType.SPOT,
+            feeTier = FeeTier.NORMAL,
+            scheduleVersion = 1,
+            feeRates =
+                MakerTakerFeeRates(
+                    makerFeeRate = FeeRate.ZERO,
+                    takerFeeRate = FeeRate.ZERO,
+                ),
+        )
+
     @Autowired
     private lateinit var jdbcTemplate: JdbcTemplate
 
@@ -182,7 +199,8 @@ class PostgresOrderReservationStoreTest {
         val partiallyFilled =
             reservation.applyFill(
                 filledQuantity = Quantity(2),
-                reservedAmountToReduce = Amount(200),
+                tradeReserveAmountToReduce = Amount(200),
+                feeReserveAmountToReduce = Amount.ZERO,
             )
 
         store.update(partiallyFilled)
@@ -204,7 +222,8 @@ class PostgresOrderReservationStoreTest {
         val settled =
             reservation.applyFill(
                 filledQuantity = Quantity(5),
-                reservedAmountToReduce = Amount(500),
+                tradeReserveAmountToReduce = Amount(500),
+                feeReserveAmountToReduce = Amount.ZERO,
             )
 
         store.update(settled)
@@ -216,6 +235,69 @@ class PostgresOrderReservationStoreTest {
             )
 
         assertEquals(settled, saved)
+    }
+
+    @Test
+    fun `수수료 정책과 수수료 예약액을 저장하고 조회한다`() {
+        val feePolicySnapshot =
+            TradingFeePolicySnapshot(
+                productType = FeeProductType.SPOT,
+                feeTier = FeeTier.NORMAL,
+                scheduleVersion = 1,
+                feeRates =
+                    MakerTakerFeeRates(
+                        makerFeeRate = FeeRate(5_000),
+                        takerFeeRate = FeeRate(10_000),
+                    ),
+            )
+
+        val reservation =
+            OrderReservation.create(
+                marketId = MarketId("BTC-KRW"),
+                orderId = OrderId("order-with-fee"),
+                userId = UserId("user-1"),
+                side = Side.BUY,
+                limitPrice = Price(100),
+                quantity = Quantity(5),
+                requirement =
+                    ReservationRequirement(
+                        assetId = AssetId("KRW"),
+                        tradeReserveAmount = Amount(500),
+                        feeReserveAmount = Amount(5),
+                    ),
+                feePolicySnapshot = feePolicySnapshot,
+            )
+
+        store.create(reservation)
+
+        val saved =
+            requireNotNull(
+                store.find(
+                    marketId = reservation.marketId,
+                    orderId = reservation.orderId,
+                ),
+            )
+
+        assertEquals(
+            feePolicySnapshot,
+            saved.feePolicySnapshot,
+        )
+        assertEquals(
+            Amount(5),
+            saved.initialFeeReserveAmount,
+        )
+        assertEquals(
+            Amount(5),
+            saved.remainingFeeReserveAmount,
+        )
+        assertEquals(
+            Amount(505),
+            saved.reservedAmount,
+        )
+        assertEquals(
+            Amount(505),
+            saved.remainingAmount,
+        )
     }
 
     private fun reservation(
@@ -234,6 +316,7 @@ class PostgresOrderReservationStoreTest {
                     assetId = AssetId("KRW"),
                     amount = Amount(500),
                 ),
+            feePolicySnapshot = feeFreePolicySnapshot,
         )
 
     companion object {

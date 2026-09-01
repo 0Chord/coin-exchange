@@ -8,6 +8,11 @@ import com.exchange.core.common.OrderId
 import com.exchange.core.common.Price
 import com.exchange.core.common.Quantity
 import com.exchange.core.common.UserId
+import com.exchange.core.fee.FeeProductType
+import com.exchange.core.fee.FeeRate
+import com.exchange.core.fee.FeeTier
+import com.exchange.core.fee.MakerTakerFeeRates
+import com.exchange.core.fee.TradingFeePolicySnapshot
 import com.exchange.core.ledger.InsufficientBalanceException
 import com.exchange.core.order.MarketDefinition
 import com.exchange.core.order.OrderReservationAlreadyExistsException
@@ -53,6 +58,18 @@ class OrderFundingServiceTest {
     @Autowired
     private lateinit var jdbcTemplate: JdbcTemplate
 
+    private val feePolicySnapshot =
+        TradingFeePolicySnapshot(
+            productType = FeeProductType.SPOT,
+            feeTier = FeeTier.NORMAL,
+            scheduleVersion = 1,
+            feeRates =
+                MakerTakerFeeRates(
+                    makerFeeRate = FeeRate(5_000),
+                    takerFeeRate = FeeRate(10_000),
+                ),
+        )
+
     @BeforeEach
     fun setUp() {
         jdbcTemplate.update("delete from order_reservations")
@@ -65,14 +82,14 @@ class OrderFundingServiceTest {
     }
 
     @Test
-    fun `주문 자금을 동결하면 예약을 저장하고 잔고를 이동한다`() {
+    fun `BUY 주문 자금을 동결하면 수수료를 포함한 예약을 저장하고 잔고를 이동한다`() {
         val reservation = reserveOrder()
 
         assertEquals(MARKET.marketId, reservation.marketId)
         assertEquals(ORDER_ID, reservation.orderId)
         assertEquals(USER_ID, reservation.userId)
         assertEquals(AssetId("KRW"), reservation.assetId)
-        assertEquals(Amount(500), reservation.reservedAmount)
+        assertEquals(Amount(505), reservation.reservedAmount)
 
         assertEquals(
             reservation,
@@ -83,8 +100,8 @@ class OrderFundingServiceTest {
         )
 
         assertPersistedBalance(
-            available = 500,
-            hold = 500,
+            available = 495,
+            hold = 505,
         )
     }
 
@@ -121,8 +138,8 @@ class OrderFundingServiceTest {
         }
 
         assertPersistedBalance(
-            available = 500,
-            hold = 500,
+            available = 495,
+            hold = 505,
         )
 
         assertEquals(1, reservationCount())
@@ -136,6 +153,7 @@ class OrderFundingServiceTest {
             side = Side.BUY,
             limitPrice = Price(100),
             quantity = Quantity(5),
+            feePolicySnapshot = feePolicySnapshot,
         )
 
     private fun insertBalance(

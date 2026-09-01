@@ -7,13 +7,36 @@ import com.exchange.core.common.OrderId
 import com.exchange.core.common.Price
 import com.exchange.core.common.Quantity
 import com.exchange.core.common.UserId
+import com.exchange.core.fee.FeeProductType
+import com.exchange.core.fee.FeeRate
+import com.exchange.core.fee.FeeTier
+import com.exchange.core.fee.LiquidityRole
+import com.exchange.core.fee.MakerTakerFeeRates
+import com.exchange.core.fee.TradingFeeCalculator
+import com.exchange.core.fee.TradingFeePolicySnapshot
+import com.exchange.core.fee.TradingFeeReserveCalculator
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 
 class OrderFillSettlementCalculatorTest {
+    private val feeFreePolicySnapshot =
+        TradingFeePolicySnapshot(
+            productType = FeeProductType.SPOT,
+            feeTier = FeeTier.NORMAL,
+            scheduleVersion = 1,
+            feeRates =
+                MakerTakerFeeRates(
+                    makerFeeRate = FeeRate.ZERO,
+                    takerFeeRate = FeeRate.ZERO,
+                ),
+        )
+
     private val calculator =
-        OrderFillSettlementCalculator()
+        OrderFillSettlementCalculator(
+            tradingFeeCalculator = TradingFeeCalculator(),
+            tradingFeeReserveCalculator = TradingFeeReserveCalculator(),
+        )
 
     private val market =
         MarketDefinition(
@@ -33,6 +56,7 @@ class OrderFillSettlementCalculatorTest {
                 reservation = reservation,
                 executionPrice = Price(90),
                 filledQuantity = Quantity(2),
+                liquidityRole = LiquidityRole.MAKER,
             )
 
         assertEquals(
@@ -81,6 +105,7 @@ class OrderFillSettlementCalculatorTest {
                 reservation = reservation,
                 executionPrice = Price(90),
                 filledQuantity = Quantity(2),
+                liquidityRole = LiquidityRole.MAKER,
             )
 
         assertEquals(
@@ -129,6 +154,7 @@ class OrderFillSettlementCalculatorTest {
                 reservation = reservation,
                 executionPrice = Price(90),
                 filledQuantity = Quantity(5),
+                liquidityRole = LiquidityRole.MAKER,
             )
 
         assertEquals(
@@ -168,6 +194,7 @@ class OrderFillSettlementCalculatorTest {
                 reservation = reservation,
                 executionPrice = Price(101),
                 filledQuantity = Quantity(1),
+                liquidityRole = LiquidityRole.MAKER,
             )
         }
     }
@@ -182,6 +209,7 @@ class OrderFillSettlementCalculatorTest {
                 reservation = reservation,
                 executionPrice = Price(79),
                 filledQuantity = Quantity(1),
+                liquidityRole = LiquidityRole.MAKER,
             )
         }
     }
@@ -204,8 +232,169 @@ class OrderFillSettlementCalculatorTest {
                 reservation = reservation,
                 executionPrice = Price(90),
                 filledQuantity = Quantity(1),
+                liquidityRole = LiquidityRole.MAKER,
             )
         }
+    }
+
+    @Test
+    fun `taker BUY 체결은 실제 수수료를 소비하고 남는 예약액을 반환한다`() {
+        val feePolicySnapshot =
+            TradingFeePolicySnapshot(
+                productType = FeeProductType.SPOT,
+                feeTier = FeeTier.NORMAL,
+                scheduleVersion = 1,
+                feeRates =
+                    MakerTakerFeeRates(
+                        makerFeeRate = FeeRate(5_000),
+                        takerFeeRate = FeeRate(10_000),
+                    ),
+            )
+
+        val reservation =
+            OrderReservation.create(
+                marketId = market.marketId,
+                orderId = OrderId("buy-order-with-fee"),
+                userId = UserId("buyer"),
+                side = Side.BUY,
+                limitPrice = Price(100_000),
+                quantity = Quantity(5),
+                requirement =
+                    ReservationRequirement(
+                        assetId = market.quoteAssetId,
+                        tradeReserveAmount = Amount(500_000),
+                        feeReserveAmount = Amount(5_000),
+                    ),
+                feePolicySnapshot = feePolicySnapshot,
+            )
+
+        val plan =
+            calculator.calculate(
+                market = market,
+                reservation = reservation,
+                executionPrice = Price(90_000),
+                filledQuantity = Quantity(2),
+                liquidityRole = LiquidityRole.TAKER,
+            )
+
+        assertEquals(
+            Amount(202_000),
+            plan.reservedAmountToReduce,
+        )
+        assertEquals(
+            Amount(181_800),
+            plan.holdAmountToConsume,
+        )
+        assertEquals(
+            Amount(20_200),
+            plan.holdAmountToRelease,
+        )
+
+        assertEquals(
+            Quantity(3),
+            plan.updatedReservation.remainingQuantity,
+        )
+        assertEquals(
+            Amount(303_000),
+            plan.updatedReservation.remainingAmount,
+        )
+        assertEquals(
+            Amount(3_000),
+            plan.updatedReservation.remainingFeeReserveAmount,
+        )
+        assertEquals(
+            OrderReservationStatus.ACTIVE,
+            plan.updatedReservation.status,
+        )
+
+        assertEquals(
+            market.baseAssetId,
+            plan.creditAssetId,
+        )
+        assertEquals(
+            Amount(2),
+            plan.creditAmount,
+        )
+    }
+
+    @Test
+    fun `maker SELL 체결은 판매 대금에서 실제 수수료를 차감한다`() {
+        val feePolicySnapshot =
+            TradingFeePolicySnapshot(
+                productType = FeeProductType.SPOT,
+                feeTier = FeeTier.NORMAL,
+                scheduleVersion = 1,
+                feeRates =
+                    MakerTakerFeeRates(
+                        makerFeeRate = FeeRate(5_000),
+                        takerFeeRate = FeeRate(10_000),
+                    ),
+            )
+
+        val reservation =
+            OrderReservation.create(
+                marketId = market.marketId,
+                orderId = OrderId("sell-order-with-fee"),
+                userId = UserId("seller"),
+                side = Side.SELL,
+                limitPrice = Price(80_000),
+                quantity = Quantity(5),
+                requirement =
+                    ReservationRequirement(
+                        assetId = market.baseAssetId,
+                        tradeReserveAmount = Amount(5),
+                        feeReserveAmount = Amount.ZERO,
+                    ),
+                feePolicySnapshot = feePolicySnapshot,
+            )
+
+        val plan =
+            calculator.calculate(
+                market = market,
+                reservation = reservation,
+                executionPrice = Price(90_000),
+                filledQuantity = Quantity(2),
+                liquidityRole = LiquidityRole.MAKER,
+            )
+
+        assertEquals(
+            Amount(2),
+            plan.reservedAmountToReduce,
+        )
+        assertEquals(
+            Amount(2),
+            plan.holdAmountToConsume,
+        )
+        assertEquals(
+            Amount.ZERO,
+            plan.holdAmountToRelease,
+        )
+
+        assertEquals(
+            market.quoteAssetId,
+            plan.creditAssetId,
+        )
+        assertEquals(
+            Amount(179_100),
+            plan.creditAmount,
+        )
+
+        assertEquals(
+            Quantity(3),
+            plan.updatedReservation.remainingQuantity,
+        )
+        assertEquals(
+            Amount(3),
+            plan.updatedReservation.remainingAmount,
+        )
+        assertEquals(
+            Amount.ZERO,
+            plan.updatedReservation.remainingFeeReserveAmount,
+        )
+        assertEquals(
+            OrderReservationStatus.ACTIVE,
+            plan.updatedReservation.status,
+        )
     }
 
     private fun buyReservation(): OrderReservation =
@@ -221,6 +410,7 @@ class OrderFillSettlementCalculatorTest {
                     assetId = market.quoteAssetId,
                     amount = Amount(500),
                 ),
+            feePolicySnapshot = feeFreePolicySnapshot,
         )
 
     private fun sellReservation(): OrderReservation =
@@ -236,5 +426,6 @@ class OrderFillSettlementCalculatorTest {
                     assetId = market.baseAssetId,
                     amount = Amount(5),
                 ),
+            feePolicySnapshot = feeFreePolicySnapshot,
         )
 }

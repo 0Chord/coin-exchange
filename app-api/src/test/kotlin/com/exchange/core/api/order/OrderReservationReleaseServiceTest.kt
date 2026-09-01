@@ -8,6 +8,11 @@ import com.exchange.core.common.OrderId
 import com.exchange.core.common.Price
 import com.exchange.core.common.Quantity
 import com.exchange.core.common.UserId
+import com.exchange.core.fee.FeeProductType
+import com.exchange.core.fee.FeeRate
+import com.exchange.core.fee.FeeTier
+import com.exchange.core.fee.MakerTakerFeeRates
+import com.exchange.core.fee.TradingFeePolicySnapshot
 import com.exchange.core.ledger.InsufficientHoldException
 import com.exchange.core.order.OrderReservation
 import com.exchange.core.order.OrderReservationNotFoundException
@@ -49,6 +54,18 @@ import kotlin.test.assertTrue
 @Testcontainers
 @Transactional(propagation = Propagation.NOT_SUPPORTED)
 class OrderReservationReleaseServiceTest {
+    private val feeFreePolicySnapshot =
+        TradingFeePolicySnapshot(
+            productType = FeeProductType.SPOT,
+            feeTier = FeeTier.NORMAL,
+            scheduleVersion = 1,
+            feeRates =
+                MakerTakerFeeRates(
+                    makerFeeRate = FeeRate.ZERO,
+                    takerFeeRate = FeeRate.ZERO,
+                ),
+        )
+
     @Autowired
     private lateinit var service: OrderReservationReleaseService
 
@@ -217,6 +234,7 @@ class OrderReservationReleaseServiceTest {
                     assetId = ASSET_ID,
                     amount = Amount(500),
                 ),
+            feePolicySnapshot = feeFreePolicySnapshot,
         )
 
     private fun insertBalance(

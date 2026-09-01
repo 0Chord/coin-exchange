@@ -5,6 +5,7 @@ include(
 	"domain-order",
 	"domain-matching",
 	"domain-ledger",
+	"domain-fee",
 	"benchmark-jmh",
 	"app-api",
 )
