@@ -239,18 +239,22 @@ data class OrderReservation(
      * 이미 발생한 체결을 주문 예약의 남은 수량과 금액에 반영한다.
      *
      * 이 메서드는 매칭을 수행하거나 Balance를 변경하지 않는다. BUY와 SELL에 따라 달라지는
-     * 예약 감소 금액은 [OrderFillSettlementCalculator]가 계산해서 전달한다.
-     * 남은 수량이 0이면 상태를 SETTLED로, 수량이 남으면 ACTIVE로 유지한다.
+     * 거래 예약 감소액과 BUY 수수료 예약 감소액은 [OrderFillSettlementCalculator]가
+     * 계산해서 전달한다. 남은 수량이 0이면 상태를 SETTLED로, 수량이 남으면 ACTIVE로
+     * 유지한다.
      *
      * @param filledQuantity 이번 체결에서 처리된 base 자산 수량
-     * @param reservedAmountToReduce 이번 체결로 주문별 예약 장부에서 줄일 금액
-     * @return 체결 후 남은 수량, 남은 예약 금액과 상태를 담은 새 주문 예약
+     * @param tradeReserveAmountToReduce 이번 체결로 거래 예약 장부에서 줄일 금액
+     * @param feeReserveAmountToReduce 이번 체결 몫으로 수수료 예약 장부에서 줄일 금액
+     * @return 체결 후 남은 수량, 거래·수수료 예약 금액과 상태를 담은 새 주문 예약
      * @throws IllegalStateException 현재 상태가 ACTIVE가 아닐 경우
-     * @throws IllegalArgumentException 체결 수량이나 예약 감소 금액이 유효 범위를 벗어날 경우
+     * @throws IllegalArgumentException 체결 수량이나 거래·수수료 예약 감소 금액이 유효 범위를
+     * 벗어날 경우
      */
     fun applyFill(
         filledQuantity: Quantity,
-        reservedAmountToReduce: Amount,
+        tradeReserveAmountToReduce: Amount,
+        feeReserveAmountToReduce: Amount,
     ): OrderReservation {
         check(status == OrderReservationStatus.ACTIVE) {
             "only active reservation can be filled"
@@ -264,25 +268,49 @@ data class OrderReservation(
             "filled quantity must not exceed remaining quantity"
         }
 
-        require(reservedAmountToReduce.value > 0) {
-            "reserved amount to reduce must be positive"
+        require(tradeReserveAmountToReduce.value > 0) {
+            "trade reserve amount to reduce must be positive"
         }
 
-        require(reservedAmountToReduce <= remainingAmount) {
-            "reserved amount to reduce must not exceed remaining amount"
+        /*
+         * remainingAmount에는 거래 예약액과 수수료 예약액이 함께 들어 있다.
+         * 따라서 남은 거래 예약액은 수수료 예약액을 제외한 값이다.
+         */
+        val remainingTradeReserveAmount =
+            Amount(
+                remainingAmount.value - remainingFeeReserveAmount.value,
+            )
+
+        require(tradeReserveAmountToReduce <= remainingTradeReserveAmount) {
+            "trade reserve amount to reduce must not exceed remaining trade reserve"
         }
 
-        // 주문 수량 장부에서 이번 base 체결 수량을 뺀 값이다.
+        require(feeReserveAmountToReduce <= remainingFeeReserveAmount) {
+            "fee reserve amount to reduce must not exceed remaining fee reserve"
+        }
+
+        val totalReserveAmountToReduce =
+            Amount(
+                Math.addExact(
+                    tradeReserveAmountToReduce.value,
+                    feeReserveAmountToReduce.value,
+                ),
+            )
+
         val nextRemainingQuantity =
             remainingQuantity - filledQuantity
 
-        // 주문 자금 장부에서 방향별 계산기가 정한 예약 감소액을 뺀 값이다.
         val nextRemainingAmount =
             Amount(
-                remainingAmount.value - reservedAmountToReduce.value,
+                remainingAmount.value - totalReserveAmountToReduce.value,
             )
 
-        // 잔량이 없어진 순간에만 SETTLED이며, 부분 체결이면 계속 ACTIVE다.
+        val nextRemainingFeeReserveAmount =
+            Amount(
+                remainingFeeReserveAmount.value -
+                    feeReserveAmountToReduce.value,
+            )
+
         val nextStatus =
             if (nextRemainingQuantity.isZero()) {
                 OrderReservationStatus.SETTLED
@@ -293,6 +321,7 @@ data class OrderReservation(
         return copy(
             remainingQuantity = nextRemainingQuantity,
             remainingAmount = nextRemainingAmount,
+            remainingFeeReserveAmount = nextRemainingFeeReserveAmount,
             status = nextStatus,
         )
     }

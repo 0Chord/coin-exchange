@@ -188,7 +188,8 @@ class OrderReservationTest {
         val partiallyFilled =
             reservation.applyFill(
                 filledQuantity = Quantity(2),
-                reservedAmountToReduce = Amount(200),
+                tradeReserveAmountToReduce = Amount(200),
+                feeReserveAmountToReduce = Amount.ZERO,
             )
 
         assertEquals(Quantity(3), partiallyFilled.remainingQuantity)
@@ -210,7 +211,8 @@ class OrderReservationTest {
         val settled =
             reservation.applyFill(
                 filledQuantity = Quantity(5),
-                reservedAmountToReduce = Amount(500),
+                tradeReserveAmountToReduce = Amount(500),
+                feeReserveAmountToReduce = Amount.ZERO,
             )
 
         assertEquals(Quantity.ZERO, settled.remainingQuantity)
@@ -228,7 +230,8 @@ class OrderReservationTest {
         assertFailsWith<IllegalArgumentException> {
             reservation.applyFill(
                 filledQuantity = Quantity.ZERO,
-                reservedAmountToReduce = Amount(100),
+                tradeReserveAmountToReduce = Amount(100),
+                feeReserveAmountToReduce = Amount.ZERO,
             )
         }
     }
@@ -240,7 +243,8 @@ class OrderReservationTest {
         assertFailsWith<IllegalArgumentException> {
             reservation.applyFill(
                 filledQuantity = Quantity(6),
-                reservedAmountToReduce = Amount(500),
+                tradeReserveAmountToReduce = Amount(500),
+                feeReserveAmountToReduce = Amount.ZERO,
             )
         }
     }
@@ -252,7 +256,8 @@ class OrderReservationTest {
         assertFailsWith<IllegalArgumentException> {
             reservation.applyFill(
                 filledQuantity = Quantity(1),
-                reservedAmountToReduce = Amount.ZERO,
+                tradeReserveAmountToReduce = Amount.ZERO,
+                feeReserveAmountToReduce = Amount.ZERO,
             )
         }
     }
@@ -264,7 +269,8 @@ class OrderReservationTest {
         assertFailsWith<IllegalArgumentException> {
             reservation.applyFill(
                 filledQuantity = Quantity(1),
-                reservedAmountToReduce = Amount(501),
+                tradeReserveAmountToReduce = Amount(501),
+                feeReserveAmountToReduce = Amount.ZERO,
             )
         }
     }
@@ -289,14 +295,16 @@ class OrderReservationTest {
         assertFailsWith<IllegalStateException> {
             settled.applyFill(
                 filledQuantity = Quantity(1),
-                reservedAmountToReduce = Amount(100),
+                tradeReserveAmountToReduce = Amount(100),
+                feeReserveAmountToReduce = Amount.ZERO,
             )
         }
 
         assertFailsWith<IllegalStateException> {
             released.applyFill(
                 filledQuantity = Quantity(1),
-                reservedAmountToReduce = Amount(100),
+                tradeReserveAmountToReduce = Amount(100),
+                feeReserveAmountToReduce = Amount.ZERO,
             )
         }
     }
@@ -398,6 +406,62 @@ class OrderReservationTest {
         assertEquals(
             OrderReservationStatus.RELEASED,
             released.status,
+        )
+    }
+
+    @Test
+    fun `applyFill은 거래 예약액과 수수료 예약액을 함께 감소시킨다`() {
+        val feePolicySnapshot =
+            TradingFeePolicySnapshot(
+                productType = FeeProductType.SPOT,
+                feeTier = FeeTier.NORMAL,
+                scheduleVersion = 1,
+                feeRates =
+                    MakerTakerFeeRates(
+                        makerFeeRate = FeeRate(5_000),
+                        takerFeeRate = FeeRate(10_000),
+                    ),
+            )
+
+        val reservation =
+            OrderReservation.create(
+                marketId = MarketId("BTC-KRW"),
+                orderId = OrderId("order-with-fee"),
+                userId = UserId("user-1"),
+                side = Side.BUY,
+                limitPrice = Price(100),
+                quantity = Quantity(5),
+                requirement =
+                    ReservationRequirement(
+                        assetId = AssetId("KRW"),
+                        tradeReserveAmount = Amount(500),
+                        feeReserveAmount = Amount(5),
+                    ),
+                feePolicySnapshot = feePolicySnapshot,
+            )
+
+        val updated =
+            reservation.applyFill(
+                filledQuantity = Quantity(2),
+                tradeReserveAmountToReduce = Amount(200),
+                feeReserveAmountToReduce = Amount(2),
+            )
+
+        assertEquals(
+            Quantity(3),
+            updated.remainingQuantity,
+        )
+        assertEquals(
+            Amount(303),
+            updated.remainingAmount,
+        )
+        assertEquals(
+            Amount(3),
+            updated.remainingFeeReserveAmount,
+        )
+        assertEquals(
+            OrderReservationStatus.ACTIVE,
+            updated.status,
         )
     }
 

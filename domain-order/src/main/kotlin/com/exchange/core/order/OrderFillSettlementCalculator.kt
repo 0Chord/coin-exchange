@@ -151,7 +151,8 @@ class OrderFillSettlementCalculator {
         val updatedReservation =
             reservation.applyFill(
                 filledQuantity = filledQuantity,
-                reservedAmountToReduce = reservedAmountToReduce,
+                tradeReserveAmountToReduce = reservedAmountToReduce,
+                feeReserveAmountToReduce = Amount.ZERO,
             )
 
         return OrderFillSettlementPlan(
@@ -208,7 +209,8 @@ class OrderFillSettlementCalculator {
         val updatedReservation =
             reservation.applyFill(
                 filledQuantity = filledQuantity,
-                reservedAmountToReduce = reservedAmountToReduce,
+                tradeReserveAmountToReduce = reservedAmountToReduce,
+                feeReserveAmountToReduce = Amount.ZERO,
             )
 
         return OrderFillSettlementPlan(

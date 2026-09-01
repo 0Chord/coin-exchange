@@ -199,7 +199,8 @@ class PostgresOrderReservationStoreTest {
         val partiallyFilled =
             reservation.applyFill(
                 filledQuantity = Quantity(2),
-                reservedAmountToReduce = Amount(200),
+                tradeReserveAmountToReduce = Amount(200),
+                feeReserveAmountToReduce = Amount.ZERO,
             )
 
         store.update(partiallyFilled)
@@ -221,7 +222,8 @@ class PostgresOrderReservationStoreTest {
         val settled =
             reservation.applyFill(
                 filledQuantity = Quantity(5),
-                reservedAmountToReduce = Amount(500),
+                tradeReserveAmountToReduce = Amount(500),
+                feeReserveAmountToReduce = Amount.ZERO,
             )
 
         store.update(settled)
