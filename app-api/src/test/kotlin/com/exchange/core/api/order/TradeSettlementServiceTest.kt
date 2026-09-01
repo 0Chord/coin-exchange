@@ -334,6 +334,186 @@ class TradeSettlementServiceTest {
         )
     }
 
+    @Test
+    fun `taker BUY와 maker SELL 수수료를 각각 잔고에 반영한다`() {
+        val feeBuyerUserId = UserId("fee-buyer")
+        val feeSellerUserId = UserId("fee-seller")
+        val feeBuyerOrderId = OrderId("fee-buyer-order")
+        val feeSellerOrderId = OrderId("fee-seller-order")
+
+        val feePolicySnapshot =
+            TradingFeePolicySnapshot(
+                productType = FeeProductType.SPOT,
+                feeTier = FeeTier.NORMAL,
+                scheduleVersion = 1,
+                feeRates =
+                    MakerTakerFeeRates(
+                        makerFeeRate = FeeRate(5_000),
+                        takerFeeRate = FeeRate(10_000),
+                    ),
+            )
+
+        insertBalance(
+            userId = feeBuyerUserId,
+            assetId = KRW_ASSET_ID,
+            available = 798_000,
+            hold = 202_000,
+        )
+
+        insertBalance(
+            userId = feeBuyerUserId,
+            assetId = BTC_ASSET_ID,
+            available = 0,
+            hold = 0,
+        )
+
+        insertBalance(
+            userId = feeSellerUserId,
+            assetId = BTC_ASSET_ID,
+            available = 8,
+            hold = 2,
+        )
+
+        insertBalance(
+            userId = feeSellerUserId,
+            assetId = KRW_ASSET_ID,
+            available = 0,
+            hold = 0,
+        )
+
+        reservationStore.create(
+            OrderReservation.create(
+                marketId = MARKET.marketId,
+                orderId = feeBuyerOrderId,
+                userId = feeBuyerUserId,
+                side = Side.BUY,
+                limitPrice = Price(100_000),
+                quantity = Quantity(2),
+                requirement =
+                    ReservationRequirement(
+                        assetId = KRW_ASSET_ID,
+                        tradeReserveAmount = Amount(200_000),
+                        feeReserveAmount = Amount(2_000),
+                    ),
+                feePolicySnapshot = feePolicySnapshot,
+            ),
+        )
+
+        reservationStore.create(
+            OrderReservation.create(
+                marketId = MARKET.marketId,
+                orderId = feeSellerOrderId,
+                userId = feeSellerUserId,
+                side = Side.SELL,
+                limitPrice = Price(90_000),
+                quantity = Quantity(2),
+                requirement =
+                    ReservationRequirement(
+                        assetId = BTC_ASSET_ID,
+                        tradeReserveAmount = Amount(2),
+                        feeReserveAmount = Amount.ZERO,
+                    ),
+                feePolicySnapshot = feePolicySnapshot,
+            ),
+        )
+
+        val trade =
+            TradeExecuted(
+                marketId = MARKET.marketId,
+                engineSequence = 2,
+                makerOrderId = feeSellerOrderId,
+                takerOrderId = feeBuyerOrderId,
+                makerUserId = feeSellerUserId,
+                takerUserId = feeBuyerUserId,
+                side = Side.BUY,
+                price = Price(90_000),
+                quantity = Quantity(2),
+            )
+
+        service.settle(
+            market = MARKET,
+            trade = trade,
+        )
+
+        val savedBuyerReservation =
+            requireNotNull(
+                reservationStore.find(
+                    marketId = MARKET.marketId,
+                    orderId = feeBuyerOrderId,
+                ),
+            )
+
+        val savedSellerReservation =
+            requireNotNull(
+                reservationStore.find(
+                    marketId = MARKET.marketId,
+                    orderId = feeSellerOrderId,
+                ),
+            )
+
+        assertEquals(
+            Quantity.ZERO,
+            savedBuyerReservation.remainingQuantity,
+        )
+        assertEquals(
+            Amount.ZERO,
+            savedBuyerReservation.remainingAmount,
+        )
+        assertEquals(
+            Amount.ZERO,
+            savedBuyerReservation.remainingFeeReserveAmount,
+        )
+        assertEquals(
+            OrderReservationStatus.SETTLED,
+            savedBuyerReservation.status,
+        )
+
+        assertEquals(
+            Quantity.ZERO,
+            savedSellerReservation.remainingQuantity,
+        )
+        assertEquals(
+            Amount.ZERO,
+            savedSellerReservation.remainingAmount,
+        )
+        assertEquals(
+            Amount.ZERO,
+            savedSellerReservation.remainingFeeReserveAmount,
+        )
+        assertEquals(
+            OrderReservationStatus.SETTLED,
+            savedSellerReservation.status,
+        )
+
+        assertPersistedBalance(
+            userId = feeBuyerUserId,
+            assetId = KRW_ASSET_ID,
+            available = 818_200,
+            hold = 0,
+        )
+
+        assertPersistedBalance(
+            userId = feeBuyerUserId,
+            assetId = BTC_ASSET_ID,
+            available = 2,
+            hold = 0,
+        )
+
+        assertPersistedBalance(
+            userId = feeSellerUserId,
+            assetId = BTC_ASSET_ID,
+            available = 8,
+            hold = 0,
+        )
+
+        assertPersistedBalance(
+            userId = feeSellerUserId,
+            assetId = KRW_ASSET_ID,
+            available = 179_100,
+            hold = 0,
+        )
+    }
+
     companion object {
         private val MARKET =
             MarketDefinition(
