@@ -15,6 +15,8 @@ import com.exchange.core.fee.TradingFeeReserveCalculator
  * BUY 가격 개선이 발생하면 [reservedAmountToReduce]는 지정가 기준 거래·수수료 예약
  * 감소액이고, [holdAmountToConsume]은 실제 체결 대금과 수수료 소비액이다. 두 값의 차이가
  * 가격 개선분과 사용하지 않은 수수료 예약액을 합한 [holdAmountToRelease]다.
+ * SELL의 [creditAmount]는 실제 체결 대금에서 해당 체결의 maker/taker 수수료를
+ * 차감한 quote 자산 순지급액이다.
  *
  * 각 값이 가리키는 장부는 서로 다르다.
  * - [updatedReservation], [reservedAmountToReduce]: 특정 주문의 예약 장부
@@ -26,7 +28,7 @@ import com.exchange.core.fee.TradingFeeReserveCalculator
  * @property holdAmountToConsume 실제 거래와 수수료에 사용되어 Balance hold에서 제거할 금액
  * @property holdAmountToRelease 거래에 사용되지 않아 Balance available로 반환할 금액
  * @property creditAssetId 체결 결과로 사용자에게 지급할 자산
- * @property creditAmount 체결 결과로 사용자에게 지급할 최소 단위 기준 수량 또는 금액
+ * @property creditAmount 체결 결과로 사용자에게 지급할 최소 단위 기준 수량 또는 순지급액
  */
 data class OrderFillSettlementPlan(
     val updatedReservation: OrderReservation,
@@ -42,7 +44,8 @@ data class OrderFillSettlementPlan(
  *
  * BUY는 quote 자산 hold에서 실제 체결 대금과 maker/taker 수수료를 소비하고 가격 개선분과
  * 사용하지 않은 수수료 예약액을 반환한 뒤 체결 수량만큼 base 자산을 지급한다. SELL은
- * 체결 수량만큼 base 자산 hold를 소비하고 실제 체결 대금만큼 quote 자산을 지급한다.
+ * 체결 수량만큼 base 자산 hold를 소비하고 실제 체결 대금에서 maker/taker 수수료를
+ * 차감한 quote 자산을 지급한다.
  *
  * BUY 계산:
  * - 거래 예약 감소액 = 지정가 × 체결 수량
@@ -55,7 +58,9 @@ data class OrderFillSettlementPlan(
  * SELL 계산:
  * - 예약 감소액 = hold 소비액 = base 자산 체결 수량
  * - hold 반환액 = 0
- * - 지급 = quote 자산 기준 체결가 × 체결 수량
+ * - 총 판매 대금 = quote 자산 기준 체결가 × 체결 수량
+ * - 실제 수수료 = 총 판매 대금 × maker/taker 수수료율
+ * - 지급 = 총 판매 대금 - 실제 수수료
  *
  * 이 계산기는 순수 도메인 계산만 담당하며 DB 조회, Reservation 저장 또는 Balance 변경을
  * 수행하지 않는다. 실제 저장과 자산 이동은 이후 TradeSettlementService가 담당한다.
@@ -227,10 +232,11 @@ class OrderFillSettlementCalculator(
     }
 
     /**
-     * SELL 체결의 base 자산 소비량과 판매자가 받을 quote 대금을 계산한다.
+     * SELL 체결의 base 자산 소비량과 판매자가 받을 quote 순지급액을 계산한다.
      *
      * SELL은 체결 수량만큼 base 자산을 예약하고 그대로 소비하므로 반환할 hold가 없다.
-     * 판매자에게 지급할 quote 금액은 실제 체결가와 체결 수량으로 계산한다.
+     * SELL 수수료는 주문 접수 시 별도로 hold하지 않고, 실제 체결가와 체결 수량으로
+     * 계산한 총 판매 대금에서 이번 체결의 maker/taker 수수료를 차감한다.
      *
      * @param market 체결 마켓 정보
      * @param reservation SELL 주문의 현재 예약
@@ -260,12 +266,29 @@ class OrderFillSettlementCalculator(
         // SELL은 예약한 base 수량을 그대로 판매하므로 가격 개선 반환액이 없다.
         val holdAmountToRelease = Amount.ZERO
 
-        // 판매자가 받을 quote 금액은 지정가가 아니라 실제 체결가로 계산한다.
-        val creditAmount =
+        // 판매자가 수수료 차감 전에 받을 실제 체결가 기준 총 quote 대금이다.
+        val grossCreditAmount =
             calculateQuoteAmount(
                 price = executionPrice,
                 quantity = filledQuantity,
                 baseAssetScale = market.baseAssetScale,
+            )
+
+        // 주문에 저장된 정책에서 이번 maker/taker 역할의 실제 수수료율을 선택한다.
+        val actualFeeAmount =
+            tradingFeeCalculator.calculateFee(
+                feeBaseAmount = grossCreditAmount,
+                feeRate = reservation.feePolicySnapshot.rateFor(liquidityRole),
+            )
+
+        require(actualFeeAmount <= grossCreditAmount) {
+            "actual trading fee must not exceed gross settlement amount"
+        }
+
+        // SELL 수수료는 미리 hold하지 않고 판매 대금에서 바로 차감한다.
+        val creditAmount =
+            Amount(
+                grossCreditAmount.value - actualFeeAmount.value,
             )
 
         // 주문별 남은 base 수량과 예약된 base 금액을 같은 체결 수량만큼 줄인다.

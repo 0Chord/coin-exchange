@@ -317,6 +317,86 @@ class OrderFillSettlementCalculatorTest {
         )
     }
 
+    @Test
+    fun `maker SELL 체결은 판매 대금에서 실제 수수료를 차감한다`() {
+        val feePolicySnapshot =
+            TradingFeePolicySnapshot(
+                productType = FeeProductType.SPOT,
+                feeTier = FeeTier.NORMAL,
+                scheduleVersion = 1,
+                feeRates =
+                    MakerTakerFeeRates(
+                        makerFeeRate = FeeRate(5_000),
+                        takerFeeRate = FeeRate(10_000),
+                    ),
+            )
+
+        val reservation =
+            OrderReservation.create(
+                marketId = market.marketId,
+                orderId = OrderId("sell-order-with-fee"),
+                userId = UserId("seller"),
+                side = Side.SELL,
+                limitPrice = Price(80_000),
+                quantity = Quantity(5),
+                requirement =
+                    ReservationRequirement(
+                        assetId = market.baseAssetId,
+                        tradeReserveAmount = Amount(5),
+                        feeReserveAmount = Amount.ZERO,
+                    ),
+                feePolicySnapshot = feePolicySnapshot,
+            )
+
+        val plan =
+            calculator.calculate(
+                market = market,
+                reservation = reservation,
+                executionPrice = Price(90_000),
+                filledQuantity = Quantity(2),
+                liquidityRole = LiquidityRole.MAKER,
+            )
+
+        assertEquals(
+            Amount(2),
+            plan.reservedAmountToReduce,
+        )
+        assertEquals(
+            Amount(2),
+            plan.holdAmountToConsume,
+        )
+        assertEquals(
+            Amount.ZERO,
+            plan.holdAmountToRelease,
+        )
+
+        assertEquals(
+            market.quoteAssetId,
+            plan.creditAssetId,
+        )
+        assertEquals(
+            Amount(179_100),
+            plan.creditAmount,
+        )
+
+        assertEquals(
+            Quantity(3),
+            plan.updatedReservation.remainingQuantity,
+        )
+        assertEquals(
+            Amount(3),
+            plan.updatedReservation.remainingAmount,
+        )
+        assertEquals(
+            Amount.ZERO,
+            plan.updatedReservation.remainingFeeReserveAmount,
+        )
+        assertEquals(
+            OrderReservationStatus.ACTIVE,
+            plan.updatedReservation.status,
+        )
+    }
+
     private fun buyReservation(): OrderReservation =
         OrderReservation.create(
             marketId = market.marketId,
