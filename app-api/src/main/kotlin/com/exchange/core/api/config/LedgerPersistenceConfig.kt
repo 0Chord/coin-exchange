@@ -22,11 +22,11 @@ import org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate
 /**
  * PostgreSQL 기반 잔고, 주문 예약과 원장 저장 기능을 조립하는 Spring 구성.
  *
- * `exchange.ledger.persistence.enabled=true`일 때만 활성화된다. BalanceStore와
- * OrderReservationStore가 같은 DataSource와 Spring 트랜잭션을 사용하므로 주문 예약 생성과
- * 잔고 hold 변경, 예약 해제와 hold 반환을 각각 하나의 트랜잭션으로 묶을 수 있다.
- * LedgerTransactionStore도 같은 DataSource를 사용하지만, 현재 정산 서비스에는 아직
- * 연결하지 않았으므로 Bean 등록만으로 체결 원장이 자동 기록되지는 않는다.
+ * `exchange.ledger.persistence.enabled=true`일 때만 활성화된다. [BalanceStore],
+ * [OrderReservationStore]와 [LedgerTransactionStore]가 같은 DataSource와 Spring 트랜잭션을
+ * 사용한다. 주문 예약 생성과 hold 변경, 예약 해제와 hold 반환을 각각 원자적으로 처리하며,
+ * 체결 정산에서는 양쪽 예약·잔고 변경과 수수료를 포함한 원장 기록을 함께 커밋하거나 롤백한다.
+ * 주문 예약 생성과 해제의 원장 기록은 아직 연결하지 않았다.
  */
 @Configuration
 @ConditionalOnProperty(
@@ -101,16 +101,18 @@ class LedgerPersistenceConfig {
         )
 
     /**
-     * 매칭 엔진의 체결 결과를 양쪽 Reservation과 Balance에 반영하는 서비스를 등록한다.
+     * 한 체결의 양쪽 예약·잔고 변경과 원장 기록을 함께 실행하는 서비스를 등록한다.
      *
      * @param balanceStore 사용자·자산별 체결 잔고 변경 포트
      * @param orderReservationStore maker와 taker의 주문별 예약 저장 포트
-     * @return 양쪽 정산을 하나의 트랜잭션으로 실행하는 application service
+     * @param ledgerTransactionStore 양쪽 자산 이동과 거래소 수수료 수익을 기록하는 원장 저장 포트
+     * @return 양쪽 정산과 원장 저장을 하나의 트랜잭션으로 실행하는 application service
      */
     @Bean
     fun tradeSettlementService(
         balanceStore: BalanceStore,
         orderReservationStore: OrderReservationStore,
+        ledgerTransactionStore: LedgerTransactionStore,
     ): TradeSettlementService =
         TradeSettlementService(
             calculator =
@@ -120,6 +122,7 @@ class LedgerPersistenceConfig {
                 ),
             balanceStore = balanceStore,
             reservationStore = orderReservationStore,
+            ledgerTransactionStore = ledgerTransactionStore,
         )
 
     /**
