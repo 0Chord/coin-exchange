@@ -2,6 +2,7 @@ package com.exchange.core.api.matching.persistence
 
 import com.exchange.core.api.matching.MatchingApplicationService
 import com.exchange.core.api.matching.publish.MatchingEventPublisher
+import com.exchange.core.api.order.OrderCancellationService
 import com.exchange.core.api.order.OrderSubmissionService
 import com.exchange.core.common.MarketId
 import com.exchange.core.common.OrderId
@@ -30,7 +31,7 @@ import kotlin.test.assertTrue
 
 /**
  * 실제 매칭 결과가 PostgreSQL 이벤트 저장소에 연결되는지 검증한다.
- * 주문 접수 서비스는 테스트 대역으로 두고 자금 예약·정산은 실행하지 않는다.
+ * 주문 접수·취소 서비스는 테스트 대역으로 두고 자금 예약·반환·정산은 실행하지 않는다.
  */
 @SpringBootTest(
     properties = [
@@ -41,9 +42,12 @@ import kotlin.test.assertTrue
 )
 @Testcontainers
 class MatchingPersistenceIntegrationTest {
-    // 이 테스트는 매칭과 이벤트 영속화만 검사한다. 실제 주문 예약 연결은 E2E에서 검사한다.
+    // 이 테스트는 매칭과 이벤트 영속화만 검사한다. 실제 주문 자금 처리는 E2E에서 검사한다.
     @MockitoBean
     private lateinit var orderSubmissionService: OrderSubmissionService
+
+    @MockitoBean
+    private lateinit var orderCancellationService: OrderCancellationService
 
     @Autowired
     private lateinit var applicationService: MatchingApplicationService

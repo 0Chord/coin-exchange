@@ -1,5 +1,6 @@
 package com.exchange.core
 
+import com.exchange.core.api.order.OrderCancellationService
 import com.exchange.core.api.order.OrderSubmissionService
 import org.junit.jupiter.api.Test
 import org.springframework.boot.test.context.SpringBootTest
@@ -18,6 +19,9 @@ class ExchangeCoreApplicationTests {
     // DB 없는 context 검사에서는 주문 접수의 필수 의존성을 테스트 대역으로 제공한다.
     @MockitoBean
     private lateinit var orderSubmissionService: OrderSubmissionService
+
+    @MockitoBean
+    private lateinit var orderCancellationService: OrderCancellationService
 
     @Test
     fun contextLoads() {

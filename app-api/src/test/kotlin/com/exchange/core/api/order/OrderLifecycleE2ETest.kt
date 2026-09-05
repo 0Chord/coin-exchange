@@ -4,6 +4,7 @@ import com.exchange.core.common.Amount
 import com.exchange.core.common.AssetId
 import com.exchange.core.common.MarketId
 import com.exchange.core.common.OrderId
+import com.exchange.core.common.Quantity
 import com.exchange.core.common.UserId
 import com.exchange.core.fee.FeeProductType
 import com.exchange.core.fee.FeeRate
@@ -28,6 +29,7 @@ import org.springframework.test.context.DynamicPropertyRegistry
 import org.springframework.test.context.DynamicPropertySource
 import org.springframework.test.web.servlet.MockMvc
 import org.springframework.test.web.servlet.ResultActions
+import org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete
 import org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post
 import org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath
 import org.springframework.test.web.servlet.result.MockMvcResultMatchers.status
@@ -41,8 +43,8 @@ import kotlin.test.assertEquals
 /**
  * LIMIT/GTC 주문의 HTTP 접수부터 자금 예약, 매칭, 이벤트 저장, 정산과 수수료 원장까지 검증한다.
  *
- * 서비스 대역 없이 MockMvc와 실제 PostgreSQL을 사용한다. 이 테스트의 범위는 한 번의 전량
- * 체결이며, 취소·장애 복구·재시도는 포함하지 않는다. 초기 잔고는 원장 없이 직접 준비하므로
+ * 서비스 대역 없이 MockMvc와 실제 PostgreSQL을 사용한다. 한 번의 전량 체결과 미체결 BUY
+ * 취소를 검증하며, 장애 복구·재시도는 포함하지 않는다. 초기 잔고는 원장 없이 직접 준비하므로
  * 체결 원장의 차변·대변 균형 검증이 전체 잔고 대사를 의미하지는 않는다.
  */
 @SpringBootTest(
@@ -266,6 +268,98 @@ class OrderLifecycleE2ETest {
         )
 
         assertLedgerTransactionsBalanced()
+    }
+
+    /**
+     * 100,000원 BUY 수량 2개에 예약한 거래 대금 200,000원과 수수료 2,000원을
+     * 취소 시 모두 반환한다. 체결되지 않았으므로 거래소 수수료 수익은 발생하지 않는다.
+     */
+    @Test
+    fun `미체결 BUY 주문을 취소하면 거래 대금과 수수료 예약금을 모두 반환한다`() {
+        val orderId = OrderId("e2e-cancel-buy-order")
+
+        submitOrder(
+            orderId = orderId.value,
+            userId = BUYER_USER_ID,
+            side = Side.BUY,
+            price = 100_000,
+            quantity = 2,
+        )
+            .andExpect(status().isOk)
+            .andExpect(
+                jsonPath("$.events[0].type")
+                    .value("ORDER_ENTERED_BOOK"),
+            )
+
+        val activeReservation = findReservation(orderId)
+
+        assertEquals(
+            OrderReservationStatus.ACTIVE,
+            activeReservation.status,
+        )
+        assertEquals(
+            Amount(202_000),
+            activeReservation.remainingAmount,
+        )
+        assertEquals(
+            Amount(2_000),
+            activeReservation.remainingFeeReserveAmount,
+        )
+
+        assertPersistedBalance(
+            userId = BUYER_USER_ID,
+            assetId = KRW_ASSET_ID,
+            available = 798_000,
+            hold = 202_000,
+        )
+
+        mockMvc.perform(
+            delete(
+                "/api/markets/{marketId}/orders/{orderId}",
+                MARKET.marketId.value,
+                orderId.value,
+            ).param("userId", BUYER_USER_ID.value),
+        )
+            .andExpect(status().isOk)
+            .andExpect(
+                jsonPath("$.events[0].type")
+                    .value("ORDER_CANCELLED"),
+            )
+            .andExpect(
+                jsonPath("$.events[0].orderId")
+                    .value(orderId.value),
+            )
+
+        val releasedReservation = findReservation(orderId)
+
+        assertEquals(
+            OrderReservationStatus.RELEASED,
+            releasedReservation.status,
+        )
+        assertEquals(
+            Amount.ZERO,
+            releasedReservation.remainingAmount,
+        )
+        assertEquals(
+            Amount.ZERO,
+            releasedReservation.remainingFeeReserveAmount,
+        )
+
+        assertEquals(
+            Quantity(2),
+            releasedReservation.remainingQuantity,
+        )
+
+        assertPersistedBalance(
+            userId = BUYER_USER_ID,
+            assetId = KRW_ASSET_ID,
+            available = 1_000_000,
+            hold = 0,
+        )
+
+        assertPersistedFeeRevenue(
+            expectedAmount = 0L,
+        )
     }
 
     /** KRW 수수료 수익 계정의 CREDIT 합계에서 DEBIT 합계를 뺀 실제 기록 금액을 확인한다. */

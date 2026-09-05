@@ -1,5 +1,6 @@
 package com.exchange.core.api.matching
 
+import com.exchange.core.api.order.OrderCancellationService
 import com.exchange.core.api.order.OrderSubmissionService
 import com.exchange.core.common.MarketId
 import com.exchange.core.common.OrderId
@@ -33,7 +34,7 @@ import org.mockito.Mockito.`when` as whenever
 /**
  * HTTP 입력 변환, 서비스 위임과 응답 변환을 검사한다.
  *
- * 서비스는 테스트 대역으로 분리한다. 새 주문이 주문 접수 서비스를 거치고 취소가 매칭 서비스로
+ * 서비스는 테스트 대역으로 분리한다. 새 주문이 주문 접수 서비스를 거치고 취소가 주문 취소 서비스로
  * 전달되는지 확인한다. 실제 예약·매칭·정산 연결은 OrderLifecycleE2ETest, 매칭 규칙은
  * domain-matching 테스트에서 검사한다. 이 테스트의 취소 응답 검증은 예약금 반환을 보장하지 않는다.
  */
@@ -46,7 +47,7 @@ class MatchingControllerTest {
     private lateinit var orderSubmissionService: OrderSubmissionService
 
     @MockitoBean
-    private lateinit var matchingService: MatchingApplicationService
+    private lateinit var orderCancellationService: OrderCancellationService
 
     @Test
     fun `주문을 접수하면 book entered event를 반환한다`() {
@@ -87,7 +88,7 @@ class MatchingControllerTest {
             .andExpect(jsonPath("$.events[0].remainingQuantity").value(5))
 
         verify(orderSubmissionService).submit(command)
-        verifyNoInteractions(matchingService)
+        verifyNoInteractions(orderCancellationService)
     }
 
     @Test
@@ -177,7 +178,7 @@ class MatchingControllerTest {
 
         verify(orderSubmissionService).submit(sellCommand)
         verify(orderSubmissionService).submit(buyCommand)
-        verifyNoInteractions(matchingService)
+        verifyNoInteractions(orderCancellationService)
     }
 
     @Test
@@ -196,7 +197,7 @@ class MatchingControllerTest {
 
         whenever(orderSubmissionService.submit(submitCommand))
             .thenReturn(listOf(enteredBook(submitCommand)))
-        whenever(matchingService.process(cancelCommand))
+        whenever(orderCancellationService.cancel(cancelCommand))
             .thenReturn(
                 listOf(
                     OrderCancelled(
@@ -241,7 +242,7 @@ class MatchingControllerTest {
             .andExpect(jsonPath("$.events[0].remainingQuantity").value(5))
 
         verify(orderSubmissionService).submit(submitCommand)
-        verify(matchingService).process(cancelCommand)
+        verify(orderCancellationService).cancel(cancelCommand)
     }
 
     @Test
@@ -253,7 +254,7 @@ class MatchingControllerTest {
                 userId = UserId("user-1"),
             )
 
-        whenever(matchingService.process(command))
+        whenever(orderCancellationService.cancel(command))
             .thenReturn(
                 listOf(
                     OrderCancelRejected(
@@ -278,7 +279,7 @@ class MatchingControllerTest {
             .andExpect(jsonPath("$.events[0].userId").value("user-1"))
             .andExpect(jsonPath("$.events[0].reason").value("order not found"))
 
-        verify(matchingService).process(command)
+        verify(orderCancellationService).cancel(command)
         verifyNoInteractions(orderSubmissionService)
     }
 
@@ -304,7 +305,7 @@ class MatchingControllerTest {
             .andExpect(status().isBadRequest)
             .andExpect(jsonPath("$.message").value("price must be positive"))
 
-        verifyNoInteractions(orderSubmissionService, matchingService)
+        verifyNoInteractions(orderSubmissionService, orderCancellationService)
     }
 
     @Test
@@ -348,7 +349,7 @@ class MatchingControllerTest {
             .andExpect(jsonPath("$.message").value("order already exists"))
 
         verify(orderSubmissionService, times(2)).submit(command)
-        verifyNoInteractions(matchingService)
+        verifyNoInteractions(orderCancellationService)
     }
 
     @Test
@@ -384,7 +385,7 @@ class MatchingControllerTest {
             .andExpect(jsonPath("$.message").value("only LIMIT order is supported"))
 
         verify(orderSubmissionService).submit(command)
-        verifyNoInteractions(matchingService)
+        verifyNoInteractions(orderCancellationService)
     }
 
     /** HTTP 입력이 변환되어 서비스에 전달되어야 하는 GTC 주문 명령을 만든다. */

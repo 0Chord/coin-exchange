@@ -1,7 +1,9 @@
 package com.exchange.core.api.config
 
 import com.exchange.core.api.matching.MatchingApplicationService
+import com.exchange.core.api.order.OrderCancellationService
 import com.exchange.core.api.order.OrderFundingService
+import com.exchange.core.api.order.OrderReservationReleaseService
 import com.exchange.core.api.order.OrderSubmissionService
 import com.exchange.core.api.order.TradeSettlementService
 import com.exchange.core.fee.TradingFeePolicySnapshot
@@ -10,9 +12,9 @@ import org.springframework.context.annotation.Bean
 import org.springframework.context.annotation.Configuration
 
 /**
- * 주문 접수 서비스를 명시적 Bean으로 조립한다.
+ * 주문 접수와 취소 서비스를 명시적 Bean으로 조립한다.
  *
- * 자금 예약·정산 서비스와 매칭 서비스, 주문에 적용할 마켓·수수료 정책 Bean이 필요하다.
+ * 자금 예약·반환·정산 서비스와 매칭 서비스, 주문에 적용할 마켓·수수료 정책 Bean이 필요하다.
  * 마켓과 정책 자체는 이 구성에서 만들지 않으며, E2E에서는 테스트 구성으로 제공한다.
  */
 @Configuration
@@ -41,5 +43,16 @@ class OrderApplicationConfig {
             tradeSettlementService = tradeSettlementService,
             market = market,
             feePolicySnapshot = feePolicySnapshot,
+        )
+
+    /** 매칭 취소 성공 후 남은 거래 대금과 수수료 예약금을 반환하는 서비스를 등록한다. */
+    @Bean
+    fun orderCancellationService(
+        matchingService: MatchingApplicationService,
+        reservationReleaseService: OrderReservationReleaseService,
+    ): OrderCancellationService =
+        OrderCancellationService(
+            matchingService = matchingService,
+            reservationReleaseService = reservationReleaseService,
         )
 }
