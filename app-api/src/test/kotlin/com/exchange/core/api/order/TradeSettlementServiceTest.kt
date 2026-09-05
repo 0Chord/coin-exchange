@@ -13,6 +13,7 @@ import com.exchange.core.fee.FeeRate
 import com.exchange.core.fee.FeeTier
 import com.exchange.core.fee.MakerTakerFeeRates
 import com.exchange.core.fee.TradingFeePolicySnapshot
+import com.exchange.core.ledger.BalanceNotFoundException
 import com.exchange.core.matching.TradeExecuted
 import com.exchange.core.order.MarketDefinition
 import com.exchange.core.order.OrderReservation
@@ -36,7 +37,14 @@ import org.testcontainers.postgresql.PostgreSQLContainer
 import org.testcontainers.utility.DockerImageName
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 
+/**
+ * 실제 PostgreSQL에서 체결 정산의 잔고·예약 변경, 수수료 원장 기록과 전체 롤백을 검증한다.
+ *
+ * 테스트 전체를 감싸는 트랜잭션은 사용하지 않는다. Spring이 주입한 [TradeSettlementService]의
+ * 트랜잭션이 끝난 뒤 DB를 조회하여 서비스 자체의 커밋·롤백 결과를 확인한다.
+ */
 @DataJpaTest(
     properties = [
         "spring.jpa.hibernate.ddl-auto=validate",
@@ -70,8 +78,14 @@ class TradeSettlementServiceTest {
     @Autowired
     private lateinit var jdbcTemplate: JdbcTemplate
 
+    /**
+     * 이전 테스트 데이터를 비우고 수수료 없는 BUY·SELL 예약과 지급받을 자산의 잔고를 준비한다.
+     * 원장은 외래 키를 가진 분개부터 삭제하며, 준비한 데이터는 정산 트랜잭션 밖에 저장한다.
+     */
     @BeforeEach
     fun setUp() {
+        jdbcTemplate.update("delete from ledger_postings")
+        jdbcTemplate.update("delete from ledger_transactions")
         jdbcTemplate.update("delete from order_reservations")
         jdbcTemplate.update("delete from balance_projection")
 
@@ -129,6 +143,9 @@ class TradeSettlementServiceTest {
         reservationStore.create(sellerReservation())
     }
 
+    /**
+     * 200원을 예약한 BUY가 180원에 전량 체결되면 20원을 반환하고 양쪽 예약을 정산 완료한다.
+     */
     @Test
     fun `taker BUY 체결은 양쪽 예약과 잔고를 한 트랜잭션으로 정산한다`() {
         /*
@@ -252,6 +269,7 @@ class TradeSettlementServiceTest {
         )
     }
 
+    /** 지정가 100원에 수량 2개를 사기 위해 KRW 200원을 예약한 체결 전 BUY 주문을 만든다. */
     private fun buyerReservation(): OrderReservation =
         OrderReservation.create(
             marketId = MARKET.marketId,
@@ -268,6 +286,7 @@ class TradeSettlementServiceTest {
             feePolicySnapshot = feeFreePolicySnapshot,
         )
 
+    /** 지정가 90원에 수량 2개를 팔기 위해 BTC 최소 단위 2개를 예약한 체결 전 SELL 주문을 만든다. */
     private fun sellerReservation(): OrderReservation =
         OrderReservation.create(
             marketId = MARKET.marketId,
@@ -284,6 +303,7 @@ class TradeSettlementServiceTest {
             feePolicySnapshot = feeFreePolicySnapshot,
         )
 
+    /** 테스트 준비용 사용자·자산 잔고를 최소 단위의 available과 hold 값으로 직접 저장한다. */
     private fun insertBalance(
         userId: UserId,
         assetId: AssetId,
@@ -306,6 +326,7 @@ class TradeSettlementServiceTest {
         )
     }
 
+    /** 실제 DB에서 읽은 available과 hold가 기대한 최소 단위 금액과 같은지 확인한다. */
     private fun assertPersistedBalance(
         userId: UserId,
         assetId: AssetId,
@@ -334,6 +355,10 @@ class TradeSettlementServiceTest {
         )
     }
 
+    /**
+     * 체결 대금 180,000원에서 taker BUY 수수료 1,800원과 maker SELL 수수료 900원을 반영한다.
+     * 두 수수료의 합계 2,700원이 거래소 수익 계정에 기록되고 원장 거래는 하나만 생성되어야 한다.
+     */
     @Test
     fun `taker BUY와 maker SELL 수수료를 각각 잔고에 반영한다`() {
         val feeBuyerUserId = UserId("fee-buyer")
@@ -512,6 +537,147 @@ class TradeSettlementServiceTest {
             available = 179_100,
             hold = 0,
         )
+
+        val actualFeeRevenue =
+            jdbcTemplate.queryForObject(
+                """
+                select coalesce(
+                    sum(
+                        case
+                            when side = 'CREDIT' then amount
+                            when side = 'DEBIT' then -amount
+                            else 0
+                        end
+                    ),
+                    0
+                )
+                from ledger_postings
+                where account_id = ?
+                  and asset_id = ?
+                """.trimIndent(),
+                Long::class.java,
+                "SYSTEM:KRW:FEE_REVENUE",
+                KRW_ASSET_ID.value,
+            )
+
+        assertEquals(
+            2_700L,
+            actualFeeRevenue,
+            "구매자와 판매자의 수수료가 거래소 수익 계정에 기록되어야 한다",
+        )
+
+        val settlementTransactionCount =
+            jdbcTemplate.queryForObject(
+                """
+                select count(*)
+                from ledger_transactions
+                where transaction_type = 'SETTLEMENT'
+                """.trimIndent(),
+                Long::class.java,
+            )
+
+        assertEquals(
+            1L,
+            settlementTransactionCount,
+            "한 체결의 양쪽 정산은 하나의 원장 거래로 기록되어야 한다",
+        )
+    }
+
+    /**
+     * 마지막 구매자 BTC 지급이 실패하면 먼저 저장한 원장과 양쪽 예약·잔고 변경도 취소한다.
+     * 구매자 BTC 잔고 행의 삭제는 정산 호출 전 준비 작업이므로 정산 롤백 대상이 아니다.
+     */
+    @Test
+    fun `잔고 지급이 실패하면 원장과 양쪽 예약 및 잔고 변경을 모두 롤백한다`() {
+        // 판매자 정산과 구매자의 KRW 소비·반환 이후 BTC 지급 단계에서 실패하도록 준비한다.
+        val deletedRows =
+            jdbcTemplate.update(
+                """
+                delete from balance_projection
+                where user_id = ?
+                  and asset_id = ?
+                """.trimIndent(),
+                BUYER_USER_ID.value,
+                BTC_ASSET_ID.value,
+            )
+
+        assertEquals(1, deletedRows)
+
+        val trade =
+            TradeExecuted(
+                marketId = MARKET.marketId,
+                engineSequence = 3,
+                makerOrderId = SELLER_ORDER_ID,
+                takerOrderId = BUYER_ORDER_ID,
+                makerUserId = SELLER_USER_ID,
+                takerUserId = BUYER_USER_ID,
+                side = Side.BUY,
+                price = Price(90),
+                quantity = Quantity(2),
+            )
+
+        val exception =
+            assertFailsWith<BalanceNotFoundException> {
+                service.settle(
+                    market = MARKET,
+                    trade = trade,
+                )
+            }
+
+        assertEquals(BUYER_USER_ID, exception.userId)
+        assertEquals(BTC_ASSET_ID, exception.assetId)
+
+        // 상태뿐 아니라 남은 수량과 예약 금액까지 체결 전 객체와 같아야 한다.
+        assertEquals(
+            buyerReservation(),
+            reservationStore.find(
+                marketId = MARKET.marketId,
+                orderId = BUYER_ORDER_ID,
+            ),
+        )
+        assertEquals(
+            sellerReservation(),
+            reservationStore.find(
+                marketId = MARKET.marketId,
+                orderId = SELLER_ORDER_ID,
+            ),
+        )
+
+        assertPersistedBalance(
+            userId = BUYER_USER_ID,
+            assetId = KRW_ASSET_ID,
+            available = 800,
+            hold = 200,
+        )
+
+        assertPersistedBalance(
+            userId = SELLER_USER_ID,
+            assetId = BTC_ASSET_ID,
+            available = 8,
+            hold = 2,
+        )
+        assertPersistedBalance(
+            userId = SELLER_USER_ID,
+            assetId = KRW_ASSET_ID,
+            available = 0,
+            hold = 0,
+        )
+
+        // 잔고 변경보다 먼저 INSERT한 원장 거래와 분개도 함께 롤백되어야 한다.
+        val transactionCount =
+            jdbcTemplate.queryForObject(
+                "select count(*) from ledger_transactions",
+                Long::class.java,
+            )
+
+        val postingCount =
+            jdbcTemplate.queryForObject(
+                "select count(*) from ledger_postings",
+                Long::class.java,
+            )
+
+        assertEquals(0L, transactionCount)
+        assertEquals(0L, postingCount)
     }
 
     companion object {

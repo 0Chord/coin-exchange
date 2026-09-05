@@ -4,21 +4,20 @@ import com.exchange.core.api.matching.publish.MatchingEventPublisher
 import com.exchange.core.matching.MarketCommandProcessor
 import com.exchange.core.matching.MatchingCommand
 import com.exchange.core.matching.MatchingEvent
-import org.springframework.stereotype.Service
 import java.util.concurrent.ExecutionException
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.TimeoutException
 
 /**
  * HTTP 계층과 matching core 사이의 application service.
  *
- * command를 processor로 보내고, 발생한 event를 publisher에 넘긴다.
- * processor의 market worker 안에서 matching과 publish를 연속 실행하므로, 같은 마켓에서는
- * 다음 command가 시작되기 전에 현재 command의 event 저장까지 끝난다.
+ * command를 processor로 보내고 같은 마켓 작업 스레드에서 사전 작업, 매칭, 이벤트 발행과
+ * 후속 작업을 순서대로 실행한다. 주문 접수에서는 사전 작업으로 자금 예약을, 후속 작업으로
+ * 체결 정산을 전달하므로 다음 command 전에 현재 command의 정산까지 끝난다.
  *
  * @property processor market별로 command를 직렬 처리하는 진입점
  * @property publisher 생성된 matching event의 후속 저장 또는 발행 포트
  */
-@Service
 class MatchingApplicationService(
     private val processor: MarketCommandProcessor,
     private val publisher: MatchingEventPublisher,
@@ -29,18 +28,31 @@ class MatchingApplicationService(
      * HTTP 요청 thread는 비동기 processor 결과를 최대 3초 기다린다. worker 내부 예외는
      * [ExecutionException] wrapper를 벗겨 실제 도메인 또는 저장 오류를 호출자에게 전달한다.
      * 대기 중 interrupt가 발생하면 현재 thread의 interrupt flag를 복구한다.
+     * 대기 시간 초과는 worker 작업을 취소하거나 이미 반영한 변경을 롤백하지 않는다.
      *
      * @param command controller가 요청 DTO에서 변환한 새 주문 또는 취소 command
-     * @return matching state가 바뀌고 publisher 처리까지 끝난 event 목록
-     * @throws java.util.concurrent.TimeoutException 3초 안에 처리가 끝나지 않은 경우
+     * @param beforeMatching 같은 마켓 작업 스레드에서 매칭 직전에 실행할 작업. 없으면 생략한다.
+     * @param afterMatching publisher 성공 후 실행할 체결 정산 등의 작업. 기본값은 아무 일도 하지 않는다.
+     * @return 매칭, publisher와 후속 작업까지 끝난 event 목록
+     * @throws TimeoutException 3초 안에 처리가 끝나지 않은 경우
      * @throws IllegalStateException 결과 대기 중 thread가 interrupt된 경우
      */
-    fun process(command: MatchingCommand): List<MatchingEvent> {
+    fun process(
+        command: MatchingCommand,
+        beforeMatching: (() -> Unit)? = null,
+        afterMatching: (List<MatchingEvent>) -> Unit = {},
+    ): List<MatchingEvent> {
         return try {
-            // publisher는 market worker thread에서 실행되어 event 순서를 그대로 보존한다.
-            processor.submit(command) { events ->
-                publisher.publish(events)
-            }.get(3, TimeUnit.SECONDS)
+            // 같은 worker에서 publisher가 성공한 뒤에만 후속 정산을 실행한다.
+            processor
+                .submit(
+                    command = command,
+                    beforeMatching = beforeMatching,
+                    eventHandler = { events ->
+                        publisher.publish(events)
+                        afterMatching(events)
+                    },
+                ).get(3, TimeUnit.SECONDS)
         } catch (error: ExecutionException) {
             throw error.cause ?: error
         } catch (error: InterruptedException) {

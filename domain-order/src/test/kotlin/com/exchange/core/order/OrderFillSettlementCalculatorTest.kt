@@ -19,6 +19,10 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 
+/**
+ * BUY/SELL 체결의 예약 감소, hold 소비·반환과 지급액을 검사한다.
+ * 실제 수수료의 자산·금액도 확인하며, 무료 정책에서는 수수료가 0인지 검사한다.
+ */
 class OrderFillSettlementCalculatorTest {
     private val feeFreePolicySnapshot =
         TradingFeePolicySnapshot(
@@ -82,6 +86,15 @@ class OrderFillSettlementCalculatorTest {
         )
 
         assertEquals(
+            AssetId("KRW"),
+            plan.feeAssetId,
+        )
+        assertEquals(
+            Amount.ZERO,
+            plan.actualFeeAmount,
+        )
+
+        assertEquals(
             Quantity(3),
             plan.updatedReservation.remainingQuantity,
         )
@@ -128,6 +141,15 @@ class OrderFillSettlementCalculatorTest {
         assertEquals(
             Amount(180),
             plan.creditAmount,
+        )
+
+        assertEquals(
+            AssetId("KRW"),
+            plan.feeAssetId,
+        )
+        assertEquals(
+            Amount.ZERO,
+            plan.actualFeeAmount,
         )
 
         assertEquals(
@@ -315,6 +337,15 @@ class OrderFillSettlementCalculatorTest {
             Amount(2),
             plan.creditAmount,
         )
+
+        assertEquals(
+            AssetId("KRW"),
+            plan.feeAssetId,
+        )
+        assertEquals(
+            Amount(1_800),
+            plan.actualFeeAmount,
+        )
     }
 
     @Test
@@ -394,6 +425,15 @@ class OrderFillSettlementCalculatorTest {
         assertEquals(
             OrderReservationStatus.ACTIVE,
             plan.updatedReservation.status,
+        )
+
+        assertEquals(
+            AssetId("KRW"),
+            plan.feeAssetId,
+        )
+        assertEquals(
+            Amount(900),
+            plan.actualFeeAmount,
         )
     }
 

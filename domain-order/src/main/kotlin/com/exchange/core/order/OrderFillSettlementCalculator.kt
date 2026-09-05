@@ -18,6 +18,10 @@ import com.exchange.core.fee.TradingFeeReserveCalculator
  * SELL의 [creditAmount]는 실제 체결 대금에서 해당 체결의 maker/taker 수수료를
  * 차감한 quote 자산 순지급액이다.
  *
+ * [actualFeeAmount]는 BUY hold 소비액 또는 SELL 순지급액 계산에 이미 반영된 수수료다.
+ * 후속 원장 기록에서 사용할 수 있도록 별도로 반환하며 사용자에게 다시 차감하지 않는다.
+ * 현재 BUY와 SELL 모두 quote 자산으로 수수료를 부과하고, 무료 정책이면 금액은 0이다.
+ *
  * 각 값이 가리키는 장부는 서로 다르다.
  * - [updatedReservation], [reservedAmountToReduce]: 특정 주문의 예약 장부
  * - [holdAmountToConsume], [holdAmountToRelease]: 사용자·자산별 Balance 장부
@@ -29,6 +33,8 @@ import com.exchange.core.fee.TradingFeeReserveCalculator
  * @property holdAmountToRelease 거래에 사용되지 않아 Balance available로 반환할 금액
  * @property creditAssetId 체결 결과로 사용자에게 지급할 자산
  * @property creditAmount 체결 결과로 사용자에게 지급할 최소 단위 기준 수량 또는 순지급액
+ * @property feeAssetId 이번 체결의 수수료를 부과하는 자산. 현재 정책에서는 마켓의 quote 자산
+ * @property actualFeeAmount 실제 체결 대금과 maker/taker 요율로 계산한 수수료. 주문 시 예약한 금액과는 다르다
  */
 data class OrderFillSettlementPlan(
     val updatedReservation: OrderReservation,
@@ -37,6 +43,8 @@ data class OrderFillSettlementPlan(
     val holdAmountToRelease: Amount,
     val creditAssetId: AssetId,
     val creditAmount: Amount,
+    val feeAssetId: AssetId,
+    val actualFeeAmount: Amount,
 )
 
 /**
@@ -228,6 +236,8 @@ class OrderFillSettlementCalculator(
             holdAmountToRelease = holdAmountToRelease,
             creditAssetId = market.baseAssetId,
             creditAmount = Amount(filledQuantity.value),
+            feeAssetId = market.quoteAssetId,
+            actualFeeAmount = actualFeeAmount,
         )
     }
 
@@ -306,6 +316,8 @@ class OrderFillSettlementCalculator(
             holdAmountToRelease = holdAmountToRelease,
             creditAssetId = market.quoteAssetId,
             creditAmount = creditAmount,
+            feeAssetId = market.quoteAssetId,
+            actualFeeAmount = actualFeeAmount,
         )
     }
 }
