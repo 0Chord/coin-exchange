@@ -21,20 +21,16 @@ import com.exchange.core.order.OrderReservationStatus
 import com.exchange.core.order.OrderReservationStore
 import com.exchange.core.order.ReservationRequirement
 import com.exchange.core.order.Side
+import com.exchange.core.support.PostgresTestConfiguration
 import org.junit.jupiter.api.BeforeEach
 import org.springframework.beans.factory.annotation.Autowired
 import org.springframework.boot.data.jpa.test.autoconfigure.DataJpaTest
 import org.springframework.boot.jdbc.test.autoconfigure.AutoConfigureTestDatabase
 import org.springframework.context.annotation.Import
 import org.springframework.jdbc.core.JdbcTemplate
-import org.springframework.test.context.DynamicPropertyRegistry
-import org.springframework.test.context.DynamicPropertySource
+import org.springframework.test.annotation.DirtiesContext
 import org.springframework.transaction.annotation.Propagation
 import org.springframework.transaction.annotation.Transactional
-import org.testcontainers.junit.jupiter.Container
-import org.testcontainers.junit.jupiter.Testcontainers
-import org.testcontainers.postgresql.PostgreSQLContainer
-import org.testcontainers.utility.DockerImageName
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
@@ -44,6 +40,8 @@ import kotlin.test.assertFailsWith
  *
  * 테스트 전체를 감싸는 트랜잭션은 사용하지 않는다. Spring이 주입한 [TradeSettlementService]의
  * 트랜잭션이 끝난 뒤 DB를 조회하여 서비스 자체의 커밋·롤백 결과를 확인한다.
+ *
+ * 공통 PostgreSQL 설정을 사용하되, 클래스 종료 시 context와 컨테이너를 닫아 다른 클래스와 격리한다.
  */
 @DataJpaTest(
     properties = [
@@ -53,8 +51,8 @@ import kotlin.test.assertFailsWith
     ],
 )
 @AutoConfigureTestDatabase(replace = AutoConfigureTestDatabase.Replace.NONE)
-@Import(LedgerPersistenceConfig::class)
-@Testcontainers
+@Import(LedgerPersistenceConfig::class, PostgresTestConfiguration::class)
+@DirtiesContext(classMode = DirtiesContext.ClassMode.AFTER_CLASS)
 @Transactional(propagation = Propagation.NOT_SUPPORTED)
 class TradeSettlementServiceTest {
     private val feeFreePolicySnapshot =
@@ -697,20 +695,5 @@ class TradeSettlementServiceTest {
 
         private val BUYER_USER_ID = UserId("buyer")
         private val SELLER_USER_ID = UserId("seller")
-
-        @Container
-        @JvmStatic
-        val postgres: PostgreSQLContainer =
-            PostgreSQLContainer(
-                DockerImageName.parse("postgres:16-alpine"),
-            )
-
-        @DynamicPropertySource
-        @JvmStatic
-        fun registerPostgresProperties(registry: DynamicPropertyRegistry) {
-            registry.add("spring.datasource.url", postgres::getJdbcUrl)
-            registry.add("spring.datasource.username", postgres::getUsername)
-            registry.add("spring.datasource.password", postgres::getPassword)
-        }
     }
 }

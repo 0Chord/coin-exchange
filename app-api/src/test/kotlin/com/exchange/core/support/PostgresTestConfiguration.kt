@@ -11,6 +11,7 @@ import org.testcontainers.utility.DockerImageName
  *
  * 마켓·수수료 정책이나 서비스 Bean은 포함하지 않는다. 설정만 재사용하며, 컨테이너는
  * 각 Spring context에 속한다. 같은 context에서는 DB를 공유하고 context를 닫으면 종료한다.
+ * 전체 애플리케이션 테스트는 메서드마다, JPA 테스트는 클래스마다 context를 닫아 격리한다.
  */
 @TestConfiguration(proxyBeanMethods = false)
 class PostgresTestConfiguration {

@@ -9,20 +9,16 @@ import com.exchange.core.ledger.BalanceNotFoundException
 import com.exchange.core.ledger.BalanceStore
 import com.exchange.core.ledger.InsufficientBalanceException
 import com.exchange.core.ledger.InsufficientHoldException
+import com.exchange.core.support.PostgresTestConfiguration
 import org.junit.jupiter.api.BeforeEach
 import org.springframework.beans.factory.annotation.Autowired
 import org.springframework.boot.data.jpa.test.autoconfigure.DataJpaTest
 import org.springframework.boot.jdbc.test.autoconfigure.AutoConfigureTestDatabase
 import org.springframework.context.annotation.Import
 import org.springframework.jdbc.core.JdbcTemplate
-import org.springframework.test.context.DynamicPropertyRegistry
-import org.springframework.test.context.DynamicPropertySource
+import org.springframework.test.annotation.DirtiesContext
 import org.springframework.transaction.annotation.Propagation
 import org.springframework.transaction.annotation.Transactional
-import org.testcontainers.junit.jupiter.Container
-import org.testcontainers.junit.jupiter.Testcontainers
-import org.testcontainers.postgresql.PostgreSQLContainer
-import org.testcontainers.utility.DockerImageName
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
@@ -31,6 +27,12 @@ import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertTrue
 
+/**
+ * 실제 PostgreSQL에서 잔고의 예약·해제·소비·지급과 동시 갱신을 검증한다.
+ * 일반 테스트는 롤백하고, 동시성 테스트는 테스트 트랜잭션 없이 실제 DB 갱신 결과를 확인한다.
+ *
+ * 공통 PostgreSQL 설정을 사용하되, 클래스 종료 시 context와 컨테이너를 닫아 다른 클래스와 격리한다.
+ */
 @DataJpaTest(
     properties = [
         "spring.jpa.hibernate.ddl-auto=validate",
@@ -39,8 +41,8 @@ import kotlin.test.assertTrue
     ],
 )
 @AutoConfigureTestDatabase(replace = AutoConfigureTestDatabase.Replace.NONE)
-@Import(LedgerPersistenceConfig::class)
-@Testcontainers
+@Import(LedgerPersistenceConfig::class, PostgresTestConfiguration::class)
+@DirtiesContext(classMode = DirtiesContext.ClassMode.AFTER_CLASS)
 class PostgresBalanceStoreTest {
     @Autowired
     private lateinit var jdbcTemplate: JdbcTemplate
@@ -474,20 +476,5 @@ class PostgresBalanceStoreTest {
         private const val CONCURRENT_TASK_COUNT = 2
         private val USER_ID = UserId("user-1")
         private val ASSET_ID = AssetId("KRW")
-
-        @Container
-        @JvmStatic
-        val postgres: PostgreSQLContainer =
-            PostgreSQLContainer(
-                DockerImageName.parse("postgres:16-alpine"),
-            )
-
-        @DynamicPropertySource
-        @JvmStatic
-        fun registerPostgresProperties(registry: DynamicPropertyRegistry) {
-            registry.add("spring.datasource.url", postgres::getJdbcUrl)
-            registry.add("spring.datasource.username", postgres::getUsername)
-            registry.add("spring.datasource.password", postgres::getPassword)
-        }
     }
 }

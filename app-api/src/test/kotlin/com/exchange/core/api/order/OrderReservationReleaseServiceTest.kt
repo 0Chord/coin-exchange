@@ -20,20 +20,16 @@ import com.exchange.core.order.OrderReservationStatus
 import com.exchange.core.order.OrderReservationStore
 import com.exchange.core.order.ReservationRequirement
 import com.exchange.core.order.Side
+import com.exchange.core.support.PostgresTestConfiguration
 import org.junit.jupiter.api.BeforeEach
 import org.springframework.beans.factory.annotation.Autowired
 import org.springframework.boot.data.jpa.test.autoconfigure.DataJpaTest
 import org.springframework.boot.jdbc.test.autoconfigure.AutoConfigureTestDatabase
 import org.springframework.context.annotation.Import
 import org.springframework.jdbc.core.JdbcTemplate
-import org.springframework.test.context.DynamicPropertyRegistry
-import org.springframework.test.context.DynamicPropertySource
+import org.springframework.test.annotation.DirtiesContext
 import org.springframework.transaction.annotation.Propagation
 import org.springframework.transaction.annotation.Transactional
-import org.testcontainers.junit.jupiter.Container
-import org.testcontainers.junit.jupiter.Testcontainers
-import org.testcontainers.postgresql.PostgreSQLContainer
-import org.testcontainers.utility.DockerImageName
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
@@ -42,6 +38,12 @@ import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertTrue
 
+/**
+ * 실제 PostgreSQL에서 예약 해제·잔고 반환의 원자성과 중복·동시 취소를 검증한다.
+ * 테스트 트랜잭션 없이 서비스의 커밋·롤백 결과를 확인하며, 각 테스트 전에 데이터를 준비한다.
+ *
+ * 공통 PostgreSQL 설정을 사용하되, 클래스 종료 시 context와 컨테이너를 닫아 다른 클래스와 격리한다.
+ */
 @DataJpaTest(
     properties = [
         "spring.jpa.hibernate.ddl-auto=validate",
@@ -50,8 +52,8 @@ import kotlin.test.assertTrue
     ],
 )
 @AutoConfigureTestDatabase(replace = AutoConfigureTestDatabase.Replace.NONE)
-@Import(LedgerPersistenceConfig::class)
-@Testcontainers
+@Import(LedgerPersistenceConfig::class, PostgresTestConfiguration::class)
+@DirtiesContext(classMode = DirtiesContext.ClassMode.AFTER_CLASS)
 @Transactional(propagation = Propagation.NOT_SUPPORTED)
 class OrderReservationReleaseServiceTest {
     private val feeFreePolicySnapshot =
@@ -336,20 +338,5 @@ class OrderReservationReleaseServiceTest {
         private val ORDER_ID = OrderId("order-1")
         private val USER_ID = UserId("user-1")
         private val ASSET_ID = AssetId("KRW")
-
-        @Container
-        @JvmStatic
-        val postgres: PostgreSQLContainer =
-            PostgreSQLContainer(
-                DockerImageName.parse("postgres:16-alpine"),
-            )
-
-        @DynamicPropertySource
-        @JvmStatic
-        fun registerPostgresProperties(registry: DynamicPropertyRegistry) {
-            registry.add("spring.datasource.url", postgres::getJdbcUrl)
-            registry.add("spring.datasource.username", postgres::getUsername)
-            registry.add("spring.datasource.password", postgres::getPassword)
-        }
     }
 }
