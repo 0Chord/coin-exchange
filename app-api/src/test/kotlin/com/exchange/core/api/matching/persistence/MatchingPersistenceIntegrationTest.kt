@@ -2,7 +2,12 @@ package com.exchange.core.api.matching.persistence
 
 import com.exchange.core.api.matching.MatchingApplicationService
 import com.exchange.core.api.matching.publish.MatchingEventPublisher
-import com.exchange.core.common.*
+import com.exchange.core.api.order.OrderSubmissionService
+import com.exchange.core.common.MarketId
+import com.exchange.core.common.OrderId
+import com.exchange.core.common.Price
+import com.exchange.core.common.Quantity
+import com.exchange.core.common.UserId
 import com.exchange.core.matching.OrderEnteredBook
 import com.exchange.core.matching.SubmitOrderCommand
 import com.exchange.core.order.OrderType
@@ -14,6 +19,7 @@ import org.springframework.beans.factory.annotation.Autowired
 import org.springframework.boot.test.context.SpringBootTest
 import org.springframework.test.context.DynamicPropertyRegistry
 import org.springframework.test.context.DynamicPropertySource
+import org.springframework.test.context.bean.override.mockito.MockitoBean
 import org.testcontainers.junit.jupiter.Container
 import org.testcontainers.junit.jupiter.Testcontainers
 import org.testcontainers.postgresql.PostgreSQLContainer
@@ -22,15 +28,22 @@ import kotlin.test.assertEquals
 import kotlin.test.assertIs
 import kotlin.test.assertTrue
 
+/**
+ * 실제 매칭 결과가 PostgreSQL 이벤트 저장소에 연결되는지 검증한다.
+ * 주문 접수 서비스는 테스트 대역으로 두고 자금 예약·정산은 실행하지 않는다.
+ */
 @SpringBootTest(
     properties = [
         "exchange.matching.persistence.enabled=true",
         "spring.flyway.enabled=true",
-        "spring.jpa.hibernate.ddl-auto=validate"
-    ]
+        "spring.jpa.hibernate.ddl-auto=validate",
+    ],
 )
 @Testcontainers
 class MatchingPersistenceIntegrationTest {
+    // 이 테스트는 매칭과 이벤트 영속화만 검사한다. 실제 주문 예약 연결은 E2E에서 검사한다.
+    @MockitoBean
+    private lateinit var orderSubmissionService: OrderSubmissionService
 
     @Autowired
     private lateinit var applicationService: MatchingApplicationService
@@ -50,18 +63,19 @@ class MatchingPersistenceIntegrationTest {
     fun `matching 결과를 PostgreSQL event store에 저장한다`() {
         assertIs<PersistentMatchingEventPublisher>(eventPublisher)
 
-        val events = applicationService.process(
-            SubmitOrderCommand(
-                marketId = MarketId("PERSISTENCE-WIRING"),
-                orderId = OrderId("order-1"),
-                userId = UserId("user-1"),
-                side = Side.BUY,
-                orderType = OrderType.LIMIT,
-                timeInForce = TimeInForce.GTC,
-                price = Price(100),
-                quantity = Quantity(5),
-            ),
-        )
+        val events =
+            applicationService.process(
+                SubmitOrderCommand(
+                    marketId = MarketId("PERSISTENCE-WIRING"),
+                    orderId = OrderId("order-1"),
+                    userId = UserId("user-1"),
+                    side = Side.BUY,
+                    orderType = OrderType.LIMIT,
+                    timeInForce = TimeInForce.GTC,
+                    price = Price(100),
+                    quantity = Quantity(5),
+                ),
+            )
 
         val event = assertIs<OrderEnteredBook>(events.single())
 
@@ -69,9 +83,10 @@ class MatchingPersistenceIntegrationTest {
         assertEquals(1, event.engineSequence)
         assertEquals("order-1", event.orderId.value)
 
-        val saved = repository
-            .findByMarketIdOrderByEngineSequenceAsc("PERSISTENCE-WIRING")
-            .single()
+        val saved =
+            repository
+                .findByMarketIdOrderByEngineSequenceAsc("PERSISTENCE-WIRING")
+                .single()
 
         assertEquals("PERSISTENCE-WIRING", saved.marketId)
         assertEquals(1, saved.engineSequence)

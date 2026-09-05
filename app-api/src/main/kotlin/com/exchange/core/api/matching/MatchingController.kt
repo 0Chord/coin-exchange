@@ -1,26 +1,41 @@
 package com.exchange.core.api.matching
 
-import com.exchange.core.common.*
+import com.exchange.core.api.order.OrderSubmissionService
+import com.exchange.core.common.MarketId
+import com.exchange.core.common.OrderId
+import com.exchange.core.common.Price
+import com.exchange.core.common.Quantity
+import com.exchange.core.common.UserId
 import com.exchange.core.matching.CancelOrderCommand
 import com.exchange.core.matching.SubmitOrderCommand
-import org.springframework.web.bind.annotation.*
+import org.springframework.web.bind.annotation.DeleteMapping
+import org.springframework.web.bind.annotation.PathVariable
+import org.springframework.web.bind.annotation.PostMapping
+import org.springframework.web.bind.annotation.RequestBody
+import org.springframework.web.bind.annotation.RequestMapping
+import org.springframework.web.bind.annotation.RequestParam
+import org.springframework.web.bind.annotation.RestController
 
 /**
  * Matching core를 HTTP로 호출하는 API.
  *
- * Controller는 요청/응답 변환만 맡고, 실제 처리는 MatchingApplicationService가 담당한다.
+ * Controller는 요청/응답 변환만 맡는다. 새 주문은 [OrderSubmissionService]를 통해
+ * 자금 예약·매칭·체결 정산을 수행하며, 취소는 현재 [MatchingApplicationService]에 전달한다.
+ * 취소 성공 후 남은 예약금을 반환하는 서비스 연결은 아직 포함하지 않는다.
  * 모든 endpoint는 `/api/markets/{marketId}/orders` 아래에 있으며 URL의 marketId를
  * command에 명시적으로 넣어 서로 다른 마켓의 book이 섞이지 않게 한다.
  *
- * @property matchingService command 실행과 event 발행을 담당하는 application service
+ * @property orderSubmissionService 새 주문의 검증, 자금 예약·매칭·정산을 담당하는 서비스
+ * @property matchingService 취소 command 실행과 event 발행을 담당하는 서비스
  */
 @RestController
 @RequestMapping("/api/markets/{marketId}/orders")
 class MatchingController(
+    private val orderSubmissionService: OrderSubmissionService,
     private val matchingService: MatchingApplicationService,
 ) {
     /**
-     * 주문을 matching command로 변환해 processor에 넣는다.
+     * 주문을 command로 변환하고 자금 예약부터 체결 정산까지 수행하는 서비스에 전달한다.
      *
      * 문자열과 Long 입력을 value class로 감싸는 시점에 빈 id, 0 이하 가격, 음수 수량이
      * 검증된다. command 처리 결과 event는 입력 순서를 유지한 API DTO 목록으로 변환된다.
@@ -34,18 +49,19 @@ class MatchingController(
         @PathVariable marketId: String,
         @RequestBody request: SubmitOrderRequest,
     ): MatchingResponse {
-        val command = SubmitOrderCommand(
-            marketId = MarketId(marketId),
-            orderId = OrderId(request.orderId),
-            userId = UserId(request.userId),
-            side = request.side,
-            orderType = request.orderType,
-            timeInForce = request.timeInForce,
-            price = Price(request.price),
-            quantity = Quantity(request.quantity),
-        )
+        val command =
+            SubmitOrderCommand(
+                marketId = MarketId(marketId),
+                orderId = OrderId(request.orderId),
+                userId = UserId(request.userId),
+                side = request.side,
+                orderType = request.orderType,
+                timeInForce = request.timeInForce,
+                price = Price(request.price),
+                quantity = Quantity(request.quantity),
+            )
 
-        val events = matchingService.process(command)
+        val events = orderSubmissionService.submit(command)
 
         return MatchingResponse(
             events = events.map { it.toResponse() },
@@ -69,11 +85,12 @@ class MatchingController(
         @PathVariable orderId: String,
         @RequestParam userId: String,
     ): MatchingResponse {
-        val command = CancelOrderCommand(
-            marketId = MarketId(marketId),
-            orderId = OrderId(orderId),
-            userId = UserId(userId),
-        )
+        val command =
+            CancelOrderCommand(
+                marketId = MarketId(marketId),
+                orderId = OrderId(orderId),
+                userId = UserId(userId),
+            )
 
         val events = matchingService.process(command)
 
