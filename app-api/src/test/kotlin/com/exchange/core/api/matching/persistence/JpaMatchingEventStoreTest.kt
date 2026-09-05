@@ -10,24 +10,27 @@ import com.exchange.core.matching.OrderCancelled
 import com.exchange.core.matching.OrderEnteredBook
 import com.exchange.core.matching.TradeExecuted
 import com.exchange.core.order.Side
+import com.exchange.core.support.PostgresTestConfiguration
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
 import org.springframework.beans.factory.annotation.Autowired
 import org.springframework.boot.data.jpa.test.autoconfigure.DataJpaTest
 import org.springframework.boot.jdbc.test.autoconfigure.AutoConfigureTestDatabase
+import org.springframework.context.annotation.Import
 import org.springframework.dao.DataIntegrityViolationException
-import org.springframework.test.context.DynamicPropertyRegistry
-import org.springframework.test.context.DynamicPropertySource
-import org.testcontainers.junit.jupiter.Container
-import org.testcontainers.junit.jupiter.Testcontainers
-import org.testcontainers.postgresql.PostgreSQLContainer
-import org.testcontainers.utility.DockerImageName
+import org.springframework.test.annotation.DirtiesContext
 import tools.jackson.module.kotlin.jacksonObjectMapper
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
 
+/**
+ * 실제 JPA 저장소와 PostgreSQL로 매칭 이벤트의 저장 내용·순서·중복 제약을 검증한다.
+ * 테스트 메서드마다 테스트 트랜잭션을 롤백하여 저장한 이벤트를 되돌린다.
+ *
+ * 공통 PostgreSQL 설정을 사용하되, 클래스 종료 시 context와 컨테이너를 닫아 다른 클래스와 격리한다.
+ */
 @DataJpaTest(
     properties = [
         "spring.jpa.hibernate.ddl-auto=validate",
@@ -35,7 +38,8 @@ import kotlin.test.assertTrue
     ],
 )
 @AutoConfigureTestDatabase(replace = AutoConfigureTestDatabase.Replace.NONE)
-@Testcontainers
+@Import(PostgresTestConfiguration::class)
+@DirtiesContext(classMode = DirtiesContext.ClassMode.AFTER_CLASS)
 class JpaMatchingEventStoreTest {
     @Autowired
     private lateinit var repository: MatchingEventRepository
@@ -242,20 +246,5 @@ class JpaMatchingEventStoreTest {
 
         assertEquals(expectedValue, actual)
         assertTrue(payloadJson.contains(fieldName))
-    }
-
-    companion object {
-        @Container
-        @JvmStatic
-        val postgres: PostgreSQLContainer =
-            PostgreSQLContainer(DockerImageName.parse("postgres:16-alpine"))
-
-        @DynamicPropertySource
-        @JvmStatic
-        fun registerPostgresProperties(registry: DynamicPropertyRegistry) {
-            registry.add("spring.datasource.url", postgres::getJdbcUrl)
-            registry.add("spring.datasource.username", postgres::getUsername)
-            registry.add("spring.datasource.password", postgres::getPassword)
-        }
     }
 }

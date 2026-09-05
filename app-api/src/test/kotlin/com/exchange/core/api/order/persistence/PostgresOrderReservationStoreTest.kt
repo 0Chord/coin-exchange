@@ -19,23 +19,25 @@ import com.exchange.core.order.OrderReservationNotFoundException
 import com.exchange.core.order.OrderReservationStore
 import com.exchange.core.order.ReservationRequirement
 import com.exchange.core.order.Side
+import com.exchange.core.support.PostgresTestConfiguration
 import org.junit.jupiter.api.BeforeEach
 import org.springframework.beans.factory.annotation.Autowired
 import org.springframework.boot.data.jpa.test.autoconfigure.DataJpaTest
 import org.springframework.boot.jdbc.test.autoconfigure.AutoConfigureTestDatabase
 import org.springframework.context.annotation.Import
 import org.springframework.jdbc.core.JdbcTemplate
-import org.springframework.test.context.DynamicPropertyRegistry
-import org.springframework.test.context.DynamicPropertySource
-import org.testcontainers.junit.jupiter.Container
-import org.testcontainers.junit.jupiter.Testcontainers
-import org.testcontainers.postgresql.PostgreSQLContainer
-import org.testcontainers.utility.DockerImageName
+import org.springframework.test.annotation.DirtiesContext
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertNull
 
+/**
+ * 실제 PostgreSQL에서 주문 예약의 저장·조회·변경과 중복 거절을 검증한다.
+ * 테스트 메서드마다 테스트 트랜잭션을 롤백하여 변경한 예약 데이터를 되돌린다.
+ *
+ * 공통 PostgreSQL 설정을 사용하되, 클래스 종료 시 context와 컨테이너를 닫아 다른 클래스와 격리한다.
+ */
 @DataJpaTest(
     properties = [
         "spring.jpa.hibernate.ddl-auto=validate",
@@ -44,8 +46,8 @@ import kotlin.test.assertNull
     ],
 )
 @AutoConfigureTestDatabase(replace = AutoConfigureTestDatabase.Replace.NONE)
-@Import(LedgerPersistenceConfig::class)
-@Testcontainers
+@Import(LedgerPersistenceConfig::class, PostgresTestConfiguration::class)
+@DirtiesContext(classMode = DirtiesContext.ClassMode.AFTER_CLASS)
 class PostgresOrderReservationStoreTest {
     private val feeFreePolicySnapshot =
         TradingFeePolicySnapshot(
@@ -318,21 +320,4 @@ class PostgresOrderReservationStoreTest {
                 ),
             feePolicySnapshot = feeFreePolicySnapshot,
         )
-
-    companion object {
-        @Container
-        @JvmStatic
-        val postgres: PostgreSQLContainer =
-            PostgreSQLContainer(
-                DockerImageName.parse("postgres:16-alpine"),
-            )
-
-        @DynamicPropertySource
-        @JvmStatic
-        fun registerPostgresProperties(registry: DynamicPropertyRegistry) {
-            registry.add("spring.datasource.url", postgres::getJdbcUrl)
-            registry.add("spring.datasource.username", postgres::getUsername)
-            registry.add("spring.datasource.password", postgres::getPassword)
-        }
-    }
 }

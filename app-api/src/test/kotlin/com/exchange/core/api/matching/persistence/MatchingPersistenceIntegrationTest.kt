@@ -2,7 +2,6 @@ package com.exchange.core.api.matching.persistence
 
 import com.exchange.core.api.matching.MatchingApplicationService
 import com.exchange.core.api.matching.publish.MatchingEventPublisher
-import com.exchange.core.api.order.OrderSubmissionService
 import com.exchange.core.common.MarketId
 import com.exchange.core.common.OrderId
 import com.exchange.core.common.Price
@@ -13,38 +12,19 @@ import com.exchange.core.matching.SubmitOrderCommand
 import com.exchange.core.order.OrderType
 import com.exchange.core.order.Side
 import com.exchange.core.order.TimeInForce
-import org.junit.jupiter.api.BeforeEach
+import com.exchange.core.support.ExchangeIntegrationTest
 import org.junit.jupiter.api.Test
 import org.springframework.beans.factory.annotation.Autowired
-import org.springframework.boot.test.context.SpringBootTest
-import org.springframework.test.context.DynamicPropertyRegistry
-import org.springframework.test.context.DynamicPropertySource
-import org.springframework.test.context.bean.override.mockito.MockitoBean
-import org.testcontainers.junit.jupiter.Container
-import org.testcontainers.junit.jupiter.Testcontainers
-import org.testcontainers.postgresql.PostgreSQLContainer
-import org.testcontainers.utility.DockerImageName
 import kotlin.test.assertEquals
 import kotlin.test.assertIs
 import kotlin.test.assertTrue
 
 /**
  * 실제 매칭 결과가 PostgreSQL 이벤트 저장소에 연결되는지 검증한다.
- * 주문 접수 서비스는 테스트 대역으로 두고 자금 예약·정산은 실행하지 않는다.
+ * 모든 서비스는 실제 Bean으로 조립하되, 매칭 서비스를 직접 호출해 이벤트 저장 연결을 검사한다.
+ * 주문 자금 예약·반환·정산은 HTTP 통합 테스트와 주문 E2E에서 검증한다.
  */
-@SpringBootTest(
-    properties = [
-        "exchange.matching.persistence.enabled=true",
-        "spring.flyway.enabled=true",
-        "spring.jpa.hibernate.ddl-auto=validate",
-    ],
-)
-@Testcontainers
-class MatchingPersistenceIntegrationTest {
-    // 이 테스트는 매칭과 이벤트 영속화만 검사한다. 실제 주문 예약 연결은 E2E에서 검사한다.
-    @MockitoBean
-    private lateinit var orderSubmissionService: OrderSubmissionService
-
+class MatchingPersistenceIntegrationTest : ExchangeIntegrationTest() {
     @Autowired
     private lateinit var applicationService: MatchingApplicationService
 
@@ -53,11 +33,6 @@ class MatchingPersistenceIntegrationTest {
 
     @Autowired
     private lateinit var repository: MatchingEventRepository
-
-    @BeforeEach
-    fun setUp() {
-        repository.deleteAll()
-    }
 
     @Test
     fun `matching 결과를 PostgreSQL event store에 저장한다`() {
@@ -98,24 +73,5 @@ class MatchingPersistenceIntegrationTest {
         assertEquals(5, saved.remainingQuantity)
         assertTrue(saved.payloadJson.contains("\"type\":\"ORDER_ENTERED_BOOK\""))
         assertTrue(saved.payloadJson.contains("\"orderId\":\"order-1\""))
-    }
-
-    companion object {
-        @Container
-        @JvmStatic
-        val postgres: PostgreSQLContainer =
-            PostgreSQLContainer(
-                DockerImageName.parse("postgres:16-alpine"),
-            )
-
-        @DynamicPropertySource
-        @JvmStatic
-        fun registerPostgresProperties(
-            registry: DynamicPropertyRegistry,
-        ) {
-            registry.add("spring.datasource.url", postgres::getJdbcUrl)
-            registry.add("spring.datasource.username", postgres::getUsername)
-            registry.add("spring.datasource.password", postgres::getPassword)
-        }
     }
 }

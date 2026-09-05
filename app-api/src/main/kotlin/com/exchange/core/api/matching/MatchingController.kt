@@ -1,5 +1,6 @@
 package com.exchange.core.api.matching
 
+import com.exchange.core.api.order.OrderCancellationService
 import com.exchange.core.api.order.OrderSubmissionService
 import com.exchange.core.common.MarketId
 import com.exchange.core.common.OrderId
@@ -20,19 +21,19 @@ import org.springframework.web.bind.annotation.RestController
  * Matching core를 HTTP로 호출하는 API.
  *
  * Controller는 요청/응답 변환만 맡는다. 새 주문은 [OrderSubmissionService]를 통해
- * 자금 예약·매칭·체결 정산을 수행하며, 취소는 현재 [MatchingApplicationService]에 전달한다.
- * 취소 성공 후 남은 예약금을 반환하는 서비스 연결은 아직 포함하지 않는다.
+ * 자금 예약·매칭·체결 정산을 수행하며, 취소는 [OrderCancellationService]를 통해
+ * 매칭 엔진의 주문 제거와 남은 거래 대금·수수료 예약금 반환을 수행한다.
  * 모든 endpoint는 `/api/markets/{marketId}/orders` 아래에 있으며 URL의 marketId를
  * command에 명시적으로 넣어 서로 다른 마켓의 book이 섞이지 않게 한다.
  *
  * @property orderSubmissionService 새 주문의 검증, 자금 예약·매칭·정산을 담당하는 서비스
- * @property matchingService 취소 command 실행과 event 발행을 담당하는 서비스
+ * @property orderCancellationService 주문 취소와 남은 예약금 반환을 담당하는 서비스
  */
 @RestController
 @RequestMapping("/api/markets/{marketId}/orders")
 class MatchingController(
     private val orderSubmissionService: OrderSubmissionService,
-    private val matchingService: MatchingApplicationService,
+    private val orderCancellationService: OrderCancellationService,
 ) {
     /**
      * 주문을 command로 변환하고 자금 예약부터 체결 정산까지 수행하는 서비스에 전달한다.
@@ -69,7 +70,7 @@ class MatchingController(
     }
 
     /**
-     * book에 대기 중인 주문을 취소한다.
+     * book에 대기 중인 주문을 취소하고 남은 예약금을 반환한다.
      *
      * 주문이 없거나 [userId]가 원래 주문 소유자와 다르면 예외 대신
      * `ORDER_CANCEL_REJECTED` event가 반환된다.
@@ -92,7 +93,7 @@ class MatchingController(
                 userId = UserId(userId),
             )
 
-        val events = matchingService.process(command)
+        val events = orderCancellationService.cancel(command)
 
         return MatchingResponse(
             events = events.map { it.toResponse() },

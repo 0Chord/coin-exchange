@@ -8,6 +8,7 @@ import com.exchange.core.ledger.LedgerPostingSide
 import com.exchange.core.ledger.LedgerTransaction
 import com.exchange.core.ledger.LedgerTransactionStore
 import com.exchange.core.ledger.LedgerTransactionType
+import com.exchange.core.support.PostgresTestConfiguration
 import org.junit.jupiter.api.BeforeEach
 import org.springframework.beans.factory.annotation.Autowired
 import org.springframework.boot.data.jpa.test.autoconfigure.DataJpaTest
@@ -16,14 +17,9 @@ import org.springframework.context.annotation.Import
 import org.springframework.dao.DataIntegrityViolationException
 import org.springframework.dao.DuplicateKeyException
 import org.springframework.jdbc.core.JdbcTemplate
-import org.springframework.test.context.DynamicPropertyRegistry
-import org.springframework.test.context.DynamicPropertySource
+import org.springframework.test.annotation.DirtiesContext
 import org.springframework.transaction.annotation.Propagation
 import org.springframework.transaction.annotation.Transactional
-import org.testcontainers.junit.jupiter.Container
-import org.testcontainers.junit.jupiter.Testcontainers
-import org.testcontainers.postgresql.PostgreSQLContainer
-import org.testcontainers.utility.DockerImageName
 import java.sql.Timestamp
 import java.time.Instant
 import kotlin.test.Test
@@ -33,6 +29,8 @@ import kotlin.test.assertFailsWith
 /**
  * 실제 PostgreSQL에서 원장 저장, 부분 저장 롤백과 원본 이벤트 중복 거절을 검증한다.
  * 테스트 자체의 트랜잭션을 끄고 저장소의 트랜잭션이 종료된 뒤 DB 상태를 확인한다.
+ *
+ * 공통 PostgreSQL 설정을 사용하되, 클래스 종료 시 context와 컨테이너를 닫아 다른 클래스와 격리한다.
  */
 @DataJpaTest(
     properties = [
@@ -42,8 +40,8 @@ import kotlin.test.assertFailsWith
     ],
 )
 @AutoConfigureTestDatabase(replace = AutoConfigureTestDatabase.Replace.NONE)
-@Import(LedgerPersistenceConfig::class)
-@Testcontainers
+@Import(LedgerPersistenceConfig::class, PostgresTestConfiguration::class)
+@DirtiesContext(classMode = DirtiesContext.ClassMode.AFTER_CLASS)
 @Transactional(propagation = Propagation.NOT_SUPPORTED)
 class PostgresLedgerTransactionStoreTest {
     @Autowired
@@ -242,22 +240,5 @@ class PostgresLedgerTransactionStoreTest {
             )
 
         assertEquals(2L, savedPostingCount)
-    }
-
-    companion object {
-        @Container
-        @JvmStatic
-        val postgres: PostgreSQLContainer =
-            PostgreSQLContainer(
-                DockerImageName.parse("postgres:16-alpine"),
-            )
-
-        @DynamicPropertySource
-        @JvmStatic
-        fun registerPostgresProperties(registry: DynamicPropertyRegistry) {
-            registry.add("spring.datasource.url", postgres::getJdbcUrl)
-            registry.add("spring.datasource.username", postgres::getUsername)
-            registry.add("spring.datasource.password", postgres::getPassword)
-        }
     }
 }
