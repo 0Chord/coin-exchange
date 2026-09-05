@@ -40,4 +40,5 @@ out/
 .kotlin
 
 ### Local documentation ###
+# Keep local documents out of version control.
 /docs/
