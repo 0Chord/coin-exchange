@@ -1,6 +1,7 @@
 package com.exchange.core.api.config
 
 import com.exchange.core.api.ledger.persistence.PostgresBalanceStore
+import com.exchange.core.api.ledger.persistence.PostgresLedgerTransactionStore
 import com.exchange.core.api.order.OrderFundingService
 import com.exchange.core.api.order.OrderReservationReleaseService
 import com.exchange.core.api.order.TradeSettlementService
@@ -8,6 +9,7 @@ import com.exchange.core.api.order.persistence.PostgresOrderReservationStore
 import com.exchange.core.fee.TradingFeeCalculator
 import com.exchange.core.fee.TradingFeeReserveCalculator
 import com.exchange.core.ledger.BalanceStore
+import com.exchange.core.ledger.LedgerTransactionStore
 import com.exchange.core.order.BuyOrderFundingQuoteCalculator
 import com.exchange.core.order.OrderFillSettlementCalculator
 import com.exchange.core.order.OrderReservationCalculator
@@ -18,11 +20,13 @@ import org.springframework.context.annotation.Configuration
 import org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate
 
 /**
- * PostgreSQL 기반 잔고와 주문 예약 기능을 조립하는 Spring 구성.
+ * PostgreSQL 기반 잔고, 주문 예약과 원장 저장 기능을 조립하는 Spring 구성.
  *
  * `exchange.ledger.persistence.enabled=true`일 때만 활성화된다. BalanceStore와
  * OrderReservationStore가 같은 DataSource와 Spring 트랜잭션을 사용하므로 주문 예약 생성과
  * 잔고 hold 변경, 예약 해제와 hold 반환을 각각 하나의 트랜잭션으로 묶을 수 있다.
+ * LedgerTransactionStore도 같은 DataSource를 사용하지만, 현재 정산 서비스에는 아직
+ * 연결하지 않았으므로 Bean 등록만으로 체결 원장이 자동 기록되지는 않는다.
  */
 @Configuration
 @ConditionalOnProperty(
@@ -117,4 +121,16 @@ class LedgerPersistenceConfig {
             balanceStore = balanceStore,
             reservationStore = orderReservationStore,
         )
+
+    /**
+     * 원장 거래와 항목을 함께 추가하는 PostgreSQL 저장소를 등록한다.
+     *
+     * @param jdbcTemplate 기존 잔고 및 주문 예약 저장소와 같은 DataSource를 사용하는 template
+     * @return [LedgerTransactionStore] 포트의 PostgreSQL 구현체
+     */
+    @Bean
+    fun ledgerTransactionStore(
+        jdbcTemplate: NamedParameterJdbcTemplate,
+    ): LedgerTransactionStore =
+        PostgresLedgerTransactionStore(jdbcTemplate)
 }
