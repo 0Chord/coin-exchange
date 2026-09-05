@@ -1,5 +1,6 @@
 package com.exchange.core.api.common
 
+import com.exchange.core.order.OrderReservationAlreadyExistsException
 import org.springframework.http.HttpStatus
 import org.springframework.http.ResponseEntity
 import org.springframework.web.bind.annotation.ExceptionHandler
@@ -17,11 +18,24 @@ data class ApiErrorResponse(
 /**
  * controller 밖으로 전파된 애플리케이션 예외를 HTTP 응답으로 변환한다.
  *
- * 현재는 입력값과 도메인 사전조건 위반인 [IllegalArgumentException]만 400으로 변환한다.
+ * 입력값·도메인 사전조건 위반과 이미 예약된 주문의 중복 접수는 400으로 변환한다.
  * 그 밖의 예외는 Spring의 기본 500 처리에 맡긴다.
  */
 @RestControllerAdvice
 class ApiExceptionHandler {
+    /** 중복 주문 예약은 서버 장애가 아니라 이미 접수된 주문을 다시 보낸 잘못된 요청이다. */
+    @ExceptionHandler(OrderReservationAlreadyExistsException::class)
+    fun handleOrderReservationAlreadyExists(
+        error: OrderReservationAlreadyExistsException,
+    ): ResponseEntity<ApiErrorResponse> =
+        ResponseEntity
+            .status(HttpStatus.BAD_REQUEST)
+            .body(
+                ApiErrorResponse(
+                    message = error.message ?: "order reservation already exists",
+                ),
+            )
+
     /**
      * 잘못된 요청 값을 HTTP 400 응답으로 변환한다.
      *

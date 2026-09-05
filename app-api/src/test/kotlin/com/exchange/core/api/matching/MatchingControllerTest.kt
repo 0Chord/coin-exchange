@@ -1,174 +1,104 @@
 package com.exchange.core.api.matching
 
-import com.exchange.core.api.order.OrderCancellationService
-import com.exchange.core.api.order.OrderSubmissionService
-import com.exchange.core.common.MarketId
+import com.exchange.core.api.matching.persistence.MatchingEventRepository
+import com.exchange.core.api.matching.persistence.MatchingEventType
+import com.exchange.core.common.Amount
 import com.exchange.core.common.OrderId
-import com.exchange.core.common.Price
 import com.exchange.core.common.Quantity
-import com.exchange.core.common.UserId
-import com.exchange.core.matching.CancelOrderCommand
-import com.exchange.core.matching.OrderCancelRejected
-import com.exchange.core.matching.OrderCancelled
-import com.exchange.core.matching.OrderEnteredBook
-import com.exchange.core.matching.SubmitOrderCommand
-import com.exchange.core.matching.TradeExecuted
+import com.exchange.core.order.MarketDefinition
+import com.exchange.core.order.OrderReservation
+import com.exchange.core.order.OrderReservationStatus
+import com.exchange.core.order.OrderReservationStore
 import com.exchange.core.order.OrderType
 import com.exchange.core.order.Side
-import com.exchange.core.order.TimeInForce
+import com.exchange.core.support.ExchangeIntegrationTest
+import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
-import org.mockito.Mockito.times
-import org.mockito.Mockito.verify
-import org.mockito.Mockito.verifyNoInteractions
 import org.springframework.beans.factory.annotation.Autowired
-import org.springframework.boot.webmvc.test.autoconfigure.WebMvcTest
+import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc
 import org.springframework.http.MediaType
-import org.springframework.test.context.bean.override.mockito.MockitoBean
+import org.springframework.jdbc.core.JdbcTemplate
 import org.springframework.test.web.servlet.MockMvc
+import org.springframework.test.web.servlet.ResultActions
 import org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete
 import org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post
 import org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath
 import org.springframework.test.web.servlet.result.MockMvcResultMatchers.status
-import org.mockito.Mockito.`when` as whenever
+import kotlin.test.assertEquals
+import kotlin.test.assertNotNull
+import kotlin.test.assertNull
 
 /**
- * HTTP 입력 변환, 서비스 위임과 응답 변환을 검사한다.
- *
- * 서비스는 테스트 대역으로 분리한다. 새 주문이 주문 접수 서비스를 거치고 취소가 주문 취소 서비스로
- * 전달되는지 확인한다. 실제 예약·매칭·정산 연결은 OrderLifecycleE2ETest, 매칭 규칙은
- * domain-matching 테스트에서 검사한다. 이 테스트의 취소 응답 검증은 예약금 반환을 보장하지 않는다.
+ * HTTP 요청을 실제 주문 서비스·매칭 엔진·PostgreSQL까지 실행하는 컨트롤러 통합 테스트.
+ * 호출 횟수 대신 응답 JSON과 저장된 예약·잔고·이벤트를 확인한다.
+ * 각 테스트는 새 context에서 시작하므로 남은 주문이나 엔진 순번이 다른 테스트에 섞이지 않는다.
  */
-@WebMvcTest(MatchingController::class)
-class MatchingControllerTest {
+@AutoConfigureMockMvc
+class MatchingControllerTest : ExchangeIntegrationTest() {
     @Autowired
     private lateinit var mockMvc: MockMvc
 
-    @MockitoBean
-    private lateinit var orderSubmissionService: OrderSubmissionService
+    @Autowired
+    private lateinit var market: MarketDefinition
 
-    @MockitoBean
-    private lateinit var orderCancellationService: OrderCancellationService
+    @Autowired
+    private lateinit var jdbcTemplate: JdbcTemplate
+
+    @Autowired
+    private lateinit var reservationStore: OrderReservationStore
+
+    @Autowired
+    private lateinit var eventRepository: MatchingEventRepository
+
+    /** 구매자의 KRW와 판매자의 BTC, 체결 시 받을 반대편 자산의 빈 잔고를 준비한다. */
+    @BeforeEach
+    fun setUp() {
+        insertBalance("buyer-1", "KRW", 1_000_000)
+        insertBalance("buyer-1", "BTC", 0)
+        insertBalance("seller-1", "BTC", 10)
+        insertBalance("seller-1", "KRW", 0)
+    }
 
     @Test
-    fun `주문을 접수하면 book entered event를 반환한다`() {
-        val command =
-            orderCommand(
-                marketId = "API-TEST-ENTER",
-                orderId = "order-1",
-            )
-
-        whenever(orderSubmissionService.submit(command))
-            .thenReturn(listOf(enteredBook(command)))
-
-        mockMvc.perform(
-            post("/api/markets/API-TEST-ENTER/orders")
-                .contentType(MediaType.APPLICATION_JSON)
-                .content(
-                    """
-                    {
-                      "orderId": "order-1",
-                      "userId": "user-1",
-                      "side": "BUY",
-                      "orderType": "LIMIT",
-                      "timeInForce": "GTC",
-                      "price": 100,
-                      "quantity": 5
-                    }
-                    """.trimIndent(),
-                ),
-        )
+    fun `주문을 접수하면 자금을 예약하고 book entered event를 반환한다`() {
+        submitOrder(orderId = "order-1")
             .andExpect(status().isOk)
             .andExpect(jsonPath("$.events[0].type").value("ORDER_ENTERED_BOOK"))
-            .andExpect(jsonPath("$.events[0].marketId").value("API-TEST-ENTER"))
+            .andExpect(jsonPath("$.events[0].marketId").value(market.marketId.value))
             .andExpect(jsonPath("$.events[0].engineSequence").value(1))
             .andExpect(jsonPath("$.events[0].orderId").value("order-1"))
-            .andExpect(jsonPath("$.events[0].userId").value("user-1"))
+            .andExpect(jsonPath("$.events[0].userId").value("buyer-1"))
             .andExpect(jsonPath("$.events[0].side").value("BUY"))
             .andExpect(jsonPath("$.events[0].price").value(100))
             .andExpect(jsonPath("$.events[0].remainingQuantity").value(5))
 
-        verify(orderSubmissionService).submit(command)
-        verifyNoInteractions(orderCancellationService)
+        val reservation = findReservation("order-1")
+        assertEquals(OrderReservationStatus.ACTIVE, reservation.status)
+        assertEquals(Amount(505), reservation.remainingAmount)
+        assertEquals(Amount(5), reservation.remainingFeeReserveAmount)
+        assertBalance("buyer-1", "KRW", available = 999_495, hold = 505)
+        assertEquals(
+            MatchingEventType.ORDER_ENTERED_BOOK,
+            eventRepository.findAll().single().eventType,
+        )
     }
 
+    /** 체결 대금 300원에서 구매자 수수료 3원, 판매자 수수료 버림값 1원이 실제 반영된다. */
     @Test
-    fun `주문 접수 서비스의 체결 결과를 응답으로 반환한다`() {
-        val sellCommand =
-            orderCommand(
-                marketId = "API-TEST-CROSS",
-                orderId = "ask-1",
-                userId = "seller-1",
-                side = Side.SELL,
-                quantity = 3,
-            )
-        val buyCommand =
-            orderCommand(
-                marketId = "API-TEST-CROSS",
-                orderId = "bid-1",
-                userId = "buyer-1",
-                price = 110,
-                quantity = 3,
-            )
-
-        whenever(orderSubmissionService.submit(sellCommand))
-            .thenReturn(listOf(enteredBook(sellCommand)))
-        whenever(orderSubmissionService.submit(buyCommand))
-            .thenReturn(
-                listOf(
-                    TradeExecuted(
-                        marketId = sellCommand.marketId,
-                        engineSequence = 2,
-                        makerOrderId = sellCommand.orderId,
-                        takerOrderId = buyCommand.orderId,
-                        makerUserId = sellCommand.userId,
-                        takerUserId = buyCommand.userId,
-                        side = Side.BUY,
-                        price = Price(100),
-                        quantity = Quantity(3),
-                    ),
-                ),
-            )
-
-        mockMvc.perform(
-            post("/api/markets/API-TEST-CROSS/orders")
-                .contentType(MediaType.APPLICATION_JSON)
-                .content(
-                    """
-                    {
-                      "orderId": "ask-1",
-                      "userId": "seller-1",
-                      "side": "SELL",
-                      "orderType": "LIMIT",
-                      "timeInForce": "GTC",
-                      "price": 100,
-                      "quantity": 3
-                    }
-                    """.trimIndent(),
-                ),
+    fun `주문이 체결되면 정산 후 trade executed event를 반환한다`() {
+        submitOrder(
+            orderId = "ask-1",
+            userId = "seller-1",
+            side = Side.SELL,
+            quantity = 3,
         )
             .andExpect(status().isOk)
             .andExpect(jsonPath("$.events[0].type").value("ORDER_ENTERED_BOOK"))
 
-        mockMvc.perform(
-            post("/api/markets/API-TEST-CROSS/orders")
-                .contentType(MediaType.APPLICATION_JSON)
-                .content(
-                    """
-                    {
-                      "orderId": "bid-1",
-                      "userId": "buyer-1",
-                      "side": "BUY",
-                      "orderType": "LIMIT",
-                      "timeInForce": "GTC",
-                      "price": 110,
-                      "quantity": 3
-                    }
-                    """.trimIndent(),
-                ),
-        )
+        submitOrder(orderId = "bid-1", price = 110, quantity = 3)
             .andExpect(status().isOk)
             .andExpect(jsonPath("$.events[0].type").value("TRADE_EXECUTED"))
-            .andExpect(jsonPath("$.events[0].marketId").value("API-TEST-CROSS"))
+            .andExpect(jsonPath("$.events[0].marketId").value(market.marketId.value))
             .andExpect(jsonPath("$.events[0].engineSequence").value(2))
             .andExpect(jsonPath("$.events[0].makerOrderId").value("ask-1"))
             .andExpect(jsonPath("$.events[0].takerOrderId").value("bid-1"))
@@ -176,248 +106,209 @@ class MatchingControllerTest {
             .andExpect(jsonPath("$.events[0].price").value(100))
             .andExpect(jsonPath("$.events[0].quantity").value(3))
 
-        verify(orderSubmissionService).submit(sellCommand)
-        verify(orderSubmissionService).submit(buyCommand)
-        verifyNoInteractions(orderCancellationService)
+        assertEquals(OrderReservationStatus.SETTLED, findReservation("ask-1").status)
+        assertEquals(OrderReservationStatus.SETTLED, findReservation("bid-1").status)
+        assertBalance("buyer-1", "KRW", available = 999_697, hold = 0)
+        assertBalance("buyer-1", "BTC", available = 3, hold = 0)
+        assertBalance("seller-1", "KRW", available = 299, hold = 0)
+        assertBalance("seller-1", "BTC", available = 7, hold = 0)
+        val savedEventTypes =
+            eventRepository
+                .findByMarketIdOrderByEngineSequenceAsc(market.marketId.value)
+                .map { it.eventType }
+        assertEquals(
+            listOf(MatchingEventType.ORDER_ENTERED_BOOK, MatchingEventType.TRADE_EXECUTED),
+            savedEventTypes,
+        )
     }
 
     @Test
-    fun `취소 요청을 전달하고 cancelled event를 반환한다`() {
-        val submitCommand =
-            orderCommand(
-                marketId = "API-TEST-CANCEL",
-                orderId = "cancel-1",
-            )
-        val cancelCommand =
-            CancelOrderCommand(
-                marketId = submitCommand.marketId,
-                orderId = submitCommand.orderId,
-                userId = submitCommand.userId,
-            )
+    fun `취소 요청은 예약금을 반환하고 cancelled event를 반환한다`() {
+        submitOrder(orderId = "cancel-1").andExpect(status().isOk)
 
-        whenever(orderSubmissionService.submit(submitCommand))
-            .thenReturn(listOf(enteredBook(submitCommand)))
-        whenever(orderCancellationService.cancel(cancelCommand))
-            .thenReturn(
-                listOf(
-                    OrderCancelled(
-                        marketId = cancelCommand.marketId,
-                        engineSequence = 2,
-                        orderId = cancelCommand.orderId,
-                        userId = cancelCommand.userId,
-                        remainingQuantity = Quantity(5),
-                    ),
-                ),
-            )
-
-        mockMvc.perform(
-            post("/api/markets/API-TEST-CANCEL/orders")
-                .contentType(MediaType.APPLICATION_JSON)
-                .content(
-                    """
-                    {
-                      "orderId": "cancel-1",
-                      "userId": "user-1",
-                      "side": "BUY",
-                      "orderType": "LIMIT",
-                      "timeInForce": "GTC",
-                      "price": 100,
-                      "quantity": 5
-                    }
-                    """.trimIndent(),
-                ),
-        )
-            .andExpect(status().isOk)
-
-        mockMvc.perform(
-            delete("/api/markets/API-TEST-CANCEL/orders/cancel-1")
-                .param("userId", "user-1"),
-        )
+        cancelOrder(orderId = "cancel-1")
             .andExpect(status().isOk)
             .andExpect(jsonPath("$.events[0].type").value("ORDER_CANCELLED"))
-            .andExpect(jsonPath("$.events[0].marketId").value("API-TEST-CANCEL"))
+            .andExpect(jsonPath("$.events[0].marketId").value(market.marketId.value))
             .andExpect(jsonPath("$.events[0].engineSequence").value(2))
             .andExpect(jsonPath("$.events[0].orderId").value("cancel-1"))
-            .andExpect(jsonPath("$.events[0].userId").value("user-1"))
+            .andExpect(jsonPath("$.events[0].userId").value("buyer-1"))
             .andExpect(jsonPath("$.events[0].remainingQuantity").value(5))
 
-        verify(orderSubmissionService).submit(submitCommand)
-        verify(orderCancellationService).cancel(cancelCommand)
+        val reservation = findReservation("cancel-1")
+        assertEquals(OrderReservationStatus.RELEASED, reservation.status)
+        assertEquals(Amount.ZERO, reservation.remainingAmount)
+        assertEquals(Amount.ZERO, reservation.remainingFeeReserveAmount)
+        assertBalance("buyer-1", "KRW", available = 1_000_000, hold = 0)
+        assertEquals(
+            MatchingEventType.ORDER_CANCELLED,
+            eventRepository.findByMarketIdOrderByEngineSequenceAsc(market.marketId.value).last().eventType,
+        )
     }
 
     @Test
-    fun `없는 주문을 취소하면 cancel rejected event를 반환한다`() {
-        val command =
-            CancelOrderCommand(
-                marketId = MarketId("API-TEST-MISSING"),
-                orderId = OrderId("missing-order"),
-                userId = UserId("user-1"),
-            )
-
-        whenever(orderCancellationService.cancel(command))
-            .thenReturn(
-                listOf(
-                    OrderCancelRejected(
-                        marketId = command.marketId,
-                        engineSequence = 1,
-                        orderId = command.orderId,
-                        userId = command.userId,
-                        reason = "order not found",
-                    ),
-                ),
-            )
-
-        mockMvc.perform(
-            delete("/api/markets/API-TEST-MISSING/orders/missing-order")
-                .param("userId", "user-1"),
-        )
+    fun `없는 주문을 취소하면 자금 변경 없이 cancel rejected event를 반환한다`() {
+        cancelOrder(orderId = "missing-order")
             .andExpect(status().isOk)
             .andExpect(jsonPath("$.events[0].type").value("ORDER_CANCEL_REJECTED"))
-            .andExpect(jsonPath("$.events[0].marketId").value("API-TEST-MISSING"))
+            .andExpect(jsonPath("$.events[0].marketId").value(market.marketId.value))
             .andExpect(jsonPath("$.events[0].engineSequence").value(1))
             .andExpect(jsonPath("$.events[0].orderId").value("missing-order"))
-            .andExpect(jsonPath("$.events[0].userId").value("user-1"))
+            .andExpect(jsonPath("$.events[0].userId").value("buyer-1"))
             .andExpect(jsonPath("$.events[0].reason").value("order not found"))
 
-        verify(orderCancellationService).cancel(command)
-        verifyNoInteractions(orderSubmissionService)
+        assertNull(reservationStore.find(market.marketId, OrderId("missing-order")))
+        assertBalance("buyer-1", "KRW", available = 1_000_000, hold = 0)
+        assertEquals(
+            MatchingEventType.ORDER_CANCEL_REJECTED,
+            eventRepository.findAll().single().eventType,
+        )
     }
 
     @Test
-    fun `가격이 0이면 bad request를 반환한다`() {
-        mockMvc.perform(
-            post("/api/markets/API-TEST-BAD-PRICE/orders")
-                .contentType(MediaType.APPLICATION_JSON)
-                .content(
-                    """
-                    {
-                      "orderId": "bad-price-1",
-                      "userId": "user-1",
-                      "side": "BUY",
-                      "orderType": "LIMIT",
-                      "timeInForce": "GTC",
-                      "price": 0,
-                      "quantity": 5
-                    }
-                    """.trimIndent(),
-                ),
-        )
+    fun `가격이 0이면 자금을 예약하지 않고 bad request를 반환한다`() {
+        submitOrder(orderId = "bad-price-1", price = 0)
             .andExpect(status().isBadRequest)
             .andExpect(jsonPath("$.message").value("price must be positive"))
 
-        verifyNoInteractions(orderSubmissionService, orderCancellationService)
+        assertNull(reservationStore.find(market.marketId, OrderId("bad-price-1")))
+        assertBalance("buyer-1", "KRW", available = 1_000_000, hold = 0)
+        assertEquals(0L, eventRepository.count())
     }
 
+    /** 같은 주문을 다시 보내도 최초 예약만 남고 hold를 두 번 차감하지 않아야 한다. */
     @Test
-    fun `주문 접수 서비스의 중복 주문 거절을 bad request로 반환한다`() {
-        val command =
-            orderCommand(
-                marketId = "API-TEST-DUPLICATE",
-                orderId = "duplicate-1",
-            )
+    fun `중복 주문은 기존 예약을 유지하고 bad request를 반환한다`() {
+        submitOrder(orderId = "duplicate-1").andExpect(status().isOk)
+        val originalReservation = findReservation("duplicate-1")
 
-        whenever(orderSubmissionService.submit(command))
-            .thenReturn(listOf(enteredBook(command)))
-            .thenThrow(IllegalArgumentException("order already exists"))
-
-        val requestBody =
-            """
-            {
-              "orderId": "duplicate-1",
-              "userId": "user-1",
-              "side": "BUY",
-              "orderType": "LIMIT",
-              "timeInForce": "GTC",
-              "price": 100,
-              "quantity": 5
-            }
-            """.trimIndent()
-
-        mockMvc.perform(
-            post("/api/markets/API-TEST-DUPLICATE/orders")
-                .contentType(MediaType.APPLICATION_JSON)
-                .content(requestBody),
-        )
-            .andExpect(status().isOk)
-
-        mockMvc.perform(
-            post("/api/markets/API-TEST-DUPLICATE/orders")
-                .contentType(MediaType.APPLICATION_JSON)
-                .content(requestBody),
-        )
+        submitOrder(orderId = "duplicate-1")
             .andExpect(status().isBadRequest)
-            .andExpect(jsonPath("$.message").value("order already exists"))
+            .andExpect(
+                jsonPath("$.message").value(
+                    "order reservation already exists: marketId=${market.marketId.value}, orderId=duplicate-1",
+                ),
+            )
 
-        verify(orderSubmissionService, times(2)).submit(command)
-        verifyNoInteractions(orderCancellationService)
+        assertEquals(originalReservation, findReservation("duplicate-1"))
+        assertBalance("buyer-1", "KRW", available = 999_495, hold = 505)
+        assertEquals(1L, eventRepository.count())
     }
 
     @Test
-    fun `지원하지 않는 주문 타입이면 bad request를 반환한다`() {
-        val command =
-            orderCommand(
-                marketId = "API-TEST-MARKET",
-                orderId = "market-1",
-                orderType = OrderType.MARKET,
-            )
-
-        whenever(orderSubmissionService.submit(command))
-            .thenThrow(IllegalArgumentException("only LIMIT order is supported"))
-
-        mockMvc.perform(
-            post("/api/markets/API-TEST-MARKET/orders")
-                .contentType(MediaType.APPLICATION_JSON)
-                .content(
-                    """
-                    {
-                      "orderId": "market-1",
-                      "userId": "user-1",
-                      "side": "BUY",
-                      "orderType": "MARKET",
-                      "timeInForce": "GTC",
-                      "price": 100,
-                      "quantity": 5
-                    }
-                    """.trimIndent(),
-                ),
-        )
+    fun `지원하지 않는 주문 타입이면 자금 변경 없이 bad request를 반환한다`() {
+        submitOrder(orderId = "market-1", orderType = OrderType.MARKET)
             .andExpect(status().isBadRequest)
             .andExpect(jsonPath("$.message").value("only LIMIT order is supported"))
 
-        verify(orderSubmissionService).submit(command)
-        verifyNoInteractions(orderCancellationService)
+        assertNull(reservationStore.find(market.marketId, OrderId("market-1")))
+        assertBalance("buyer-1", "KRW", available = 1_000_000, hold = 0)
+        assertEquals(0L, eventRepository.count())
     }
 
-    /** HTTP 입력이 변환되어 서비스에 전달되어야 하는 GTC 주문 명령을 만든다. */
-    private fun orderCommand(
-        marketId: String,
+    /** 취소 거절 이벤트를 성공으로 취급해 다른 사람의 예약금을 반환하지 않는지 확인한다. */
+    @Test
+    fun `다른 사용자의 취소 요청은 원래 주문의 예약금을 유지한다`() {
+        submitOrder(orderId = "owner-order").andExpect(status().isOk)
+        val originalReservation = findReservation("owner-order")
+
+        cancelOrder(orderId = "owner-order", userId = "seller-1")
+            .andExpect(status().isOk)
+            .andExpect(jsonPath("$.events[0].type").value("ORDER_CANCEL_REJECTED"))
+            .andExpect(jsonPath("$.events[0].reason").value("order owner mismatch"))
+
+        assertEquals(originalReservation, findReservation("owner-order"))
+        assertBalance("buyer-1", "KRW", available = 999_495, hold = 505)
+        assertBalance("seller-1", "KRW", available = 0, hold = 0)
+    }
+
+    @Test
+    fun `이미 취소한 주문을 다시 취소해도 예약금을 두 번 반환하지 않는다`() {
+        submitOrder(orderId = "cancel-twice").andExpect(status().isOk)
+        cancelOrder(orderId = "cancel-twice")
+            .andExpect(status().isOk)
+            .andExpect(jsonPath("$.events[0].type").value("ORDER_CANCELLED"))
+
+        cancelOrder(orderId = "cancel-twice")
+            .andExpect(status().isOk)
+            .andExpect(jsonPath("$.events[0].type").value("ORDER_CANCEL_REJECTED"))
+            .andExpect(jsonPath("$.events[0].reason").value("order not found"))
+
+        val reservation = findReservation("cancel-twice")
+        assertEquals(OrderReservationStatus.RELEASED, reservation.status)
+        assertEquals(Amount.ZERO, reservation.remainingAmount)
+        assertEquals(Amount.ZERO, reservation.remainingFeeReserveAmount)
+        assertEquals(Quantity(5), reservation.remainingQuantity)
+        assertBalance("buyer-1", "KRW", available = 1_000_000, hold = 0)
+    }
+
+    /** 서비스 메서드가 아니라 HTTP 경계로 주문을 제출한다. 기본 주문은 100원 BUY 수량 5개다. */
+    private fun submitOrder(
         orderId: String,
-        userId: String = "user-1",
+        userId: String = "buyer-1",
         side: Side = Side.BUY,
         orderType: OrderType = OrderType.LIMIT,
         price: Long = 100,
         quantity: Long = 5,
-    ): SubmitOrderCommand =
-        SubmitOrderCommand(
-            marketId = MarketId(marketId),
-            orderId = OrderId(orderId),
-            userId = UserId(userId),
-            side = side,
-            orderType = orderType,
-            timeInForce = TimeInForce.GTC,
-            price = Price(price),
-            quantity = Quantity(quantity),
+    ): ResultActions =
+        mockMvc.perform(
+            post("/api/markets/{marketId}/orders", market.marketId.value)
+                .contentType(MediaType.APPLICATION_JSON)
+                .content(
+                    """
+                    {
+                      "orderId": "$orderId",
+                      "userId": "$userId",
+                      "side": "${side.name}",
+                      "orderType": "${orderType.name}",
+                      "timeInForce": "GTC",
+                      "price": $price,
+                      "quantity": $quantity
+                    }
+                    """.trimIndent(),
+                ),
         )
 
-    /** 매칭 엔진을 실행하지 않고 서비스 대역이 반환할 book 진입 이벤트를 만든다. */
-    private fun enteredBook(command: SubmitOrderCommand): OrderEnteredBook =
-        OrderEnteredBook(
-            marketId = command.marketId,
-            engineSequence = 1,
-            orderId = command.orderId,
-            userId = command.userId,
-            side = command.side,
-            price = command.price,
-            remainingQuantity = command.quantity,
+    private fun cancelOrder(
+        orderId: String,
+        userId: String = "buyer-1",
+    ): ResultActions =
+        mockMvc.perform(
+            delete("/api/markets/{marketId}/orders/{orderId}", market.marketId.value, orderId)
+                .param("userId", userId),
         )
+
+    private fun findReservation(orderId: String): OrderReservation =
+        assertNotNull(reservationStore.find(market.marketId, OrderId(orderId)))
+
+    /** 실제 DB에 초기 잔고를 준비하며, 이 시드 금액의 원장 기록은 테스트 범위 밖이다. */
+    private fun insertBalance(
+        userId: String,
+        assetId: String,
+        available: Long,
+    ) {
+        jdbcTemplate.update(
+            "insert into balance_projection (user_id, asset_id, available, hold) values (?, ?, ?, 0)",
+            userId,
+            assetId,
+            available,
+        )
+    }
+
+    /** 요청 처리 뒤 커밋된 잔고를 조회해 사용 가능 금액과 동결 금액을 검증한다. */
+    private fun assertBalance(
+        userId: String,
+        assetId: String,
+        available: Long,
+        hold: Long,
+    ) {
+        val saved =
+            jdbcTemplate.queryForMap(
+                "select available, hold from balance_projection where user_id = ? and asset_id = ?",
+                userId,
+                assetId,
+            )
+        assertEquals(available, (saved["available"] as Number).toLong())
+        assertEquals(hold, (saved["hold"] as Number).toLong())
+    }
 }
