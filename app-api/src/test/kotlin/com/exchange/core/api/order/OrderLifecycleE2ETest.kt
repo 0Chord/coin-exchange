@@ -43,8 +43,8 @@ import kotlin.test.assertEquals
 /**
  * LIMIT/GTC 주문의 HTTP 접수부터 자금 예약, 매칭, 이벤트 저장, 정산과 수수료 원장까지 검증한다.
  *
- * 서비스 대역 없이 MockMvc와 실제 PostgreSQL을 사용한다. 한 번의 전량 체결과 미체결 BUY
- * 취소를 검증하며, 장애 복구·재시도는 포함하지 않는다. 초기 잔고는 원장 없이 직접 준비하므로
+ * 서비스 대역 없이 MockMvc와 실제 PostgreSQL을 사용한다. 한 번의 전량 체결과 미체결
+ * BUY·SELL 취소를 검증하며, 장애 복구·재시도는 포함하지 않는다. 초기 잔고는 원장 없이 직접 준비하므로
  * 체결 원장의 차변·대변 균형 검증이 전체 잔고 대사를 의미하지는 않는다.
  */
 @SpringBootTest(
@@ -360,6 +360,96 @@ class OrderLifecycleE2ETest {
         assertPersistedFeeRevenue(
             expectedAmount = 0L,
         )
+    }
+
+    /**
+     * 미체결 SELL 주문에 예약한 BTC를 모두 반환한다.
+     * 체결되지 않았으므로 KRW 지급이나 수수료 수익은 발생하지 않는다.
+     */
+    @Test
+    fun `미체결 SELL 주문을 취소하면 예약한 BTC를 모두 반환한다`() {
+        val orderId = OrderId("e2e-cancel-sell-order")
+
+        submitOrder(
+            orderId = orderId.value,
+            userId = SELLER_USER_ID,
+            side = Side.SELL,
+            price = 90_000,
+            quantity = 2,
+        )
+            .andExpect(status().isOk)
+            .andExpect(
+                jsonPath("$.events[0].type")
+                    .value("ORDER_ENTERED_BOOK"),
+            )
+
+        val activeReservation = findReservation(orderId)
+
+        assertEquals(
+            OrderReservationStatus.ACTIVE,
+            activeReservation.status,
+        )
+        assertEquals(BTC_ASSET_ID, activeReservation.assetId)
+        assertEquals(Amount(2), activeReservation.remainingAmount)
+        assertEquals(
+            Amount.ZERO,
+            activeReservation.remainingFeeReserveAmount,
+        )
+
+        assertPersistedBalance(
+            userId = SELLER_USER_ID,
+            assetId = BTC_ASSET_ID,
+            available = 8,
+            hold = 2,
+        )
+
+        mockMvc.perform(
+            delete(
+                "/api/markets/{marketId}/orders/{orderId}",
+                MARKET.marketId.value,
+                orderId.value,
+            ).param("userId", SELLER_USER_ID.value),
+        )
+            .andExpect(status().isOk)
+            .andExpect(
+                jsonPath("$.events[0].type")
+                    .value("ORDER_CANCELLED"),
+            )
+            .andExpect(
+                jsonPath("$.events[0].orderId")
+                    .value(orderId.value),
+            )
+            .andExpect(
+                jsonPath("$.events[0].remainingQuantity")
+                    .value(2),
+            )
+
+        val releasedReservation = findReservation(orderId)
+
+        assertEquals(
+            OrderReservationStatus.RELEASED,
+            releasedReservation.status,
+        )
+        assertEquals(Amount.ZERO, releasedReservation.remainingAmount)
+        assertEquals(
+            Amount.ZERO,
+            releasedReservation.remainingFeeReserveAmount,
+        )
+        assertEquals(Quantity(2), releasedReservation.remainingQuantity)
+
+        assertPersistedBalance(
+            userId = SELLER_USER_ID,
+            assetId = BTC_ASSET_ID,
+            available = 10,
+            hold = 0,
+        )
+        assertPersistedBalance(
+            userId = SELLER_USER_ID,
+            assetId = KRW_ASSET_ID,
+            available = 0,
+            hold = 0,
+        )
+        assertPersistedFeeRevenue(expectedAmount = 0L)
     }
 
     /** KRW 수수료 수익 계정의 CREDIT 합계에서 DEBIT 합계를 뺀 실제 기록 금액을 확인한다. */
