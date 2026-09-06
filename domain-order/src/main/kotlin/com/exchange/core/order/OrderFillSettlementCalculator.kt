@@ -27,8 +27,8 @@ import com.exchange.core.fee.TradingFeeReserveCalculator
  * - [holdAmountToConsume], [holdAmountToRelease]: 사용자·자산별 Balance 장부
  * - [creditAssetId], [creditAmount]: 거래 결과로 받을 반대편 자산
  *
- * @property updatedReservation 체결 수량과 예약 감소액을 반영한 새 주문 예약.
- * SELL은 다음 체결로 넘길 수수료 소수 나머지도 반영한다.
+ * @property updatedReservation 체결 수량, 예약 감소액과 다음 체결로 넘길 수수료 소수
+ * 나머지를 반영한 새 주문 예약
  * @property reservedAmountToReduce 주문별 거래·수수료 예약 장부에서 줄일 전체 금액
  * @property holdAmountToConsume 실제 거래와 수수료에 사용되어 Balance hold에서 제거할 금액
  * @property holdAmountToRelease 거래에 사용되지 않아 Balance available로 반환할 금액
@@ -36,7 +36,7 @@ import com.exchange.core.fee.TradingFeeReserveCalculator
  * @property creditAmount 체결 결과로 사용자에게 지급할 최소 단위 기준 수량 또는 순지급액
  * @property feeAssetId 이번 체결의 수수료를 부과하는 자산. 현재 정책에서는 마켓의 quote 자산
  * @property actualFeeAmount 이번 체결에 청구할 수수료. 주문 시 예약액이나 주문 전체 누적 청구액이 아니다.
- * SELL은 이전 체결의 소수 나머지도 합산해 계산한다.
+ * BUY와 SELL 모두 이전 체결의 소수 나머지도 합산해 계산한다.
  */
 data class OrderFillSettlementPlan(
     val updatedReservation: OrderReservation,
@@ -59,11 +59,15 @@ data class OrderFillSettlementPlan(
  *
  * BUY 계산:
  * - 거래 예약 감소액 = 지정가 × 체결 수량
- * - 수수료 예약 감소액 = 거래 예약 감소액 × 최대 수수료율
- * - 실제 수수료 = 체결가 대금 × maker/taker 수수료율
+ * - 실제 수수료 = (체결가 대금 × maker/taker 수수료율 + 이전 소수 나머지)의
+ *   최소 금액 단위 미만을 버린 금액
+ * - 다음 수수료 예약액 = (남은 지정가 대금 × 최대 수수료율 + 새 소수 나머지)를
+ *   최소 금액 단위로 올림한 금액. 전량 체결이면 0이다.
+ * - 수수료 예약 감소액 = 현재 수수료 예약액 - 다음 수수료 예약액
  * - hold 소비액 = 체결가 대금 + 실제 수수료
  * - hold 반환액 = 전체 예약 감소액 - hold 소비액
  * - 지급 = base 자산 체결 수량
+ * - 새 소수 나머지는 주문 예약에 반영해 다음 체결 계산으로 넘긴다
  *
  * SELL 계산:
  * - 예약 감소액 = hold 소비액 = base 자산 체결 수량
@@ -78,7 +82,8 @@ data class OrderFillSettlementPlan(
  * 수행하지 않는다. 실제 저장과 자산 이동은 이후 TradeSettlementService가 담당한다.
  *
  * @property tradingFeeCalculator 체결가 대금과 maker/taker 요율로 실제 수수료를 계산하는 객체
- * @property tradingFeeReserveCalculator 지정가 대금과 최대 요율로 수수료 예약액을 계산하는 객체
+ * @property tradingFeeReserveCalculator 남은 지정가 대금, 최대 요율과 소수 나머지로
+ * 유지할 수수료 예약액을 계산하는 객체
  */
 class OrderFillSettlementCalculator(
     private val tradingFeeCalculator: TradingFeeCalculator,
@@ -135,9 +140,10 @@ class OrderFillSettlementCalculator(
      * BUY 체결의 거래·수수료 예약 감소액, 실제 소비액, 반환액과 지급할 base 수량을
      * 계산한다.
      *
-     * 수수료 예약액은 최대 수수료율로 확보하지만 실제 수수료는 체결가 대금과 이번
-     * maker/taker 역할의 요율로 계산한다. 따라서 가격 개선분과 사용하지 않은 수수료
-     * 예약액을 함께 반환한다.
+     * 실제 수수료는 체결가 대금에 이번 maker/taker 요율을 곱하고 이전 소수 나머지를 합산한다.
+     * 부분 체결 후에는 남은 지정가 대금의 최대 수수료와 새 나머지를 합산해 올림한 금액을
+     * 계속 예약한다. 이번 수수료를 소비하고도 남는 초과분과 가격 개선분만 반환한다.
+     * 전량 체결되면 새 나머지는 기록하되, 앞으로의 체결이 없으므로 수수료 예약액은 0이다.
      *
      * @param market 체결 마켓 정보
      * @param reservation BUY 주문의 현재 예약
@@ -177,25 +183,51 @@ class OrderFillSettlementCalculator(
                 baseAssetScale = market.baseAssetScale,
             )
 
-        // 이번 체결 몫의 최대 수수료 예약액을 계산하고 남은 예약액을 넘지 않게
-        // 제한한다.
-        val calculatedFeeReserveAmount =
-            tradingFeeReserveCalculator.calculateReserve(
-                feeReserveBaseAmount = tradeReserveAmountToReduce,
-                maximumFeeRate = reservation.feePolicySnapshot.maximumRate(),
-            )
-
-        val feeReserveAmountToReduce =
-            minOf(
-                calculatedFeeReserveAmount,
-                reservation.remainingFeeReserveAmount,
-            )
-
-        // 실제 수수료는 체결가 대금과 이번 체결의 maker/taker 요율을 사용한다.
-        val actualFeeAmount =
+        // 이번 청구액을 계산하고, 최소 금액 단위 미만의 나머지는 다음 체결로 넘긴다.
+        val feeCalculation =
             tradingFeeCalculator.calculateFee(
                 feeBaseAmount = executionTradeAmount,
                 feeRate = reservation.feePolicySnapshot.rateFor(liquidityRole),
+                previousRemainder = reservation.feeRemainder,
+            )
+
+        val actualFeeAmount = feeCalculation.actualFeeAmount
+
+        // 이번 체결 이후에도 남아 있을 수량과 그 수량의 지정가 기준 거래대금이다.
+        val nextRemainingQuantity =
+            reservation.remainingQuantity - filledQuantity
+
+        val nextRemainingTradeReserveAmount =
+            calculateQuoteAmount(
+                price = reservation.limitPrice,
+                quantity = nextRemainingQuantity,
+                baseAssetScale = market.baseAssetScale,
+            )
+
+        // 남은 주문에 필요한 수수료와 새 소수 나머지를 함께 고려해 예약액을 유지한다.
+        // 주문이 끝나면 나머지가 있어도 실제로 묶어둘 수수료 예약액은 없다.
+        val nextRemainingFeeReserveAmount =
+            if (nextRemainingQuantity.isZero()) {
+                Amount.ZERO
+            } else {
+                tradingFeeReserveCalculator.calculateReserve(
+                    feeReserveBaseAmount = nextRemainingTradeReserveAmount,
+                    maximumFeeRate = reservation.feePolicySnapshot.maximumRate(),
+                    feeRemainder = feeCalculation.remainder,
+                )
+            }
+
+        require(
+            nextRemainingFeeReserveAmount <= reservation.remainingFeeReserveAmount,
+        ) {
+            "required fee reserve must not exceed remaining fee reserve"
+        }
+
+        // 이번에 수수료로 소비할 금액과 사용자에게 반환할 초과분을 합친 예약 감소액이다.
+        val feeReserveAmountToReduce =
+            Amount(
+                reservation.remainingFeeReserveAmount.value -
+                    nextRemainingFeeReserveAmount.value,
             )
 
         require(actualFeeAmount <= feeReserveAmountToReduce) {
@@ -225,12 +257,13 @@ class OrderFillSettlementCalculator(
                     totalHoldAmountToConsume.value,
             )
 
-        // 주문별 거래 예약액과 수수료 예약액을 각 장부에서 분리해 감소시킨다.
+        // 새 주문 예약 객체를 만든다. 실제 DB 저장이나 Balance 변경은 여기서 하지 않는다.
         val updatedReservation =
             reservation.applyFill(
                 filledQuantity = filledQuantity,
                 tradeReserveAmountToReduce = tradeReserveAmountToReduce,
                 feeReserveAmountToReduce = feeReserveAmountToReduce,
+                nextFeeRemainder = feeCalculation.remainder,
             )
 
         return OrderFillSettlementPlan(
