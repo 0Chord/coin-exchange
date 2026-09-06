@@ -15,8 +15,8 @@ import com.exchange.core.fee.TradingFeeReserveCalculator
  * BUY 가격 개선이 발생하면 [reservedAmountToReduce]는 지정가 기준 거래·수수료 예약
  * 감소액이고, [holdAmountToConsume]은 실제 체결 대금과 수수료 소비액이다. 두 값의 차이가
  * 가격 개선분과 사용하지 않은 수수료 예약액을 합한 [holdAmountToRelease]다.
- * SELL의 [creditAmount]는 실제 체결 대금에서 해당 체결의 maker/taker 수수료를
- * 차감한 quote 자산 순지급액이다.
+ * SELL의 [creditAmount]는 이전 소수 나머지와 이번 maker/taker 요율로 계산한 수수료를
+ * 실제 체결 대금에서 차감한 quote 자산 순지급액이다.
  *
  * [actualFeeAmount]는 BUY hold 소비액 또는 SELL 순지급액 계산에 이미 반영된 수수료다.
  * 후속 원장 기록에서 사용할 수 있도록 별도로 반환하며 사용자에게 다시 차감하지 않는다.
@@ -27,14 +27,16 @@ import com.exchange.core.fee.TradingFeeReserveCalculator
  * - [holdAmountToConsume], [holdAmountToRelease]: 사용자·자산별 Balance 장부
  * - [creditAssetId], [creditAmount]: 거래 결과로 받을 반대편 자산
  *
- * @property updatedReservation 체결 수량과 예약 감소액을 반영한 새 주문 예약
+ * @property updatedReservation 체결 수량과 예약 감소액을 반영한 새 주문 예약.
+ * SELL은 다음 체결로 넘길 수수료 소수 나머지도 반영한다.
  * @property reservedAmountToReduce 주문별 거래·수수료 예약 장부에서 줄일 전체 금액
  * @property holdAmountToConsume 실제 거래와 수수료에 사용되어 Balance hold에서 제거할 금액
  * @property holdAmountToRelease 거래에 사용되지 않아 Balance available로 반환할 금액
  * @property creditAssetId 체결 결과로 사용자에게 지급할 자산
  * @property creditAmount 체결 결과로 사용자에게 지급할 최소 단위 기준 수량 또는 순지급액
  * @property feeAssetId 이번 체결의 수수료를 부과하는 자산. 현재 정책에서는 마켓의 quote 자산
- * @property actualFeeAmount 실제 체결 대금과 maker/taker 요율로 계산한 수수료. 주문 시 예약한 금액과는 다르다
+ * @property actualFeeAmount 이번 체결에 청구할 수수료. 주문 시 예약액이나 주문 전체 누적 청구액이 아니다.
+ * SELL은 이전 체결의 소수 나머지도 합산해 계산한다.
  */
 data class OrderFillSettlementPlan(
     val updatedReservation: OrderReservation,
@@ -67,8 +69,10 @@ data class OrderFillSettlementPlan(
  * - 예약 감소액 = hold 소비액 = base 자산 체결 수량
  * - hold 반환액 = 0
  * - 총 판매 대금 = quote 자산 기준 체결가 × 체결 수량
- * - 실제 수수료 = 총 판매 대금 × maker/taker 수수료율
+ * - 실제 수수료 = (총 판매 대금 × maker/taker 수수료율 + 이전 소수 나머지)의
+ *   최소 금액 단위 미만을 버린 금액
  * - 지급 = 총 판매 대금 - 실제 수수료
+ * - 새 소수 나머지는 주문 예약에 반영해 다음 체결 계산으로 넘긴다
  *
  * 이 계산기는 순수 도메인 계산만 담당하며 DB 조회, Reservation 저장 또는 Balance 변경을
  * 수행하지 않는다. 실제 저장과 자산 이동은 이후 TradeSettlementService가 담당한다.
@@ -248,12 +252,15 @@ class OrderFillSettlementCalculator(
      * SELL 수수료는 주문 접수 시 별도로 hold하지 않고, 실제 체결가와 체결 수량으로
      * 계산한 총 판매 대금에서 이번 체결의 maker/taker 수수료를 차감한다.
      *
+     * 이번 수수료에는 주문에 보관된 이전 소수 나머지를 합산한다. 최소 금액 단위의
+     * 정수 금액만 차감하고, 새 나머지는 갱신된 주문 예약에 반영해 다음 체결로 넘긴다.
+     *
      * @param market 체결 마켓 정보
      * @param reservation SELL 주문의 현재 예약
      * @param executionPrice 실제 체결 가격
      * @param filledQuantity 이번 체결 수량
      * @param liquidityRole SELL 주문의 이번 체결 maker/taker 역할. SELL 수수료 정산에서 사용한다
-     * @return SELL 주문에 적용할 정산 계획
+     * @return 이번 순지급액·수수료와 새 소수 나머지를 반영한 주문 예약을 포함하는 정산 계획
      */
     private fun calculateSell(
         market: MarketDefinition,
@@ -284,12 +291,15 @@ class OrderFillSettlementCalculator(
                 baseAssetScale = market.baseAssetScale,
             )
 
-        // 주문에 저장된 정책에서 이번 maker/taker 역할의 실제 수수료율을 선택한다.
-        val actualFeeAmount =
+        // 이번 maker/taker 요율과 주문에 보관된 이전 나머지로 수수료를 계산한다.
+        val feeCalculation =
             tradingFeeCalculator.calculateFee(
                 feeBaseAmount = grossCreditAmount,
                 feeRate = reservation.feePolicySnapshot.rateFor(liquidityRole),
+                previousRemainder = reservation.feeRemainder,
             )
+
+        val actualFeeAmount = feeCalculation.actualFeeAmount
 
         require(actualFeeAmount <= grossCreditAmount) {
             "actual trading fee must not exceed gross settlement amount"
@@ -301,12 +311,13 @@ class OrderFillSettlementCalculator(
                 grossCreditAmount.value - actualFeeAmount.value,
             )
 
-        // 주문별 남은 base 수량과 예약된 base 금액을 같은 체결 수량만큼 줄인다.
+        // 체결된 base 수량만큼 예약을 줄이고 다음 체결로 넘길 수수료 나머지도 반영한다.
         val updatedReservation =
             reservation.applyFill(
                 filledQuantity = filledQuantity,
                 tradeReserveAmountToReduce = reservedAmountToReduce,
                 feeReserveAmountToReduce = Amount.ZERO,
+                nextFeeRemainder = feeCalculation.remainder,
             )
 
         return OrderFillSettlementPlan(

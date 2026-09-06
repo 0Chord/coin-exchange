@@ -9,6 +9,7 @@ import com.exchange.core.common.Quantity
 import com.exchange.core.common.UserId
 import com.exchange.core.fee.FeeProductType
 import com.exchange.core.fee.FeeRate
+import com.exchange.core.fee.FeeRemainder
 import com.exchange.core.fee.FeeTier
 import com.exchange.core.fee.LiquidityRole
 import com.exchange.core.fee.MakerTakerFeeRates
@@ -22,6 +23,7 @@ import kotlin.test.assertFailsWith
 /**
  * BUY/SELL 체결의 예약 감소, hold 소비·반환과 지급액을 검사한다.
  * 실제 수수료의 자산·금액도 확인하며, 무료 정책에서는 수수료가 0인지 검사한다.
+ * SELL 부분 체결은 이전 소수 나머지가 다음 정산의 청구액과 순지급액에 반영되는지 확인한다.
  */
 class OrderFillSettlementCalculatorTest {
     private val feeFreePolicySnapshot =
@@ -434,6 +436,67 @@ class OrderFillSettlementCalculatorTest {
         assertEquals(
             Amount(900),
             plan.actualFeeAmount,
+        )
+    }
+
+    @Test
+    fun `SELL 부분 체결은 이전 수수료 나머지를 합산해 순지급액을 계산한다`() {
+        val reservation =
+            sellReservation().copy(
+                limitPrice = Price(51),
+                feePolicySnapshot =
+                    feeFreePolicySnapshot.copy(
+                        feeRates =
+                            MakerTakerFeeRates(
+                                makerFeeRate = FeeRate(10_000),
+                                takerFeeRate = FeeRate(10_000),
+                            ),
+                    ),
+            )
+
+        val firstPlan =
+            calculator.calculate(
+                market = market,
+                reservation = reservation,
+                executionPrice = Price(51),
+                filledQuantity = Quantity(1),
+                liquidityRole = LiquidityRole.MAKER,
+            )
+
+        // 첫 정산에서 갱신된 주문 예약을 전달해 나머지가 다음 계산으로 이어지게 한다.
+        val secondPlan =
+            calculator.calculate(
+                market = market,
+                reservation = firstPlan.updatedReservation,
+                executionPrice = Price(51),
+                filledQuantity = Quantity(1),
+                liquidityRole = LiquidityRole.MAKER,
+            )
+
+        assertEquals(
+            Amount.ZERO,
+            firstPlan.actualFeeAmount,
+        )
+        assertEquals(
+            Amount(51),
+            firstPlan.creditAmount,
+        )
+        assertEquals(
+            FeeRemainder(510_000),
+            firstPlan.updatedReservation.feeRemainder,
+        )
+
+        assertEquals(
+            Amount(1),
+            secondPlan.actualFeeAmount,
+        )
+        assertEquals(
+            Amount(50),
+            secondPlan.creditAmount,
+        )
+        assertEquals(
+            FeeRemainder(20_000),
+            secondPlan.updatedReservation.feeRemainder,
         )
     }
 
