@@ -40,10 +40,10 @@ BTC-KRW에서 BTC는 사고파는 자산(`base`), KRW는 대금을 지불하는 
 flowchart TD
     API["HTTP 주문 접수"] --> Submission["OrderSubmissionService"]
     Submission --> Worker["마켓별 single-writer 작업 스레드"]
-    Worker --> Funding["1. 자금 예약<br/>OrderFundingService · DB 트랜잭션"]
+    Worker --> Funding["1. 자금 예약<br/>OrderFundingService<br/>DB 트랜잭션"]
     Funding --> Matching["2. 가격·시간 우선순위 매칭<br/>메모리 주문장"]
     Matching --> Events["3. 매칭 이벤트 저장"]
-    Events --> Settlement["4. 체결별 정산<br/>TradeSettlementService · DB 트랜잭션"]
+    Events --> Settlement["4. 체결별 정산<br/>TradeSettlementService<br/>DB 트랜잭션"]
     Settlement --> Reservations["BUY·SELL 예약과 소수 나머지"]
     Settlement --> Balances["잔고 소비 · 반환 · 지급"]
     Settlement --> Ledger["체결 원장 · 수수료 수익 분개"]
