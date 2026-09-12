@@ -9,6 +9,7 @@ import com.exchange.core.common.Quantity
 import com.exchange.core.common.UserId
 import com.exchange.core.fee.FeeProductType
 import com.exchange.core.fee.FeeRate
+import com.exchange.core.fee.FeeRemainder
 import com.exchange.core.fee.FeeTier
 import com.exchange.core.fee.MakerTakerFeeRates
 import com.exchange.core.fee.TradingFeePolicySnapshot
@@ -16,6 +17,9 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 
+/**
+ * 주문 예약의 생성·체결·해제 규칙과 수수료 예약액·소수 나머지의 상태 갱신을 검증한다.
+ */
 class OrderReservationTest {
     private val feeFreePolicySnapshot =
         TradingFeePolicySnapshot(
@@ -462,6 +466,80 @@ class OrderReservationTest {
         assertEquals(
             OrderReservationStatus.ACTIVE,
             updated.status,
+        )
+    }
+
+    @Test
+    fun `새 주문의 수수료 소수 나머지는 0이다`() {
+        val reservation = activeReservation()
+
+        assertEquals(
+            FeeRemainder.ZERO,
+            reservation.feeRemainder,
+        )
+    }
+
+    @Test
+    fun `applyFill은 체결 후 수수료 소수 나머지를 새 값으로 갱신한다`() {
+        val feePolicySnapshot =
+            TradingFeePolicySnapshot(
+                productType = FeeProductType.SPOT,
+                feeTier = FeeTier.NORMAL,
+                scheduleVersion = 1,
+                feeRates =
+                    MakerTakerFeeRates(
+                        makerFeeRate = FeeRate(10_000),
+                        takerFeeRate = FeeRate(10_000),
+                    ),
+            )
+
+        val reservation =
+            OrderReservation.create(
+                marketId = MarketId("BTC-KRW"),
+                orderId = OrderId("order-with-fee-remainder"),
+                userId = UserId("user-1"),
+                side = Side.BUY,
+                limitPrice = Price(51),
+                quantity = Quantity(5),
+                requirement =
+                    ReservationRequirement(
+                        assetId = AssetId("KRW"),
+                        tradeReserveAmount = Amount(255),
+                        feeReserveAmount = Amount(3),
+                    ),
+                feePolicySnapshot = feePolicySnapshot,
+            )
+
+        // 수수료 계산 결과를 직접 전달해 주문 객체의 나머지 갱신만 검증한다.
+        val firstFilledReservation =
+            reservation.applyFill(
+                filledQuantity = Quantity(1),
+                tradeReserveAmountToReduce = Amount(51),
+                feeReserveAmountToReduce = Amount.ZERO,
+                nextFeeRemainder = FeeRemainder(510_000),
+            )
+
+        val secondFilledReservation =
+            firstFilledReservation.applyFill(
+                filledQuantity = Quantity(1),
+                tradeReserveAmountToReduce = Amount(51),
+                feeReserveAmountToReduce = Amount(1),
+                nextFeeRemainder = FeeRemainder(20_000),
+            )
+
+        assertEquals(
+            FeeRemainder(510_000),
+            firstFilledReservation.feeRemainder,
+        )
+        assertEquals(
+            FeeRemainder(20_000),
+            secondFilledReservation.feeRemainder,
+        )
+
+        // 체결 결과는 새 객체에 반영되므로 최초 주문 예약은 바뀌지 않는다.
+        assertEquals(
+            FeeRemainder.ZERO,
+            reservation.feeRemainder,
         )
     }
 

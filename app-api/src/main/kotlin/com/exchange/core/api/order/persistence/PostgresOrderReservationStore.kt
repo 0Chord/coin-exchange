@@ -9,6 +9,7 @@ import com.exchange.core.common.Quantity
 import com.exchange.core.common.UserId
 import com.exchange.core.fee.FeeProductType
 import com.exchange.core.fee.FeeRate
+import com.exchange.core.fee.FeeRemainder
 import com.exchange.core.fee.FeeTier
 import com.exchange.core.fee.MakerTakerFeeRates
 import com.exchange.core.fee.TradingFeePolicySnapshot
@@ -27,7 +28,8 @@ import org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate
  *
  * `(market_id, order_id)`를 주문 예약의 business key로 사용한다. 생성 시에는 최초 값 전체를
  * 저장하고, 이후 체결 또는 취소에서는 변경 가능한 `remaining_quantity`, `remaining_amount`,
- * `remaining_fee_reserve_amount`, `status`만 갱신한다.
+ * `remaining_fee_reserve_amount`, `fee_remainder_numerator`, `status`와 갱신 시각을 변경한다.
+ * 수수료 소수 나머지는 [FeeRemainder.numerator]를 정수로 저장해 다음 조회에서도 복원한다.
  *
  * @property jdbcTemplate 이름 기반 SQL parameter와 row mapping을 제공하는 Spring JDBC 도구
  */
@@ -36,6 +38,8 @@ open class PostgresOrderReservationStore(
 ) : OrderReservationStore {
     /**
      * 새 주문 예약의 최초 상태를 insert한다.
+     *
+     * 수수료 소수 나머지의 분자도 명시적으로 저장하며 DB 기본값에 의존하지 않는다.
      *
      * @param reservation [OrderReservation.create]로 만든 ACTIVE 예약
      * @throws OrderReservationAlreadyExistsException 같은 business key가 이미 존재하는 경우
@@ -62,6 +66,7 @@ open class PostgresOrderReservationStore(
                     taker_fee_rate_ppm,
                     initial_fee_reserve_amount,
                     remaining_fee_reserve_amount,
+                    fee_remainder_numerator,
                     status
                 ) values (
                     :marketId,
@@ -81,6 +86,7 @@ open class PostgresOrderReservationStore(
                     :takerFeeRatePpm,
                     :initialFeeReserveAmount,
                     :remainingFeeReserveAmount,
+                    :feeRemainderNumerator,
                     :status
                 )
                 """.trimIndent(),
@@ -104,6 +110,7 @@ open class PostgresOrderReservationStore(
                         reservation.feePolicySnapshot.feeRates.takerFeeRate.partsPerMillion,
                     "initialFeeReserveAmount" to reservation.initialFeeReserveAmount.value,
                     "remainingFeeReserveAmount" to reservation.remainingFeeReserveAmount.value,
+                    "feeRemainderNumerator" to reservation.feeRemainder.numerator,
                     "status" to reservation.status.name,
                 ),
             )
@@ -153,11 +160,11 @@ open class PostgresOrderReservationStore(
         )
 
     /**
-     * 체결 또는 취소로 바뀐 잔량, 예약 잔액과 상태를 갱신한다.
+     * 체결 또는 취소로 바뀐 잔량, 예약 잔액, 수수료 소수 나머지와 상태를 갱신한다.
      *
      * 주문 소유자, 방향, 지정가, 최초 수량과 최초 예약 금액, 최초 수수료 예약액과
-     * 수수료 정책 snapshot은 생성 후 불변이므로 UPDATE하지 않는다. 체결 또는 취소 후에도
-     * 남은 수수료 예약액만 변경한다.
+     * 수수료 정책 snapshot은 생성 후 불변이므로 UPDATE하지 않는다. 수수료 관련 상태는
+     * 남은 수수료 예약액과 소수 나머지의 분자를 갱신하며, 수수료 계산은 수행하지 않는다.
      *
      * @param reservation 동일 business key의 새 상태
      * @throws OrderReservationNotFoundException UPDATE 대상 row가 정확히 1개가 아닌 경우
@@ -171,6 +178,7 @@ open class PostgresOrderReservationStore(
                 set remaining_quantity = :remainingQuantity,
                     remaining_amount = :remainingAmount,
                     remaining_fee_reserve_amount = :remainingFeeReserveAmount,
+                    fee_remainder_numerator = :feeRemainderNumerator,
                     status = :status,
                     updated_at = current_timestamp
                 where market_id = :marketId
@@ -182,6 +190,7 @@ open class PostgresOrderReservationStore(
                     "remainingQuantity" to reservation.remainingQuantity.value,
                     "remainingAmount" to reservation.remainingAmount.value,
                     "remainingFeeReserveAmount" to reservation.remainingFeeReserveAmount.value,
+                    "feeRemainderNumerator" to reservation.feeRemainder.numerator,
                     "status" to reservation.status.name,
                 ),
             )
@@ -237,6 +246,7 @@ open class PostgresOrderReservationStore(
                    taker_fee_rate_ppm,
                    initial_fee_reserve_amount,
                    remaining_fee_reserve_amount,
+                   fee_remainder_numerator,
                    status
             from order_reservations
             where market_id = :marketId
@@ -254,7 +264,11 @@ open class PostgresOrderReservationStore(
             ).singleOrNull()
     }
 
-    /** DB 문자열과 정수 컬럼을 domain enum/value class로 복원하는 mapper. */
+    /**
+     * DB 문자열과 정수 컬럼을 domain enum/value class로 복원하는 mapper.
+     *
+     * 수수료 소수 나머지도 저장된 분자로 복원하며, 생성자의 기본값 0으로 대체하지 않는다.
+     */
     private val orderReservationRowMapper =
         RowMapper<OrderReservation> { resultSet, _ ->
             OrderReservation(
@@ -296,6 +310,10 @@ open class PostgresOrderReservationStore(
                 remainingFeeReserveAmount =
                     Amount(resultSet.getLong("remaining_fee_reserve_amount")),
                 status = OrderReservationStatus.valueOf(resultSet.getString("status")),
+                feeRemainder =
+                    FeeRemainder(
+                        resultSet.getLong("fee_remainder_numerator"),
+                    ),
             )
         }
 }

@@ -10,6 +10,7 @@ import com.exchange.core.common.Quantity
 import com.exchange.core.common.UserId
 import com.exchange.core.fee.FeeProductType
 import com.exchange.core.fee.FeeRate
+import com.exchange.core.fee.FeeRemainder
 import com.exchange.core.fee.FeeTier
 import com.exchange.core.fee.MakerTakerFeeRates
 import com.exchange.core.fee.TradingFeePolicySnapshot
@@ -34,6 +35,7 @@ import kotlin.test.assertNull
 
 /**
  * 실제 PostgreSQL에서 주문 예약의 저장·조회·변경과 중복 거절을 검증한다.
+ * 체결 후 수수료 소수 나머지도 DB 업데이트와 재조회를 거쳐 보존되는지 확인한다.
  * 테스트 메서드마다 테스트 트랜잭션을 롤백하여 변경한 예약 데이터를 되돌린다.
  *
  * 공통 PostgreSQL 설정을 사용하되, 클래스 종료 시 context와 컨테이너를 닫아 다른 클래스와 격리한다.
@@ -299,6 +301,68 @@ class PostgresOrderReservationStoreTest {
         assertEquals(
             Amount(505),
             saved.remainingAmount,
+        )
+    }
+
+    @Test
+    fun `부분 체결 후 수수료 소수 나머지를 업데이트하고 조회한다`() {
+        val feePolicySnapshot =
+            TradingFeePolicySnapshot(
+                productType = FeeProductType.SPOT,
+                feeTier = FeeTier.NORMAL,
+                scheduleVersion = 1,
+                feeRates =
+                    MakerTakerFeeRates(
+                        makerFeeRate = FeeRate(10_000),
+                        takerFeeRate = FeeRate(10_000),
+                    ),
+            )
+
+        val reservation =
+            OrderReservation.create(
+                marketId = MarketId("BTC-KRW"),
+                orderId = OrderId("order-with-fee-remainder"),
+                userId = UserId("user-1"),
+                side = Side.BUY,
+                limitPrice = Price(51),
+                quantity = Quantity(5),
+                requirement =
+                    ReservationRequirement(
+                        assetId = AssetId("KRW"),
+                        tradeReserveAmount = Amount(255),
+                        feeReserveAmount = Amount(3),
+                    ),
+                feePolicySnapshot = feePolicySnapshot,
+            )
+
+        store.create(reservation)
+
+        val partiallyFilled =
+            reservation.applyFill(
+                filledQuantity = Quantity(1),
+                tradeReserveAmountToReduce = Amount(51),
+                feeReserveAmountToReduce = Amount.ZERO,
+                nextFeeRemainder = FeeRemainder(510_000),
+            )
+
+        // 객체에 반영한 나머지를 DB에 저장한 뒤 다시 읽어 검증한다.
+        store.update(partiallyFilled)
+
+        val saved =
+            requireNotNull(
+                store.find(
+                    marketId = reservation.marketId,
+                    orderId = reservation.orderId,
+                ),
+            )
+
+        assertEquals(
+            FeeRemainder(510_000),
+            saved.feeRemainder,
+        )
+        assertEquals(
+            partiallyFilled,
+            saved,
         )
     }
 

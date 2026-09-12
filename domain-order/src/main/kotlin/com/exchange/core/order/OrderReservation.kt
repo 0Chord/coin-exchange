@@ -7,6 +7,7 @@ import com.exchange.core.common.OrderId
 import com.exchange.core.common.Price
 import com.exchange.core.common.Quantity
 import com.exchange.core.common.UserId
+import com.exchange.core.fee.FeeRemainder
 import com.exchange.core.fee.TradingFeePolicySnapshot
 
 /**
@@ -136,6 +137,8 @@ enum class OrderReservationStatus {
  * @property remainingFeeReserveAmount 아직 체결에 사용하거나 사용자에게 반환하지 않은 수수료
  * 예약액
  * @property status 예약의 현재 생명주기 상태
+ * @property feeRemainder 이 주문의 수수료 계산에서 다음 체결로 넘길 소수 나머지.
+ * 수수료 자산의 최소 금액 단위 미만을 나타내며, 실제로 동결한 수수료 예약액과는 다르다.
  * @throws IllegalArgumentException 최초/남은 수량, 거래·수수료 예약 금액 또는 [status]의 조합이
  * 유효하지 않은 경우
  */
@@ -154,6 +157,7 @@ data class OrderReservation(
     val initialFeeReserveAmount: Amount,
     val remainingFeeReserveAmount: Amount,
     val status: OrderReservationStatus,
+    val feeRemainder: FeeRemainder = FeeRemainder.ZERO,
 ) {
     init {
         require(initialQuantity.value > 0) {
@@ -236,17 +240,22 @@ data class OrderReservation(
     }
 
     /**
-     * 이미 발생한 체결을 주문 예약의 남은 수량과 금액에 반영한다.
+     * 이미 발생한 체결을 주문 예약의 남은 수량, 금액과 수수료 소수 나머지에 반영한다.
      *
      * 이 메서드는 매칭을 수행하거나 Balance를 변경하지 않는다. BUY와 SELL에 따라 달라지는
      * 거래 예약 감소액과 BUY 수수료 예약 감소액은 [OrderFillSettlementCalculator]가
      * 계산해서 전달한다. 남은 수량이 0이면 상태를 SETTLED로, 수량이 남으면 ACTIVE로
      * 유지한다.
      *
+     * [nextFeeRemainder]는 이전 나머지까지 합산한 계산 결과이므로 기존 값에 더하지 않고
+     * 교체한다. 이 메서드 자체는 수수료를 계산하거나 DB에 저장하지 않는다.
+     *
      * @param filledQuantity 이번 체결에서 처리된 base 자산 수량
      * @param tradeReserveAmountToReduce 이번 체결로 거래 예약 장부에서 줄일 금액
      * @param feeReserveAmountToReduce 이번 체결 몫으로 수수료 예약 장부에서 줄일 금액
-     * @return 체결 후 남은 수량, 거래·수수료 예약 금액과 상태를 담은 새 주문 예약
+     * @param nextFeeRemainder 이번 수수료 계산 후 보관할 새 소수 나머지. 기존 호출부와의
+     * 호환을 위해 생략하면 현재 값을 유지하며, 누적 정산 호출부는 계산 결과를 전달해야 한다.
+     * @return 체결 후 남은 수량, 거래·수수료 예약 금액, 소수 나머지와 상태를 담은 새 주문 예약
      * @throws IllegalStateException 현재 상태가 ACTIVE가 아닐 경우
      * @throws IllegalArgumentException 체결 수량이나 거래·수수료 예약 감소 금액이 유효 범위를
      * 벗어날 경우
@@ -255,6 +264,7 @@ data class OrderReservation(
         filledQuantity: Quantity,
         tradeReserveAmountToReduce: Amount,
         feeReserveAmountToReduce: Amount,
+        nextFeeRemainder: FeeRemainder = feeRemainder,
     ): OrderReservation {
         check(status == OrderReservationStatus.ACTIVE) {
             "only active reservation can be filled"
@@ -323,6 +333,7 @@ data class OrderReservation(
             remainingAmount = nextRemainingAmount,
             remainingFeeReserveAmount = nextRemainingFeeReserveAmount,
             status = nextStatus,
+            feeRemainder = nextFeeRemainder,
         )
     }
 
@@ -333,6 +344,7 @@ data class OrderReservation(
          * 최초 값과 남은 값을 동일하게 시작하며, [requirement]의 자산과 금액은
          * [OrderReservationCalculator]가 주문 방향에 맞게 계산한다. 수수료 정책과 수수료
          * 예약액도 함께 보존해 이후 체결과 취소에서 주문 접수 시점의 기준을 사용한다.
+         * 아직 체결이 없는 신규 주문이므로 수수료 소수 나머지는 [FeeRemainder.ZERO]로 시작한다.
          *
          * @param marketId 주문이 제출될 마켓
          * @param orderId 주문 식별자
@@ -369,6 +381,7 @@ data class OrderReservation(
                 initialFeeReserveAmount = requirement.feeReserveAmount,
                 remainingFeeReserveAmount = requirement.feeReserveAmount,
                 status = OrderReservationStatus.ACTIVE,
+                feeRemainder = FeeRemainder.ZERO,
             )
     }
 }
