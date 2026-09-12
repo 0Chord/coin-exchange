@@ -10,6 +10,7 @@ import com.exchange.core.common.Quantity
 import com.exchange.core.common.UserId
 import com.exchange.core.fee.FeeProductType
 import com.exchange.core.fee.FeeRate
+import com.exchange.core.fee.FeeRemainder
 import com.exchange.core.fee.FeeTier
 import com.exchange.core.fee.MakerTakerFeeRates
 import com.exchange.core.fee.TradingFeePolicySnapshot
@@ -34,12 +35,14 @@ import org.springframework.transaction.annotation.Transactional
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
+import kotlin.test.assertTrue
 
 /**
  * 실제 PostgreSQL에서 체결 정산의 잔고·예약 변경, 수수료 원장 기록과 전체 롤백을 검증한다.
  *
  * 테스트 전체를 감싸는 트랜잭션은 사용하지 않는다. Spring이 주입한 [TradeSettlementService]의
  * 트랜잭션이 끝난 뒤 DB를 조회하여 서비스 자체의 커밋·롤백 결과를 확인한다.
+ * 분할 체결의 소수 나머지, maker/taker 전환, 남은 예약 해제와 실패 후 재시도도 검사한다.
  *
  * 공통 PostgreSQL 설정을 사용하되, 클래스 종료 시 context와 컨테이너를 닫아 다른 클래스와 격리한다.
  */
@@ -69,6 +72,12 @@ class TradeSettlementServiceTest {
 
     @Autowired
     private lateinit var service: TradeSettlementService
+
+    @Autowired
+    private lateinit var fundingService: OrderFundingService
+
+    @Autowired
+    private lateinit var releaseService: OrderReservationReleaseService
 
     @Autowired
     private lateinit var reservationStore: OrderReservationStore
@@ -676,6 +685,308 @@ class TradeSettlementServiceTest {
 
         assertEquals(0L, transactionCount)
         assertEquals(0L, postingCount)
+    }
+
+    /**
+     * 255원 주문을 51·51·51·102원으로 나눠 정산한다.
+     * 매번 DB에서 재조회한 나머지가 다음 정산으로 이어지고 BUY 2원·SELL 1원이 청구되어야 한다.
+     */
+    @Test
+    fun `BUY와 SELL 분할 체결은 DB 나머지를 이어받아 잔고와 수수료 원장을 정산한다`() {
+        prepareFractionalFeeOrders()
+
+        val quantities = listOf(1L, 1L, 1L, 2L)
+        val buyerRemainders = listOf(510_000L, 20_000L, 530_000L, 550_000L)
+        val sellerRemainders = listOf(255_000L, 510_000L, 765_000L, 275_000L)
+        val buyerFeeReserves = listOf(3L, 2L, 2L, 0L)
+        val buyerHolds = listOf(207L, 155L, 104L, 0L)
+        val sellerCredits = listOf(51L, 102L, 153L, 254L)
+        val feeRevenues = listOf(0L, 1L, 1L, 3L)
+        var totalFilledQuantity = 0L
+
+        for ((index, quantity) in quantities.withIndex()) {
+            service.settle(MARKET, fractionalBuyTrade(index.toLong() + 1, quantity))
+            totalFilledQuantity += quantity
+
+            val buyer = readReservation(BUYER_ORDER_ID)
+            val seller = readReservation(SELLER_ORDER_ID)
+            val expectedStatus =
+                if (totalFilledQuantity == 5L) {
+                    OrderReservationStatus.SETTLED
+                } else {
+                    OrderReservationStatus.ACTIVE
+                }
+
+            assertEquals(FeeRemainder(buyerRemainders[index]), buyer.feeRemainder)
+            assertEquals(FeeRemainder(sellerRemainders[index]), seller.feeRemainder)
+            assertEquals(Amount(buyerFeeReserves[index]), buyer.remainingFeeReserveAmount)
+            assertEquals(Amount.ZERO, seller.remainingFeeReserveAmount)
+            assertEquals(Amount(buyerHolds[index]), buyer.remainingAmount)
+            assertEquals(Amount(5 - totalFilledQuantity), seller.remainingAmount)
+            assertEquals(Quantity(5 - totalFilledQuantity), buyer.remainingQuantity)
+            assertEquals(Quantity(5 - totalFilledQuantity), seller.remainingQuantity)
+            assertEquals(expectedStatus, buyer.status)
+            assertEquals(expectedStatus, seller.status)
+
+            assertPersistedBalance(
+                BUYER_USER_ID,
+                KRW_ASSET_ID,
+                available = if (totalFilledQuantity == 5L) 743 else 742,
+                hold = buyerHolds[index],
+            )
+            assertPersistedBalance(BUYER_USER_ID, BTC_ASSET_ID, totalFilledQuantity, 0)
+            assertPersistedBalance(SELLER_USER_ID, BTC_ASSET_ID, 5, 5 - totalFilledQuantity)
+            assertPersistedBalance(SELLER_USER_ID, KRW_ASSET_ID, sellerCredits[index], 0)
+            assertSettlementLedger(index.toLong() + 1, feeRevenues[index])
+        }
+    }
+
+    /**
+     * BUY가 첫 51원은 taker, 나머지 204원은 maker로 체결된다.
+     * 이전 나머지 0.51원에 새 maker 수수료 1.02원을 더해 총 1원만 청구해야 한다.
+     */
+    @Test
+    fun `같은 BUY 주문이 taker에서 maker로 바뀌어도 이전 수수료 나머지를 유지한다`() {
+        prepareFractionalFeeOrders(sellerQuantity = 1)
+        service.settle(MARKET, fractionalBuyTrade(sequence = 1, quantity = 1))
+
+        assertEquals(FeeRemainder(510_000), readReservation(BUYER_ORDER_ID).feeRemainder)
+        assertEquals(OrderReservationStatus.SETTLED, readReservation(SELLER_ORDER_ID).status)
+
+        // 최초 SELL은 전량 체결됐다. 남은 BUY를 새 SELL 주문이 taker로 체결한다.
+        val nextSellerOrderId = OrderId("next-seller-order")
+        fundingService.reserve(
+            market = MARKET,
+            orderId = nextSellerOrderId,
+            userId = SELLER_USER_ID,
+            side = Side.SELL,
+            limitPrice = Price(51),
+            quantity = Quantity(4),
+            feePolicySnapshot = fractionalFeePolicy(),
+        )
+
+        service.settle(
+            market = MARKET,
+            trade =
+                TradeExecuted(
+                    marketId = MARKET.marketId,
+                    engineSequence = 2,
+                    makerOrderId = BUYER_ORDER_ID,
+                    takerOrderId = nextSellerOrderId,
+                    makerUserId = BUYER_USER_ID,
+                    takerUserId = SELLER_USER_ID,
+                    side = Side.SELL,
+                    price = Price(51),
+                    quantity = Quantity(4),
+                ),
+        )
+
+        val buyer = readReservation(BUYER_ORDER_ID)
+        val seller = readReservation(nextSellerOrderId)
+        assertEquals(FeeRemainder(530_000), buyer.feeRemainder)
+        assertEquals(FeeRemainder(40_000), seller.feeRemainder)
+        assertEquals(Amount.ZERO, buyer.remainingAmount)
+        assertEquals(Amount.ZERO, buyer.remainingFeeReserveAmount)
+        assertEquals(Amount.ZERO, seller.remainingAmount)
+        assertEquals(OrderReservationStatus.SETTLED, buyer.status)
+        assertEquals(OrderReservationStatus.SETTLED, seller.status)
+        assertPersistedBalance(BUYER_USER_ID, KRW_ASSET_ID, 744, 0)
+        assertPersistedBalance(BUYER_USER_ID, BTC_ASSET_ID, 5, 0)
+        assertPersistedBalance(SELLER_USER_ID, KRW_ASSET_ID, 253, 0)
+        assertPersistedBalance(SELLER_USER_ID, BTC_ASSET_ID, 5, 0)
+        assertSettlementLedger(expectedTransactionCount = 2, expectedFeeRevenue = 3)
+    }
+
+    /**
+     * 두 번 체결한 뒤 남은 BUY·SELL 예약을 해제한다.
+     * 청구된 BUY 수수료 1원은 유지하고, 미사용 예약만 반환하며 중복 해제는 잔고를 늘리지 않는다.
+     */
+    @Test
+    fun `부분 체결 후 예약을 해제하면 이미 청구한 수수료는 유지하고 미사용 금액만 반환한다`() {
+        prepareFractionalFeeOrders()
+        service.settle(MARKET, fractionalBuyTrade(sequence = 1, quantity = 1))
+        service.settle(MARKET, fractionalBuyTrade(sequence = 2, quantity = 1))
+
+        val buyerBeforeRelease = readReservation(BUYER_ORDER_ID)
+        val sellerBeforeRelease = readReservation(SELLER_ORDER_ID)
+        val postingsBeforeRelease = readPostings()
+        assertEquals(Amount(155), buyerBeforeRelease.remainingAmount)
+        assertEquals(Amount(2), buyerBeforeRelease.remainingFeeReserveAmount)
+        assertSettlementLedger(expectedTransactionCount = 2, expectedFeeRevenue = 1)
+
+        // HTTP나 주문장은 이 테스트의 범위가 아니다. 취소 후 자금 해제 서비스를 검증한다.
+        releaseService.release(MARKET.marketId, BUYER_ORDER_ID)
+        releaseService.release(MARKET.marketId, SELLER_ORDER_ID)
+        releaseService.release(MARKET.marketId, BUYER_ORDER_ID)
+        releaseService.release(MARKET.marketId, SELLER_ORDER_ID)
+
+        val buyer = readReservation(BUYER_ORDER_ID)
+        val seller = readReservation(SELLER_ORDER_ID)
+        assertEquals(buyerBeforeRelease.release(), buyer)
+        assertEquals(sellerBeforeRelease.release(), seller)
+        assertEquals(FeeRemainder(20_000), buyer.feeRemainder)
+        assertEquals(FeeRemainder(510_000), seller.feeRemainder)
+        assertPersistedBalance(BUYER_USER_ID, KRW_ASSET_ID, 897, 0)
+        assertPersistedBalance(BUYER_USER_ID, BTC_ASSET_ID, 2, 0)
+        assertPersistedBalance(SELLER_USER_ID, KRW_ASSET_ID, 102, 0)
+        assertPersistedBalance(SELLER_USER_ID, BTC_ASSET_ID, 8, 0)
+        assertEquals(postingsBeforeRelease, readPostings())
+        assertSettlementLedger(expectedTransactionCount = 2, expectedFeeRevenue = 1)
+    }
+
+    /**
+     * 첫 체결로 소수 나머지를 저장한 뒤 두 번째 정산의 마지막 지급을 실패시킨다.
+     * 먼저 반영한 양쪽 예약·잔고·수수료 분개가 모두 롤백되고, 같은 이벤트 재시도는 한 번만 반영된다.
+     */
+    @Test
+    fun `분할 정산 실패는 나머지와 수수료 원장도 롤백하고 재시도에서 한 번만 청구한다`() {
+        prepareFractionalFeeOrders()
+        service.settle(MARKET, fractionalBuyTrade(sequence = 1, quantity = 1))
+
+        assertEquals(
+            1,
+            jdbcTemplate.update(
+                "delete from balance_projection where user_id = ? and asset_id = ?",
+                BUYER_USER_ID.value,
+                BTC_ASSET_ID.value,
+            ),
+        )
+        val buyerBeforeFailure = readReservation(BUYER_ORDER_ID)
+        val sellerBeforeFailure = readReservation(SELLER_ORDER_ID)
+        val balancesBeforeFailure = readBalances()
+        val postingsBeforeFailure = readPostings()
+        val transactionsBeforeFailure = readLedgerTransactions()
+        val trade = fractionalBuyTrade(sequence = 2, quantity = 2)
+
+        val exception =
+            assertFailsWith<BalanceNotFoundException> {
+                service.settle(MARKET, trade)
+            }
+
+        assertEquals(BUYER_USER_ID, exception.userId)
+        assertEquals(BTC_ASSET_ID, exception.assetId)
+        assertEquals(buyerBeforeFailure, readReservation(BUYER_ORDER_ID))
+        assertEquals(sellerBeforeFailure, readReservation(SELLER_ORDER_ID))
+        assertEquals(balancesBeforeFailure, readBalances())
+        assertEquals(postingsBeforeFailure, readPostings())
+        assertEquals(transactionsBeforeFailure, readLedgerTransactions())
+        assertSettlementLedger(expectedTransactionCount = 1, expectedFeeRevenue = 0)
+
+        // 실패 원인이었던 지급 계좌를 첫 체결 후 잔고로 복구하고 같은 이벤트를 다시 정산한다.
+        insertBalance(BUYER_USER_ID, BTC_ASSET_ID, available = 1, hold = 0)
+        service.settle(MARKET, trade)
+
+        assertEquals(FeeRemainder(530_000), readReservation(BUYER_ORDER_ID).feeRemainder)
+        assertEquals(FeeRemainder(765_000), readReservation(SELLER_ORDER_ID).feeRemainder)
+        assertEquals(Amount(2), readReservation(BUYER_ORDER_ID).remainingFeeReserveAmount)
+        assertPersistedBalance(BUYER_USER_ID, KRW_ASSET_ID, 742, 104)
+        assertPersistedBalance(BUYER_USER_ID, BTC_ASSET_ID, 3, 0)
+        assertPersistedBalance(SELLER_USER_ID, KRW_ASSET_ID, 153, 0)
+        assertPersistedBalance(SELLER_USER_ID, BTC_ASSET_ID, 5, 2)
+        assertSettlementLedger(expectedTransactionCount = 2, expectedFeeRevenue = 1)
+    }
+
+    /** 기본 무수수료 fixture를 소액 분할 체결용으로 교체하고 실제 서비스로 자금을 예약한다. */
+    private fun prepareFractionalFeeOrders(sellerQuantity: Long = 5) {
+        jdbcTemplate.update("delete from order_reservations")
+        jdbcTemplate.update("delete from balance_projection")
+        insertBalance(BUYER_USER_ID, KRW_ASSET_ID, 1_000, 0)
+        insertBalance(BUYER_USER_ID, BTC_ASSET_ID, 0, 0)
+        insertBalance(SELLER_USER_ID, KRW_ASSET_ID, 0, 0)
+        insertBalance(SELLER_USER_ID, BTC_ASSET_ID, 10, 0)
+
+        fundingService.reserve(
+            market = MARKET,
+            orderId = BUYER_ORDER_ID,
+            userId = BUYER_USER_ID,
+            side = Side.BUY,
+            limitPrice = Price(51),
+            quantity = Quantity(5),
+            feePolicySnapshot = fractionalFeePolicy(),
+        )
+        fundingService.reserve(
+            market = MARKET,
+            orderId = SELLER_ORDER_ID,
+            userId = SELLER_USER_ID,
+            side = Side.SELL,
+            limitPrice = Price(51),
+            quantity = Quantity(sellerQuantity),
+            feePolicySnapshot = fractionalFeePolicy(),
+        )
+    }
+
+    /** 소액 체결에서 서로 다른 소수 나머지가 생기도록 maker 0.5%·taker 1%를 적용한다. */
+    private fun fractionalFeePolicy(): TradingFeePolicySnapshot =
+        feeFreePolicySnapshot.copy(
+            feeRates =
+                MakerTakerFeeRates(
+                    makerFeeRate = FeeRate(5_000),
+                    takerFeeRate = FeeRate(10_000),
+                ),
+        )
+
+    /** 기존 SELL이 maker이고 BUY가 taker인 51원 체결을 만든다. 매칭 엔진 자체는 실행하지 않는다. */
+    private fun fractionalBuyTrade(sequence: Long, quantity: Long): TradeExecuted =
+        TradeExecuted(
+            marketId = MARKET.marketId,
+            engineSequence = sequence,
+            makerOrderId = SELLER_ORDER_ID,
+            takerOrderId = BUYER_ORDER_ID,
+            makerUserId = SELLER_USER_ID,
+            takerUserId = BUYER_USER_ID,
+            side = Side.BUY,
+            price = Price(51),
+            quantity = Quantity(quantity),
+        )
+
+    /** 직전 서비스 트랜잭션이 커밋한 예약을 DB에서 다시 읽는다. */
+    private fun readReservation(orderId: OrderId): OrderReservation =
+        requireNotNull(reservationStore.find(MARKET.marketId, orderId))
+
+    /** 실패 전후의 실제 DB 행 전체를 비교한다. */
+    private fun readBalances(): List<Map<String, Any?>> =
+        jdbcTemplate.queryForList("select * from balance_projection order by user_id, asset_id")
+
+    /** 분개 순서를 고정해 실패·예약 해제 전후에 기존 수수료 기록이 바뀌지 않는지 확인한다. */
+    private fun readPostings(): List<Map<String, Any?>> =
+        jdbcTemplate.queryForList("select * from ledger_postings order by posting_id")
+
+    /** 실패한 정산의 원장 거래가 남지 않고 기존 거래도 유지되는지 확인한다. */
+    private fun readLedgerTransactions(): List<Map<String, Any?>> =
+        jdbcTemplate.queryForList("select * from ledger_transactions order by source_event_id")
+
+    /** 정산별·자산별 차대 일치와 실제 수수료 수익 계정의 순 CREDIT을 DB에서 검증한다. */
+    private fun assertSettlementLedger(expectedTransactionCount: Long, expectedFeeRevenue: Long) {
+        assertEquals(
+            expectedTransactionCount,
+            jdbcTemplate.queryForObject(
+                "select count(*) from ledger_transactions where transaction_type = 'SETTLEMENT'",
+                Long::class.java,
+            ),
+        )
+        assertEquals(
+            expectedFeeRevenue,
+            jdbcTemplate.queryForObject(
+                """
+                select coalesce(sum(case when side = 'CREDIT' then amount else -amount end), 0)
+                from ledger_postings
+                where account_id = 'SYSTEM:KRW:FEE_REVENUE'
+                  and asset_id = 'KRW'
+                """.trimIndent(),
+                Long::class.java,
+            ),
+        )
+
+        val unbalancedTransactions =
+            jdbcTemplate.queryForList(
+                """
+                select ledger_transaction_id, asset_id
+                from ledger_postings
+                group by ledger_transaction_id, asset_id
+                having sum(case when side = 'DEBIT' then amount else -amount end) <> 0
+                """.trimIndent(),
+            )
+        assertTrue(unbalancedTransactions.isEmpty(), "각 정산은 자산별 차변과 대변 합계가 같아야 한다")
     }
 
     companion object {
