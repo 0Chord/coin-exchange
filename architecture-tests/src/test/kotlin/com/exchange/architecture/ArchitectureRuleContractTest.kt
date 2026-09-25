@@ -1,6 +1,10 @@
 package com.exchange.architecture
 
 import com.exchange.architecture.fixtures.*
+import com.exchange.architecture.fixtures.portaccess.BalancePortImplementation
+import com.exchange.architecture.fixtures.portaccess.ImplementationCallingDomain
+import com.exchange.architecture.fixtures.portaccess.ImplementationReferencingDomain
+import com.exchange.architecture.fixtures.portaccess.PortReferencingDomain
 import com.exchange.architecture.rules.ArchitectureRoles
 import com.exchange.architecture.rules.ArchitectureViolation
 import com.exchange.architecture.rules.DomainTechnologyIndependence
@@ -215,6 +219,53 @@ class ArchitectureRuleContractTest {
         val reverse = DomainTechnologyIndependence.evaluate(importFixtures(*types.reversedArray()), pure(*types))
         assertTrue(forward.size >= 3)
         assertEquals(forward, reverse)
+    }
+
+    @Test
+    fun `A21 포트 구현체를 직접 호출해도 등록된 포트 접근으로 검출한다`() {
+        assertPortAccessViolation(
+            ImplementationCallingDomain::class.java, BalancePortImplementation::class.java, 12,
+        )
+    }
+
+    @Test
+    fun `A22 포트의 메서드 참조를 반환하면 실행 전에도 접근으로 검출한다`() {
+        assertPortAccessViolation(PortReferencingDomain::class.java, DomainBalancePort::class.java, 16)
+    }
+
+    @Test
+    fun `A23 포트 구현체의 메서드 참조도 접근으로 검출한다`() {
+        assertPortAccessViolation(
+            ImplementationReferencingDomain::class.java, BalancePortImplementation::class.java, 20,
+        )
+    }
+
+    private fun assertPortAccessViolation(caller: Class<*>, target: Class<*>, expectedLine: Int) {
+        // 메서드 참조용 생성 클래스도 읽되, 예제의 업무 메서드를 실행해 입력을 만들지는 않는다.
+        val classes = ClassFileImporter().importPackagesOf(ImplementationCallingDomain::class.java)
+        assertTrue(classes.any { it.name == caller.name }, "검사할 호출자가 읽혀야 한다")
+        assertTrue(classes.any { it.name == BalancePortImplementation::class.java.name }, "포트 구현 관계를 읽어야 한다")
+        val accesses = classes.flatMap { it.methodCallsFromSelf + it.methodReferencesFromSelf }.filter {
+            (it.origin.owner.name == caller.name || it.origin.owner.name.startsWith(caller.name + "$")) &&
+                it.target.owner.name == target.name && it.target.name == "save"
+        }
+        assertTrue(accesses.isNotEmpty(), "예제 바이트코드에 해당 호출 또는 참조가 실제로 있어야 한다")
+
+        // 구현체를 포트 목록에 따로 넣지 않아야 인터페이스의 구현 관계를 따라가는지 확인할 수 있다.
+        val roles = ArchitectureRoles(
+            pureDomain = setOf(caller.name), externalPorts = setOf(DomainBalancePort::class.java.name),
+        )
+        val violations = DomainTechnologyIndependence.evaluate(classes, roles)
+        assertEquals(1, violations.size, "선택한 순수 도메인의 save 접근만 보고해야 한다: $violations")
+        val violation = violations.single()
+        assertEquals("ARCH-01", violation.ruleId)
+        assertTrue(violation.originType == caller.name || violation.originType.startsWith(caller.name + "$"))
+        assertEquals(target.name, violation.targetType)
+        assertTrue(violation.description.contains("save"), "단순 타입 보유가 아닌 save 접근을 보고해야 한다")
+        assertEquals("PortAccessFixtures.kt", violation.sourceFile)
+        // 기대 행은 예제 소스에서 정한다. 검사 결과에서 가져오면 잘못된 위치를 놓칠 수 있다.
+        assertEquals(expectedLine, violation.lineNumber)
+        assertEquals("engineering/architecture-check-spec.md", violation.specification)
     }
 
     private fun assertViolation(origin: Class<*>, target: String): ArchitectureViolation {
