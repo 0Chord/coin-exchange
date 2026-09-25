@@ -90,7 +90,7 @@ class ArchitectureRuleContractTest {
         val call = classes.get(origin).methodCallsFromSelf.single {
             it.origin.name == "createClient" && it.target.owner.name == target && it.target.name == "newHttpClient"
         }
-        // The fixed fixture calls newHttpClient on line 47. Do not derive the answer from the rule.
+        // 예제의 실제 호출은 47행이다. 검사기가 반환한 행에서 기대값을 만들면 잘못된 위치도 통과할 수 있다.
         assertEquals(47, call.sourceCodeLocation.lineNumber, "Fixture call site changed; review the source and expected line together")
         val violations = DomainTechnologyIndependence.evaluate(classes, pure(origin))
         val violation = assertNotNull(
@@ -219,7 +219,7 @@ class ArchitectureRuleContractTest {
 
     private fun assertViolation(origin: Class<*>, target: String): ArchitectureViolation {
         val classes = importFixtures(origin)
-        // A malformed fixture or unsupported import must not masquerade as a rule's Red.
+        // 예제의 의존이 실제로 읽혔는지 먼저 확인해야 입력 준비 실패와 규칙의 검출 실패를 구별할 수 있다.
         assertDependency(classes, origin, target)
         return findViolation(DomainTechnologyIndependence.evaluate(classes, pure(origin)), origin.name, target)
     }

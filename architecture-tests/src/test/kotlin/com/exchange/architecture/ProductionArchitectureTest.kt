@@ -8,6 +8,7 @@ import com.exchange.architecture.support.RoleClassifier
 import kotlin.test.Test
 import kotlin.test.assertTrue
 
+/** 등록·수집·역할 오류가 없는 경우에만 실제 운영 코드에 ARCH-01을 적용한다. */
 class ProductionArchitectureTest {
     @Test
     fun `P01 전체 운영 출력과 역할을 검증한 뒤 동일 ARCH-01 규칙을 적용한다`() {

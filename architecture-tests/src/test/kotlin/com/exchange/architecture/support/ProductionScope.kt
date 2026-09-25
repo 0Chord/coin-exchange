@@ -3,7 +3,10 @@ package com.exchange.architecture.support
 import java.io.File
 import java.nio.file.Path
 
-/** Explicit policy registration; it is deliberately not used to discover Gradle projects. */
+/**
+ * 운영 코드의 수집·역할 기준. 이 목록은 실제 Gradle 모듈을 발견하는 근거로 사용하지 않는다.
+ * 새 모듈의 등록 누락을 잡으려면 발견 목록을 별도로 받아야 한다.
+ */
 object ProductionScope {
     val requiredTypes = mapOf(
         "domain-common" to setOf("com.exchange.core.common.Amount"),
@@ -26,7 +29,7 @@ object ProductionScope {
             "com.exchange.core.matching.MarketCommandProcessor",
             "com.exchange.core.matching.InMemoryMarketCommandProcessor",
             "com.exchange.core.matching.MarketWorker",
-            // This facade owns only the executor's top-level failedFuture helper.
+            // 이 파일의 최상위 함수는 실행기의 failedFuture 보조 함수뿐이므로 실행기 역할로 둔다.
             "com.exchange.core.matching.MarketCommandProcessorKt",
         ),
         reviewedPureInterfaces = setOf(

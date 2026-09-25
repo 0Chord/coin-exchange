@@ -7,10 +7,22 @@ import java.lang.classfile.ClassFile
 import java.nio.file.Files
 import java.nio.file.Path
 
-/** Inventory comes from class-file bytes, independently of ArchUnit's dependency resolver. */
+/**
+ * 클래스 파일 자체에서 만든 목록을 ArchUnit의 읽기 결과와 대조한다.
+ * 읽기 도구의 결과만 정답으로 삼으면 그 도구가 누락한 클래스를 발견할 수 없기 때문이다.
+ */
 class ProductionScopeImporter(
     private val reader: BytecodeReader = BytecodeReader { ClassFileImporter().importPaths(it) },
 ) {
+    /**
+     * 운영 출력에서 가능한 오류를 모아 반환한다. 첫 오류만으로 즉시 중단하지 않는다.
+     *
+     * @param outputs 모듈별 운영 컴파일 출력 폴더.
+     * @param expectations 필수 타입·역할과 금지 경로·이름 범위.
+     * @return 모듈별 클래스와 정렬된 오류 목록. 오류가 있으면 부분 결과로 준수를 판정하지 않는다.
+     * @throws java.io.IOException 경로 정규화 중 실제 경로를 확인하지 못한 경우.
+     * 폴더 탐색·클래스 해석·읽기 도구 호출에서 잡은 예외는 결과의 읽기 오류로 남긴다.
+     */
     fun load(outputs: List<ModuleOutput>, expectations: ScopeExpectations): ScopeImportResult {
         val problems = mutableListOf<ScopeProblem>()
         val modules = outputs.groupBy { it.module }
@@ -24,7 +36,7 @@ class ProductionScopeImporter(
             val files = linkedSetOf<Path>()
             entries.flatMap { it.roots }.distinctBy { canonical(it) }.forEach { inputRoot ->
                 val root = canonical(inputRoot)
-                // A parent output directory can contain test/JMH children; reject both overlap directions.
+                // 테스트·벤치마크 폴더를 품은 상위 폴더도 오염된 입력이므로 양방향 포함 관계를 막는다.
                 if (forbidden.any { root.startsWith(it) || it.startsWith(root) }) {
                     problems += ScopeProblem(ScopeProblemCode.FORBIDDEN_OUTPUT, inputRoot.toString())
                 } else {

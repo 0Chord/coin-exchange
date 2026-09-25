@@ -21,7 +21,7 @@ dependencies {
 	testImplementation(platform("org.springframework.boot:spring-boot-dependencies:4.1.0"))
 	testImplementation(kotlin("test-junit5"))
 	testImplementation("com.tngtech.archunit:archunit:1.4.2")
-	// Actual annotations in negative fixtures; no Spring context is started.
+	// 위반 예제에 실제 애너테이션을 붙이기 위한 의존성이다. Spring 컨텍스트는 띄우지 않는다.
 	testImplementation("org.springframework:spring-context")
 	testImplementation("jakarta.persistence:jakarta.persistence-api")
 	testRuntimeOnly("org.junit.platform:junit-platform-launcher")
@@ -61,13 +61,13 @@ tasks.withType<Test> {
 	inputs.property("registeredNonProductionModules", nonProductionModules)
 	inputs.property("forbiddenOutputPaths", forbiddenOutputs)
 	doFirst {
-		// At execution time all projects are configured. Discovery must not reuse productionModules.
+		// 등록 목록과 별도로 찾아야 새 모듈의 등록 누락을 잡을 수 있다. 모든 프로젝트 설정이 끝난 뒤 읽는다.
 		systemProperty("architecture.discoveredJvmProjects", discoveredJvmProjects.get().joinToString(","))
 		systemProperty("architecture.registration.production", productionModules.joinToString(",") { ":$it" })
 		systemProperty("architecture.registration.nonProduction", nonProductionModules.joinToString(",") { ":$it" })
 		systemProperty("architecture.forbiddenOutputs", forbiddenOutputs.get().joinToString(File.pathSeparator))
 		productionOutputs.forEach { (module, output) ->
-			// Source sets without Java sources need not create a Java output directory.
+			// Java 소스가 없는 모듈에는 Java 출력 폴더가 생기지 않을 수 있다.
 			systemProperty("architecture.outputs.$module", output.filter { it.exists() }.asPath)
 		}
 	}

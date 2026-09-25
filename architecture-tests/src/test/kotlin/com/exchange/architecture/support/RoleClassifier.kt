@@ -14,6 +14,12 @@ data class RoleRegistration(
 data class RoleClassification(val roles: ArchitectureRoles, val problems: List<ScopeProblem>)
 
 object RoleClassifier {
+    /**
+     * 도메인 타입을 기본 포함하고 등록한 포트·실행기만 별도 역할로 분리한다.
+     *
+     * 새 인터페이스는 자동 제외하지 않고 미분류 오류를 남긴다.
+     * @return 역할 집합과 분류 오류. 오류가 있어도 집합은 반환되므로 호출자가 진행을 막아야 한다.
+     */
     fun classify(classesByModule: Map<String, JavaClasses>, registration: RoleRegistration): RoleClassification {
         val all = classesByModule.values.flatMap { it.toList() }
         val domains = classesByModule.filterKeys { it in registration.domainModules }.values.flatMap { it.toList() }

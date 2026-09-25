@@ -11,7 +11,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
 
-/** Verifies Gradle/bytecode preparation only, not production compliance with ARCH-01. */
+/** Gradle이 실제 목록·컴파일 출력을 전달했는지 확인한다. ARCH-01 준수 판정은 P01이 맡는다. */
 class ProductionOutputWiringTest {
     @Test
     fun `W02 Gradle의 JVM 발견 목록과 운영 및 비운영 등록을 검사 경계로 전달한다`() {
