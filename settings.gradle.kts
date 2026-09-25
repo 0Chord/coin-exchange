@@ -8,4 +8,5 @@ include(
 	"domain-fee",
 	"benchmark-jmh",
 	"app-api",
+	"architecture-tests",
 )
