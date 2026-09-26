@@ -1,0 +1,475 @@
+{
+  "createdAt": "2026-09-26T23:11:16+09:00",
+  "baseCommit": "b10027618f48d11e26b931531bc5e9e3cde4906e",
+  "branch": "test/http-entry-boundary/19",
+  "workingTree": "uncommitted local implementation; source hashes identify tested content",
+  "scope": "ARCH-03 example contracts; production activation remains #20–21",
+  "sourceHashes": {
+    "architecture-tests/src/test/kotlin/com/exchange/architecture/support/HttpBoundaryScope.kt": "18e369e49d7a81ce89575a95cdbeb77b34c9f41eec42a0a148fc2adf91062816",
+    "architecture-tests/src/test/kotlin/com/exchange/architecture/rules/HttpEntryBoundary.kt": "cbaeb04a81532061aa19d8d9926041ec505babf2c92fc1ad8d0716489a585346",
+    "architecture-tests/src/test/kotlin/com/exchange/architecture/support/ScopeContracts.kt": "b359e58000f3e95ae483d108cd2050ac567295d8e0458d1ade960b3a8a109ca0",
+    "architecture-tests/src/test/kotlin/com/exchange/architecture/support/ProductionScopeImporter.kt": "36703391b28abec68245b1e80c5e3f88ce687bef6a8ed7252c0337a70a182cc9",
+    "architecture-tests/src/test/kotlin/com/exchange/architecture/HttpBoundaryScopeTest.kt": "fd8db77dab05040329170a5625c2273fe1ef303f56f7eb7c97e970f7695ed8a7",
+    "architecture-tests/src/test/kotlin/com/exchange/architecture/HttpBoundaryImportTest.kt": "883be550eaf6c673523594f87a536a7c4742d16b8d21f66dff13502f4d853ba5",
+    "architecture-tests/src/test/kotlin/com/exchange/architecture/HttpEntryBoundaryContractTest.kt": "cbda0b85d00f293f6e515e0b20014c7921864155ca924fc9486063f6d777a0b4",
+    "architecture-tests/src/test/kotlin/com/exchange/architecture/fixtures/httpboundary/Contracts.kt": "505954191da9f88fc020eabeefe9b190072a1f120dfe1bcb334bc086dcd8a51f",
+    "architecture-tests/src/test/kotlin/com/exchange/architecture/fixtures/httpboundary/web/HttpFixtures.kt": "60a048d6e07e949e87a7a986395610e8425e635c0c8bbb819f00882ed106c7f9",
+    "architecture-tests/src/test/kotlin/com/exchange/architecture/fixtures/httpboundary/web/MappingFunctions.kt": "7d6c373de52334698ea1c15f34e9081d73534b6128adc1ed5e46a00333e3b11a",
+    "architecture-tests/src/test/java/com/exchange/architecture/fixtures/httpboundary/web/JavaReferenceController.java": "59a1fbe45a0f8455b6c97370fb2810a31ce5783c89a11d0e7c13e216f734e814",
+    "architecture-tests/build.gradle.kts": "0ff2cbc44238436103de3be9771cf10b95921b72a3ec19b3994383751db6a02c"
+  },
+  "commands": [
+    {
+      "command": "./gradlew :architecture-tests:test --tests '*HttpBoundaryScopeTest' --no-daemon --console=plain",
+      "stage": "scope Red",
+      "tests": 6,
+      "failures": 6,
+      "cause": "Compiled; assertions failed against empty role preparation"
+    },
+    {
+      "command": "./gradlew :architecture-tests:test --tests '*HttpEntryBoundaryContractTest' --no-daemon --console=plain",
+      "stage": "rule Red",
+      "tests": 4,
+      "failures": 3,
+      "cause": "No rule evaluation; valid use-case internal storage case already passed"
+    },
+    {
+      "command": "./gradlew :architecture-tests:test --tests '*HttpBoundary*Test' --tests '*HttpEntryBoundaryContractTest' --no-daemon --console=plain",
+      "stage": "input review counterexample",
+      "tests": 36,
+      "failures": 1,
+      "cause": "External java.sql.Connection could be assigned DATA role"
+    },
+    {
+      "command": "./gradlew :architecture-tests:test --tests '*HttpBoundary*Test' --tests '*HttpEntryBoundaryContractTest' --no-daemon --console=plain",
+      "stage": "focused after correction and JVM reference case",
+      "tests": 37,
+      "failures": 0
+    },
+    {
+      "command": "./gradlew :architecture-tests:test --no-daemon --console=plain --rerun-tasks",
+      "result": "SUCCESS",
+      "counts": {
+        "tests": 196,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      "note": "Final source including concrete JDBC and HTTP client examples; all architecture tests executed"
+    },
+    {
+      "command": "./gradlew :architecture-tests:test --dry-run --no-daemon --console=plain",
+      "result": "SUCCESS",
+      "testTasks": [
+        ":architecture-tests:test"
+      ],
+      "note": "Task graph only; SKIPPED here is not a skipped test"
+    },
+    {
+      "command": "./gradlew build --no-daemon --continue --console=plain",
+      "result": "SUCCESS",
+      "note": "30 tasks UP-TO-DATE; build wiring confirmed with cached outputs, not a fresh rerun of product tests"
+    }
+  ],
+  "suites": [
+    {
+      "name": "com.exchange.architecture.ArchitectureRuleContractTest",
+      "tests": 23,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0,
+      "xmlSha256": "fcfd5f138d101771f1cc3931348cea644a44caff7cc920b4f21c259bc8ca1d6d",
+      "path": "architecture-tests/build/test-results/test/TEST-com.exchange.architecture.ArchitectureRuleContractTest.xml"
+    },
+    {
+      "name": "com.exchange.architecture.GradleDependencyWiringTest",
+      "tests": 4,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0,
+      "xmlSha256": "9052f719778be8138cb6b09af41c625969c57dae9cfb5778a63d98a62d0aeae1",
+      "path": "architecture-tests/build/test-results/test/TEST-com.exchange.architecture.GradleDependencyWiringTest.xml"
+    },
+    {
+      "name": "com.exchange.architecture.HttpBoundaryImportTest",
+      "tests": 7,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0,
+      "xmlSha256": "e55bf55bb20f447e629359307fd5148bb517832d487f9ba1582295f2cb9c3b64",
+      "path": "architecture-tests/build/test-results/test/TEST-com.exchange.architecture.HttpBoundaryImportTest.xml"
+    },
+    {
+      "name": "com.exchange.architecture.HttpBoundaryScopeTest",
+      "tests": 12,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0,
+      "xmlSha256": "21569e7958192d6249f5833c4368d5f04127a758f2c8089f7f33b034720a3dbc",
+      "path": "architecture-tests/build/test-results/test/TEST-com.exchange.architecture.HttpBoundaryScopeTest.xml"
+    },
+    {
+      "name": "com.exchange.architecture.HttpEntryBoundaryContractTest",
+      "tests": 18,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0,
+      "xmlSha256": "4647d4414cf51309b918210c823dec63166104054cef5ff3e4a889b7f6cdf0c6",
+      "path": "architecture-tests/build/test-results/test/TEST-com.exchange.architecture.HttpEntryBoundaryContractTest.xml"
+    },
+    {
+      "name": "com.exchange.architecture.ImportScopeContractTest",
+      "tests": 22,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0,
+      "xmlSha256": "ed9cc582cc89ab7a7a8c206cfa69f0f9e1641034282da0f47178aa959373d79d",
+      "path": "architecture-tests/build/test-results/test/TEST-com.exchange.architecture.ImportScopeContractTest.xml"
+    },
+    {
+      "name": "com.exchange.architecture.IsolationDependencyContractTest",
+      "tests": 6,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0,
+      "xmlSha256": "a9119bbc1410c2a7f253d38c544bc8bdfb219349c9bed2fe9bce9c3e16d6e669",
+      "path": "architecture-tests/build/test-results/test/TEST-com.exchange.architecture.IsolationDependencyContractTest.xml"
+    },
+    {
+      "name": "com.exchange.architecture.IsolationGradleWiringTest",
+      "tests": 7,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0,
+      "xmlSha256": "1841858b6b5a9dced8fa7a7bbd11eea86311d26906da323aeceb9602a05b9d27",
+      "path": "architecture-tests/build/test-results/test/TEST-com.exchange.architecture.IsolationGradleWiringTest.xml"
+    },
+    {
+      "name": "com.exchange.architecture.ModuleDependencyContractTest",
+      "tests": 11,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0,
+      "xmlSha256": "9c70a618a584fd4bc6895168da9d0c605ab27eeb26a80eb5fecc07edd7501f80",
+      "path": "architecture-tests/build/test-results/test/TEST-com.exchange.architecture.ModuleDependencyContractTest.xml"
+    },
+    {
+      "name": "com.exchange.architecture.ModuleRegistrationContractTest",
+      "tests": 5,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0,
+      "xmlSha256": "e290d4ccef93a6888c6d5a2f263d96e42c0cc868e0093154166d51a0bf8746a5",
+      "path": "architecture-tests/build/test-results/test/TEST-com.exchange.architecture.ModuleRegistrationContractTest.xml"
+    },
+    {
+      "name": "com.exchange.architecture.NonProductionTargetsTest",
+      "tests": 7,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0,
+      "xmlSha256": "25549a3ebc4f0c5fb564d453c27eed6912220be8718b2210ba350418a0d7f451",
+      "path": "architecture-tests/build/test-results/test/TEST-com.exchange.architecture.NonProductionTargetsTest.xml"
+    },
+    {
+      "name": "com.exchange.architecture.PortContractRuleTest",
+      "tests": 47,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0,
+      "xmlSha256": "0bd8ab42c0ae906777aa447fe4ea0d76970862982204b28398eb96409121a24c",
+      "path": "architecture-tests/build/test-results/test/TEST-com.exchange.architecture.PortContractRuleTest.xml"
+    },
+    {
+      "name": "com.exchange.architecture.ProductionArchitectureTest",
+      "tests": 4,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0,
+      "xmlSha256": "5d3ab327c9517de59d502a23853515cb2f19280c0da2aa6ee41c029fa96f4206",
+      "path": "architecture-tests/build/test-results/test/TEST-com.exchange.architecture.ProductionArchitectureTest.xml"
+    },
+    {
+      "name": "com.exchange.architecture.ProductionDependencyIsolationTest",
+      "tests": 9,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0,
+      "xmlSha256": "3e2edd7d9194575bc19d50ea7f9222b44a7f21f5d12b20fafd47ccc41003da39",
+      "path": "architecture-tests/build/test-results/test/TEST-com.exchange.architecture.ProductionDependencyIsolationTest.xml"
+    },
+    {
+      "name": "com.exchange.architecture.ProductionOutputWiringTest",
+      "tests": 2,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0,
+      "xmlSha256": "e1d9137c33732b36b56abbf00f4cface8385da41d2dce047ca82e3b00fcc74c9",
+      "path": "architecture-tests/build/test-results/test/TEST-com.exchange.architecture.ProductionOutputWiringTest.xml"
+    },
+    {
+      "name": "com.exchange.architecture.ProjectDependencyContractTest",
+      "tests": 8,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0,
+      "xmlSha256": "a72dc80b4550f03415dbe26953e3440bf3cba0076be1cd4f7f4e6fcdfb823238",
+      "path": "architecture-tests/build/test-results/test/TEST-com.exchange.architecture.ProjectDependencyContractTest.xml"
+    },
+    {
+      "name": "com.exchange.architecture.RoleClassificationContractTest",
+      "tests": 4,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0,
+      "xmlSha256": "a8f3c9e41cd7fca848bfafcf8c633f0c6e421011d23b743af57f10bf47ec9cd1",
+      "path": "architecture-tests/build/test-results/test/TEST-com.exchange.architecture.RoleClassificationContractTest.xml"
+    }
+  ],
+  "newTests": [
+    {
+      "suite": "com.exchange.architecture.HttpBoundaryImportTest",
+      "name": "HTTP-12 필수 컨트롤러 파일이 없으면 통과하지 않는다()",
+      "status": "passed"
+    },
+    {
+      "suite": "com.exchange.architecture.HttpBoundaryImportTest",
+      "name": "HTTP-14 출력 전체를 읽어 역할에 등록하지 않은 매퍼도 발견한다()",
+      "status": "passed"
+    },
+    {
+      "suite": "com.exchange.architecture.HttpBoundaryImportTest",
+      "name": "HTTP-12 비어 있는 출력 디렉터리를 성공으로 처리하지 않는다()",
+      "status": "passed"
+    },
+    {
+      "suite": "com.exchange.architecture.HttpBoundaryImportTest",
+      "name": "HTTP-01 실제 출력 수집부터 정상 예제 판정까지 연결된다()",
+      "status": "passed"
+    },
+    {
+      "suite": "com.exchange.architecture.HttpBoundaryImportTest",
+      "name": "HTTP-14 클래스 손상과 읽기 도구 오류를 준비 실패로 전파한다()",
+      "status": "passed"
+    },
+    {
+      "suite": "com.exchange.architecture.HttpBoundaryImportTest",
+      "name": "HTTP-14 출력과 가져온 목록이 다르면 누락 타입을 보고한다()",
+      "status": "passed"
+    },
+    {
+      "suite": "com.exchange.architecture.HttpBoundaryImportTest",
+      "name": "HTTP-14 서로 다른 파일의 중복 정의를 거절한다()",
+      "status": "passed"
+    },
+    {
+      "suite": "com.exchange.architecture.HttpBoundaryScopeTest",
+      "name": "HTTP-13 컨트롤러를 변환 역할로 잘못 등록해도 발견한다()",
+      "status": "passed"
+    },
+    {
+      "suite": "com.exchange.architecture.HttpBoundaryScopeTest",
+      "name": "HTTP-12 실제로 없는 등록 타입과 역할을 정확히 보고한다()",
+      "status": "passed"
+    },
+    {
+      "suite": "com.exchange.architecture.HttpBoundaryScopeTest",
+      "name": "HTTP-14 발견 범위를 비워 등록 누락 검사를 끌 수 없다()",
+      "status": "passed"
+    },
+    {
+      "suite": "com.exchange.architecture.HttpBoundaryScopeTest",
+      "name": "HTTP-12 빈 입력은 빈 위반 목록의 통과가 아니다()",
+      "status": "passed"
+    },
+    {
+      "suite": "com.exchange.architecture.HttpBoundaryScopeTest",
+      "name": "HTTP-13 새 메타 어노테이션 컨트롤러를 등록하지 않으면 실패한다()",
+      "status": "passed"
+    },
+    {
+      "suite": "com.exchange.architecture.HttpBoundaryScopeTest",
+      "name": "HTTP-14 외부 기술을 데이터 역할로 등록해 허용시킬 수 없다()",
+      "status": "passed"
+    },
+    {
+      "suite": "com.exchange.architecture.HttpBoundaryScopeTest",
+      "name": "HTTP-13 API 패키지 밖의 새 컨트롤러도 어노테이션으로 발견한다()",
+      "status": "passed"
+    },
+    {
+      "suite": "com.exchange.architecture.HttpBoundaryScopeTest",
+      "name": "HTTP-13 역할이 없거나 두 역할로 겹친 API 타입을 거절한다()",
+      "status": "passed"
+    },
+    {
+      "suite": "com.exchange.architecture.HttpBoundaryScopeTest",
+      "name": "HTTP-02 Service라는 이름도 등록한 진입점이면 허용한다()",
+      "status": "passed"
+    },
+    {
+      "suite": "com.exchange.architecture.HttpBoundaryScopeTest",
+      "name": "HTTP-14 내부 대상 정의 또는 대상 역할이 없으면 실패한다()",
+      "status": "passed"
+    },
+    {
+      "suite": "com.exchange.architecture.HttpBoundaryScopeTest",
+      "name": "HTTP-01 등록한 컨트롤러와 변환 데이터의 역할을 준비한다()",
+      "status": "passed"
+    },
+    {
+      "suite": "com.exchange.architecture.HttpBoundaryScopeTest",
+      "name": "HTTP-12 컨트롤러 또는 유즈케이스 역할이 없으면 준비 실패다()",
+      "status": "passed"
+    },
+    {
+      "suite": "com.exchange.architecture.HttpEntryBoundaryContractTest",
+      "name": "HTTP-06 주입 인자 반환 배열 제네릭 상속에만 남은 저장 타입도 금지한다()",
+      "status": "passed"
+    },
+    {
+      "suite": "com.exchange.architecture.HttpEntryBoundaryContractTest",
+      "name": "HTTP-08 컨트롤러 부모를 허용하되 그 본문의 저장 호출은 금지한다()",
+      "status": "passed"
+    },
+    {
+      "suite": "com.exchange.architecture.HttpEntryBoundaryContractTest",
+      "name": "HTTP-02과13 이름에 의존하지 않고 합성 컨트롤러도 정상 등록한다()",
+      "status": "passed"
+    },
+    {
+      "suite": "com.exchange.architecture.HttpEntryBoundaryContractTest",
+      "name": "HTTP-10 변환 코드의 유즈케이스 호출과 다른 컨트롤러 및 설정 사용을 금지한다()",
+      "status": "passed"
+    },
+    {
+      "suite": "com.exchange.architecture.HttpEntryBoundaryContractTest",
+      "name": "HTTP-06 어노테이션의 영속 타입 값도 금지 의존이다()",
+      "status": "passed"
+    },
+    {
+      "suite": "com.exchange.architecture.HttpEntryBoundaryContractTest",
+      "name": "HTTP-15 입력 순서와 중복 입력에 따라 진단이 달라지지 않는다()",
+      "status": "passed"
+    },
+    {
+      "suite": "com.exchange.architecture.HttpEntryBoundaryContractTest",
+      "name": "HTTP-09 유즈케이스 내부의 정당한 저장 호출까지 HTTP 위반으로 보지 않는다()",
+      "status": "passed"
+    },
+    {
+      "suite": "com.exchange.architecture.HttpEntryBoundaryContractTest",
+      "name": "HTTP-16 위반과 누락이 함께 있으면 전체 미평가이고 부분 위반을 내지 않는다()",
+      "status": "passed"
+    },
+    {
+      "suite": "com.exchange.architecture.HttpEntryBoundaryContractTest",
+      "name": "HTTP-08 최상위 확장 함수의 파일 파사드도 검사한다()",
+      "status": "passed"
+    },
+    {
+      "suite": "com.exchange.architecture.HttpEntryBoundaryContractTest",
+      "name": "HTTP-11 웹 지원은 허용하지만 직접 DB와 외부 요청 기술은 금지한다()",
+      "status": "passed"
+    },
+    {
+      "suite": "com.exchange.architecture.HttpEntryBoundaryContractTest",
+      "name": "HTTP-04 저장 포트와 구현 Repository 엔티티를 직접 사용하면 금지한다()",
+      "status": "passed"
+    },
+    {
+      "suite": "com.exchange.architecture.HttpEntryBoundaryContractTest",
+      "name": "HTTP-01과03 명령 구성과 유즈케이스 호출 및 응답 변환은 허용한다()",
+      "status": "passed"
+    },
+    {
+      "suite": "com.exchange.architecture.HttpEntryBoundaryContractTest",
+      "name": "HTTP-16 반환 타입의 행을 추측하지 않고 규칙과 역할을 표시한다()",
+      "status": "passed"
+    },
+    {
+      "suite": "com.exchange.architecture.HttpEntryBoundaryContractTest",
+      "name": "HTTP-08 매퍼와 DTO 속 저장 호출의 실제 출발 타입을 보고한다()",
+      "status": "passed"
+    },
+    {
+      "suite": "com.exchange.architecture.HttpEntryBoundaryContractTest",
+      "name": "HTTP-15 실제 중첩 타입과 람다 및 익명 클래스의 저장 호출을 놓치지 않는다()",
+      "status": "passed"
+    },
+    {
+      "suite": "com.exchange.architecture.HttpEntryBoundaryContractTest",
+      "name": "HTTP-07 JVM 메서드 및 생성자 참조의 위치와 근거를 보고한다()",
+      "status": "passed"
+    },
+    {
+      "suite": "com.exchange.architecture.HttpEntryBoundaryContractTest",
+      "name": "HTTP-05 이름이 UseCase인 내부 작업도 엔진과 동일하게 금지한다()",
+      "status": "passed"
+    },
+    {
+      "suite": "com.exchange.architecture.HttpEntryBoundaryContractTest",
+      "name": "HTTP-07 저장 포트와 구현체의 메서드 참조 근거를 남긴다()",
+      "status": "passed"
+    }
+  ],
+  "localLogs": [
+    {
+      "path": "/tmp/arch03-scope-red.log",
+      "sha256": "8400f5da09db3e2b3f1c8714e764a22a8139ae88d8c2c25994ebb98173af3c9c",
+      "availability": "local temporary file, not repository artifact"
+    },
+    {
+      "path": "/tmp/arch03-scope-green.log",
+      "sha256": "1d15930c923164bba9920f556184322d80cc1988bb9ca4437d13f27b17419f44",
+      "availability": "local temporary file, not repository artifact"
+    },
+    {
+      "path": "/tmp/arch03-rule-red.log",
+      "sha256": "3a8659b305c68530049997808ddfc77b5d818388de7bcb145f9c124e4629d077",
+      "availability": "local temporary file, not repository artifact"
+    },
+    {
+      "path": "/tmp/arch03-rule-green.log",
+      "sha256": "5550de87e43457ea7dce42b6a856a351febfdd76f62dd49116238977159512c4",
+      "availability": "local temporary file, not repository artifact"
+    },
+    {
+      "path": "/tmp/arch03-edges-first.log",
+      "sha256": "ea67516ae5bf691a12832330b4c7157fba9bc15cf46bdbcb762cc57f6fe577c8",
+      "availability": "local temporary file, not repository artifact"
+    },
+    {
+      "path": "/tmp/arch03-input-first.log",
+      "sha256": "d6d3721d148116f7066fa90962665b0b06085af5272d5f2d30a01fc1bec4b377",
+      "availability": "local temporary file, not repository artifact"
+    },
+    {
+      "path": "/tmp/arch03-final-focused.log",
+      "sha256": "3771d6231167242dd00dc78d9dcca27d7f385c5607bb68740c861783f332cc57",
+      "availability": "local temporary file, not repository artifact"
+    },
+    {
+      "path": "/tmp/arch03-architecture-all.log",
+      "sha256": "d1fc45250869510ea67da2daa0fe6180848b657e79f24d483ceea522b508b0fd",
+      "availability": "local temporary file, not repository artifact"
+    },
+    {
+      "path": "/tmp/arch03-dry-run.log",
+      "sha256": "0a0a0786279b89800725b28c0c2d2b97d0c68dda9e71a6158857fa104db131a5",
+      "availability": "local temporary file, not repository artifact"
+    },
+    {
+      "path": "/tmp/arch03-build.log",
+      "sha256": "14a95c39f99da4790e622d0fc1586a96cb04f8edc0895911a336e91d4c43b70f",
+      "availability": "local temporary file, not repository artifact"
+    }
+  ],
+  "review": "Test expectations and implementation checked by the same authoring AI; no independent review or user approval claimed",
+  "remoteStatus": "No new PR, push, CI, issue or board update in this implementation",
+  "limitations": [
+    "Example validation only; not production ARCH-03 compliance",
+    "Direct bytecode references and explicit external technology policy",
+    "No runtime invocation counts/order, API response semantics, DB atomicity, concurrency, rollback or proxy/reflection guarantees"
+  ]
+}
