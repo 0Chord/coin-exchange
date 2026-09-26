@@ -24,6 +24,9 @@ dependencies {
 	testImplementation("com.tngtech.archunit:archunit:1.4.2")
 	// 위반 예제에 실제 애너테이션을 붙이기 위한 의존성이다. Spring 컨텍스트는 띄우지 않는다.
 	testImplementation("org.springframework:spring-context")
+	// HTTP 경계 예제의 실제 컨트롤러·응답 타입만 읽으며 서버는 시작하지 않는다.
+	testImplementation("org.springframework:spring-web")
+	testImplementation("org.springframework:spring-jdbc")
 	testImplementation("org.springframework:spring-test")
 	testImplementation("org.testcontainers:testcontainers")
 	testImplementation("org.openjdk.jmh:jmh-core:1.37")
