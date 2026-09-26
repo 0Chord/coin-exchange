@@ -19,9 +19,8 @@ val mainProjectDependencies = providers.provider {
                 add(row("C", path, usage, name, sourceProject.buildFile.absolutePath))
                 // 구성 상속은 포함하지만 목적지 프로젝트의 전이 의존까지 펼치지는 않는다.
                 sourceProject.configurations.getByName(name).hierarchy.sortedBy { it.name }.forEach { declared ->
-                    declared.dependencies.withType<ProjectDependency>().sortedBy { it.path }.forEach { dependency ->
-                        add(row("D", dependency.path, declared.name))
-                    }
+                    declared.dependencies.withType<ProjectDependency>().map { row("D", it.path, declared.name) }
+                        .distinct().sorted().forEach { add(it) }
                 }
             }
         }

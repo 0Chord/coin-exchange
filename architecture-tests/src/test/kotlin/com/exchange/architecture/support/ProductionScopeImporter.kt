@@ -19,12 +19,17 @@ class ProductionScopeImporter(
      *
      * @param outputs 모듈별 운영 컴파일 출력 폴더.
      * @param expectations 필수 타입·역할과 금지 경로·이름 범위.
+     * @param nonProduction 소속 확인을 마친 비운영 목적지. 운영 목록에 섞지 않으며 미확인 내부 타입은 계속 거절한다.
      * @return 모듈별 클래스와 정렬된 오류 목록. 오류가 있으면 부분 결과로 준수를 판정하지 않는다.
      * @throws java.io.IOException 경로 정규화 중 실제 경로를 확인하지 못한 경우.
      * 폴더 탐색·클래스 해석·읽기 도구 호출에서 잡은 예외는 결과의 읽기 오류로 남긴다.
      */
-    fun load(outputs: List<ModuleOutput>, expectations: ScopeExpectations): ScopeImportResult {
-        val problems = mutableListOf<ScopeProblem>()
+    fun load(
+        outputs: List<ModuleOutput>,
+        expectations: ScopeExpectations,
+        nonProduction: NonProductionIndex = NonProductionIndex(),
+    ): ScopeImportResult {
+        val problems = nonProduction.problems.map { ScopeProblem(ScopeProblemCode.INVALID_TARGET_INPUT, "non-production", it) }.toMutableList()
         val modules = outputs.groupBy { it.module }
         val expectedModules = expectations.requiredTypesByModule.keys
         if (outputs.isEmpty()) problems += ScopeProblem(ScopeProblemCode.EMPTY_SCOPE, "production")
@@ -69,6 +74,7 @@ class ProductionScopeImporter(
 
         val definitions = inventory.flatMap { (module, files) -> files.map { (path, name) -> Triple(name, path, module) } }
         definitions.groupBy { it.first }.forEach { (name, entries) ->
+            if (name in nonProduction.knownTypes) problems += ScopeProblem(ScopeProblemCode.AMBIGUOUS_OWNERSHIP, name, "운영/비운영 출력에 중복 정의")
             if (entries.map { it.second }.distinct().size > 1) problems += ScopeProblem(ScopeProblemCode.DUPLICATE_TYPE, name)
             if (entries.map { it.third }.distinct().size > 1 && entries.map { it.second }.distinct().size == 1) {
                 problems += ScopeProblem(ScopeProblemCode.AMBIGUOUS_OWNERSHIP, name)
@@ -106,7 +112,7 @@ class ProductionScopeImporter(
         classes?.forEach { origin ->
             origin.directDependenciesFromSelf.forEach { dependency ->
                 val target = dependency.targetClass.baseComponentType.name
-                if (expectations.projectPackagePrefixes.any { target.startsWith(it) } && target !in expected) {
+                if (expectations.projectPackagePrefixes.any { target.startsWith(it) } && target !in expected && target !in nonProduction.knownTypes) {
                     problems += ScopeProblem(ScopeProblemCode.UNRESOLVED_PROJECT_TYPE, target, "Referenced by ${origin.name}")
                 }
             }

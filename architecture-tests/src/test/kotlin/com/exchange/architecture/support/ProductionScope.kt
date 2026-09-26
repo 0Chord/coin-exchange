@@ -46,6 +46,10 @@ object ProductionScope {
         nonProductionModules = csv("architecture.registration.nonProduction"),
     )
 
+    fun nonProductionTargets() = IsolationInputs.targets(
+        System.getProperty("architecture.sourceInventory"), System.getProperty("architecture.sourceOutputs"), inventory(),
+    )
+
     fun outputs(): List<ModuleOutput> = System.getProperties().stringPropertyNames()
         .filter { it.startsWith("architecture.outputs.") }.sorted().map {
             ModuleOutput(it.removePrefix("architecture.outputs."), paths(it))

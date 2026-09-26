@@ -24,6 +24,9 @@ dependencies {
 	testImplementation("com.tngtech.archunit:archunit:1.4.2")
 	// 위반 예제에 실제 애너테이션을 붙이기 위한 의존성이다. Spring 컨텍스트는 띄우지 않는다.
 	testImplementation("org.springframework:spring-context")
+	testImplementation("org.springframework:spring-test")
+	testImplementation("org.testcontainers:testcontainers")
+	testImplementation("org.openjdk.jmh:jmh-core:1.37")
 	testImplementation("jakarta.persistence:jakarta.persistence-api")
 	// 포트 계약 위반 예제에서 실제 기술 타입을 사용한다. 이 의존성으로 서버를 시작하지 않는다.
 	testImplementation("jakarta.transaction:jakarta.transaction-api")
@@ -43,6 +46,7 @@ val productionOutputs = productionModules.associateWith { module ->
 }
 extra["architecture.productionProjects"] = productionModules.map { ":$it" }
 apply(from = "gradle/project-dependencies.gradle.kts")
+apply(from = "gradle/isolation-inputs.gradle.kts")
 
 val discoveredJvmProjects = providers.provider {
 	rootProject.subprojects.filter {
@@ -60,6 +64,8 @@ val forbiddenOutputs = providers.provider {
 tasks.withType<Test> {
 	useJUnitPlatform()
 	inputs.file("gradle/project-dependencies.gradle.kts")
+	inputs.file("gradle/isolation-inputs.gradle.kts")
+	systemProperty("architecture.isolationScript", file("gradle/isolation-inputs.gradle.kts").absolutePath)
 	systemProperty("architecture.dependencyScript", file("gradle/project-dependencies.gradle.kts").absolutePath)
 	systemProperty("architecture.gradleHome", requireNotNull(gradle.gradleHomeDir).absolutePath)
 	productionModules.forEach { dependsOn(":$it:classes") }

@@ -48,13 +48,16 @@ object ModuleDependencyDirection {
         scope: ScopeImportResult,
         policy: Map<String, Set<String>> = allowedTargets,
         projectPackagePrefixes: Set<String> = setOf("com.exchange.core.", "com.exchange.architecture."),
+        nonProduction: NonProductionIndex = NonProductionIndex(),
     ): ModuleDirectionResult {
         val problems = scope.problems.map { "${it.code}: ${it.subject} ${it.detail.orEmpty()}" }.toMutableList()
+        problems += nonProduction.problems
         val modules = scope.classesByModule
         if (modules.isEmpty()) problems += "EMPTY_SCOPE: 운영 클래스가 없습니다"
         problems += policyProblems(modules.keys, policy)
         modules.filterValues { it.isEmpty() }.keys.forEach { problems += "EMPTY_MODULE: $it" }
         val definitions = modules.flatMap { (module, classes) -> classes.map { it.name to module } }
+        definitions.filter { it.first in nonProduction.knownTypes }.forEach { problems += "AMBIGUOUS_OWNERSHIP: ${it.first}" }
         definitions.groupBy { it.first }.filterValues { it.size > 1 }.keys.forEach {
             problems += "AMBIGUOUS_OWNERSHIP: $it"
         }
@@ -66,7 +69,7 @@ object ModuleDependencyDirection {
                 val target = dependency.targetClass.baseComponentType.name
                 val targetModule = owners[target]
                 if (targetModule == null) {
-                    if (projectPackagePrefixes.any { target.startsWith(it) }) {
+                    if (target !in nonProduction.knownTypes && projectPackagePrefixes.any { target.startsWith(it) }) {
                         problems += "UNRESOLVED_PROJECT_TYPE: ${origin.name} → $target"
                     }
                 } else if (module != targetModule && targetModule !in policy.getValue(module)) {
@@ -88,26 +91,10 @@ object ModuleDependencyDirection {
         inventory: GradleModuleInventory,
         policy: Map<String, Set<String>> = allowedTargets,
     ): ModuleDirectionResult {
-        val problems = (snapshot.problems + ModuleRegistration.inspect(inventory).map { "${it.code}: ${it.subject}" }).toMutableList()
+        val problems = DependencyInputValidation.problems(snapshot, inventory).toMutableList()
         val modules = inventory.productionModules.map { it.removePrefix(":") }.toSet()
         if (modules.isEmpty()) problems += "EMPTY_SCOPE: 운영 모듈 등록이 없습니다"
         problems += policyProblems(modules, policy)
-        val expected = inventory.productionModules.flatMap { p -> listOf(p to "compile", p to "runtime") }.toSet()
-        val groups = snapshot.configurations.groupBy { it.projectPath to it.usage }
-        (expected - groups.keys).forEach { problems += "MISSING_CONFIGURATION: ${it.first} ${it.second}" }
-        (groups.keys - expected).forEach { problems += "UNKNOWN_CONFIGURATION: ${it.first} ${it.second}" }
-        groups.filterValues { it.size != 1 }.keys.forEach { problems += "DUPLICATE_CONFIGURATION: ${it.first} ${it.second}" }
-        snapshot.configurations.groupBy { it.projectPath }.forEach { (path, records) ->
-            if (records.map { it.buildFile }.distinct().size != 1) problems += "CONFLICTING_BUILD_FILE: $path"
-        }
-        snapshot.configurations.forEach { c ->
-            if (c.configuration.isBlank() || c.buildFile.isBlank()) problems += "INVALID_CONFIGURATION: ${c.projectPath} ${c.usage}"
-            if (c.dependencies.distinct().size != c.dependencies.size) problems += "DUPLICATE_DECLARATION: ${c.projectPath} ${c.usage}"
-            c.dependencies.forEach { d ->
-                if (d.targetPath !in inventory.discoveredModules) problems += "UNKNOWN_DEPENDENCY_PROJECT: ${d.targetPath}"
-                if (d.declaredIn.isBlank()) problems += "MISSING_DECLARATION_CONFIGURATION: ${c.projectPath} → ${d.targetPath}"
-            }
-        }
         if (problems.isNotEmpty()) return ModuleDirectionResult(problems.distinct().sorted())
         // 한 선언이 compile/runtime에 함께 보여도 한 위반에 양쪽 근거를 보존한다.
         val declarations = snapshot.configurations.flatMap { c -> c.dependencies.map { c to it } }
@@ -133,8 +120,9 @@ object ModuleDependencyDirection {
         snapshot: ProjectDependencySnapshot,
         inventory: GradleModuleInventory,
         policy: Map<String, Set<String>> = allowedTargets,
+        nonProduction: NonProductionIndex = NonProductionIndex(),
     ): ModuleDirectionResult {
-        val bytecode = inspectBytecode(scope, policy)
+        val bytecode = inspectBytecode(scope, policy, nonProduction = nonProduction)
         val gradle = inspectGradle(snapshot, inventory, policy)
         val problems = (bytecode.problems + gradle.problems).distinct().sorted()
         return if (problems.isNotEmpty()) ModuleDirectionResult(problems)
