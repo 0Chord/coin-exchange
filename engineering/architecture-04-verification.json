@@ -1,0 +1,735 @@
+{
+  "createdAt": "2026-09-27T00:55:38+09:00",
+  "baseCommit": "07d4e0501dc5de7bbc9f6709eaa04ae22eb7741c",
+  "branch": "test/application-boundary/19",
+  "workingTree": "커밋 전 로컬 변경. sourceHashes가 최종 검증·설명 대상의 내용을 식별한다.",
+  "scope": "ARCH-04 예제 검증. 운영 적용은 #20–21. 제품 코드 변경 없음.",
+  "sourceHashes": {
+    "architecture-tests/build.gradle.kts": "de99f1556f6184ba69bcecbfa8a78e30e3711081e3409e32deb46669a7dcb12a",
+    "architecture-tests/src/test/java/com/exchange/architecture/fixtures/applicationboundary/application/JavaReferences.java": "79b4532e4b649b2e81f6d696c3330ed8855d7e8325e015b92abe99a3b8ec6629",
+    "architecture-tests/src/test/kotlin/com/exchange/architecture/ApplicationBoundaryContractTest.kt": "567966e1b284adc7f6a4d179061ff2b9b198b8ab3ae2349e97d31559fb8adde6",
+    "architecture-tests/src/test/kotlin/com/exchange/architecture/ApplicationBoundaryImportTest.kt": "7274ef9f3c1b52630c08ad001e413bd44c87f2a2a3f235f3620b9338ac2500fe",
+    "architecture-tests/src/test/kotlin/com/exchange/architecture/ApplicationBoundaryReferenceTest.kt": "3586987a17e8403a1f48868a3a233ddac139c5eb748dcd33d0c6f7de9d3ff92f",
+    "architecture-tests/src/test/kotlin/com/exchange/architecture/ApplicationBoundaryScopeTest.kt": "929b236bc5dc4e1a9bba46fc26d8001aee80ee539df221823a732e2d6201e216",
+    "architecture-tests/src/test/kotlin/com/exchange/architecture/fixtures/applicationboundary/Contracts.kt": "057b0d5863531e25fedbe7dc018ea4637063eb93556183e134b6c661bf13a457",
+    "architecture-tests/src/test/kotlin/com/exchange/architecture/fixtures/applicationboundary/OutsideConfiguration.kt": "8069c01314a05be85d0e05a7c44068747becbaea5f3e3393794ef0d693c8d8df",
+    "architecture-tests/src/test/kotlin/com/exchange/architecture/fixtures/applicationboundary/application/NormalWorkflow.kt": "45e21ef528ee88e2a99de8cd6f9f4ae199431353bf7c71e4df7546a565e67b65",
+    "architecture-tests/src/test/kotlin/com/exchange/architecture/fixtures/applicationboundary/application/PolicyExamples.kt": "06a73de0909499c85e057abb9524475ec18e69cbf8d2a3f9725b70cda64e056f",
+    "architecture-tests/src/test/kotlin/com/exchange/architecture/fixtures/applicationboundary/application/ReferenceExamples.kt": "94593d9e0ccc04c764d7a226d2c87075d847d8b40b157f222335046695351ca5",
+    "architecture-tests/src/test/kotlin/com/exchange/architecture/fixtures/applicationboundary/application/WorkflowFunctions.kt": "a94ed518ac81d4cbf40b5f780ece30a671f68aa50555f4613a533cc2b729db7d",
+    "architecture-tests/src/test/kotlin/com/exchange/architecture/fixtures/applicationboundary/config/Assembly.kt": "d612cf4031245adaa4e65585aef496967e4861ccaeff6fef84dac8b5a04ee30d",
+    "architecture-tests/src/test/kotlin/com/exchange/architecture/rules/ApplicationImplementationIndependence.kt": "c00bdd614294b7be74247b126ad53cdc82bd0ba6fcf8ffb86e953a9636585ed0",
+    "architecture-tests/src/test/kotlin/com/exchange/architecture/rules/ApplicationTechnologyPolicy.kt": "6335c30159b9246df0435899d04cdf3ed5b6295a0d2283f07da2557cec1bdd24",
+    "architecture-tests/src/test/kotlin/com/exchange/architecture/support/ApplicationBoundaryScope.kt": "008831c5d6e906f65d7cd7ceb50277bd1f315a2d314369a31de50c29a9ab631c",
+    "architecture-tests/src/test/kotlin/com/exchange/architecture/support/ScopeContracts.kt": "ea7b05bc1e7a115312c9862139842fea7d6c88dd89f70b3deb4a6189e2252ff4",
+    "engineering/architecture-04-review.md": "b2eb31cf6974a7ba804b0909da343facba37f8538cb254dc829db9452ed952b8",
+    "engineering/architecture-check-spec.md": "03897b0ffd50516e20f17aae83d97b7337a1d29151ce45e32f9624389a028810"
+  },
+  "commands": [
+    {
+      "command": "./gradlew :architecture-tests:test --tests '*ApplicationBoundaryScopeTest' --no-daemon --console=plain",
+      "stage": "준비 Red",
+      "tests": 12,
+      "failures": 12,
+      "cause": "컴파일 성공 후 빈 준비 구현 때문에 명세의 역할·오류 대상 어설션이 실패했다."
+    },
+    {
+      "command": "./gradlew :architecture-tests:test --tests '*ApplicationBoundaryScopeTest' --no-daemon --console=plain",
+      "stage": "준비 Green",
+      "tests": 12,
+      "failures": 0
+    },
+    {
+      "command": "./gradlew :architecture-tests:test --tests '*ApplicationBoundaryContractTest' --no-daemon --console=plain",
+      "stage": "판정 Red",
+      "tests": 11,
+      "failures": 7,
+      "cause": "금지 참조와 검사 대상/참조 수를 아직 반환하지 않아 실패했다. 정상 사례의 빈 위반 목록만으로 검사 구현을 완료로 보지 않았다."
+    },
+    {
+      "command": "./gradlew :architecture-tests:test --tests '*ApplicationBoundary*Test' --no-daemon --console=plain",
+      "stage": "준비와 판정 Green",
+      "tests": 23,
+      "failures": 0
+    },
+    {
+      "command": "./gradlew :architecture-tests:test --tests '*ApplicationBoundary*Test' --no-daemon --console=plain",
+      "stage": "참조·파일 경계 보강",
+      "tests": 39,
+      "failures": 0,
+      "cause": "추가 16개가 기존 구현으로 통과. 인위적인 Red를 만들지 않았다."
+    },
+    {
+      "command": "./gradlew build --no-daemon --continue --console=plain --rerun-tasks",
+      "stage": "전체 빌드 재실행",
+      "tests": 480,
+      "architectureTests": 237,
+      "productTests": 243,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0,
+      "duration": "4m 17s",
+      "executedTasks": 30,
+      "sourceHashes": {
+        "architecture-tests/build.gradle.kts": "de99f1556f6184ba69bcecbfa8a78e30e3711081e3409e32deb46669a7dcb12a",
+        "architecture-tests/src/test/java/com/exchange/architecture/fixtures/applicationboundary/application/JavaReferences.java": "79b4532e4b649b2e81f6d696c3330ed8855d7e8325e015b92abe99a3b8ec6629",
+        "architecture-tests/src/test/kotlin/com/exchange/architecture/ApplicationBoundaryContractTest.kt": "567966e1b284adc7f6a4d179061ff2b9b198b8ab3ae2349e97d31559fb8adde6",
+        "architecture-tests/src/test/kotlin/com/exchange/architecture/ApplicationBoundaryImportTest.kt": "7274ef9f3c1b52630c08ad001e413bd44c87f2a2a3f235f3620b9338ac2500fe",
+        "architecture-tests/src/test/kotlin/com/exchange/architecture/ApplicationBoundaryReferenceTest.kt": "3586987a17e8403a1f48868a3a233ddac139c5eb748dcd33d0c6f7de9d3ff92f",
+        "architecture-tests/src/test/kotlin/com/exchange/architecture/ApplicationBoundaryScopeTest.kt": "929b236bc5dc4e1a9bba46fc26d8001aee80ee539df221823a732e2d6201e216",
+        "architecture-tests/src/test/kotlin/com/exchange/architecture/fixtures/applicationboundary/Contracts.kt": "057b0d5863531e25fedbe7dc018ea4637063eb93556183e134b6c661bf13a457",
+        "architecture-tests/src/test/kotlin/com/exchange/architecture/fixtures/applicationboundary/OutsideConfiguration.kt": "8069c01314a05be85d0e05a7c44068747becbaea5f3e3393794ef0d693c8d8df",
+        "architecture-tests/src/test/kotlin/com/exchange/architecture/fixtures/applicationboundary/application/NormalWorkflow.kt": "45e21ef528ee88e2a99de8cd6f9f4ae199431353bf7c71e4df7546a565e67b65",
+        "architecture-tests/src/test/kotlin/com/exchange/architecture/fixtures/applicationboundary/application/PolicyExamples.kt": "85a440c027c1467e7cc3439794bee4d09d1a2ae1868bea3f2ee1938282cb6df8",
+        "architecture-tests/src/test/kotlin/com/exchange/architecture/fixtures/applicationboundary/application/ReferenceExamples.kt": "94593d9e0ccc04c764d7a226d2c87075d847d8b40b157f222335046695351ca5",
+        "architecture-tests/src/test/kotlin/com/exchange/architecture/fixtures/applicationboundary/application/WorkflowFunctions.kt": "a94ed518ac81d4cbf40b5f780ece30a671f68aa50555f4613a533cc2b729db7d",
+        "architecture-tests/src/test/kotlin/com/exchange/architecture/fixtures/applicationboundary/config/Assembly.kt": "d612cf4031245adaa4e65585aef496967e4861ccaeff6fef84dac8b5a04ee30d",
+        "architecture-tests/src/test/kotlin/com/exchange/architecture/rules/ApplicationImplementationIndependence.kt": "c00bdd614294b7be74247b126ad53cdc82bd0ba6fcf8ffb86e953a9636585ed0",
+        "architecture-tests/src/test/kotlin/com/exchange/architecture/rules/ApplicationTechnologyPolicy.kt": "6335c30159b9246df0435899d04cdf3ed5b6295a0d2283f07da2557cec1bdd24",
+        "architecture-tests/src/test/kotlin/com/exchange/architecture/support/ApplicationBoundaryScope.kt": "008831c5d6e906f65d7cd7ceb50277bd1f315a2d314369a31de50c29a9ab631c",
+        "architecture-tests/src/test/kotlin/com/exchange/architecture/support/ScopeContracts.kt": "ea7b05bc1e7a115312c9862139842fea7d6c88dd89f70b3deb4a6189e2252ff4"
+      }
+    },
+    {
+      "command": "./gradlew :architecture-tests:test --tests '*ApplicationBoundary*Test' --no-daemon --console=plain",
+      "stage": "최종 예제 어노테이션 적용 대상 명시 후 재실행",
+      "tests": 41,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0,
+      "duration": "14s",
+      "changeSinceFullBuild": "PolicyExamples.kt의 @Qualifier를 현재 동작과 같은 @param:Qualifier로 명시. 나머지 검사기·제품 코드 변화 없음."
+    }
+  ],
+  "fullBuildResults": {
+    "architecture-tests": {
+      "totals": {
+        "tests": 237,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      "suites": [
+        {
+          "name": "com.exchange.architecture.ApplicationBoundaryContractTest",
+          "tests": 11,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0,
+          "timestamp": "2026-09-26T15:49:21.006Z"
+        },
+        {
+          "name": "com.exchange.architecture.ApplicationBoundaryImportTest",
+          "tests": 9,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0,
+          "timestamp": "2026-09-26T15:49:21.777Z"
+        },
+        {
+          "name": "com.exchange.architecture.ApplicationBoundaryReferenceTest",
+          "tests": 9,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0,
+          "timestamp": "2026-09-26T15:49:22.155Z"
+        },
+        {
+          "name": "com.exchange.architecture.ApplicationBoundaryScopeTest",
+          "tests": 12,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0,
+          "timestamp": "2026-09-26T15:49:22.169Z"
+        },
+        {
+          "name": "com.exchange.architecture.ArchitectureRuleContractTest",
+          "tests": 23,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0,
+          "timestamp": "2026-09-26T15:49:22.216Z"
+        },
+        {
+          "name": "com.exchange.architecture.GradleDependencyWiringTest",
+          "tests": 4,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0,
+          "timestamp": "2026-09-26T15:49:22.840Z"
+        },
+        {
+          "name": "com.exchange.architecture.HttpBoundaryImportTest",
+          "tests": 7,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0,
+          "timestamp": "2026-09-26T15:50:28.947Z"
+        },
+        {
+          "name": "com.exchange.architecture.HttpBoundaryScopeTest",
+          "tests": 12,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0,
+          "timestamp": "2026-09-26T15:50:29.155Z"
+        },
+        {
+          "name": "com.exchange.architecture.HttpEntryBoundaryContractTest",
+          "tests": 18,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0,
+          "timestamp": "2026-09-26T15:50:29.267Z"
+        },
+        {
+          "name": "com.exchange.architecture.ImportScopeContractTest",
+          "tests": 22,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0,
+          "timestamp": "2026-09-26T15:50:29.280Z"
+        },
+        {
+          "name": "com.exchange.architecture.IsolationDependencyContractTest",
+          "tests": 6,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0,
+          "timestamp": "2026-09-26T15:50:29.482Z"
+        },
+        {
+          "name": "com.exchange.architecture.IsolationGradleWiringTest",
+          "tests": 7,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0,
+          "timestamp": "2026-09-26T15:50:29.491Z"
+        },
+        {
+          "name": "com.exchange.architecture.ModuleDependencyContractTest",
+          "tests": 11,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0,
+          "timestamp": "2026-09-26T15:52:11.844Z"
+        },
+        {
+          "name": "com.exchange.architecture.ModuleRegistrationContractTest",
+          "tests": 5,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0,
+          "timestamp": "2026-09-26T15:52:12.088Z"
+        },
+        {
+          "name": "com.exchange.architecture.NonProductionTargetsTest",
+          "tests": 7,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0,
+          "timestamp": "2026-09-26T15:52:12.090Z"
+        },
+        {
+          "name": "com.exchange.architecture.PortContractRuleTest",
+          "tests": 47,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0,
+          "timestamp": "2026-09-26T15:52:12.119Z"
+        },
+        {
+          "name": "com.exchange.architecture.ProductionArchitectureTest",
+          "tests": 4,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0,
+          "timestamp": "2026-09-26T15:52:16.857Z"
+        },
+        {
+          "name": "com.exchange.architecture.ProductionDependencyIsolationTest",
+          "tests": 9,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0,
+          "timestamp": "2026-09-26T15:52:17.728Z"
+        },
+        {
+          "name": "com.exchange.architecture.ProductionOutputWiringTest",
+          "tests": 2,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0,
+          "timestamp": "2026-09-26T15:52:17.912Z"
+        },
+        {
+          "name": "com.exchange.architecture.ProjectDependencyContractTest",
+          "tests": 8,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0,
+          "timestamp": "2026-09-26T15:52:18.145Z"
+        },
+        {
+          "name": "com.exchange.architecture.RoleClassificationContractTest",
+          "tests": 4,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0,
+          "timestamp": "2026-09-26T15:52:18.151Z"
+        }
+      ]
+    },
+    "app-api": {
+      "totals": {
+        "tests": 75,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      "suites": [
+        {
+          "name": "com.exchange.core.ExchangeCoreApplicationTests",
+          "tests": 1,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0,
+          "timestamp": "2026-09-26T15:48:30.136Z"
+        },
+        {
+          "name": "com.exchange.core.api.ledger.persistence.PostgresBalanceStoreTest",
+          "tests": 15,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0,
+          "timestamp": "2026-09-26T15:48:39.476Z"
+        },
+        {
+          "name": "com.exchange.core.api.ledger.persistence.PostgresLedgerTransactionStoreTest",
+          "tests": 3,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0,
+          "timestamp": "2026-09-26T15:48:41.315Z"
+        },
+        {
+          "name": "com.exchange.core.api.matching.MatchingApplicationServicePersistenceFailureTest",
+          "tests": 3,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0,
+          "timestamp": "2026-09-26T15:48:42.812Z"
+        },
+        {
+          "name": "com.exchange.core.api.matching.MatchingControllerTest",
+          "tests": 9,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0,
+          "timestamp": "2026-09-26T15:48:48.056Z"
+        },
+        {
+          "name": "com.exchange.core.api.matching.persistence.JpaMatchingEventStoreTest",
+          "tests": 8,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0,
+          "timestamp": "2026-09-26T15:49:03.485Z"
+        },
+        {
+          "name": "com.exchange.core.api.matching.persistence.MatchingEventPayloadTest",
+          "tests": 4,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0,
+          "timestamp": "2026-09-26T15:49:05.048Z"
+        },
+        {
+          "name": "com.exchange.core.api.matching.persistence.MatchingPersistenceIntegrationTest",
+          "tests": 1,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0,
+          "timestamp": "2026-09-26T15:49:05.049Z"
+        },
+        {
+          "name": "com.exchange.core.api.matching.persistence.PersistentMatchingEventPublisherTest",
+          "tests": 2,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0,
+          "timestamp": "2026-09-26T15:49:06.603Z"
+        },
+        {
+          "name": "com.exchange.core.api.order.OrderFundingServiceTest",
+          "tests": 3,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0,
+          "timestamp": "2026-09-26T15:49:09.653Z"
+        },
+        {
+          "name": "com.exchange.core.api.order.OrderLifecycleE2ETest",
+          "tests": 3,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0,
+          "timestamp": "2026-09-26T15:49:11.081Z"
+        },
+        {
+          "name": "com.exchange.core.api.order.OrderReservationReleaseServiceTest",
+          "tests": 5,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0,
+          "timestamp": "2026-09-26T15:49:15.725Z"
+        },
+        {
+          "name": "com.exchange.core.api.order.TradeSettlementServiceTest",
+          "tests": 7,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0,
+          "timestamp": "2026-09-26T15:49:17.123Z"
+        },
+        {
+          "name": "com.exchange.core.api.order.persistence.PostgresOrderReservationStoreTest",
+          "tests": 11,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0,
+          "timestamp": "2026-09-26T15:49:18.725Z"
+        }
+      ]
+    },
+    "domain-common": {
+      "totals": {
+        "tests": 0,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      "suites": []
+    },
+    "domain-fee": {
+      "totals": {
+        "tests": 37,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      "suites": [
+        {
+          "name": "com.exchange.core.fee.FeeRateTest",
+          "tests": 4,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0,
+          "timestamp": "2026-09-26T15:48:15.988Z"
+        },
+        {
+          "name": "com.exchange.core.fee.FeeRemainderTest",
+          "tests": 6,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0,
+          "timestamp": "2026-09-26T15:48:16.043Z"
+        },
+        {
+          "name": "com.exchange.core.fee.FeeTierResolverTest",
+          "tests": 1,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0,
+          "timestamp": "2026-09-26T15:48:16.050Z"
+        },
+        {
+          "name": "com.exchange.core.fee.FeeTierThresholdsTest",
+          "tests": 3,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0,
+          "timestamp": "2026-09-26T15:48:16.052Z"
+        },
+        {
+          "name": "com.exchange.core.fee.MakerTakerFeeRatesTest",
+          "tests": 3,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0,
+          "timestamp": "2026-09-26T15:48:16.056Z"
+        },
+        {
+          "name": "com.exchange.core.fee.TradingFeeCalculatorTest",
+          "tests": 7,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0,
+          "timestamp": "2026-09-26T15:48:16.069Z"
+        },
+        {
+          "name": "com.exchange.core.fee.TradingFeePolicySnapshotTest",
+          "tests": 4,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0,
+          "timestamp": "2026-09-26T15:48:16.074Z"
+        },
+        {
+          "name": "com.exchange.core.fee.TradingFeeReserveCalculatorTest",
+          "tests": 5,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0,
+          "timestamp": "2026-09-26T15:48:16.077Z"
+        },
+        {
+          "name": "com.exchange.core.fee.TradingFeeScheduleTest",
+          "tests": 4,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0,
+          "timestamp": "2026-09-26T15:48:16.082Z"
+        }
+      ]
+    },
+    "domain-ledger": {
+      "totals": {
+        "tests": 16,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      "suites": [
+        {
+          "name": "com.exchange.core.ledger.BalanceTest",
+          "tests": 8,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0,
+          "timestamp": "2026-09-26T15:48:15.200Z"
+        },
+        {
+          "name": "com.exchange.core.ledger.LedgerPostingTest",
+          "tests": 3,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0,
+          "timestamp": "2026-09-26T15:48:15.258Z"
+        },
+        {
+          "name": "com.exchange.core.ledger.LedgerTransactionTest",
+          "tests": 5,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0,
+          "timestamp": "2026-09-26T15:48:15.261Z"
+        }
+      ]
+    },
+    "domain-order": {
+      "totals": {
+        "tests": 50,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      "suites": [
+        {
+          "name": "com.exchange.core.order.BuyOrderFundingQuoteCalculatorTest",
+          "tests": 6,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0,
+          "timestamp": "2026-09-26T15:48:17.133Z"
+        },
+        {
+          "name": "com.exchange.core.order.MaximumBuyOrderFundingQuoteCalculatorTest",
+          "tests": 4,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0,
+          "timestamp": "2026-09-26T15:48:17.187Z"
+        },
+        {
+          "name": "com.exchange.core.order.OrderFillSettlementCalculatorTest",
+          "tests": 11,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0,
+          "timestamp": "2026-09-26T15:48:17.194Z"
+        },
+        {
+          "name": "com.exchange.core.order.OrderReservationCalculatorTest",
+          "tests": 5,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0,
+          "timestamp": "2026-09-26T15:48:17.208Z"
+        },
+        {
+          "name": "com.exchange.core.order.OrderReservationTest",
+          "tests": 21,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0,
+          "timestamp": "2026-09-26T15:48:17.214Z"
+        },
+        {
+          "name": "com.exchange.core.order.ReservationRequirementTest",
+          "tests": 3,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0,
+          "timestamp": "2026-09-26T15:48:17.227Z"
+        }
+      ]
+    },
+    "domain-matching": {
+      "totals": {
+        "tests": 65,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      "suites": [
+        {
+          "name": "com.exchange.core.matching.MarketCommandProcessorTest",
+          "tests": 16,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0,
+          "timestamp": "2026-09-26T15:48:19.659Z"
+        },
+        {
+          "name": "com.exchange.core.matching.MatchingEngineTest",
+          "tests": 49,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0,
+          "timestamp": "2026-09-26T15:48:19.823Z"
+        }
+      ]
+    }
+  },
+  "finalArch04Results": [
+    {
+      "name": "com.exchange.architecture.ApplicationBoundaryContractTest",
+      "tests": 11,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0,
+      "timestamp": "2026-09-26T15:53:13.689Z",
+      "cases": [
+        "APP-06 실제 JDBC JPA HTTP 라이브러리 참조를 금지한다()",
+        "APP-02 실행기 진입 계약과 Future 조율 및 발행 포트는 허용한다()",
+        "APP-08 컨테이너 계약과 실제 구현 및 사용자 하위 타입도 금지한다()",
+        "APP-15 준비 오류와 위반이 함께 있으면 부분 위반 없이 미평가다()",
+        "APP-12 포트 뒤 구현의 DB 작업을 호출자에게 전파하지 않는다()",
+        "APP-08 업무 안의 Bean 선언을 금지하되 정상 config Bean은 허용한다()",
+        "APP-05 HTTP 입력 응답 컨트롤러 매퍼 예외 처리기 모두 금지한다()",
+        "APP-03과04 이름과 무관하게 모든 구체 저장 역할을 금지한다()",
+        "APP-02 Transactional과 DI 및 일반 값은 허용한다()",
+        "APP-08 업무가 config Bean을 직접 호출하거나 참조하면 금지한다()",
+        "APP-01과07 업무 포트 조립은 통과하고 각각 검사한 타입 수를 보고한다()"
+      ]
+    },
+    {
+      "name": "com.exchange.architecture.ApplicationBoundaryImportTest",
+      "tests": 9,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0,
+      "timestamp": "2026-09-26T15:53:14.461Z",
+      "cases": [
+        "APP-14 가져온 목록에서 파일이 빠지거나 더해지면 준비 실패다()",
+        "APP-13 전체 출력에서 미등록 업무와 설정 타입을 발견한다()",
+        "APP-14 필수 타입 파일 누락과 빈 출력은 통과하지 않는다()",
+        "APP-14 config만 수집하고 업무 대상이 없으면 통과하지 않는다()",
+        "APP-14 실제 손상 파일과 읽기 도구 오류를 준비 실패로 전달한다()",
+        "APP-04 실제 출력에서 찾은 구체 저장 참조를 위반으로 보고한다()",
+        "APP-14 다른 경로의 같은 클래스 정의를 거절한다()",
+        "APP-01과07 실제 출력 수집부터 정상 조립과 업무 참조 판정까지 연결한다()",
+        "APP-08 상속 정의가 없으면 컨테이너가 아니라고 추정하지 않는다()"
+      ]
+    },
+    {
+      "name": "com.exchange.architecture.ApplicationBoundaryReferenceTest",
+      "tests": 9,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0,
+      "timestamp": "2026-09-26T15:53:14.900Z",
+      "cases": [
+        "APP-09 어노테이션 값으로 쓰는 영속 타입도 찾는다()",
+        "APP-11 JVM 메서드 생성자 참조의 실제 줄과 대상이 일치한다()",
+        "APP-11 Kotlin 메서드 참조는 포트 허용과 구현 금지를 구분한다()",
+        "APP-15 행 없는 서명은 위치를 추측하지 않는다()",
+        "APP-10 유즈케이스가 호출한 helper와 부모 본문의 실제 위반을 찾는다()",
+        "APP-11 중첩 익명 타입과 람다 본문을 전부 제외하지 않는다()",
+        "APP-15 입력 순서와 반복 선택에 따라 결과가 바뀌지 않는다()",
+        "APP-10 최상위 확장 함수도 역할에 등록하여 본문 위반을 찾는다()",
+        "APP-09 필드 인자 반환 배열 제네릭 상속만 있어도 구현 의존을 찾는다()"
+      ]
+    },
+    {
+      "name": "com.exchange.architecture.ApplicationBoundaryScopeTest",
+      "tests": 12,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0,
+      "timestamp": "2026-09-26T15:53:14.912Z",
+      "cases": [
+        "APP-01과07 정상 업무와 포트 및 조립 역할을 준비한다()",
+        "APP-14 모듈 사이 중복 정의와 기존 수집 오류를 보존한다()",
+        "APP-14 범위를 비우거나 잘못 지정해서 발견 검사를 끌 수 없다()",
+        "APP-13 업무로 등록한 설정 어노테이션 타입을 자동 면제하지 않는다()",
+        "APP-13 새 업무 보조 타입과 설정 타입의 등록 누락을 찾는다()",
+        "APP-13 발견 패키지 밖의 Configuration도 역할과 대조한다()",
+        "APP-13 업무와 설정 이중 역할 및 중첩 역할 충돌을 거절한다()",
+        "APP-13 합성 설정 어노테이션 선언은 조립 인스턴스로 오인하지 않는다()",
+        "APP-14 빈 출력과 실제 없는 역할 등록은 실패다()",
+        "APP-14 업무와 config가 참조한 내부 정의와 역할 누락을 각각 찾는다()",
+        "APP-14 업무 역할이 비거나 config만 있으면 준비 실패다()",
+        "APP-13 외부 기술을 도메인 역할로 등록해도 입력 오류다()"
+      ]
+    }
+  ],
+  "normalFixtureObservation": {
+    "applicationTypes": 2,
+    "configurationTypes": 2,
+    "directReferences": 45,
+    "problems": 0,
+    "violations": 0
+  },
+  "environment": {
+    "dockerServerVersion": "29.6.2",
+    "javaToolchain": 25
+  },
+  "review": {
+    "testIntent": "명세의 역할·외부 정책·독립 반례와 정확한 타입 쌍/오류 대상/실제 위치를 대조했다.",
+    "implementation": "입력 실패 우선, config 조립 허용, 포트 뒤 구현 종료 경계, 내부 helper 출발점과 외부 컨테이너 상속을 소스와 테스트에 대조했다.",
+    "independentAgentReview": false,
+    "humanReview": "미기록. 화면 열기나 검사 통과를 사용자 검토 완료로 추정하지 않는다."
+  },
+  "limitations": [
+    "운영 ARCH-04 미적용. #20–21에서 전체 역할과 연결한다.",
+    "바이트코드의 직접 참조 검사이며 config 업무 의미·역할의 의미는 리뷰 대상이다.",
+    "모든 리플렉션 문자열·외부 I/O·임의 서비스 검색을 전수 검사하지 않는다.",
+    "구조 검사는 DB 원자성·트랜잭션/롤백·실행 순서를 증명하지 않는다.",
+    "PR·원격 CI·병합·이슈 종료는 수행하지 않았다."
+  ],
+  "logHashes": {
+    "arch04-unit1-red.log": "7330e9d4c1dde4221a2194798f695fa713cda52db66d74297ba659d96505096e",
+    "arch04-unit1-green.log": "ea67516ae5bf691a12832330b4c7157fba9bc15cf46bdbcb762cc57f6fe577c8",
+    "arch04-unit2-red.log": "0e1b060400649415d5d189295ec6f29e1535108a6f32e7e6d3403ca43fc003b2",
+    "arch04-unit2-green.log": "84a4bdea0d6d8c2dd174016781cedac108d85eb703b53c64fe5c47fe298df8ac",
+    "arch04-unit3.log": "1b10a33e52561a6933e47dd308ee7ee5b16a22bbecc84ea95d161fee2898281f",
+    "arch04-full-build.log": "a3502511e437e0b0fc74037adbe63393387da5597583fbf3a37f165fc25a0f7d",
+    "arch04-final-targeted.log": "ea67516ae5bf691a12832330b4c7157fba9bc15cf46bdbcb762cc57f6fe577c8"
+  },
+  "publicationPreparation": {
+    "changes": "게시용 문서의 PR 상태 안내만 수정. 검사기·예제·테스트·빌드는 검증 후 동일하며 기존 실행 근거를 재사용한다.",
+    "codeChangedSinceFinalValidation": false
+  }
+}

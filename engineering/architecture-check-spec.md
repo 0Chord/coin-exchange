@@ -1,3 +1,172 @@
+# 구조 검사 명세 — #19 · ARCH-04 애플리케이션 구현 독립
+
+대상: [#19 공통 구조 검사 기반 구현 및 명세 v1 적용](https://github.com/0Chord/coin-exchange/issues/19). 기준: [PR #30](https://github.com/0Chord/coin-exchange/pull/30)이 병합된 `feature/phase-2/integration`의 **`07d4e0501dc5de7bbc9f6709eaa04ae22eb7741c`**. 확인일: 2026-09-27.
+
+**상태: 합의한 ARCH-04 로컬 구현·검증 완료.** 신규 ARCH-04 41개를 포함한 구조 검사 **237개**, 기존 제품 테스트 **243개**가 전체 빌드에서 재실행되어 실패·오류·skip 없이 통과했다. 구현은 검사기와 테스트 예제에 한정하며 운영 적용은 #20–21이다. [구현 흐름·실제 코드](architecture-04-review.md), [실행 근거와 소스 해시](architecture-04-verification.json)를 연결한다. 병합된 ARCH-03 이하 기록은 뒤에 보존한다.
+
+## ARCH-04 · 먼저 읽을 핵심
+
+**업무를 조율하는 코드가 특정 DB 구현이나 HTTP 표현에 묶이지 않도록 검사한다.** 여기서 애플리케이션은 외부 진입점인 유즈케이스와 내부 예약·정산 Service, 실행을 연결하는 Coordinator를 포함한다.
+
+| 관계 예시 | 기대 결과 | 이유 |
+| --- | --- | --- |
+| 유즈케이스 → 내부 작업 → `BalanceStore` 포트 | 허용 | 업무 조율과 저장 요청은 애플리케이션 책임 |
+| 내부 작업 → 도메인 계산기·상태 전이 메서드 | 허용 | 판단은 도메인에 요청함 |
+| 유즈케이스·내부 작업 → `PostgresBalanceStore` | 위반 | 업무 코드가 구체 저장 구현에 묶임 |
+| 유즈케이스 → HTTP 요청 DTO·컨트롤러·응답 매퍼 | 위반 | 업무 계층이 HTTP 표현에 의존함 |
+| `config` → 저장 구현 생성 → 포트로 유즈케이스에 연결 | 조립 관계는 허용 | 구현 선택과 객체 연결은 config 책임 |
+| 유즈케이스 → `config`의 Bean 생성 메서드 | 위반 | 조립 객체를 업무 코드에서 사용하는 우회 |
+| 역할 목록·검사할 파일이 빠짐 | 준비 실패·미평가 | 불완전한 검사를 통과로 표시하지 않음 |
+
+**이번 결과도 검사기의 예제 검증이다.** #19에서는 정상·위반·누락 입력에 대한 판정을 만들고, 실제 운영 클래스의 이동·적용은 #20–21에서 한다. 제품 코드를 바꾸거나 #19 전체를 종료하는 작업이 아니다.
+
+## 허용·금지와 검사 범위
+
+**검사 출발점은 유즈케이스와 모든 등록된 애플리케이션 협력자다.** 유즈케이스만 검사하고 내부 Service를 빠뜨리지 않는다. 이름이나 `@Service`만 보고 검사기의 허용 역할로 자동 분류하지 않는다. 이것은 Bean 등록 방식을 바꾸는 제안이 아니다. 현재처럼 config의 `@Bean`에서 구체 구현을 조립·주입한다. 현재 Service 이름인 진입점도 역할에 따라 같은 기준을 받으며 이름·폴더 적합성은 ARCH-05가 맡는다.
+
+| 출발 역할 | 허용하는 프로젝트 내부 대상 | 금지하는 프로젝트 내부 대상 |
+| --- | --- | --- |
+| 유즈케이스·내부 Service·Coordinator·애플리케이션 보조 코드 | 등록한 도메인 값·명령·이벤트·예외·계산/상태 객체, 저장·발행 포트, 다른 애플리케이션 협력자, 명시한 실행기 진입 계약 | PostgreSQL/JPA 등 기술 구현, 영속 엔티티·Spring Data Repository, HTTP 컨트롤러·DTO·매퍼·예외 응답 처리기, config 조립 객체 |
+| 명시한 config 조립 객체 | 필요한 애플리케이션·도메인·포트·구체 구현·외부 조립 타입 | 이 규칙의 업무 의존 판정 출발점에서는 제외. 역할·누락 검증에서는 제외하지 않음 |
+| 저장 구현·HTTP 코드·도메인·포트 선언·실행기 내부 | ARCH-04의 출발점이 아님 | 각 계층의 다른 규칙과 동작 검증에서 다룸 |
+
+**포트를 통해 구체 구현이 실행된다는 이유로 호출자를 금지하지 않는다.** `유즈케이스 → BalanceStore`는 허용이고, 런타임에 주입된 PostgreSQL 구현의 DB 작업은 그 구현의 책임이다. 대신 `유즈케이스 → 내부 Service → PostgresBalanceStore`라면 내부 Service도 검사 출발점이므로 그 위치에서 위반을 보고한다.
+
+**직접 참조 범위:** 호출·생성·메서드/생성자 참조뿐 아니라 주입·필드·인자·반환·배열·제네릭·상속·어노테이션에 관측되는 금지 타입도 검사한다. 사용하지 않는 구체 저장소 필드도 위반이다. 애플리케이션이 도메인 규칙을 직접 재구현했는지, 다른 유즈케이스 호출이 적절한지, 엔진·주문장 변경의 소유권이 맞는지는 이 타입 검사만으로 판정하지 않는다.
+
+## config 조립 예외의 경계
+
+`LedgerPersistenceConfig`가 `PostgresBalanceStore`를 생성하고 `BalanceStore`로 서비스에 전달하는 현재 구조를 보존한다. 업무 코드가 config를 참조하는 방향까지 허용하는 예외가 아니다.
+
+1. **예외는 등록한 구체 타입에만 적용한다.** `config`라는 이름·폴더나 `@Configuration` 하나만으로 검사 대상에서 지우지 않는다. 설정 패키지에서 발견한 타입·설정 어노테이션이 붙은 타입을 역할 목록과 대조한다.
+2. **업무 역할과 config 역할을 동시에 부여하면 준비 오류다.** 애플리케이션 타입에 `@Configuration`을 붙였다는 이유로 조용히 검사 제외하지 않는다. 실제 중첩 타입도 업무 역할과 조립 역할이 겹치면 충돌이다.
+3. **애플리케이션에서 config를 참조하면 위반이다.** 주입·필드·정적 함수·Bean 메서드·메서드 참조 등 관측되는 방향에 동일 적용한다. `ApplicationContext.getBean` 같은 서비스 검색으로 구현 선택을 끌어오는 방식도 아래 명시 기술 정책으로 막는다.
+4. **조립 허용이 config 내부의 모든 동작을 인증하지 않는다.** 타입 검사로 “이 메서드는 객체 연결만 하고 거래 업무를 실행하지 않는다”를 증명할 수 없다. config에 업무 판단·상태 변경을 넣지 않았는지 의미 리뷰로 확인한다. config에 다른 규칙의 위반이 있어도 ARCH-04 예외로 면제하지 않는다.
+
+## 입력 → 판단 → 통과·실패 보고
+
+| 단계 | 입력 → 판단 | 결과와 중단 조건 |
+| --- | --- | --- |
+| 1. 대상 준비 | 실제 출력 전체·발견 패키지·필수 타입·역할 목록 → 누락/손상/중복/역할 충돌 대조 | 오류가 있으면 `ARCH-04 미평가`. 부분 위반 목록과 검사 참조 수는 비우고 중단 |
+| 2. 출발점 선택 | 준비된 역할 → 유즈케이스·협력 작업·그 보조/생성 코드 선택 | config는 조립 역할 수로 따로 표시하며 업무 검사 출발점에는 넣지 않음 |
+| 3. 방향 판단 | 각 출발점의 직접 참조 → 내부 역할 표와 명시 외부 기술 정책 비교 | 허용이면 다음 참조 확인. 금지면 출발·대상과 근거를 위반 목록에 추가 |
+| 4. 보고 | 전체 판단 → 정렬·중복 제거, 실제 위치 연결 | 준비 오류 없음 + 위반 없음이면 **예제 범위 통과 / 운영 미적용**. 위반이 있으면 규칙·타입·파일·관측한 행 보고 |
+
+통과 보고에는 검사한 애플리케이션 타입 수·직접 참조 수와 조립 역할 타입 수를 구분한다. config만 있어서 업무 검사 대상이 0개인 입력은 통과할 수 없다. 행 정보가 없으면 `null` 또는 위치 미상으로 남기며 config나 호출자의 행을 임의로 붙이지 않는다. 구조 위반을 발견하는 예제 테스트는 **그 위반이 기대와 맞게 검출됐을 때 테스트가 통과**한다.
+
+검사는 컴파일 결과를 읽는 과정이다. Spring 컨텍스트·DB·서버·실제 거래 메서드를 실행하지 않으며 거래 상태, 트랜잭션, 콜백 실행 순서나 롤백을 바꾸지 않는다. 오류가 없는 애플리케이션 타입의 직접 참조만 검증한다는 뜻이지 모든 런타임 호출 조합을 추적한다는 뜻은 아니다.
+
+<details markdown="1">
+<summary>현재 코드 근거와 명시 외부 기술 정책</summary>
+
+## 확인한 현재 코드와 보존할 계약
+
+아래는 통합 `07d4e05`의 소스를 읽어 확인한 사실이다. 새 테스트 실행 결과가 아니다. 현재 업무 코드와 저장 구현이 같은 `app-api` 모듈·옛 패키지에 있으므로 모듈 이름이나 `com.exchange.core.api` 전체를 역할 판정에 사용할 수 없다.
+
+| 실제 코드 | 확인한 책임과 ARCH-04 설계 근거 |
+| --- | --- |
+| [OrderSubmissionService](../app-api/src/main/kotlin/com/exchange/core/api/order/OrderSubmissionService.kt), [OrderCancellationService](../app-api/src/main/kotlin/com/exchange/core/api/order/OrderCancellationService.kt) | 진입점이 예약·정산/해제와 매칭 조율을 호출함. 각각 #20에서 SubmitOrderUseCase·CancelOrderUseCase로 이행할 대상 |
+| [OrderFundingService](../app-api/src/main/kotlin/com/exchange/core/api/order/OrderFundingService.kt), [OrderReservationReleaseService](../app-api/src/main/kotlin/com/exchange/core/api/order/OrderReservationReleaseService.kt), [TradeSettlementService](../app-api/src/main/kotlin/com/exchange/core/api/order/TradeSettlementService.kt) | 도메인 계산/상태 전이와 BalanceStore·OrderReservationStore·LedgerTransactionStore를 사용하고 Spring `@Transactional`로 작업 경계를 지정함 |
+| [MatchingApplicationService](../app-api/src/main/kotlin/com/exchange/core/api/matching/MatchingApplicationService.kt) | MarketCommandProcessor와 MatchingEventPublisher를 사용하고 Future 결과를 기다림. #20의 MatchingCoordinator 후보이며 실행기 내부 구현을 application으로 재분류하지 않음 |
+| [LedgerPersistenceConfig](../app-api/src/main/kotlin/com/exchange/core/api/config/LedgerPersistenceConfig.kt), [MatchingPersistenceConfig](../app-api/src/main/kotlin/com/exchange/core/api/config/MatchingPersistenceConfig.kt) | PostgreSQL/JPA 구현과 포트·업무 객체를 연결함. config 조립 예외의 정상 사례 |
+| [MatchingConfig](../app-api/src/main/kotlin/com/exchange/core/api/config/MatchingConfig.kt) | 실행기 구현, NoOp 발행 구현, 조율 서비스를 연결함. 구현 이름에 Store가 없거나 저장 동작이 없어도 조립 역할로 판단 |
+| [PersistentMatchingEventPublisher](../app-api/src/main/kotlin/com/exchange/core/api/matching/persistence/PersistentMatchingEventPublisher.kt) | 발행 포트 구현으로 저장 포트에 위임함. 애플리케이션에서 포트 대신 이 구현을 직접 사용하는 것은 금지 대상 |
+
+`MatchingEventPublisher`는 현재 `matching.publish`, `MatchingEventStore`는 `matching.persistence`에 있지만 포트다. `NoOpMatchingEventPublisher`는 저장하지 않아도 구체 구현이다. 옛 위치·이름만으로 허용/금지를 뒤집지 않는다. 현재 역할 예시는 실제 코드 이행 때 전체 출력·역할 목록과 다시 대조하며, 표에 나온 파일만 운영 검사 대상으로 제한하지 않는다.
+
+### 외부 기술의 세부 검사 정책
+
+- **허용 유지:** JDK/Kotlin의 일반 자료·컬렉션·예외·시간/UUID, 현재 실행기 계약을 사용하는 Future/동시성 타입, Spring의 `@Transactional`과 관련 annotation/enum, DI·컴포넌트 메타데이터. Spring 전체 금지를 사용하지 않는다. 트랜잭션 어노테이션을 허용한다고 실제 프록시·롤백을 검증한 것은 아니다.
+- **직접 DB 의존 금지:** `java.sql.`, `javax.sql.`, `org.springframework.jdbc.`, `jakarta.persistence.`, `javax.persistence.`, `org.springframework.data.repository.`, `org.springframework.data.jpa.repository.`, `org.hibernate.`, `org.postgresql.`. 별도 Spring Data 기술을 쓰면 구체 목적과 정상 반대 사례를 확인해 목록을 확장한다.
+- **HTTP 표현·클라이언트 의존 금지:** `org.springframework.web.`, `org.springframework.http.`, `jakarta.servlet.`, `javax.servlet.`, `java.net.http.`. `ResponseEntity`, Spring 웹 요청 DTO/매핑, WebClient 등 웹 기술을 애플리케이션으로 끌어오지 않는다. `java.net.URI` 같은 일반 값 타입은 이 이름만으로 금지하지 않는다.
+- **조립 우회 금지:** `org.springframework.beans.factory`의 `BeanFactory`·`ListableBeanFactory`·`HierarchicalBeanFactory`, 그 `.config` 패키지의 `AutowireCapableBeanFactory`·`ConfigurableBeanFactory`·`ConfigurableListableBeanFactory`, `org.springframework.context`의 `ApplicationContext`·`ConfigurableApplicationContext` 및 이 계약들의 하위 타입. `org.springframework.context.annotation.Bean`·`Configuration`의 직접 사용도 application에서는 금지한다. 이 분류에 필요한 컨테이너 상속 관계가 미해석이면 통과로 추정하지 않고 준비 오류로 보고한다. 일반 DI 어노테이션까지 일괄 금지하지 않는다.
+- 프로젝트 내부 금지 역할은 외부 기술 목록과 무관하게 거절한다. 구현체를 인터페이스나 메서드 참조로 사용하거나 `UseCase`로 개명해도 구체 구현 역할이면 위반이다. 외부 타입을 내부 역할로 오등록해 정책을 우회하는 입력은 거절한다.
+
+Spring 트랜잭션 지원·일반 언어 기능 허용은 기존 합의다. 위 구체 패키지·컨테이너 목록은 이번에 구현한 **상세 검사 정책**이다. 모든 외부 I/O·직렬화 라이브러리·리플렉션·서비스 검색 구현을 전수 금지하는 목록은 아니다. 현재 사용하지 않는 기술까지 광범위하게 모아 선행 도입하지 않는다.
+
+</details>
+
+<details markdown="1">
+<summary>역할·누락 검증과 기존 검사 기반 재사용</summary>
+
+## 역할 준비와 누락 방지
+
+입력은 ① 읽을 컴파일 출력과 독립적인 발견 범위, ② 필수 타입 목록, ③ 구체 역할 목록으로 나눈다. 검사 결과를 복사한 목록으로 대상의 완전성을 증명하지 않는다.
+
+- 역할은 애플리케이션 진입점/협력자/보조 코드, 도메인, 포트, 허용 실행기 진입 계약, HTTP, 기술 구현·영속 모델, config로 구분한다. 출발점 범위와 금지 목적지 범위를 함께 받는다. 새 이름으로 바꿔도 역할에 따른 판정은 유지한다.
+- 예제에는 적어도 유즈케이스·협력자 각 하나, 포트와 config 정상 반대 사례가 있어야 한다. 검사 입력의 애플리케이션 출발점이 비면 미평가다. 작은 검사 호출마다 config·포트 인스턴스가 있어야 한다는 뜻은 아니며, 선언한 필수 타입 누락은 별도로 실패한다.
+- 발견한 application/config 패키지 타입과 명시한 필수 타입을 역할에 대조한다. `@Configuration`과 합성 설정 어노테이션으로 발견한 타입도 역할 대조 대상이며 어노테이션 선언 자체는 설정 인스턴스로 오인하지 않는다. `@Service`만으로는 애플리케이션 의미를 확정할 수 없다.
+- 애플리케이션이 참조한 프로젝트 내부 타입은 실제 정의와 역할이 모두 필요하다. config가 참조한 프로젝트 내부 조립 대상도 정의·역할이 있어야 한다. config를 출발점에서 제외해도 누락 검증까지 생략하지 않는다. 비어 있거나 잘못된 패키지 범위, 미존재 등록, 중복 정의, 파일 누락·손상·가져온 목록 불일치는 준비 오류다.
+- 겹친 역할, 애플리케이션으로 등록했지만 설정 어노테이션을 가진 타입, 외부 기술의 내부 역할 오등록은 준비 오류다. 반환 자료에 일부 타입이 남아도 최종 규칙은 미평가·위반 목록 없음·참조 수 0으로 멈춘다.
+- 공통 부모·최상위 함수의 파일 파사드와 실제 중첩/익명 클래스도 역할에 연결한다. 애플리케이션에 딸린 보조 코드를 누락하거나 config 예외로 옮겨 숨기지 않는다. `$`나 synthetic 플래그만으로 전체 제외하지 않는다.
+
+임의의 업무 코드를 사람이 도메인/config로 잘못 등록한 모든 경우를 도구가 판별할 수는 없다. 새 역할 등록의 의미는 코드 리뷰 대상이다. 한편 알려진 충돌·발견 범위 누락·설정 어노테이션 불일치는 자동으로 거절한다. 새 application 패키지 자체를 발견 범위에서 빠뜨리는 위험은 #20에서 전체 역할·배치 목록과 실제 출력 연결로 다시 확인한다.
+
+### 재사용과 실제 배치
+
+기존 `architecture-tests`, ArchUnit 1.4.2, JUnit·Kotlin Test, `ProductionScopeImporter`, `ScopeImportResult`·`ScopeProblem`, `ArchitectureViolation`, `belongsToRole`의 실제 포함 관계 처리와 독립 실행 명령을 재사용한다. ARCH-03의 준비 실패/미평가 계약도 그대로 따른다.
+
+ARCH-01의 `ExternalTechnologyTypes`는 Spring 전체를 금지하므로 정책을 그대로 재사용하지 않는다. ARCH-03의 외부 정책은 정상 웹 타입을 허용하므로 ARCH-04와 같지 않다. 공통 수집·진단을 활용하되 다른 규칙의 허용표를 바꾸거나 거대한 공통 역할 프레임워크로 재작성하지 않는다.
+
+**추가한 검사 파일:** `support/ApplicationBoundaryScope.kt`, `rules/ApplicationImplementationIndependence.kt`, `rules/ApplicationTechnologyPolicy.kt`. 테스트는 `ApplicationBoundaryScopeTest.kt`, `ApplicationBoundaryImportTest.kt`, `ApplicationBoundaryContractTest.kt`, `ApplicationBoundaryReferenceTest.kt` 네 클래스이며, Kotlin·Java 예제는 `fixtures/applicationboundary/`에 둔다. 공통 `ScopeContracts`에는 준비 오류 종류 4개만 추가했다.
+
+예제는 실제 Spring `@Configuration`·`@Bean`·`@Transactional`과 DB/HTTP 타입을 사용한다. 기존 테스트 의존을 재사용하고 `spring-tx`를 테스트 전용으로 명시했다. 프레임워크 패키지를 흉내 낸 가짜 클래스로 검사를 증명하지 않는다. Spring 컨텍스트·DB·업무 예제 메서드는 실행하지 않는다.
+
+</details>
+
+<details markdown="1">
+<summary>정상·위반·누락 사례와 기대값 근거 전체</summary>
+
+## 정상·위반·누락 수용 사례
+
+아래 기대 사례는 신규 41개 테스트에 연결해 검증했다. 예제의 이름은 제품 클래스 개명이 아닌 테스트용이다. 위반 유무만 검사하지 않고 출발·대상 쌍, 준비 오류 종류·대상, 위치 존재/부재를 확인한다. 정상 반대 사례를 함께 두어 전부 거절하는 구현이 통과하지 못하게 한다.
+
+| 사례 | 입력·초기 조건 | 기대 결과와 근거 |
+| --- | --- | --- |
+| APP-01 정상 조율 | 유즈케이스 → 내부 Service → 포트; Service → 도메인 계산기/상태 객체. 반환은 도메인 명령·결과 | 준비 성공, 위반 0. application의 기존 허용 책임 |
+| APP-02 실행 조율·메타데이터 | Coordinator가 등록한 실행기 진입 계약·발행 포트·Future를 사용. Service에 실제 `@Transactional`/DI 메타데이터 | 위반 0. 실행기 경계와 트랜잭션 지정 유지. 전체 흐름 원자성의 증거는 아님 |
+| APP-03 역할과 이름 | `Service` 이름의 진입점은 application, `FakeUseCase` 이름의 저장 구현은 infrastructure | 진입점 정상 조율은 허용, 그 진입점의 `FakeUseCase` 참조는 위반. 이름으로 면제하지 않음 |
+| APP-04 저장 구현 금지 | application이 Postgres/JPA 구현·NoOp 발행 구현·Spring Data Repository·영속 엔티티 각각 참조 | 금지 대상별 ARCH-04. 포트 인터페이스를 사용하는 정상 사례와 대조 |
+| APP-05 HTTP 역의존 | application이 요청/응답 DTO·컨트롤러·응답 매퍼·예외 응답 처리기 각각 참조 | 각 금지 대상에 ARCH-04. 같은 값의 도메인 명령·결과 사용은 허용 |
+| APP-06 외부 기술 경계 | application에서 실제 JdbcTemplate·EntityManager·ResponseEntity·웹 클라이언트 사용. 반대 사례는 Transactional·URI·컬렉션 | 명시 금지 기술만 위반. Spring/JDK 전체 금지나 전체 허용을 방지 |
+| APP-07 정상 조립 | 등록된 config가 DB 구현 생성, 포트 반환, application 객체에 연결. 실제 Configuration/Bean 사용 | 준비 성공, 업무 위반 0, config는 조립 역할 수로 보고. application 본문은 별도로 검사 |
+| APP-08 config 우회 | application이 config 주입/Bean 메서드 호출/메서드 참조 또는 컨테이너 검색 타입을 사용. 하위 컨테이너 타입도 포함 | application 출발점에서 위반. config의 정상 생성 방향과 구분. 상위 타입 미해석이면 준비 실패 |
+| APP-09 주입·서명만 있는 위반 | 미사용 구현체 필드, 생성자·메서드 인자/반환, 배열·제네릭, 상속·어노테이션 값의 금지 타입 | 관측되는 직접 참조에 위반. 호출이 없다는 이유로 통과하지 않음 |
+| APP-10 협력 코드의 우회 | 유즈케이스 → 정상 이름의 내부 helper/Service → 저장 구현. 공통 부모·최상위 확장 함수의 같은 변형 | 실제 금지 참조가 있는 helper/부모/파일 파사드의 위반. 유즈케이스만 검사하지 않음 |
+| APP-11 메서드 참조·생성 코드 | 저장 구현 메서드/생성자 참조, 람다·중첩/익명 타입 안의 금지 사용 | 바이트코드에 참조/호출이 실제 존재하는지 먼저 확인하고 해당 출발점·대상·위치의 위반 검증. 정상 포트 참조도 함께 허용 |
+| APP-12 포트 뒤 구현의 종료 경계 | application → 포트; 그 포트의 구현 → DB. 구현은 별도 infrastructure로 등록 | application 위반 0. 구현의 DB 의존을 호출자의 직접 의존으로 확장하지 않음 |
+| APP-13 역할·발견 누락 | 새 application helper/설정 타입 미등록, config와 application 이중 등록, 업무 타입에 Configuration 부착, 외부 타입 역할 등록 | 해당 타입의 준비 오류. 설정 이름·어노테이션으로 조용히 제외하지 않음 |
+| APP-14 출력·내부 참조 누락 | 빈 출력/출발점, 필수 타입 없음, 중복·손상 파일, 읽기 오류, 실제 발견/가져온 목록 불일치, application/config의 내부 참조 정의·역할 누락 | 원인·대상을 남기고 미평가. 실제 `.class` 임시 출력과 기존 수집기를 연결해 확인; config만 있는 범위도 통과 금지 |
+| APP-15 보고의 일관성 | 순서를 바꾼 동일 입력, 동일 참조 근거의 중복, 행 없는 서명, 위반과 준비 오류가 함께 있음 | 결정적인 정렬·중복 제거, 행 추측 없음. 준비 오류가 있으면 부분 위반 없이 미평가·참조 수 0 |
+
+### 실제로 확인한 기술 경계
+
+합성 Configuration 발견과 어노테이션 선언 제외, 실제 GenericApplicationContext·사용자 컨테이너 하위 인터페이스 금지, 미해석 상속의 준비 실패를 확인했다. Kotlin의 보조·생성 코드와 Java의 실제 메서드/생성자 참조를 읽어 출발·대상·관측한 줄 번호를 검증했다. 행 없는 서명은 null로 보고한다. 테스트 상세와 입력별 한계는 [구현 가이드](architecture-04-review.md)에 기록했다. 보장 범위를 바꾸는 명세 변경은 없었다.
+
+</details>
+
+## 이번 PR의 완료 기준과 다음 구현 단위
+
+- [x] APP-01~15의 정상·위반·누락 사례가 기대대로 동작하고, config 조립 허용과 application→config 금지를 구분한다.
+- [x] 기존 수집부터 준비·판정·진단까지 연결한 예제가 있으며 빈 대상·역할 충돌·부분 결과로 거짓 통과하지 않는다.
+- [x] 기존 ARCH-01·02·06·08 운영 검사와 ARCH-03 예제 검증을 유지한다. ARCH-04는 **예제 검증 / 운영 미적용**으로 보고한다.
+- [x] 작은 실행 단위마다 기대값 근거와 실제 결과를 남기고, 이름·자료 수가 아닌 역할/허용 관계를 사람이 설명할 수 있도록 흐름과 소스를 연결한다.
+- [x] 제품 이름·패키지·API·SQL·트랜잭션·실행기 동작을 변경하지 않고 #20–21 적용 책임을 남긴다.
+
+구현 순서는 **① 역할 준비와 APP-01/07/13/14 → ② 포트 허용·구현/HTTP/config 금지 APP-02~08/12 → ③ 보조 코드·참조·진단 APP-09~11/15 → ④ 기존 검사 회귀와 설명 갱신**이다. 첫 테스트는 정상 조립과 업무 역할 충돌/누락을 같은 입력 준비 계약으로 확인하는 것이다. 예외부터 넓게 만들지 않는다.
+
+실제 최종 검증은 `./gradlew build --no-daemon --continue --console=plain --rerun-tasks`로 수행했다. 총 30개 작업과 테스트 480개가 재실행됐으며 구조 237개·제품 243개가 모두 통과했다. 이후 예제의 `Qualifier` 적용 대상을 현재 동작과 같은 생성자 인자로 명시하고 `./gradlew :architecture-tests:test --tests '*ApplicationBoundary*Test' --no-daemon --console=plain`로 영향받은 ARCH-04 41개를 다시 확인했다. 보고서는 `architecture-tests/build/reports/tests/test/`와 `architecture-tests/build/test-results/test/`이며, 마지막 선택 실행으로 바뀌는 로컬 보고서와 별도로 전체 집계를 실행 근거 JSON에 보존한다.
+
+**#20:** 실제 주문 application·matching application 이동과 함께 같은 규칙을 운영 출력에 연결한다. 저장 구현이 옛 위치여도 역할로 금지한다. **#21:** 포트·기술 구현 이동 뒤 역할을 갱신하고 config/조건부 Bean·SQL 계약을 유지한다. ARCH-05 이름/위치, ARCH-07 상태 접근과 #22–23의 순서·동시성·원자성·롤백은 별도 범위다.
+
+**남은 상태:** ARCH-04 예제 검증은 완료했다. 역할 등록의 의미와 config 내부 업무 여부는 리뷰 대상이다. 운영 적용은 #20–21, 명명·위치는 ARCH-05, 상태·동시성·원자성은 ARCH-07/#22–23에 남는다. 게시·원격 CI·리뷰·병합 상태는 PR에서 따로 확인한다. 이 구현으로 #19 전체를 종료하지 않는다.
+
+<!-- ARCH04_SOURCES_START -->
+HTML의 ‘현재 코드 근거’에서 위 조립·업무 코드 원문을 펼칠 수 있다. 이 코드는 설계 입력인 기존 코드이며 ARCH-04 구현이 아니다.
+<!-- ARCH04_SOURCES_END -->
+
+<!-- ARCH03_HISTORY_START -->
+
 # 구조 검사 명세 — #19 · ARCH-03 HTTP 진입 경계
 
 대상: [#19 공통 구조 검사 기반 구현 및 명세 v1 적용](https://github.com/0Chord/coin-exchange/issues/19). 기준: PR #29가 병합된 `feature/phase-2/integration`의 **`b10027618f48d11e26b931531bc5e9e3cde4906e`**. 확인일: 2026-09-26.
