@@ -1,7 +1,7 @@
 # 구조 검사 명세 — #19 · ARCH-02 구현 계약
 
 대상: [#19 공통 구조 검사 기반 구현 및 명세 v1 적용](https://github.com/0Chord/coin-exchange/issues/19).
-현재 기준은 통합 브랜치 `feature/phase-2/integration`의 **`0f709c30b446e558060416cad6e0389f9f33ad16`**이다. [PR #26](https://github.com/0Chord/coin-exchange/pull/26)의 대상 준비·ARCH-01은 병합됐다. **ARCH-02의 로컬 구현·검증을 완료했다. 구조 검사 79개, 전체 테스트 322개가 통과했다. 원격 CI·리뷰 상태는 이 문서를 포함한 PR에서 별도로 확인한다.** #19 전체 완료를 뜻하지 않는다.
+현재 기준은 통합 브랜치 `feature/phase-2/integration`의 **`0f709c30b446e558060416cad6e0389f9f33ad16`**이다. [PR #26](https://github.com/0Chord/coin-exchange/pull/26)의 대상 준비·ARCH-01은 병합됐다. **ARCH-02의 로컬 구현·검증을 완료했다. 구조 검사 81개, 전체 테스트 324개가 통과했다. 원격 CI·리뷰 상태는 이 문서를 포함한 PR에서 별도로 확인한다.** #19 전체 완료를 뜻하지 않는다.
 
 ## ARCH-02 · 합의한 계약
 
@@ -123,6 +123,7 @@ flowchart TD
 | G03 테스트·전이 구분 | testImplementation의 의존, matching → order → fee 간접 연결 | 테스트 전용 선언 제외, 전이 fee를 matching 직접 선언으로 세지 않음. main으로 상속됐다면 더 이상 테스트 전용이 아니다. |
 | G04 빈 값과 누락 | common의 컴파일·런타임 의존 목록이 각각 빈 기록인 경우 / 한 기록을 아예 제거한 경우 | 전자는 정상, 후자는 준비 실패. 0개와 미전달은 다르다. |
 | G05 실제 Gradle 연결 | 최소 임시 다중 모듈 프로젝트에서 G01–G04 구성. 실제 빌드 입력 수집 코드를 사용 | 실제 선언이 검사 입력까지 도달하고 변경 시 재평가되는지 확인. 수동 리스트만 넣는 단위 테스트로 대신하지 않는다. |
+| G06 지연 기본 의존 | matching의 runtimeOnly에 `defaultDependencies`로 fee를 등록. 의존 해석 전·후를 같은 실제 수집 스크립트로 읽음 / 명시한 common 의존이 있는 경우도 비교 | 빈 runtimeOnly에만 해석 후 fee가 추가되고 ARCH-02 위반 1건. 입력이 달라지면 snapshot 재실행. common을 이미 선언했다면 기본 fee는 추가되지 않고 위반 0건, 입력도 동일. |
 | S01 기존 수집 오류 | 빈 전체/모듈, 내부 참조 대상 누락, 중복 클래스/소속 | 기존 준비 오류, ARCH-02 미평가. 이미 있는 수집 회귀 테스트를 재사용하고 연결 경계만 보완한다. |
 | S02 정책·등록 누락 | 발견된 새 프로젝트 미등록 / 등록된 새 운영 모듈의 정책 행 누락 / 정책에 알 수 없는 대상 | 준비 실패. 모르는 대상을 자동 허용하거나 제외하지 않는다. |
 | S03 입력 손상 | Gradle 정보 없음, 파싱 실패, 상충하는 중복 기록, 알 수 없는 목적지 | 준비 실패. 위반 0건으로 둔갑하지 않는다. |
@@ -130,6 +131,8 @@ flowchart TD
 | P02 실제 운영 적용 | 최신 통합 기준의 전체 운영 출력과 실제 Gradle 입력 | 위 계약을 같은 검사 함수로 평가한다. 실제 여섯 운영 모듈에서 준비 오류·위반 0건을 확인했다. 아래 실행 범위에 한정한다. |
 
 G05는 Gradle TestKit과 실제 수집 스크립트로 구현·검증했다. 현재 저장소를 일부러 오염시키거나 검사 규칙과 별개의 모조 수집기를 만들지 않는다. Kotlin 생성 코드 사례는 이 저장소의 컴파일러로 만든 실제 `.class`를 사용한다. 모든 언어 기능을 지원한다고 확대하지 않는다.
+
+G06은 [PR #27 독립 리뷰의 선택적 보완](https://github.com/0Chord/coin-exchange/pull/27#pullrequestreview-5324683769)에 따른 회귀 사례다. Gradle의 `defaultDependencies`는 해당 구성에 명시한 의존이 없고 의존 해석에 참여할 때 실행된다. 단순 선언 목록 순회가 이 동작을 강제하지는 않는다. 해석 전 입력을 전체 준수의 증거로 쓰지 않으며, 해석 후 동일 수집 스크립트에 선언이 나타나고 규칙까지 전달되는지 확인한다. 현재 운영 검사에서의 탐지와 모든 플러그인·실행 순서에 대한 보장은 구분한다. 이 보완은 허용표나 수집기의 의존 해석 정책을 바꾸지 않는다.
 
 ### 이번 PR의 완료 기준과 제외 범위
 
@@ -152,7 +155,7 @@ G05는 Gradle TestKit과 실제 수집 스크립트로 구현·검증했다. 현
 | --- | --- | --- |
 | 1. 코드의 한 방향을 구별 | D01/D04/D08 중심: 출력 소속을 사용해 matching → order는 허용하고 matching → fee는 거절 | 같은 패키지·전이 노출에도 직접 방향을 제대로 구분하는가 |
 | 2. 코드 검사 경계 완성 | 나머지 모듈 조합, 역할·참조 형태, 기존 준비 오류 연결 | 순수 도메인 이외 클래스나 누락 때문에 거짓 통과하지 않는가 |
-| 3. 선언만 있는 의존 검사 | G01–G05, S02–S03의 실제 Gradle 입력 연결 | 사용하지 않는 금지 선언과 누락을 실제로 잡는가 |
+| 3. 선언만 있는 의존 검사 | G01–G06, S02–S03의 실제 Gradle 입력 연결 | 사용하지 않는 금지 선언과 누락을 실제로 잡는가 |
 | 4. 운영 활성화·보고 | R01/P02, 기존 회귀, 독립 명령·CI·리뷰 근거 | 두 입력이 모두 검증됐을 때만 이번 PR 완료로 볼 수 있는가 |
 
 합의한 허용표·책임 경계를 유지했다. 두 입력을 같은 허용표로 판단한다. 역할 전체 포함, Gradle 입력 연결과 진단 형태를 구현하고 아래 범위에서 검증했다.
@@ -167,17 +170,19 @@ Gradle 9.5.1의 실제 입력 추출·변경 추적(G05), 작성한 Kotlin 예�
 | --- | --- | --- |
 | D01–D08 | `ModuleDependencyDirection.inspectBytecode`, `ModuleDependencyContractTest` | 실제 출력 소속, 36개 방향 조합, 직접/전이 구분, 모든 역할과 작성한 참조 형태 확인 |
 | G01–G04, S02–S03 | `inspectGradle`, `ProjectDependencies.read`, `ProjectDependencyContractTest` | 금지된 미사용 선언, 빈 기록/누락, 중복·미등록·모순 입력 구분 |
-| G05 | `gradle/project-dependencies.gradle.kts`, `GradleDependencyWiringTest` | 실제 main의 compileOnly/runtimeOnly·상속 구성, 테스트·전이 제외, 입력 변경 재평가, 중첩 프로젝트 경로 확인 |
+| G05–G06 | `gradle/project-dependencies.gradle.kts`, `GradleDependencyWiringTest` | 실제 main의 compileOnly/runtimeOnly·상속 구성, 테스트·전이 제외, 입력 변경 재평가, 중첩 프로젝트 경로·지연 기본 의존의 해석 전후와 미추가 경계 확인 |
 | S01, R01 | 기존 수집 테스트 + `ModuleDependencyContractTest` | 준비 오류 시 전체 미평가, 양쪽 위반 합산·정렬, 실제 소스 17·20행과 위치 부재 구분 |
 | P02 | `ProductionArchitectureTest` | 운영 6개 모듈·113개 클래스, 내부 타입 직접 참조 1,473개, main 구성 12개, 직접 프로젝트 선언 10개. 준비 오류·ARCH-02 위반 0 |
 
 - 첫 코드 검사 Red: 3개 중 금지 사례 2개 실패. 빈 검사기가 위반을 놓쳤다는 기대 결과 불일치였다.
 - Gradle 판정 Red: 8개 중 위반·누락·입력 해석 6개 실패. 컴파일/환경 오류와 구분했다. 테스트 검토 후 금지 선언 개수 어설션도 명시했다.
 - 테스트 기대값은 합의된 허용표·손상 입력 계약·실제 예제에서 정했다. 같은 AI의 자체 검토이며 독립 PR 리뷰나 사람의 이해 완료가 아니다.
-- `./gradlew :architecture-tests:test --no-daemon --console=plain`: **79개 통과**, 실패·오류·skip 0. 기존 57개 계약과 추가 22개 포함.
-- `./gradlew :architecture-tests:test --dry-run --no-daemon --console=plain`: 다른 운영 모듈의 `test` 작업을 선행하지 않음을 확인했다. dry-run의 SKIPPED는 실제 테스트 생략 기록이 아니다.
-- `./gradlew build --no-daemon --continue --stacktrace --rerun-tasks`: **전체 322개 통과**, 실패·오류·skip 0. 기존 PostgreSQL 통합 테스트 포함. 새 원격 CI 결과가 아니라 로컬에서 CI와 같은 빌드 명령을 실행한 근거다.
+- 리뷰 보완 집중 실행 `./gradlew :architecture-tests:test --tests '*GradleDependencyWiringTest' --no-daemon --console=plain`: **4개 통과**, 실패·오류·skip 0. 아래 전체 빌드에서도 구조 검사 81개가 실행·통과했다.
+- `./gradlew :architecture-tests:test --dry-run --no-daemon --console=plain`: 기반 커밋 `6854274`에서 확인했고 이번 보완은 작업 연결을 바꾸지 않아 그 근거를 재사용했다. 다른 운영 모듈의 `test` 작업을 선행하지 않음을 확인했다. dry-run의 SKIPPED는 실제 테스트 생략 기록이 아니다.
+- `./gradlew build --no-daemon --continue --stacktrace --rerun-tasks`: **전체 324개 통과**, 실패·오류·skip 0. 기존 PostgreSQL 통합 테스트 포함. 새 원격 CI 결과가 아니라 로컬에서 CI와 같은 빌드 명령을 실행한 근거다.
 - 제품 실행 코드, HTTP 계약, SQL, 주문장·실행기 동작은 바꾸지 않았다. ARCH-06/08과 #19 전체 완료는 이번 범위 밖이다. 게시·원격 CI·리뷰·병합 여부는 PR의 상태를 따른다.
+
+추가한 G06 두 테스트는 검사 동작을 바꾸지 않는 회귀 보완이다. 첫 집중 실행에서 macOS 임시 경로 별칭 비교 1건을 보정했고 이후 4개가 통과했다. 이 실패는 검사기의 행동 수준 TDD Red가 아니다. 검토 커밋 `6854274`의 독립 리뷰와 새 두 테스트에 대한 자체 검토를 구분한다.
 
 ## 병합된 기반 — PR #26 기록
 

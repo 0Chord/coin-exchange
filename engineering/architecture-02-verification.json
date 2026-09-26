@@ -1,12 +1,12 @@
 {
-  "createdAt": "2026-09-26T13:17:41+09:00",
+  "createdAt": "2026-09-26T14:18:10+09:00",
   "base": "0f709c30b446e558060416cad6e0389f9f33ad16",
   "branch": "test/module-deps/19",
-  "state": "검증한 미커밋 작업 파일. 원격 PR/CI 미실행.",
+  "state": "6854274 위 리뷰 보완 작업 파일. sourceHashes로 현재 테스트·빌드·검사 소스를 식별한다. 새 커밋의 원격 CI는 PR에서 별도로 확인한다.",
   "sourceHashes": {
     "architecture-tests/build.gradle.kts": "ab9a9dc43c342153c8378c35c152ac7c85ea80a091739b39d84d20671ad5fd8d",
     "architecture-tests/gradle/project-dependencies.gradle.kts": "50ff0f3ed0d662ad66b050a57ec6e51b982bb4c3c6e984fbd0f266d00d0fcdc9",
-    "architecture-tests/src/test/kotlin/com/exchange/architecture/GradleDependencyWiringTest.kt": "8d001df5441830ec85ac52b89957863a3614f72cc750dc067386098d5d0e0f15",
+    "architecture-tests/src/test/kotlin/com/exchange/architecture/GradleDependencyWiringTest.kt": "86912af03fbd2c2a233589fffc9aaec3839d4020001937440424ece9722e2781",
     "architecture-tests/src/test/kotlin/com/exchange/architecture/ModuleDependencyContractTest.kt": "2916f8d7b60a0873ab985f5af4a190b4c546be20fe45a321fc31eb540a080045",
     "architecture-tests/src/test/kotlin/com/exchange/architecture/ProductionArchitectureTest.kt": "3a610d1f946a45d94b687ae0af5dbb4e7f5ad0fe3f3df8400b1e116429f73df2",
     "architecture-tests/src/test/kotlin/com/exchange/architecture/ProjectDependencyContractTest.kt": "bd983c1e79ae7e811ac0513b15d19c9911e9ad7eb011ed55293cf84f85de0c0b",
@@ -67,14 +67,13 @@
     }
   ],
   "commands": [
-    "./gradlew :architecture-tests:test --no-daemon --console=plain",
-    "./gradlew :architecture-tests:test --dry-run --no-daemon --console=plain",
+    "./gradlew :architecture-tests:test --tests '*GradleDependencyWiringTest' --no-daemon --console=plain",
     "./gradlew build --no-daemon --continue --stacktrace --rerun-tasks"
   ],
   "fullBuild": {
     "result": "SUCCESS",
     "totals": {
-      "tests": 322,
+      "tests": 324,
       "failures": 0,
       "errors": 0,
       "skipped": 0
@@ -190,7 +189,7 @@
         },
         {
           "name": "com.exchange.architecture.GradleDependencyWiringTest",
-          "tests": 2,
+          "tests": 4,
           "failures": 0,
           "errors": 0,
           "skipped": 0
@@ -396,6 +395,52 @@
     }
   },
   "productionOutput": "P02 평가: ARCH-02 · 코드 직접 참조 + Gradle 직접 선언\n운영 모듈별 클래스: {app-api=33, domain-common=9, domain-fee=16, domain-ledger=11, domain-matching=22, domain-order=22}\n내부 직접 타입 참조: 1473 / main 구성: 12 / 직접 프로젝트 선언: 10\nARCH-08에 남기는 비운영 목적지: []\n미평가 규칙: ARCH-03/04/05/06/07/08. 계산·DB·실행 순서 검증은 포함하지 않습니다.\nARCH-02 통과 · 준비 오류 0, 위반 0\nP01 평가: ARCH-01. ARCH-02는 독립된 P02에서 평가합니다.\nInventory: {app-api=33, domain-common=9, domain-fee=16, domain-ledger=11, domain-matching=22, domain-order=22}\nRoles: pure=71, ports=5, executors=6\n",
-  "independentReview": "미실행. 테스트 기대값 검토와 구현 검증은 같은 AI의 자체 대조.",
-  "humanReview": "미확인"
+  "independentReview": "6854274에서 독립 리뷰 완료: 확정 결함 없음, 지연 선언 테스트 선택적 보완 1건. 이후 추가한 두 테스트는 같은 AI가 기대값·실행 결과를 대조했으며 별도 독립 재리뷰는 미실행.",
+  "humanReview": "미확인",
+  "previousVerification": {
+    "createdAt": "2026-09-26T13:17:41+09:00",
+    "base": "0f709c30b446e558060416cad6e0389f9f33ad16",
+    "branch": "test/module-deps/19",
+    "sourceHashes": {
+      "architecture-tests/build.gradle.kts": "ab9a9dc43c342153c8378c35c152ac7c85ea80a091739b39d84d20671ad5fd8d",
+      "architecture-tests/gradle/project-dependencies.gradle.kts": "50ff0f3ed0d662ad66b050a57ec6e51b982bb4c3c6e984fbd0f266d00d0fcdc9",
+      "architecture-tests/src/test/kotlin/com/exchange/architecture/GradleDependencyWiringTest.kt": "8d001df5441830ec85ac52b89957863a3614f72cc750dc067386098d5d0e0f15",
+      "architecture-tests/src/test/kotlin/com/exchange/architecture/ModuleDependencyContractTest.kt": "2916f8d7b60a0873ab985f5af4a190b4c546be20fe45a321fc31eb540a080045",
+      "architecture-tests/src/test/kotlin/com/exchange/architecture/ProductionArchitectureTest.kt": "3a610d1f946a45d94b687ae0af5dbb4e7f5ad0fe3f3df8400b1e116429f73df2",
+      "architecture-tests/src/test/kotlin/com/exchange/architecture/ProjectDependencyContractTest.kt": "bd983c1e79ae7e811ac0513b15d19c9911e9ad7eb011ed55293cf84f85de0c0b",
+      "architecture-tests/src/test/kotlin/com/exchange/architecture/fixtures/moduledeps/ModuleDependencyFixtures.kt": "43bd0e866af7e86e3d7b2f8f450257d8745e41ed912ea4866aae4e9214e52010",
+      "architecture-tests/src/test/kotlin/com/exchange/architecture/rules/ModuleDependencyDirection.kt": "dd0a5009ee59cd380869faef4a52d4e2529de9813195521adc5aa04654108ea1",
+      "architecture-tests/src/test/kotlin/com/exchange/architecture/support/ProjectDependencies.kt": "7a32a24917f3bf9553c7c3039c58d8fb143fc2f3544ce8ceefae9e04f5bb2005"
+    },
+    "fullBuild": {
+      "result": "SUCCESS",
+      "totals": {
+        "tests": 322,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      }
+    },
+    "publishedCommit": "68542744a35996574298d87efbc9caa5350ccd1d"
+  },
+  "reviewFollowup": {
+    "reviewUrl": "https://github.com/0Chord/coin-exchange/pull/27#pullrequestreview-5324683769",
+    "baseCommit": "68542744a35996574298d87efbc9caa5350ccd1d",
+    "addedTests": 2,
+    "focusedResult": {
+      "tests": 4,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    "cases": [
+      "빈 runtimeOnly에 지연 fee 등록: 해석 전 없음, 해석 후 matching → fee 위반 정확히 1건. 입력 변경 시 snapshot 재실행, 동일 입력은 재사용.",
+      "명시한 common runtimeOnly가 있음: defaultDependencies의 fee는 추가되지 않음. 해석 직후 새로 읽은 입력도 동일, 위반 0건."
+    ],
+    "testExpectationReview": "명세 G06·Gradle 기본 의존 계약·독립된 허용표에서 기대값을 도출. 해석 전 입력을 준수 판정의 정답으로 사용하지 않음. 캐시된 출력 이외의 해석 직후 입력도 비교.",
+    "firstRunCorrection": "4개 중 1개 실패는 macOS /var와 /private/var 임시 경로 별칭 비교 차이. 기대 경로를 toRealPath로 정규화. 탐지 로직의 결함이나 TDD Red가 아님.",
+    "productionChange": "검사 규칙·수집 스크립트·제품 코드 변경 없음. 테스트와 명세·실행 기록만 보완.",
+    "limits": "현재 공유 수집 스크립트의 해석 전후 경계를 고정한다. 모든 지연 등록 API·플러그인·작업 순서의 지원을 보장하지 않는다.",
+    "reusedTaskBoundaryEvidence": "6854274의 독립 dry-run 확인을 재사용. 운영 빌드 설정과 작업 연결은 이번 변경에서 동일하다."
+  }
 }

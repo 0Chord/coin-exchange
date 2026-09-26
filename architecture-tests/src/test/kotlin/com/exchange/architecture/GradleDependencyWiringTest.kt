@@ -78,6 +78,96 @@ class GradleDependencyWiringTest {
         assertTrue(actual.problems.any { it.contains("UNKNOWN_DEPENDENCY_PROJECT: :nested:fee") })
     }
 
+    @Test
+    fun `지연 runtimeOnly 선언은 해석 후 입력에 반영되어 금지 방향으로 보고된다`() {
+        prepareDeferredRuntime()
+        assertEquals(TaskOutcome.SUCCESS, run().task(":snapshot")?.outcome)
+        val before = read()
+        assertEquals(8, before.configurations.size)
+        assertTrue(before.configurations.filter { it.projectPath == ":matching" }
+            .all { it.dependencies == listOf(ProjectDeclaration(":order", "api")) })
+
+        // 해석 전 목록을 준수 판정의 정답으로 쓰지 않는다. 실제 Gradle 해석을 거쳐 같은 입력을 다시 읽는다.
+        val resolved = run("-PresolveMatchingRuntime=true")
+        assertEquals(TaskOutcome.SUCCESS, resolved.task(":resolveMatchingRuntime")?.outcome)
+        assertEquals(TaskOutcome.SUCCESS, resolved.task(":snapshot")?.outcome,
+            "지연 선언이 나타나면 이전 snapshot을 재사용해서는 안 된다")
+        val after = read()
+        assertEquals(8, after.configurations.size)
+        assertEquals(before.configurations.filterNot { it.projectPath == ":matching" && it.usage == "runtime" },
+            after.configurations.filterNot { it.projectPath == ":matching" && it.usage == "runtime" })
+        val runtime = after.configurations.single { it.projectPath == ":matching" && it.usage == "runtime" }
+        assertEquals(setOf(ProjectDeclaration(":order", "api"), ProjectDeclaration(":fee", "runtimeOnly")),
+            runtime.dependencies.toSet())
+        assertEquals(2, runtime.dependencies.size)
+
+        val result = ModuleDependencyDirection.inspectGradle(after, inventory, policy)
+        assertTrue(result.evaluated, result.problems.toString())
+        assertEquals(1, result.violations.size)
+        val violation = result.violations.single()
+        assertEquals("ARCH-02", violation.ruleId)
+        assertEquals("GRADLE", violation.evidence)
+        assertEquals("matching", violation.originModule)
+        assertEquals("fee", violation.targetModule)
+        assertEquals(setOf("common", "order"), violation.allowedTargets)
+        assertEquals(":matching → :fee | 선언: runtimeOnly | main: runtime/runtimeClasspath", violation.description)
+        assertEquals(root.resolve("matching/build.gradle.kts").toRealPath().toString(), violation.sourceFile)
+        assertNull(violation.lineNumber)
+        assertEquals(TaskOutcome.UP_TO_DATE, run("-PresolveMatchingRuntime=true").task(":snapshot")?.outcome)
+    }
+
+    @Test
+    fun `명시한 runtimeOnly 의존이 있으면 지연 기본 의존을 추가하거나 위반으로 보고하지 않는다`() {
+        prepareDeferredRuntime(explicitRuntime = true)
+        assertEquals(TaskOutcome.SUCCESS, run().task(":snapshot")?.outcome)
+        val before = read()
+        val runtime = before.configurations.single { it.projectPath == ":matching" && it.usage == "runtime" }
+        assertEquals(setOf(ProjectDeclaration(":order", "api"), ProjectDeclaration(":common", "runtimeOnly")),
+            runtime.dependencies.toSet())
+        assertEquals(2, runtime.dependencies.size)
+
+        val resolved = run("-PresolveMatchingRuntime=true")
+        assertEquals(TaskOutcome.SUCCESS, resolved.task(":resolveMatchingRuntime")?.outcome)
+        assertEquals(TaskOutcome.UP_TO_DATE, resolved.task(":snapshot")?.outcome)
+        // snapshot 작업의 이전 출력만 비교하지 않고, 해석 직후 다시 수집한 별도 기록도 확인한다.
+        val after = read("build/after-runtime-resolution.txt")
+        assertEquals(before, after)
+        val result = ModuleDependencyDirection.inspectGradle(after, inventory, policy)
+        assertTrue(result.evaluated, result.problems.toString())
+        assertEquals(emptyList(), result.violations)
+    }
+
+    private fun prepareDeferredRuntime(explicitRuntime: Boolean = false) {
+        prepare()
+        Files.writeString(root.resolve("matching/build.gradle.kts"), """
+            plugins { `java-library` }
+            dependencies {
+                api(project(":order"))
+                ${if (explicitRuntime) "runtimeOnly(project(\":common\"))" else ""}
+                testImplementation(project(":test-only"))
+            }
+            configurations.named("runtimeOnly") {
+                defaultDependencies { add(project.dependencies.project(mapOf("path" to ":fee"))) }
+            }
+        """.trimIndent())
+        Files.writeString(root.resolve("build.gradle.kts"), """
+
+            val resolveMatchingRuntime = tasks.register("resolveMatchingRuntime") {
+                doLast {
+                    project(":matching").configurations.getByName("runtimeClasspath").incoming.resolutionResult.allDependencies
+                    val current = tasks.named<Test>("test").get().inputs.properties.getValue("mainProjectDependencies") as String
+                    layout.buildDirectory.file("after-runtime-resolution.txt").get().asFile.apply {
+                        parentFile.mkdirs()
+                        writeText(current)
+                    }
+                }
+            }
+            tasks.named("snapshot") {
+                if (providers.gradleProperty("resolveMatchingRuntime").isPresent) dependsOn(resolveMatchingRuntime)
+            }
+        """.trimIndent(), java.nio.file.StandardOpenOption.APPEND)
+    }
+
     private fun prepare() {
         Files.writeString(root.resolve("settings.gradle.kts"), "rootProject.name = \"dependency-contract\"\ninclude(\":common\", \":fee\", \":order\", \":matching\", \":test-only\")")
         inventory.discoveredModules.forEach { path ->
@@ -107,12 +197,12 @@ class GradleDependencyWiringTest {
         """.trimIndent())
     }
 
-    private fun run() = GradleRunner.create().withProjectDir(root.toFile())
+    private fun run(vararg arguments: String) = GradleRunner.create().withProjectDir(root.toFile())
         .withGradleInstallation(File(System.getProperty("architecture.gradleHome")))
         .withTestKitDir(root.resolve(".test-kit").toFile())
-        .withArguments("snapshot", "--offline", "--console=plain", "--max-workers=1", "--stacktrace").build()
+        .withArguments(listOf("snapshot", "--offline", "--console=plain", "--max-workers=1", "--stacktrace") + arguments).build()
 
-    private fun read() = ProjectDependencies.read(Files.readString(root.resolve("build/dependencies.txt"))).also {
+    private fun read(path: String = "build/dependencies.txt") = ProjectDependencies.read(Files.readString(root.resolve(path))).also {
         assertEquals(emptyList(), it.problems, "실제 Gradle 전달 형식을 읽을 수 있어야 한다")
     }
 }
