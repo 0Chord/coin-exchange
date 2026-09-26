@@ -1,10 +1,29 @@
 # ARCH-08 · 운영 코드의 테스트 의존을 막는 흐름
 
-상태: **로컬 구현·검증 완료 — 구조 검사 156개 통과, 전체 build 성공**. 기준 `db26dfc`, 브랜치 `test/non-production-deps/19`. 제품의 주문·잔고·DB 코드는 바꾸지 않았다. 변경 대상은 개발 중 실행하는 구조 검사다. 이 문서는 PR에 포함하는 로컬 검증 기록이다. 원격 CI·독립 리뷰·병합의 최신 상태는 PR에서 확인한다.
+상태: **로컬 구현·검증 완료 — 구조 검사 159개 통과, 전체 build 성공**. 기준 `db26dfc`, 브랜치 `test/non-production-deps/19`. 제품의 주문·잔고·DB 코드는 바꾸지 않았다. 변경 대상은 개발 중 실행하는 구조 검사다. 이 문서는 PR에 포함하는 로컬 검증 기록이다. 원격 CI·독립 리뷰·병합의 최신 상태는 PR에서 확인한다.
 
 **이번에 만든 것은 ‘제품 코드가 테스트 코드에 기대는 순간 알려주는 검사’다.** 두 가지를 본다. 실제 코드에서 테스트 타입을 쓰는지, 코드에 쓰지 않았어도 빌드 설정에 테스트 의존을 넣었는지다. 둘 중 하나의 입력이라도 빠졌으면 통과라고 하지 않는다.
 
 [상세 명세](architecture-check-spec.md) · 아래 네 흐름을 먼저 보고 필요한 코드 링크를 따라 읽으면 된다. 로컬 HTML에서는 같은 파일을 펼쳐 볼 수 있다. 테스트 예제의 고의 위반과 현재 제품의 위반을 구분한다.
+
+## PR #29 리뷰 보완 · 구성에 붙인 선택도 확인한다
+
+[독립 리뷰의 P2](https://github.com/0Chord/coin-exchange/pull/29#discussion_r4111410768)는 ‘어떤 산출물을 가져올지 정하는 속성’을 읽는 위치가 하나 빠졌다는 문제였다. `runtimeClasspath`에 `example.kind=testing`을 지정하면 실제 Gradle은 테스트 JAR을 고를 수 있는데, 기존 수집기는 개별 의존 선언만 읽어 정상 운영 의존으로 통과시켰다.
+
+이제 **main 구성의 기본 속성 읽기 → 개별 의존 속성으로 같은 키 덮어쓰기 → 유효 속성 판단 → 정상 선택 또는 준비 실패**로 흐른다. 두 원본과 유효 값을 진단에 남긴다. 미지원 값이 남으면 ARCH-08은 전체 미평가로 끝나고, 부분 위반 목록도 최종 결과로 내지 않는다. 일반 JVM 속성은 계속 허용한다. compile/runtime의 근거가 달라도 같은 선언의 진단은 하나로 묶고 각 구성의 근거를 모두 남긴다.
+
+| 읽을 사례 | 기대 결과와 확인 근거 |
+| --- | --- |
+| runtime 구성에 사용자 속성을 붙여 테스트 JAR 선택 | 실제 `testElements`와 `lib-1-tests.jar` 안의 Helper 클래스를 확인한 뒤 `UNSUPPORTED_SELECTION` 준비 실패를 검사 |
+| compile 구성의 속성만 변경 | compile만 미지원, runtime은 정상. 입력이 바뀌면 재수집하고, 같으면 UP-TO-DATE, 설정 제거 시 정상 복귀 |
+| 구성의 비표준 usage를 개별 의존의 `java-api`로 덮어씀 | 실제 `apiElements` 선택과 정상 통과. 원본에 미지원 값이 있었다는 이유만으로 거절하지 않음 |
+| 같은 선언의 compile/runtime 선택 근거가 다름 | 진단은 하나, 두 속성 근거는 유지. 입력 순서를 뒤집어도 같은 결과 |
+
+수정 전 네 사례 중 세 사례가 의도한 이유로 실패했고 정상 우선순위 사례는 이미 통과했다. 첫 재현 코드의 Groovy 문법 오류는 수정했으며 행동 수준 Red로 세지 않았다. 기대값은 기존 미지원 선택 계약과 실제 Gradle 선택 결과에 근거한다. 관련 테스트 17개와 전체 구조 테스트 159개가 통과했고 전체 build도 성공했다.
+
+읽을 코드: [속성 수집과 결합](../architecture-tests/gradle/isolation-inputs.gradle.kts), [진단 근거 보존](../architecture-tests/src/test/kotlin/com/exchange/architecture/rules/ProductionDependencyIsolation.kt). 실행 근거: [실제 Gradle 테스트](../architecture-tests/src/test/kotlin/com/exchange/architecture/IsolationGradleWiringTest.kt), [두 구성의 단일 진단 테스트](../architecture-tests/src/test/kotlin/com/exchange/architecture/IsolationDependencyContractTest.kt).
+
+이 수정은 검증 도구와 그 테스트에 적용했다. 실제 산출물 해석·JAR 생성은 테스트용 최소 프로젝트에서만 수행하며 수집기에는 강제 해석을 추가하지 않았다. 수정 후 독립 재리뷰·원격 CI·사람의 판단은 별도 상태다.
 
 ## 1. 테스트 도우미의 소속부터 확인한다
 
@@ -45,7 +64,7 @@
 
 `testImplementation`이라는 이름도 면제권은 아니다. main이 그 구성을 상속하면 실제 운영 의존으로 검사한다. compileOnly·runtimeOnly도 빠뜨리지 않는다. 한 선언이 compile/runtime 양쪽에 있으면 한 진단 안에 두 근거를 보존한다.
 
-Gradle 9.5.1의 실제 `testFixtures(project(...))`·외부 fixture 선택 정보를 읽으며 capability, 대상 구성, artifact 및 속성 선택 근거를 남긴다. 일반 `java-api` 같은 운영 속성은 허용하고, `example.flavor=testing` 같은 미지원 사용자 속성으로 프로젝트 variant를 고르면 준비 실패로 남긴다. 다른 라이브러리의 모든 전이 의존을 펼치거나 수집 때문에 해석을 강제로 실행하지 않는다. 지연 기본 의존은 실제 모델에 나타난 시점부터 검사하므로, 이 결과가 완전한 런타임 의존 감사는 아니다.
+Gradle 9.5.1의 실제 `testFixtures(project(...))`·외부 fixture 선택 정보를 읽으며 capability, 대상 구성, artifact 및 속성 선택 근거를 남긴다. main 구성 속성에 개별 의존 속성을 덮어쓴 유효 값을 판단한다. 일반 `java-api` 같은 운영 속성은 허용하고, `example.flavor=testing` 같은 미지원 사용자 속성으로 프로젝트 variant를 고르면 준비 실패로 남긴다. 다른 라이브러리의 모든 전이 의존을 펼치거나 수집 때문에 해석을 강제로 실행하지 않는다. 지연 기본 의존은 실제 모델에 나타난 시점부터 검사하므로, 이 결과가 완전한 런타임 의존 감사는 아니다.
 
 읽을 코드: [Gradle 수집](../architecture-tests/gradle/isolation-inputs.gradle.kts) → [전달 형식 확인](../architecture-tests/src/test/kotlin/com/exchange/architecture/support/IsolationInputs.kt) → [선언 판단](../architecture-tests/src/test/kotlin/com/exchange/architecture/rules/ProductionDependencyIsolation.kt). 근거: [선언 계약 테스트](../architecture-tests/src/test/kotlin/com/exchange/architecture/IsolationDependencyContractTest.kt), [실제 Gradle 통합 테스트](../architecture-tests/src/test/kotlin/com/exchange/architecture/IsolationGradleWiringTest.kt).
 
@@ -84,18 +103,19 @@ E -->|아니오| G[이번 검사 범위에서 통과]
 
 ## 실행 상태와 남은 범위
 
-최종 전체 `build`에서 **구조 검사 156개가 실제 실행됐고 실패·오류·skip은 0개**였다. 기존 제품 테스트는 이 명령에서 UP-TO-DATE로 재사용됐다. 새로 모두 실행했다고 세지 않는다.
+최종 전체 `build`에서 **구조 검사 159개가 실제 실행됐고 실패·오류·skip은 0개**였다. 기존 제품 테스트는 이 명령에서 UP-TO-DATE로 재사용됐다. 새로 모두 실행했다고 세지 않는다.
 
-실제 운영 적용에서는 **113개 클래스, main 구성 12개, 구성별 직접 선언 53개, 직접 코드 참조 5,090개**를 확인했고 ARCH-08 준비 오류·위반은 0건이었다. 기존 P01·02·03도 통과했다. P04만 선택한 독립 실행은 1개 테스트가 통과했다. 독립 명령의 dry-run에는 다른 제품 test/JMH 컴파일·실행이 추가되지 않았다.
+실제 운영 적용에서는 **113개 클래스, main 구성 12개, 구성별 직접 선언 53개, 직접 코드 참조 5,090개**를 확인했고 ARCH-08 준비 오류·위반은 0건이었다. 기존 P01·02·03도 통과했다. P04 단독 1개 통과는 초기 커밋의 근거이며, 이번 수정 후에는 전체 구조 실행에 P04를 포함해 확인했다. 독립 명령의 dry-run에는 다른 제품 test/JMH 컴파일·실행이 추가되지 않았다.
 
 | 실행 | 결과 | 보장 |
 | --- | --- | --- |
-| `:architecture-tests:test --rerun-tasks` | 구조 156개 통과 | 입력·규칙·실제 Gradle·기존 회귀 |
-| 작업 순서·variant 속성 보완 후 `build --continue` | 성공, 구조 156개 재실행 | 최종 코드의 전체 빌드 연결; 제품 테스트는 재사용 |
+| 초기 커밋의 `:architecture-tests:test --rerun-tasks` | 구조 156개 통과 | 보완 전 기준 기록 |
+| 리뷰 보완 관련 테스트 선택 실행 | 17개 통과 | 소비자 속성·선택 우선순위·기존 선언·운영 적용 |
+| 소비자 속성 보완 후 `build --continue` | 성공, 구조 159개 재실행 | 최종 코드의 전체 빌드 연결; 제품 테스트는 재사용 |
 | `:architecture-tests:test --dry-run` | 성공 | 다른 제품 test/JMH 작업이 선행에 추가되지 않음 |
-| `:architecture-tests:test --tests '*ProductionArchitectureTest*P04*'` | 1개 통과 | 이전 검사 실행 순서에 의존하지 않는 실제 적용 |
+| 초기 커밋의 P04 단독 실행 | 1개 통과 | 보완 전 독립 적용 기록; 현재 P04는 전체 159개에 포함 |
 
-로컬 기본 보고서 위치에는 마지막 P04 단독 실행 1개가 보인다. 전체 구조 156개 보고서와 XML은 로컬에 별도로 보존했고, 원격 검토용 집계·명령·소스 해시는 아래 JSON에 포함했다. 원본 로컬 로그 경로는 실행 당시 기록이며 저장소 첨부물이 아니다. 원격 실행 보고서는 PR의 CI 아티팩트에서 확인한다. [실행 기록과 소스 해시](architecture-08-verification.json)에서 현재 코드와 결과의 연결을 확인할 수 있다.
+로컬 기본 보고서에는 현재 전체 구조 159개 실행 결과가 보인다. 이 보고서와 XML은 로컬에 별도로 보존했고, 원격 검토용 집계·명령·소스 해시는 아래 JSON에 포함했다. 원본 로컬 로그 경로는 실행 당시 기록이며 저장소 첨부물이 아니다. 원격 실행 보고서는 PR의 CI 아티팩트에서 확인한다. [실행 기록과 소스 해시](architecture-08-verification.json)에서 현재 코드와 결과의 연결을 확인할 수 있다.
 
 이번 범위 밖: 모든 전이 의존, 파일 의존, 동적 로딩·리플렉션·재포장된 임의 복사본의 전수 추적, 테스트 품질, 거래·DB 동작의 정확성. #19 전체 완료나 ARCH-03/04/05/07 완료를 뜻하지 않는다.
 

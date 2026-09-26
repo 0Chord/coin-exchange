@@ -2,7 +2,7 @@
 
 대상: [#19 공통 구조 검사 기반 구현 및 명세 v1 적용](https://github.com/0Chord/coin-exchange/issues/19). 기준: PR #28이 병합된 통합 브랜치 `feature/phase-2/integration`의 **`db26dfcead285df9e713087d3bbba5bca0829f3f`**. 확인일: 2026-09-26.
 
-**상태: 합의한 ARCH-08 로컬 구현·검증 완료.** 최종 전체 build에서 구조 검사 156개를 실제 실행해 실패·오류·skip 없이 통과했다. 기존 제품 테스트는 해당 build에서 UP-TO-DATE 결과를 재사용했다. 실행 당시 변경 스냅샷의 소스 해시와 명령·결과는 [검증 기록](architecture-08-verification.json)에 남긴다. 외부 테스트 도구도 명시 목록으로 검사한다는 합의를 반영했다. 기존 ARCH-01·02·06의 기록은 뒤쪽에 보존한다. [구현 흐름과 실제 코드](architecture-08-review.md)를 함께 읽을 수 있다.
+**상태: 합의한 ARCH-08 로컬 구현·검증 완료.** 최종 전체 build에서 구조 검사 159개를 실제 실행해 실패·오류·skip 없이 통과했다. 기존 제품 테스트는 해당 build에서 UP-TO-DATE 결과를 재사용했다. 실행 당시 변경 스냅샷의 소스 해시와 명령·결과는 [검증 기록](architecture-08-verification.json)에 남긴다. 외부 테스트 도구도 명시 목록으로 검사한다는 합의를 반영했다. 기존 ARCH-01·02·06의 기록은 뒤쪽에 보존한다. [구현 흐름과 실제 코드](architecture-08-review.md)를 함께 읽을 수 있다.
 
 ## ARCH-08 · 먼저 읽을 핵심
 
@@ -95,7 +95,7 @@ Boot의 group은 `org.springframework.boot`로 한정한다. 초기 artifact 목
 
 - 기존 두 main 구성의 hierarchy를 재사용한다. `implementation`, `api`, `compileOnly`, `runtimeOnly`, main이 상속한 사용자 구성과 지연 선언을 포함한다. 순수 테스트 구성은 main에 연결되지 않으면 제외한다.
 - 프로젝트 경로를 끝 이름으로 축약하지 않는다. 미등록 프로젝트·구성 누락/중복·손상된 전달 형식은 준비 실패다. 외부 의존의 필수 group/name 누락도 조용히 건너뛰지 않는다.
-- `testFixtures(project(...))`와 외부 모듈의 명시적인 test-fixtures 선택은 일반 main 의존과 구분한다. capability/targetConfiguration/명시적 artifact 및 attribute 선택 근거를 보존한다. 알려진 일반 JVM 운영 속성 외의 명시적 프로젝트 선택은 미지원으로 거절하며, 실제 Gradle 예제로 일반 java-api 속성과 사용자 속성의 차이를 확인한다. 표준 fixture 선택을 정확히 판별하는 API는 Gradle 9.5.1 실제 모델로 확인한다. 이름에 test가 들어간 사용자 구성은 자동으로 fixture라고 단정하지 않는다.
+- `testFixtures(project(...))`와 외부 모듈의 명시적인 test-fixtures 선택은 일반 main 의존과 구분한다. capability/targetConfiguration/명시적 artifact 및 attribute 선택 근거를 보존한다. 선택 속성은 소비자 main compile/runtime 구성의 속성에 개별 의존 속성을 덮어쓴 유효 값을 사용한다. 의존을 선언한 부모 구성의 속성을 상속된 선택 속성이라고 가정하지 않는다. 알려진 일반 JVM 운영 속성 외의 명시적 프로젝트 선택은 미지원으로 거절하며, 실제 Gradle 예제로 구성/의존 수준의 사용자 속성과 정상 java-api 우선 선택을 구분한다. 보고에는 두 원본과 유효 속성을 보존한다. 표준 fixture 선택을 정확히 판별하는 API는 Gradle 9.5.1 실제 모델로 확인한다. 이름에 test가 들어간 사용자 구성은 자동으로 fixture라고 단정하지 않는다.
 - 현재 코드에 없는 임의 사용자 variant·파일 의존·composite/included build·dependency substitution 전체의 지원은 약속하지 않는다. 지원하지 않는 명시적 project variant 선택이 발견되면 준수라고 표시하지 않고 미지원 선택의 준비 실패로 남긴다. 일반 운영 variant와 명시한 표준 test-fixtures는 수용 사례에서 구분한다.
 - 지연 기본 의존은 해석 전후 차이와 명시 선언 우선 사례를 실제 Gradle로 확인한다. 강제 해석을 통해 없던 선언을 새로 만든 결과나, 아직 해석되지 않은 상태를 완전한 런타임 의존 감사라고 주장하지 않는다. 전이 의존·BOM·constraint·빌드 플러그인·annotation processor 전체 감사는 제외한다.
 
@@ -121,8 +121,8 @@ Gradle 공식 문서는 [test fixture의 소스셋·별도 선택](https://docs.
 | NP-10 소속/정의 실패 | 새 미등록 프로젝트, 미해석 내부 참조, 실제 필요한 비운영 정의 누락, 손상 클래스, 중복 소속 | 전체 미평가·원인 표시·최종 위반 목록 비움. 알려진 비운영만 정확히 구분 |
 | NP-11 기존 수집 경계 | 운영 출력에 테스트 파일/금지 상위 폴더 혼입; 역할 누락; 미등록 내부 타입 | 기존 준비 실패 유지. 새 ARCH-08 연결이 예외 통로가 되지 않음 |
 | NP-12 같은 이름의 반대 사례 | main의 TestValue, test의 Helper, 경로 별칭, 운영/비운영 동일 타입 소속 충돌 | 이름만으로 오탐 금지; 실제 test 소속 위반; 별칭 중복 정규화; 모호한 소속은 실패 |
-| NP-13 보고/결합 | 코드·Gradle 위반 동시 존재, 같은 선언의 compile/runtime 노출, 입력 순서 반전 | 두 근거 보존·동일 선언 중복 제거·안정된 정렬. 한 입력 준비 실패 시 전체 미평가 |
-| NP-14 실제 Gradle 연결 | 선언/fixture 선택·소스셋 추가 및 클래스 내용/존재 변경, 지연 의존 해석 전후 | 실제 수집기 출력과 작업 입력 변경을 확인. 불변 입력은 재사용 가능, 변경은 재평가 |
+| NP-13 보고/결합 | 코드·Gradle 위반 동시 존재, 같은 선언의 compile/runtime 노출과 서로 다른 선택 근거, 입력 순서 반전 | 두 근거 보존·동일 선언 중복 제거·안정된 정렬. 한 입력 준비 실패 시 전체 미평가 |
+| NP-14 실제 Gradle 연결 | 선언/fixture·소비자 구성 속성 선택, 소스셋·클래스 내용/존재 변경, 지연 의존 해석 전후 | 실제 수집기 출력과 작업 입력 변경을 확인. 불변 입력은 재사용 가능, 변경은 재평가 |
 | NP-15 작업 독립성 | 깨끗한 최소 빌드와 test/JMH 출력이 있는 빌드; 독립 명령 dry-run | 정상 입력의 판정 일관성. 다른 제품 test·JMH 실행·서버/DB/Docker를 추가 선행하지 않음 |
 | NP-16 P04 운영 적용 | 현재 등록된 운영 전체의 코드+Gradle 입력 | 준비 오류 0·위반 0을 목표로 실제 확인. 수/내용은 실행에서 기록하며 이번 문서에 추정 통과 수를 쓰지 않음 |
 
@@ -148,7 +148,7 @@ NP-14는 테스트용 문자열로 Gradle 출력을 흉내 낸 결과만으로 �
 - [x] 실행 커밋·실행/미실행 명령·결과·한계를 남긴다. HTML에서 정상·위반·준비 실패 각 하나를 입력부터 결과까지 설명한다.
 - [x] PR·CI·독립 리뷰·통합 결과는 실제 확인된 범위로 기록한다. #19의 ARCH-03/04/05 예제 검증과 후속 티켓을 남긴다.
 
-실행 명령: `./gradlew :architecture-tests:test --no-daemon --console=plain --rerun-tasks`, 작업 연결 확인용 `--dry-run`. 회귀 확인은 `./gradlew build --no-daemon --continue --console=plain`이며 전체 빌드의 기존 Testcontainers/Docker 요구와 독립 구조 검사를 구분한다. HTML/XML 보고서 위치는 기존 `architecture-tests/build/reports/tests/test/index.html`, `architecture-tests/build/test-results/test/`를 유지한다. 구조 검사 재실행, 전체 build, 독립 작업 dry-run을 완료했다. P04 단독 실행도 확인했다. [검증 기록](architecture-08-verification.json)에 명령·집계·원본 코드 해시를 연결했다. 기본 테스트 보고서는 마지막 P04 단독 실행 결과이며 전체 156개 실행 보고서는 `/private/tmp/arch08-implementation/full-build-report/index.html`에 별도로 보존했다.
+실행 명령: `./gradlew :architecture-tests:test --no-daemon --console=plain --rerun-tasks`, 작업 연결 확인용 `--dry-run`. 회귀 확인은 `./gradlew build --no-daemon --continue --console=plain`이며 전체 빌드의 기존 Testcontainers/Docker 요구와 독립 구조 검사를 구분한다. HTML/XML 보고서 위치는 기존 `architecture-tests/build/reports/tests/test/index.html`, `architecture-tests/build/test-results/test/`를 유지한다. 구조 검사 재실행, 전체 build, 독립 작업 dry-run을 완료했다. P04 단독 실행도 확인했다. [검증 기록](architecture-08-verification.json)에 명령·집계·원본 코드 해시를 연결했다. 현재 기본 보고서는 보완 후 전체 구조 159개 실행 결과다. 초기 커밋의 156개 및 P04 단독 실행과 이번 결과는 검증 기록에서 구분한다.
 
 제외: 이름·폴더 이동, ARCH-03–05/07, SQL·거래·동시성·실행 순서 변경, CI/브랜치 보호 정책 변경, 모든 전이 라이브러리/파일 의존 감사, 리플렉션·문자열 로딩·서비스 로딩·재포장 코드의 전수 추적, 테스트 실행이나 테스트 품질의 증명. 기존 일반 라이브러리·Kotlin/JDK 전체를 금지하지 않는다.
 
@@ -158,7 +158,7 @@ NP-14는 테스트용 문자열로 Gradle 출력을 흉내 낸 결과만으로 �
 - **반영한 구조:** 보조 목적지 자료·추가 Gradle 정보·독립 P04와 네 구현 단위. 전체 제품이나 #19를 다시 설계하지 않았다.
 - **확인한 기술:** Gradle 9.5.1의 실제 fixture 선택, 소스셋/파일 내용/존재 변경에 따른 재실행, 지연 기본 의존의 해석 전후 차이와 명시 선언 우선. 수집이 완전한 런타임 의존 감사라고 확대하지 않는다.
 - **사실 확인:** 병합 통합 커밋 db26dfc, 기존 코드·테스트·빌드의 현재 책임, 로컬 API 선언. 기존 통합 CI도 성공 확인했지만 ARCH-08 통과 증거는 아니다.
-- **진행 상태:** 사용자 구현 요청에 따라 테스트 작성·기대값 검토·구현·검증과 HTML 설명을 완료했다. PR 게시를 위한 변경과 검증 근거를 준비했다. 원격 CI·독립 리뷰·병합의 최신 상태는 PR에서 확인한다. 원격 이슈/보드 상태는 변경하지 않았다.
+- **진행 상태:** 사용자 구현 요청에 따라 테스트 작성·기대값 검토·구현·검증과 HTML 설명을 완료했다. PR #29의 소비자 구성 속성 누락을 보완하고 회귀 검증 근거를 갱신했다. 원격 CI·독립 리뷰·병합의 최신 상태는 PR에서 확인한다. 원격 이슈/보드 상태는 변경하지 않았다.
 
 ## 수용 사례와 실제 근거 연결
 
@@ -171,7 +171,7 @@ NP-14는 테스트용 문자열로 Gradle 출력을 흉내 낸 결과만으로 �
 | NP-09–10 | NonProductionTargetsTest, IsolationDependencyContractTest, 기존 ModuleRegistrationContractTest | 빈 값·미생성과 누락·손상·등록 실패 구분 |
 | NP-11–12 | ImportScopeContractTest 전체 회귀, NonProductionTargetsTest, ProductionDependencyIsolationTest | 기존 오염·역할 누락 검사 유지, 정확한 이름만 인식, 소속 충돌 거절 |
 | NP-13 | ProductionDependencyIsolationTest의 결합 사례, IsolationDependencyContractTest의 역순·중복 근거 | 두 근거 보존, 정렬, 준비 실패 시 최종 위반 목록 비움 |
-| NP-14 | IsolationGradleWiringTest 4개와 기존 GradleDependencyWiringTest 4개 | 실제 Gradle, 신규 소스셋, 파일 생성/내용/삭제, 지연 선언과 명시 선언 우선 |
+| NP-14 | IsolationGradleWiringTest 7개와 기존 GradleDependencyWiringTest 4개 | 실제 Gradle, 소비자 속성 및 개별 의존 우선, 속성 변경 재수집, 파일 생성/내용/삭제, 지연 선언과 명시 선언 우선 |
 | NP-15 | 최소 Gradle 통합 예제의 미생성/빈/실제 출력, 독립 명령 dry-run | 다른 제품 test/JMH 컴파일·실행 선행 없음 |
 | NP-16 | ProductionArchitectureTest.P04 | 운영 6개 모듈·113개 클래스, main 구성 12개에 적용 |
 

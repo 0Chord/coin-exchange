@@ -58,7 +58,8 @@ object ProductionDependencyIsolation {
         }
         if (problems.isNotEmpty()) return finish(problems, emptyList())
         val violations = snapshot.configurations.flatMap { c -> c.dependencies.map { c to it } }
-            .groupBy { (c, d) -> Triple(c.projectPath, c.buildFile, d) }.mapNotNull { (key, occurrences) ->
+            // 같은 선언의 compile/runtime 선택 근거는 달라도 진단 하나에 모두 보존한다.
+            .groupBy { (c, d) -> Triple(c.projectPath, c.buildFile, d.copy(details = "")) }.mapNotNull { (key, occurrences) ->
                 val (path, file, d) = key
                 val reason = when {
                     d.selection == "test-fixtures" -> "테스트 fixture 선택"
@@ -68,7 +69,7 @@ object ProductionDependencyIsolation {
                     else -> null
                 }
                 reason?.let { IsolationViolation("GRADLE", path, d.target, it,
-                    "선언: ${d.declaredIn} | main: ${occurrences.map { (c, _) -> "${c.usage}/${c.configuration}" }.distinct().sorted().joinToString()} | ${d.details}", file) }
+                    "선언: ${d.declaredIn} | main: ${occurrences.map { (c, declaration) -> "${c.usage}/${c.configuration}: ${declaration.details}" }.distinct().sorted().joinToString(" | ")}", file) }
             }
         return finish(problems, violations)
     }

@@ -9,6 +9,7 @@ import java.io.File
 import java.nio.file.Files
 import java.nio.file.Path
 import java.nio.file.StandardOpenOption.APPEND
+import java.util.jar.JarFile
 import kotlin.test.*
 
 /** 실제 운영 Test에 적용하는 수집 스크립트와 입력 파일 집합을 최소 Gradle 프로젝트에서 확인한다. */
@@ -82,6 +83,111 @@ class IsolationGradleWiringTest {
         assertFalse(customAttribute.evaluated)
         assertEquals(emptyList(), customAttribute.violations)
         assertTrue(customAttribute.problems.any { it.contains("UNSUPPORTED_SELECTION") && it.contains("example.flavor=testing") })
+    }
+
+    @Test fun `소비자 runtime 속성으로 실제 테스트 jar를 선택하면 준비 실패다`() {
+        prepare()
+        Files.writeString(root.resolve("app/build.gradle"), """
+            plugins { id 'java-library' }
+            configurations.runtimeClasspath.attributes {
+                attribute(Attribute.of('example.kind', String), 'testing')
+            }
+            dependencies { runtimeOnly project(':lib') }
+        """.trimIndent())
+        append("lib/build.gradle", """
+            def kind = Attribute.of('example.kind', String)
+            configurations.runtimeElements.attributes.attribute(kind, 'production')
+            configurations { testElements { canBeConsumed = true; canBeResolved = false } }
+            configurations.runtimeElements.attributes.keySet().each { key ->
+                configurations.testElements.attributes.attribute(key, configurations.runtimeElements.attributes.getAttribute(key))
+            }
+            configurations.testElements.attributes.attribute(kind, 'testing')
+            def testJar = tasks.register('testJar', Jar) { archiveClassifier = 'tests'; from sourceSets.test.output }
+            artifacts { testElements(testJar) }
+        """)
+        val source = root.resolve("lib/src/test/java/example/Helper.java")
+        Files.createDirectories(source.parent)
+        Files.writeString(source, "package example; public class Helper {}")
+        append("build.gradle", """
+            tasks.register('selectedRuntime') {
+                dependsOn(':lib:testJar')
+                doLast {
+                    def artifacts = project(':app').configurations.runtimeClasspath.incoming.artifacts.artifacts
+                    assert artifacts.size() == 1
+                    def artifact = artifacts.iterator().next()
+                    println('SELECTED_VARIANT=' + artifact.variant.displayName)
+                    println('SELECTED_JAR=' + artifact.file.name)
+                }
+            }
+        """)
+        val execution = run("selectedRuntime")
+        assertTrue(execution.output.contains("SELECTED_VARIANT=configuration ':lib:testElements'"))
+        assertTrue(execution.output.contains("SELECTED_JAR=lib-1-tests.jar"))
+        JarFile(root.resolve("lib/build/libs/lib-1-tests.jar").toFile()).use {
+            assertNotNull(it.getJarEntry("example/Helper.class"))
+        }
+        val input = read()
+        val runtime = input.configurations.single { it.projectPath == ":app" && it.usage == "runtime" }
+        assertEquals("unsupported", runtime.dependencies.single().selection)
+        val result = ProductionDependencyIsolation.inspectGradle(input, inventory)
+        assertFalse(result.evaluated)
+        assertEquals(emptyList(), result.violations)
+        assertTrue(result.problems.any { it.contains("UNSUPPORTED_SELECTION: :app → :lib") && it.contains("example.kind=testing") })
+    }
+
+    @Test fun `소비자 compile 속성만 바뀌어도 재수집하고 runtime 정상 선택은 유지한다`() {
+        prepare()
+        append("app/build.gradle", """
+            if (providers.gradleProperty('customCompile').isPresent()) {
+                configurations.compileClasspath.attributes { attribute(Attribute.of('example.kind', String), 'testing') }
+            }
+        """)
+        run()
+        assertEquals(emptyList(), evaluate().violations)
+        assertEquals(TaskOutcome.UP_TO_DATE, run().task(":snapshot")?.outcome)
+        val changed = run("-PcustomCompile=true")
+        val input = read()
+        val declarations = input.configurations.filter { it.projectPath == ":app" }.associate { it.usage to it.dependencies.single() }
+        assertEquals("unsupported", declarations.getValue("compile").selection)
+        assertEquals("main", declarations.getValue("runtime").selection)
+        assertEquals(TaskOutcome.SUCCESS, changed.task(":snapshot")?.outcome)
+        val result = ProductionDependencyIsolation.inspectGradle(input, inventory)
+        assertFalse(result.evaluated)
+        assertTrue(result.problems.single().contains("example.kind=testing"))
+        assertEquals(emptyList(), result.violations)
+        assertEquals(TaskOutcome.UP_TO_DATE, run("-PcustomCompile=true").task(":snapshot")?.outcome)
+        assertEquals(TaskOutcome.SUCCESS, run().task(":snapshot")?.outcome)
+        assertEquals(emptyList(), evaluate().violations)
+    }
+
+    @Test fun `의존 속성이 소비자 속성을 덮어쓰면 실제 정상 variant 선택을 허용한다`() {
+        prepare()
+        Files.writeString(root.resolve("app/build.gradle"), """
+            plugins { id 'java-library' }
+            configurations.runtimeClasspath.attributes {
+                attribute(Usage.USAGE_ATTRIBUTE, objects.named(Usage, 'test-runtime'))
+            }
+            dependencies {
+                runtimeOnly(project(':lib')) {
+                    attributes { attribute(Usage.USAGE_ATTRIBUTE, project.objects.named(Usage, 'java-api')) }
+                }
+            }
+        """.trimIndent())
+        append("build.gradle", """
+            tasks.register('selectedRuntime') {
+                dependsOn(':lib:jar')
+                doLast {
+                    def artifacts = project(':app').configurations.runtimeClasspath.incoming.artifacts.artifacts
+                    assert artifacts.size() == 1
+                    def artifact = artifacts.iterator().next()
+                    println('SELECTED_VARIANT=' + artifact.variant.displayName)
+                }
+            }
+        """)
+        assertTrue(run("selectedRuntime").output.contains("SELECTED_VARIANT=configuration ':lib:apiElements'"))
+        val result = evaluate()
+        assertEquals(emptyList(), result.violations)
+        assertEquals("main", read().configurations.single { it.projectPath == ":app" && it.usage == "runtime" }.dependencies.single().selection)
     }
 
     @Test fun `소스셋과 출력 내용 생성 삭제를 작업 입력으로 추적하며 비운영 컴파일은 요구하지 않는다`() {

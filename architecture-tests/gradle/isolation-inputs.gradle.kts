@@ -18,7 +18,9 @@ val isolationDependencies = providers.provider {
             val main = source.extensions.getByType<SourceSetContainer>().named("main").get()
             listOf("compile" to main.compileClasspathConfigurationName, "runtime" to main.runtimeClasspathConfigurationName).forEach { (usage, name) ->
                 add(row("C", path, usage, name, source.buildFile.absolutePath))
-                source.configurations.getByName(name).hierarchy.sortedBy { it.name }.forEach { declared ->
+                val consumer = source.configurations.getByName(name)
+                val consumerAttributes = consumer.attributes.keySet().associate { it.name to consumer.attributes.getAttribute(it).toString() }.toSortedMap()
+                consumer.hierarchy.sortedBy { it.name }.forEach { declared ->
                     // 현재 모델에 나타난 직접 선언만 읽는다. 이 수집 때문에 구성을 강제로 해석하지 않는다.
                     declared.dependencies.withType(ModuleDependency::class.java).map { dependency ->
                         val projectDependency = dependency as? ProjectDependency
@@ -27,7 +29,9 @@ val isolationDependencies = providers.provider {
                         val capabilities = dependency.requestedCapabilities
                         val fixture = capabilities.any { it.group == dependency.group && it.name == "${dependency.name}-test-fixtures" }
                         val configuration = dependency.targetConfiguration
-                        val attributes = dependency.attributes.keySet().associate { it.name to dependency.attributes.getAttribute(it).toString() }.toSortedMap()
+                        val dependencyAttributes = dependency.attributes.keySet().associate { it.name to dependency.attributes.getAttribute(it).toString() }.toSortedMap()
+                        // 실제 선택은 main 구성의 속성을 기본으로 쓰고, 같은 키의 개별 의존 속성이 우선한다.
+                        val attributes = (consumerAttributes + dependencyAttributes).toSortedMap()
                         val supportedAttributes = mapOf(
                             "org.gradle.category" to setOf("library", "platform", "enforced-platform"),
                             "org.gradle.usage" to setOf("java-api", "java-runtime"),
@@ -47,7 +51,7 @@ val isolationDependencies = providers.provider {
                             capabilities.isNotEmpty() || dependency.capabilitySelectors.isNotEmpty() || artifacts.isNotEmpty() || unknownAttributes
                         )
                         val selection = when { standardFixture -> "test-fixtures"; unsupportedProject -> "unsupported"; else -> "main" }
-                        val details = "configuration=${configuration.orEmpty()}; capabilities=${capabilities.map { "${it.group}:${it.name}:${it.version}" }.sorted()}; artifacts=$artifacts; attributes=$attributes; selectors=${dependency.capabilitySelectors.map { it.displayName }.sorted()}"
+                        val details = "configuration=${configuration.orEmpty()}; capabilities=${capabilities.map { "${it.group}:${it.name}:${it.version}" }.sorted()}; artifacts=$artifacts; attributes=$dependencyAttributes; consumerAttributes=$consumerAttributes; effectiveAttributes=$attributes; selectors=${dependency.capabilitySelectors.map { it.displayName }.sorted()}"
                         row("D", kind, target, declared.name, selection, details, dependency.attributes.getAttribute(Category.CATEGORY_ATTRIBUTE)?.name.orEmpty())
                     }.distinct().sorted().forEach { add(it) }
                 }

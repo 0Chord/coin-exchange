@@ -15,13 +15,20 @@ class IsolationDependencyContractTest {
     private fun external(target: String, category: String = "", selection: String = "main") = IsolationDeclaration("external", target, "implementation", selection, category = category)
 
     @Test fun `비운영 프로젝트 선언은 compile runtime 근거를 한 진단으로 남긴다`() {
-        val result = ProductionDependencyIsolation.inspectGradle(snapshot(IsolationDeclaration("project", ":bench", "implementation")), inventory)
+        val input = snapshot(IsolationDeclaration("project", ":bench", "implementation")).let { snapshot ->
+            snapshot.copy(configurations = snapshot.configurations.map { c ->
+                c.copy(dependencies = c.dependencies.map { it.copy(details = "effectiveAttributes={org.gradle.usage=java-${if (c.usage == "compile") "api" else "runtime"}}") })
+            })
+        }
+        val result = ProductionDependencyIsolation.inspectGradle(input, inventory)
         assertTrue(result.evaluated, result.problems.toString())
         val v = result.violations.single()
         assertEquals(":app", v.origin); assertEquals(":bench", v.target)
         assertEquals("비운영 프로젝트", v.reason); assertEquals("GRADLE", v.evidence)
         assertTrue(v.description.contains("compile/compileClasspath") && v.description.contains("runtime/runtimeClasspath"))
+        assertTrue(v.description.contains("org.gradle.usage=java-api") && v.description.contains("org.gradle.usage=java-runtime"))
         assertEquals("/:app/build.gradle.kts", v.sourceFile); assertNull(v.line)
+        assertEquals(result, ProductionDependencyIsolation.inspectGradle(input.copy(configurations = input.configurations.reversed()), inventory))
     }
 
     @Test fun `명시 도구 좌표와 일반 라이브러리 BOM을 구분한다`() {
