@@ -27,6 +27,8 @@ dependencies {
 	// HTTP 경계 예제의 실제 컨트롤러·응답 타입만 읽으며 서버는 시작하지 않는다.
 	testImplementation("org.springframework:spring-web")
 	testImplementation("org.springframework:spring-jdbc")
+	// 업무 계층의 트랜잭션 메타데이터 허용 예제에 사용한다. 실제 트랜잭션은 실행하지 않는다.
+	testImplementation("org.springframework:spring-tx")
 	testImplementation("org.springframework:spring-test")
 	testImplementation("org.testcontainers:testcontainers")
 	testImplementation("org.openjdk.jmh:jmh-core:1.37")
