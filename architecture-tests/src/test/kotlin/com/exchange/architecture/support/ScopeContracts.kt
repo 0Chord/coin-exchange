@@ -10,7 +10,7 @@ data class ModuleOutput(val module: String, val roots: List<Path>)
  * 수집 결과가 빠지거나 오염되지 않았는지 대조할 기준.
  *
  * [requiredTypesByModule]은 모듈별 최소 확인 타입이며 전체 수집 대상을 제한하지 않는다.
- * [projectPackagePrefixes]에 속한 직접 참조는 운영 출력에 실제 정의가 있어야 한다.
+ * [projectPackagePrefixes]에 속한 직접 참조는 운영 출력 또는 검증된 비운영 목적지에 실제 정의가 있어야 한다.
  * [forbiddenTypePrefixes]는 금지 경로 밖으로 복사된 예제도 찾기 위한 이름 접두사다.
  */
 data class ScopeExpectations(
@@ -26,7 +26,7 @@ enum class ScopeProblemCode {
     MISSING_REQUIRED_TYPE, EMPTY_ROLE, MISSING_ROLE_TYPE,
     INCOMPLETE_IMPORT, DUPLICATE_TYPE, FORBIDDEN_OUTPUT,
     READ_FAILURE, UNEXPECTED_IMPORTED_TYPE, AMBIGUOUS_OWNERSHIP,
-    UNRESOLVED_PROJECT_TYPE, UNCLASSIFIED_INTERFACE, CONFLICTING_MODULE_ROLE,
+    UNRESOLVED_PROJECT_TYPE, UNCLASSIFIED_INTERFACE, CONFLICTING_MODULE_ROLE, INVALID_TARGET_INPUT,
 }
 
 data class ScopeProblem(

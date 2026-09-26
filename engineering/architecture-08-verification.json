@@ -1,0 +1,629 @@
+{
+  "createdAt": "2026-09-26T22:09:40+09:00",
+  "baseCommit": "db26dfcead285df9e713087d3bbba5bca0829f3f",
+  "branch": "test/non-production-deps/19",
+  "snapshot": "통합 기준 커밋 위의 ARCH-08 및 PR #29 소비자 속성 보완 스냅샷. 아래 소스 SHA-256으로 최종 실행 대상을 고정한다.",
+  "result": "passed",
+  "commands": [
+    {
+      "command": "./gradlew :architecture-tests:test --tests '*NonProductionTargetsTest' --no-daemon --console=plain",
+      "phase": "초기 구현(ff542f9) · 출력 자료 Red",
+      "tests": 6,
+      "failures": 6,
+      "log": "/private/tmp/arch08-implementation/unit1-red.log"
+    },
+    {
+      "command": "./gradlew :architecture-tests:test --tests '*NonProductionTargetsTest' --no-daemon --console=plain",
+      "phase": "초기 구현(ff542f9) · 출력 자료 첫 Green",
+      "tests": 6,
+      "failures": 0,
+      "log": "/private/tmp/arch08-implementation/unit1-green2.log"
+    },
+    {
+      "command": "./gradlew :architecture-tests:test --tests '*ProductionDependencyIsolationTest' --no-daemon --console=plain",
+      "phase": "초기 구현(ff542f9) · 코드/준비 연결 Red",
+      "tests": 8,
+      "failures": 7,
+      "log": "/private/tmp/arch08-implementation/unit2-red-corrected.log"
+    },
+    {
+      "command": "./gradlew :architecture-tests:test --tests '*IsolationDependencyContractTest' --no-daemon --console=plain",
+      "phase": "초기 구현(ff542f9) · 선언 계약 Red",
+      "tests": 6,
+      "failures": 5,
+      "log": "/private/tmp/arch08-implementation/unit3-red.log"
+    },
+    {
+      "command": "./gradlew :architecture-tests:test --no-daemon --console=plain --rerun-tasks",
+      "phase": "초기 구현(ff542f9) · 작업 순서 보완 전 전체 구조 Green",
+      "tests": 156,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0,
+      "exitCode": 0,
+      "log": "/private/tmp/arch08-implementation/architecture-all.log",
+      "note": "이후 전체 build에서 발견한 작업 순서를 보완하고 아래 최종 build에서 구조 156개를 다시 실행했다."
+    },
+    {
+      "command": "./gradlew build --no-daemon --continue --console=plain",
+      "phase": "초기 구현(ff542f9) · 첫 전체 build의 입력/생산 작업 순서 결함",
+      "exitCode": 1,
+      "log": "/private/tmp/arch08-implementation/full-build-before-ordering.log",
+      "resolution": "mustRunAfter로 함께 선택된 비운영 컴파일을 먼저 끝낸다. 독립 검사에 dependsOn을 추가하지 않는다."
+    },
+    {
+      "command": "./gradlew :architecture-tests:test --tests '*IsolationGradleWiringTest*소스셋*' --no-daemon --console=plain",
+      "phase": "초기 구현(ff542f9) · 실제 생산/수집 순서와 파일 입력 회귀",
+      "tests": 1,
+      "failures": 0,
+      "exitCode": 0,
+      "log": "/private/tmp/arch08-implementation/ordering-fixed.log"
+    },
+    {
+      "command": "./gradlew :architecture-tests:test --tests '*IsolationGradleWiringTest*실제 project*' --no-daemon --console=plain",
+      "phase": "초기 구현(ff542f9) · 명시적 사용자 variant 속성 거절과 정상 java-api 대조",
+      "exitCode": 0,
+      "tests": 1,
+      "failures": 0,
+      "log": "/private/tmp/arch08-implementation/variant-attributes.log"
+    },
+    {
+      "command": "./gradlew build --no-daemon --continue --console=plain",
+      "phase": "초기 구현(ff542f9) · 최종 전체 build",
+      "exitCode": 0,
+      "architectureTestsExecuted": 156,
+      "log": "/private/tmp/arch08-implementation/full-build.log",
+      "cachedTestTasks": [
+        ":app-api:test",
+        ":domain-fee:test",
+        ":domain-ledger:test",
+        ":domain-matching:test",
+        ":domain-order:test"
+      ]
+    },
+    {
+      "command": "./gradlew :architecture-tests:test --dry-run --no-daemon --console=plain",
+      "phase": "초기 구현(ff542f9) · 최종 독립 작업 연결",
+      "exitCode": 0,
+      "log": "/private/tmp/arch08-implementation/dry-run-final.log"
+    },
+    {
+      "command": "./gradlew :architecture-tests:test --tests '*ProductionArchitectureTest*P04*' --no-daemon --console=plain",
+      "phase": "초기 구현(ff542f9) · P04만 독립 실행",
+      "exitCode": 0,
+      "tests": 1,
+      "failures": 0,
+      "log": "/private/tmp/arch08-implementation/p04-only.log"
+    },
+    {
+      "command": "./gradlew :architecture-tests:test --tests '*IsolationGradleWiringTest*소비자*' --tests '*IsolationDependencyContractTest*비운영 프로젝트*' --no-daemon --console=plain",
+      "phase": "리뷰 보완 Red",
+      "tests": 4,
+      "failures": 3,
+      "exitCode": 1,
+      "log": "/private/tmp/pr29-consumer-attributes/red-corrected.log"
+    },
+    {
+      "command": "./gradlew :architecture-tests:test --tests '*IsolationGradleWiringTest*' --tests '*IsolationDependencyContractTest*' --tests '*ProductionArchitectureTest*' --no-daemon --console=plain",
+      "phase": "리뷰 보완 관련 Green",
+      "tests": 17,
+      "failures": 0,
+      "exitCode": 0,
+      "log": "/private/tmp/pr29-consumer-attributes/green.log"
+    },
+    {
+      "command": "./gradlew build --no-daemon --continue --console=plain",
+      "phase": "리뷰 보완 최종 전체 build",
+      "architectureTestsExecuted": 159,
+      "exitCode": 0,
+      "cachedTestTasks": [
+        ":app-api:test",
+        ":domain-fee:test",
+        ":domain-ledger:test",
+        ":domain-matching:test",
+        ":domain-order:test"
+      ],
+      "log": "/private/tmp/pr29-consumer-attributes/full-build.log"
+    },
+    {
+      "command": "./gradlew :architecture-tests:test --dry-run --no-daemon --console=plain",
+      "phase": "리뷰 보완 독립 작업 연결",
+      "exitCode": 0,
+      "log": "/private/tmp/pr29-consumer-attributes/dry-run.log"
+    }
+  ],
+  "testResults": {
+    "app-api": {
+      "total": {
+        "tests": 75,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      "suites": [
+        {
+          "name": "com.exchange.core.ExchangeCoreApplicationTests",
+          "timestamp": "2026-09-26T06:10:16.954Z",
+          "tests": 1,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0
+        },
+        {
+          "name": "com.exchange.core.api.ledger.persistence.PostgresBalanceStoreTest",
+          "timestamp": "2026-09-26T06:10:26.031Z",
+          "tests": 15,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0
+        },
+        {
+          "name": "com.exchange.core.api.ledger.persistence.PostgresLedgerTransactionStoreTest",
+          "timestamp": "2026-09-26T06:10:27.706Z",
+          "tests": 3,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0
+        },
+        {
+          "name": "com.exchange.core.api.matching.MatchingApplicationServicePersistenceFailureTest",
+          "timestamp": "2026-09-26T06:10:29.411Z",
+          "tests": 3,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0
+        },
+        {
+          "name": "com.exchange.core.api.matching.MatchingControllerTest",
+          "timestamp": "2026-09-26T06:10:36.313Z",
+          "tests": 9,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0
+        },
+        {
+          "name": "com.exchange.core.api.matching.persistence.JpaMatchingEventStoreTest",
+          "timestamp": "2026-09-26T06:10:52.950Z",
+          "tests": 8,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0
+        },
+        {
+          "name": "com.exchange.core.api.matching.persistence.MatchingEventPayloadTest",
+          "timestamp": "2026-09-26T06:10:54.400Z",
+          "tests": 4,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0
+        },
+        {
+          "name": "com.exchange.core.api.matching.persistence.MatchingPersistenceIntegrationTest",
+          "timestamp": "2026-09-26T06:10:54.401Z",
+          "tests": 1,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0
+        },
+        {
+          "name": "com.exchange.core.api.matching.persistence.PersistentMatchingEventPublisherTest",
+          "timestamp": "2026-09-26T06:10:55.888Z",
+          "tests": 2,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0
+        },
+        {
+          "name": "com.exchange.core.api.order.OrderFundingServiceTest",
+          "timestamp": "2026-09-26T06:10:58.938Z",
+          "tests": 3,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0
+        },
+        {
+          "name": "com.exchange.core.api.order.OrderLifecycleE2ETest",
+          "timestamp": "2026-09-26T06:11:00.328Z",
+          "tests": 3,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0
+        },
+        {
+          "name": "com.exchange.core.api.order.OrderReservationReleaseServiceTest",
+          "timestamp": "2026-09-26T06:11:04.999Z",
+          "tests": 5,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0
+        },
+        {
+          "name": "com.exchange.core.api.order.TradeSettlementServiceTest",
+          "timestamp": "2026-09-26T06:11:06.440Z",
+          "tests": 7,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0
+        },
+        {
+          "name": "com.exchange.core.api.order.persistence.PostgresOrderReservationStoreTest",
+          "timestamp": "2026-09-26T06:11:08.043Z",
+          "tests": 11,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0
+        }
+      ]
+    },
+    "architecture-tests": {
+      "total": {
+        "tests": 159,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      "suites": [
+        {
+          "name": "com.exchange.architecture.ArchitectureRuleContractTest",
+          "timestamp": "2026-09-26T13:05:39.801Z",
+          "tests": 23,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0
+        },
+        {
+          "name": "com.exchange.architecture.GradleDependencyWiringTest",
+          "timestamp": "2026-09-26T13:05:41.257Z",
+          "tests": 4,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0
+        },
+        {
+          "name": "com.exchange.architecture.ImportScopeContractTest",
+          "timestamp": "2026-09-26T13:06:45.619Z",
+          "tests": 22,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0
+        },
+        {
+          "name": "com.exchange.architecture.IsolationDependencyContractTest",
+          "timestamp": "2026-09-26T13:06:45.901Z",
+          "tests": 6,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0
+        },
+        {
+          "name": "com.exchange.architecture.IsolationGradleWiringTest",
+          "timestamp": "2026-09-26T13:06:45.910Z",
+          "tests": 7,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0
+        },
+        {
+          "name": "com.exchange.architecture.ModuleDependencyContractTest",
+          "timestamp": "2026-09-26T13:08:25.213Z",
+          "tests": 11,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0
+        },
+        {
+          "name": "com.exchange.architecture.ModuleRegistrationContractTest",
+          "timestamp": "2026-09-26T13:08:25.464Z",
+          "tests": 5,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0
+        },
+        {
+          "name": "com.exchange.architecture.NonProductionTargetsTest",
+          "timestamp": "2026-09-26T13:08:25.467Z",
+          "tests": 7,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0
+        },
+        {
+          "name": "com.exchange.architecture.PortContractRuleTest",
+          "timestamp": "2026-09-26T13:08:25.501Z",
+          "tests": 47,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0
+        },
+        {
+          "name": "com.exchange.architecture.ProductionArchitectureTest",
+          "timestamp": "2026-09-26T13:08:30.700Z",
+          "tests": 4,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0
+        },
+        {
+          "name": "com.exchange.architecture.ProductionDependencyIsolationTest",
+          "timestamp": "2026-09-26T13:08:31.509Z",
+          "tests": 9,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0
+        },
+        {
+          "name": "com.exchange.architecture.ProductionOutputWiringTest",
+          "timestamp": "2026-09-26T13:08:31.758Z",
+          "tests": 2,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0
+        },
+        {
+          "name": "com.exchange.architecture.ProjectDependencyContractTest",
+          "timestamp": "2026-09-26T13:08:32.080Z",
+          "tests": 8,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0
+        },
+        {
+          "name": "com.exchange.architecture.RoleClassificationContractTest",
+          "timestamp": "2026-09-26T13:08:32.087Z",
+          "tests": 4,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0
+        }
+      ]
+    },
+    "domain-fee": {
+      "total": {
+        "tests": 37,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      "suites": [
+        {
+          "name": "com.exchange.core.fee.FeeRateTest",
+          "timestamp": "2026-09-26T06:08:57.569Z",
+          "tests": 4,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0
+        },
+        {
+          "name": "com.exchange.core.fee.FeeRemainderTest",
+          "timestamp": "2026-09-26T06:08:57.617Z",
+          "tests": 6,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0
+        },
+        {
+          "name": "com.exchange.core.fee.FeeTierResolverTest",
+          "timestamp": "2026-09-26T06:08:57.620Z",
+          "tests": 1,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0
+        },
+        {
+          "name": "com.exchange.core.fee.FeeTierThresholdsTest",
+          "timestamp": "2026-09-26T06:08:57.622Z",
+          "tests": 3,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0
+        },
+        {
+          "name": "com.exchange.core.fee.MakerTakerFeeRatesTest",
+          "timestamp": "2026-09-26T06:08:57.625Z",
+          "tests": 3,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0
+        },
+        {
+          "name": "com.exchange.core.fee.TradingFeeCalculatorTest",
+          "timestamp": "2026-09-26T06:08:57.630Z",
+          "tests": 7,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0
+        },
+        {
+          "name": "com.exchange.core.fee.TradingFeePolicySnapshotTest",
+          "timestamp": "2026-09-26T06:08:57.636Z",
+          "tests": 4,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0
+        },
+        {
+          "name": "com.exchange.core.fee.TradingFeeReserveCalculatorTest",
+          "timestamp": "2026-09-26T06:08:57.639Z",
+          "tests": 5,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0
+        },
+        {
+          "name": "com.exchange.core.fee.TradingFeeScheduleTest",
+          "timestamp": "2026-09-26T06:08:57.642Z",
+          "tests": 4,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0
+        }
+      ]
+    },
+    "domain-ledger": {
+      "total": {
+        "tests": 16,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      "suites": [
+        {
+          "name": "com.exchange.core.ledger.BalanceTest",
+          "timestamp": "2026-09-26T06:08:56.872Z",
+          "tests": 8,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0
+        },
+        {
+          "name": "com.exchange.core.ledger.LedgerPostingTest",
+          "timestamp": "2026-09-26T06:08:56.933Z",
+          "tests": 3,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0
+        },
+        {
+          "name": "com.exchange.core.ledger.LedgerTransactionTest",
+          "timestamp": "2026-09-26T06:08:56.936Z",
+          "tests": 5,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0
+        }
+      ]
+    },
+    "domain-matching": {
+      "total": {
+        "tests": 65,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      "suites": [
+        {
+          "name": "com.exchange.core.matching.MarketCommandProcessorTest",
+          "timestamp": "2026-09-26T06:09:00.224Z",
+          "tests": 16,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0
+        },
+        {
+          "name": "com.exchange.core.matching.MatchingEngineTest",
+          "timestamp": "2026-09-26T06:09:00.341Z",
+          "tests": 49,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0
+        }
+      ]
+    },
+    "domain-order": {
+      "total": {
+        "tests": 50,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      "suites": [
+        {
+          "name": "com.exchange.core.order.BuyOrderFundingQuoteCalculatorTest",
+          "timestamp": "2026-09-26T06:08:59.147Z",
+          "tests": 6,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0
+        },
+        {
+          "name": "com.exchange.core.order.MaximumBuyOrderFundingQuoteCalculatorTest",
+          "timestamp": "2026-09-26T06:08:59.230Z",
+          "tests": 4,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0
+        },
+        {
+          "name": "com.exchange.core.order.OrderFillSettlementCalculatorTest",
+          "timestamp": "2026-09-26T06:08:59.239Z",
+          "tests": 11,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0
+        },
+        {
+          "name": "com.exchange.core.order.OrderReservationCalculatorTest",
+          "timestamp": "2026-09-26T06:08:59.251Z",
+          "tests": 5,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0
+        },
+        {
+          "name": "com.exchange.core.order.OrderReservationTest",
+          "timestamp": "2026-09-26T06:08:59.260Z",
+          "tests": 21,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0
+        },
+        {
+          "name": "com.exchange.core.order.ReservationRequirementTest",
+          "timestamp": "2026-09-26T06:08:59.275Z",
+          "tests": 3,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0
+        }
+      ]
+    }
+  },
+  "resultsNote": "구조 159개는 리뷰 보완 후 최종 build에서 실제 실행했다. 제품 테스트는 해당 명령에서 UP-TO-DATE로 재사용했다. 초기 구현 156개와 이번 159개 실행을 구분한다.",
+  "productionSummary": "P04 평가: ARCH-08 · 운영 코드 직접 참조 + main Gradle 직접 선언\n운영 모듈별 클래스: {app-api=33, domain-common=9, domain-fee=16, domain-ledger=11, domain-matching=22, domain-order=22}\n비운영 출력: 22개 · 상태 {ABSENT=15, PRESENT=7} · 확인한 비운영 타입 285개\n출력 소속: {SourceSetKey(projectPath=:app-api, sourceSet=test)=[ABSENT, PRESENT], SourceSetKey(projectPath=:architecture-tests, sourceSet=main)=[ABSENT, ABSENT], SourceSetKey(projectPath=:architecture-tests, sourceSet=test)=[PRESENT, PRESENT], SourceSetKey(projectPath=:benchmark-jmh, sourceSet=jmh)=[ABSENT, ABSENT], SourceSetKey(projectPath=:benchmark-jmh, sourceSet=main)=[ABSENT, ABSENT], SourceSetKey(projectPath=:benchmark-jmh, sourceSet=test)=[ABSENT, ABSENT], SourceSetKey(projectPath=:domain-common, sourceSet=test)=[ABSENT, ABSENT], SourceSetKey(projectPath=:domain-fee, sourceSet=test)=[ABSENT, PRESENT], SourceSetKey(projectPath=:domain-ledger, sourceSet=test)=[ABSENT, PRESENT], SourceSetKey(projectPath=:domain-matching, sourceSet=test)=[ABSENT, PRESENT], SourceSetKey(projectPath=:domain-order, sourceSet=test)=[ABSENT, PRESENT]}\nmain 구성 12개 · 구성별 직접 선언 53개 · 코드 참조 5090개\nARCH-08 통과 · 준비 오류 0, 위반 0\n한계: 현재 모델에 나타난 직접 선언/바이트코드 참조와 명시 도구 목록. 전이·동적 로딩·임의 복사본·파일 의존 전체 감사, 테스트 품질·DB 동작은 포함하지 않습니다.\n",
+  "testReview": {
+    "expectations": "운영 main → 실제 비운영 출력/명시 도구 금지, test → main 허용, 입력 누락 시 전체 미평가라는 합의에서 기대값을 정했다.",
+    "independence": "같은 작성 AI의 기대값 검토 및 실행 검증이며 독립 PR 리뷰가 아니다.",
+    "corrections": [
+      "Path가 Iterable이어서 별칭 목록이 잘못 만들어진 테스트를 수정했다.",
+      "메서드 참조가 생성한 클래스를 실제 main 예제에 포함했다.",
+      "지연 의존 통합 테스트에서 작업 이름과 옵션 존재 여부를 혼동한 조건식을 수정했다."
+    ]
+  },
+  "boundaries": [
+    "실제 직접 바이트코드 참조와 main에 나타난 직접 선언/구성 상속을 검사한다.",
+    "현재 합의한 외부 도구 목록만 검사한다.",
+    "미생성 비운영 출력은 허용하되 필요한 내부 정의가 없거나 메타데이터가 누락되면 준비 실패다.",
+    "지연 의존의 강제 해석, 전이 의존 전체, 동적 로딩, 임의 재포장/파일 의존의 전수 감사는 아니다.",
+    "제품의 비즈니스 로직과 DB 동작을 바꾸거나 이 검사로 정확성을 증명하지 않는다.",
+    "PR #29의 초기 독립 리뷰 P2 보완이다. 수정 커밋의 CI·독립 재리뷰·병합 상태는 PR에서 확인하며 #19 전체 완료가 아니다."
+  ],
+  "sourceHashes": {
+    "architecture-tests/build.gradle.kts": "26491191124685ee5cd881cd211119e48f6f61b85738a598ebe6b5ec90cd1a2f",
+    "architecture-tests/gradle/isolation-inputs.gradle.kts": "2747e00fd42ca3417792c7436428d81693d24fc8b04d914ac928a13253d009ed",
+    "architecture-tests/gradle/project-dependencies.gradle.kts": "63370f3c3512c9794f2ac40e937620bd2c352ae235ee9f50a3d2481f332f2714",
+    "architecture-tests/src/test/kotlin/com/exchange/architecture/IsolationDependencyContractTest.kt": "70d65e6eb0788a20812335e141d8ea1865385aba87d9537244d082364ca107f2",
+    "architecture-tests/src/test/kotlin/com/exchange/architecture/IsolationGradleWiringTest.kt": "ca1b48c325d182028f08d7bf01f15203dbb737e9719b49377e162ccfaa2576e5",
+    "architecture-tests/src/test/kotlin/com/exchange/architecture/NonProductionTargetsTest.kt": "986637926d02b8e9dbcac7c8fc600e74281f7f99bd9873a7bb890a8fac5de889",
+    "architecture-tests/src/test/kotlin/com/exchange/architecture/ProductionArchitectureTest.kt": "0f9a49d2cee3e882154b4f190c918936e05db9334bb92c74070ad24b816f9a05",
+    "architecture-tests/src/test/kotlin/com/exchange/architecture/ProductionDependencyIsolationTest.kt": "7bbb71f2f033d55562f20a9789dafbc77dfca1f2a2f7a86fcea305780218913d",
+    "architecture-tests/src/test/kotlin/com/exchange/architecture/rules/ModuleDependencyDirection.kt": "b29e7005496c76f9abb6b93c19c80c83a4bcefc68be66416e4b00d951ff58fa9",
+    "architecture-tests/src/test/kotlin/com/exchange/architecture/rules/ProductionDependencyIsolation.kt": "b78dffb9e8af6e374a3ea3d679d030588341d8b7fbd550c39a5f9296bea4a6cf",
+    "architecture-tests/src/test/kotlin/com/exchange/architecture/rules/TestToolPolicy.kt": "d3dcc6f5d1b88083f9d5e73f2a30f9a187c704adf683b92845204dc673643e7f",
+    "architecture-tests/src/test/kotlin/com/exchange/architecture/support/DependencyInputValidation.kt": "6c529fdbd5956f6fe4cdb383e29f98504571d3dd6ceaa1268c9668bc11fd6f71",
+    "architecture-tests/src/test/kotlin/com/exchange/architecture/support/IsolationInputs.kt": "d08314e3fda154ff6578995311a8e365036b31429717b47f1b08ed47a6eb956d",
+    "architecture-tests/src/test/kotlin/com/exchange/architecture/support/NonProductionTargets.kt": "a3ab46b74e45cb184906a235ce903b4b47317fc60dd89b7ec03015eb631ab0cf",
+    "architecture-tests/src/test/kotlin/com/exchange/architecture/support/ProductionScope.kt": "0446f437302629e3670cba301b040a124eac2c254c94ec0c06088f8c4f41eeea",
+    "architecture-tests/src/test/kotlin/com/exchange/architecture/support/ProductionScopeImporter.kt": "36703391b28abec68245b1e80c5e3f88ce687bef6a8ed7252c0337a70a182cc9",
+    "architecture-tests/src/test/kotlin/com/exchange/architecture/support/ScopeContracts.kt": "9442e89b8c9e13251353605f6ae55c8644bf452c5df5d32041ce2156749c8b08",
+    "architecture-tests/src/test/kotlin/com/exchange/core/isolationfixture/IsolationFixtures.kt": "a2fa5ae0a132fdd564e2873e57068880216a594fd49d9cc91fd53c2d815feb48"
+  },
+  "reviewFollowup": {
+    "review": "https://github.com/0Chord/coin-exchange/pull/29#discussion_r4111410768",
+    "reviewedHead": "ff542f91722ee09344478d814c8f3198e5720a57",
+    "contract": "소비자 main 속성 + 개별 의존 우선 속성으로 유효 선택을 판단하며 미지원 project 선택은 전체 미평가",
+    "red": "소비자 compile/runtime 사례는 expected unsupported / actual main. 선택 근거가 다른 같은 선언은 중복 진단. 정상 개별 속성 우선은 기존에도 통과.",
+    "green": "실제 테스트 JAR 선택 거절, compile 속성 변경에 따른 재수집, 개별 속성 우선 정상 variant 허용, 두 구성의 근거를 한 진단에 보존",
+    "testCorrection": "첫 재현 코드의 Groovy Set.single 문법 오류는 수정했으며 행동 수준 Red로 세지 않는다.",
+    "independence": "이번 수정의 기대값 검토와 실행은 작성 AI가 수행했다. 수정 커밋의 독립 재리뷰와 원격 CI는 별도다."
+  }
+}
