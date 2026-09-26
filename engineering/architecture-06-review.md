@@ -1,6 +1,24 @@
 # ARCH-06 · 포트 계약 검사 구현 흐름
 
-상태: **로컬 구현·검증 완료**. 로컬 검증 기준: 통합 `d31e0fc` 위 `test/port-contracts/19` 작업 스냅샷. [합의한 명세](architecture-check-spec.md)를 적용했고, 실행한 소스는 [해시 기록](architecture-06-verification.json)으로 식별한다. 게시·원격 CI·리뷰의 이후 상태는 PR에서 확인한다.
+상태: **로컬 구현·검증 완료**. 로컬 검증 기준: 통합 `d31e0fc` 위 `test/port-contracts/19` 작업 스냅샷. 현재는 PR #28의 `3a93ac7` 이후 리뷰 보완을 포함한다. [합의한 명세](architecture-check-spec.md)를 적용했고, 실행한 소스는 [해시 기록](architecture-06-verification.json)으로 식별한다. 게시·원격 CI·리뷰의 이후 상태는 PR에서 확인한다.
+
+## PR #28 리뷰 보완 · 바뀐 판단 세 곳
+
+[독립 리뷰](https://github.com/0Chord/coin-exchange/pull/28#pullrequestreview-5324994963)가 기존 테스트에서 빠진 공개 계약 두 종류를 찾았다. 제품 실행 코드는 변경하지 않으며 검사기가 읽는 선언 정보를 보완한다.
+
+| 입력 → 판단 → 결과 | 변경 이유 | 확인할 근거 |
+| --- | --- | --- |
+| `Owner<Connection>.Member<String>` → 원본 Signature의 바깥·안쪽 타입 인자를 읽음 → Connection 위반 | 이전에는 Member와 String만 남아 잘못 통과 | [원본 보완](#source-bytecode), PORT-08 소유 타입 회귀 |
+| 외부 상위의 공개 중첩 인터페이스 → 원본 InnerClasses에서 포함 관계 확인 → 같은 디렉터리/JAR의 클래스 파일을 읽고 JDBC 계약 보고 | 이전에는 운영 출력 목록 안에서만 중첩 클래스를 찾았음 | [계약 순회](#source-reader), [외부 예제](#source-external-fixtures), PORT-11 외부·JAR 회귀 |
+| 필요한 중첩 타입의 파일 누락 → 내부는 수집 대상 확인, 외부는 원본 위치 확인 → 준비 실패·미평가 | 일부 계약만 읽고 정상으로 통과시키지 않음 | PORT-13 내부/외부 누락 회귀 |
+
+일반 값인 `Owner<String>.Member<Integer>`와 외부 중첩 계약의 String 반환은 통과한다. 원본 Signature의 메서드 타입 변수가 클래스의 같은 이름 변수를 가리면 메서드 상한을 사용하고, 순환 상한은 탐색을 종료한다. 다른 클래스의 필드나 메서드 본문을 추적하는 기능은 추가하지 않는다.
+
+`PortContractBytecode`는 기존 JDK 25 API로 `.class`의 선언을 읽는다. 객체 생성·클래스 초기화·메서드 실행을 하지 않는다. 추가 외부 라이브러리 의존성도 없다. 원본을 읽거나 파싱할 수 없으면 기존 준비 실패 경로로 전달한다. 기술 정책과 진단 중복 제거는 기존 규칙을 재사용한다.
+
+테스트 근거: 소유 타입 보완 전 24개 중 2개가 누락으로 실패했고 보완 후 24개가 통과했다. 외부 중첩·누락 사례 보완 전 28개 중 4개가 실패했고 보완 후 28개가 통과했다. JAR 사례를 포함한 구조 전체 111개가 통과했고, 원본 삭제·손상 사례 추가 후 최종 build에서 구조 112개가 통과했다. 실패·오류·skip은 0이다. 변경 없는 제품 테스트는 기존 결과를 UP-TO-DATE로 재사용했다.
+
+**남은 명세 선택:** 상위 인터페이스의 static 메서드를 자식 포트의 계약에 포함할지 확인 중이다. 추천은 상위 static 제외, 포트 자신의 static 유지다. 확인 전까지 해당 동작은 변경하지 않았다. 독립 리뷰는 기존 `3a93ac7`을 대상으로 수행됐으며, 보완된 코드의 독립 재리뷰·사람의 검토를 완료로 표시하지 않는다.
 
 ## 먼저 볼 전체 흐름
 
@@ -20,11 +38,11 @@
 1. 실제 운영 검사 P03이 기존 `ModuleRegistration`, `ProductionScopeImporter`, `RoleClassifier`를 호출한다. 새 모듈 미등록·출력 누락·미분류 역할이 있으면 여기서 실패한다.
 2. 준비된 클래스를 ARCH-06에 전달한다. 검사기는 등록된 포트와 영속 모델의 정의가 있는지, 포트가 실제 인터페이스인지 확인한다.
 3. 등록이 비었거나 포트가 사라졌으면 **준비 실패·미평가**다. 위반 목록이 비었다고 통과시키지 않는다.
-4. 상속 계약을 읽는 중 필요한 내부 정의가 운영 출력에 없거나 외부 정의가 미해석이면 역시 미평가한다. 클래스패스에서 찾은 내부 클래스가 운영 출력 누락을 숨기게 하지 않는다.
+4. 상속 계약을 읽는 중 필요한 내부 정의가 운영 출력에 없거나 외부 정의가 미해석이면 역시 미평가한다. 공개 중첩 정의도 원본에서 확인하므로 운영 출력이나 외부 파일 누락을 놓치지 않는다. 클래스패스에서 찾은 내부 클래스가 운영 출력 누락을 숨기게 하지 않는다.
 
 예: 포트 목록에는 `BalanceStore`가 있는데 수집 결과에 없으면 실패한다. `BalanceStore`를 빼고 나머지만 검사해서 성공하는 선택은 하지 않는다. 같은 클래스가 여러 모듈에 배정된 입력도 준비 문제다.
 
-근거: [준비·판정 코드](#source-gate), [실제 운영 연결](#source-production). 테스트: `PortContractRuleTest`의 PORT-12·13. 입력 해석 과정의 예상 밖 RuntimeException도 `CONTRACT_READ_FAILURE`로 막는다. 이 마지막 방어 분기는 소스로 검토했으며 손상된 모든 바이트코드 예외를 재현한 것은 아니다.
+근거: [준비·판정 코드](#source-gate), [실제 운영 연결](#source-production). 테스트: `PortContractRuleTest`의 PORT-12·13. 입력 해석 과정의 예상 밖 RuntimeException도 `CONTRACT_READ_FAILURE`로 막는다. 원본 파일 삭제와 잘린 클래스 파일을 별도 사례로 검사하며, 모든 손상 바이트코드 예외를 전수 재현한 것은 아니다.
 
 ## 2. 호출자가 보는 계약만 읽는다
 
@@ -43,7 +61,7 @@
 
 공개 멤버·인자에 직접 붙은 기술 어노테이션과 바이트코드의 throws 타입도 읽는다. KDoc의 문장, 어노테이션 속성 값·메타어노테이션, Kotlin metadata만의 표현은 분석하지 않는다.
 
-근거: [계약 추출 코드](#source-reader), [Kotlin 예제](#source-fixtures), [Java 예제](#source-java-fixtures). PORT-05–09·11·13 테스트가 배열·프로퍼티·상속·상한·어노테이션과 누락을 연결한다. Java 예제는 Kotlin에서 직접 쓰기 어려운 와일드카드·다중 상한·브리지를 실제 컴파일하기 위해 사용한다.
+근거: [계약 추출 코드](#source-reader), [원본 Signature·중첩 선언 보완](#source-bytecode), [Kotlin 예제](#source-fixtures), [Java 예제](#source-java-fixtures). PORT-05–09·11·13 테스트가 배열·프로퍼티·상속·상한·어노테이션과 누락을 연결한다. Java 예제는 Kotlin에서 직접 쓰기 어려운 와일드카드·다중 상한·브리지를 실제 컴파일하기 위해 사용한다.
 
 ## 3. 허용·위반을 나누고 중복을 없앤다
 
@@ -91,9 +109,9 @@ P03 결과: **포트 5개·공개 계약 11개·준비 오류 0·위반 0**. 예
 | PORT-14 보고 | 입력 순서·중복 탐색이 판정을 바꾸지 않음 | 정렬 결과 일치, 다중 상속·브리지 중복 제거, 서로 다른 노출은 유지 |
 | P03 실제 적용 | 등록한 운영 포트 전부에 동일 정책 적용 | 포트 5개·공개 계약 11개, 실제 출력에서 위반 0 |
 
-기대값은 명세의 구체적인 허용/금지 사례에서 적었다. 검사기 결과로 예상값을 만들거나 구현의 정책 목록을 복사하지 않았다. 기대값 검토와 구현 검증은 이번 작업을 수행한 같은 AI가 했으며, 별도 컨텍스트의 독립 PR 리뷰는 아직이다.
+기대값은 명세의 구체적인 허용/금지 사례에서 적었다. 검사기 결과로 예상값을 만들거나 구현의 정책 목록을 복사하지 않았다. 기대값 검토와 구현 검증은 이번 작업을 수행한 같은 AI가 했으며, 기존 3a93ac7의 독립 PR 리뷰에서 누락 두 건이 발견됐다. 이번 보완 코드의 독립 재리뷰는 아직이다.
 
-## 실행 기록
+## 최초 구현 실행 기록 · 3a93ac7
 
 - 1단위 Red: 7개 중 6개 실패. 미구현 검사기가 금지 타입·준비 문제·계약 수를 반환하지 못했다. 예제 전제가 확인된 뒤 기대 결과가 없었던 실패다.
 - 1단위 Green: 새 7개 + 기존 ARCH-01 23개 = 30개 통과.
@@ -101,13 +119,13 @@ P03 결과: **포트 5개·공개 계약 11개·준비 오류 0·위반 0**. 예
 - 2단위 Green: 19개 통과. 중간 Optional 변환 컴파일 오류는 수정했고 행동 수준의 Red로 세지 않는다.
 - 구조 전체 첫 실행: 101개 통과, 실패·오류·skip 0. 이때 P03의 포트 5개·계약 11개를 확인했다.
 - 보완 리뷰: 외부 상위 계약 허용·중복 상속·실제 JVM 브리지 사례 추가. 21개 중 1개가 브리지 중복 보고로 실패했고 중복 기준을 수정했다.
-- 보완 후 ARCH-06 테스트 21개 통과. 최종 전체 빌드는 **346개 통과·실패 0·오류 0·skip 0**이며 구조 검사 **103개**를 포함한다. 현재 소스 해시와 명령은 아래 검증 기록에 연결한다.
+- 보완 후 ARCH-06 테스트 21개 통과. 최종 전체 빌드는 **346개 통과·실패 0·오류 0·skip 0**이며 구조 검사 **103개**를 포함한다. 현재 보완의 해시·명령은 검증 기록의 최상위에, 이 최초 실행 근거는 previousVerification에 보존했다.
 
 ```sh
 ./gradlew build --no-daemon --console=plain --continue --rerun-tasks
 ```
 
-전체 빌드에서 app-api 75개, architecture-tests 103개, domain-fee 37개, domain-ledger 16개, domain-matching 65개, domain-order 50개를 실행했다. 독립 구조 검사와 전체 빌드를 구분하며, 전체 빌드의 기존 Testcontainers 테스트는 실행 가능한 Docker 환경에서 확인했다.
+최초 구현의 전체 빌드에서 app-api 75개, architecture-tests 103개, domain-fee 37개, domain-ledger 16개, domain-matching 65개, domain-order 50개를 실행했다. 독립 구조 검사와 전체 빌드를 구분하며, 전체 빌드의 기존 Testcontainers 테스트는 실행 가능한 Docker 환경에서 확인했다.
 
 보고서: `architecture-tests/build/reports/tests/test/index.html` 및 각 모듈의 `build/test-results/test/*.xml`. 이 기록은 로컬 실행 결과이며 원격 CI·독립 리뷰 완료를 뜻하지 않는다. 검증 기록의 `/tmp` 로그 경로는 로컬 보조 자료이며 저장소에 게시한 로그가 아니다.
 
@@ -116,16 +134,17 @@ P03 결과: **포트 5개·공개 계약 11개·준비 오류 0·위반 0**. 예
 | 역할 | 파일 | 연결된 흐름 |
 | --- | --- | --- |
 | 개발·검증 도구 | PortContractIndependence.kt / PortContractReader.kt | 준비·추출·판정·보고 |
+| 원본 선언 보완 | PortContractBytecode.kt | 소유 타입 인자·중첩 선언·준비 실패 |
 | 기존 검사 지원 | ExternalTechnologyTypes.kt / DomainTechnologyIndependence.kt | 기존 기술 정책 재사용, ARCH-01 보존 |
 | 운영 검사 대상 설정 | ProductionScope.kt | 포트 등록 재사용·영속 모델 등록 |
 | 실제 준수 테스트 | ProductionArchitectureTest.kt | P03 연결, P01·P02와 독립 실행 |
 | 검사기 테스트 | PortContractRuleTest.kt | 정상·위반·누락·중복·한계 |
-| 테스트용 예제 | PortFixtures.kt / JavaPortFixtures.java | 의도한 컴파일 구조. 제품 클래스가 아님 |
+| 테스트용 예제 | PortFixtures.kt / JavaPortFixtures.java / ExternalPortContracts.java | 의도한 컴파일 구조. 제품 클래스가 아님 |
 | 테스트 빌드 | architecture-tests/build.gradle.kts | 실제 트랜잭션·직렬화 타입의 테스트 의존성 |
 | 명세·설명·근거 | architecture-check-spec.md / architecture-06-review.md / architecture-06-verification.json | 합의·실제 흐름·검증 결과 연결 |
 | 로컬 표시 도구 | 기존 reader/build.py·template.html·생성 index.html | 접힌 소스·색상·줄 번호, 이전 ARCH-02 기록 분리 |
 
-제품 실행 코드 변경은 없다. 이번 변경 파일은 위 역할에 모두 연결한다. 소스에서 검토한 방어 분기와 실행한 사례를 구분했으며, 모든 JVM 조합을 실행 검증했다는 뜻은 아니다.
+제품 실행 코드 변경은 없다. 이번 변경 파일은 위 역할에 모두 연결한다. 원본 파일 삭제·손상 실패와 소스에서만 검토한 다른 방어 분기를 구분했으며, 모든 JVM 조합을 실행 검증했다는 뜻은 아니다.
 
 ## 근거 코드 펼치기
 
@@ -137,6 +156,8 @@ GitHub에서는 아래 저장소 파일 링크로 근거를 읽는다. 로컬 HT
 | --- | --- |
 | <a id="source-gate"></a>준비·판정 | [PortContractIndependence.kt](../architecture-tests/src/test/kotlin/com/exchange/architecture/rules/PortContractIndependence.kt) |
 | <a id="source-reader"></a>공개 계약 추출 | [PortContractReader.kt](../architecture-tests/src/test/kotlin/com/exchange/architecture/rules/PortContractReader.kt) |
+| <a id="source-bytecode"></a>원본 선언 보완 | [PortContractBytecode.kt](../architecture-tests/src/test/kotlin/com/exchange/architecture/rules/PortContractBytecode.kt) |
+| <a id="source-external-fixtures"></a>외부 계약 예제 | [ExternalPortContracts.java](../architecture-tests/src/test/java/com/exchange/architecture/fixtures/externalports/ExternalPortContracts.java) |
 | <a id="source-policy"></a>공통 기술 정책 | [ExternalTechnologyTypes.kt](../architecture-tests/src/test/kotlin/com/exchange/architecture/rules/ExternalTechnologyTypes.kt) |
 | <a id="source-arch01"></a>ARCH-01 연결 | [DomainTechnologyIndependence.kt](../architecture-tests/src/test/kotlin/com/exchange/architecture/rules/DomainTechnologyIndependence.kt) |
 | <a id="source-registration"></a>운영 등록 | [ProductionScope.kt](../architecture-tests/src/test/kotlin/com/exchange/architecture/support/ProductionScope.kt) |

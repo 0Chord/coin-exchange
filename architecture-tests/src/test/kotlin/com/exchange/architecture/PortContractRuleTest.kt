@@ -261,6 +261,142 @@ class PortContractRuleTest {
         assertEquals(emptyList(), result.violations)
     }
 
+    @Test
+    fun `PORT-08 중첩 타입 소유자의 반환 인자와 필드에 있는 JDBC 인자를 보고한다`() {
+        val owner = JavaPortFixtures.OwnerReturnPort::class.java.getMethod("load").genericReturnType as java.lang.reflect.ParameterizedType
+        assertEquals(java.sql.Connection::class.java,
+            (owner.ownerType as java.lang.reflect.ParameterizedType).actualTypeArguments.single(), "컴파일한 선언의 실제 소유 타입 인자")
+        listOf(
+            JavaPortFixtures.OwnerReturnPort::class.java to "return",
+            JavaPortFixtures.OwnerArgumentPort::class.java to "parameter[0]",
+            JavaPortFixtures.OwnerFieldPort::class.java to "field",
+        ).forEach { (port, exposure) ->
+            val result = inspect(port)
+            assertTrue(result.evaluated, result.problems.toString())
+            assertEquals(1, result.violations.size, port.name)
+            val violation = result.violations.single()
+            assertEquals(port.name, violation.originType)
+            assertTrue(violation.declaration.startsWith(port.name + "."))
+            assertEquals(exposure, violation.exposure)
+            assertEquals("java.sql.Connection", violation.targetType)
+            assertEquals("TECHNOLOGY", violation.reason)
+        }
+    }
+
+    @Test
+    fun `PORT-08 타입 변수 상한 안의 소유 타입 인자도 선언과 사용 자리에서 보고한다`() {
+        listOf(JavaPortFixtures.OwnerBoundPort::class.java, JavaPortFixtures.OwnerMethodBoundPort::class.java).forEach { port ->
+            val result = inspect(port)
+            assertTrue(result.evaluated, result.problems.toString())
+            assertEquals(setOf("typeParameter[T]" to "java.sql.Connection", "return" to "java.sql.Connection"),
+                result.violations.map { it.exposure to it.targetType }.toSet())
+            assertEquals(2, result.violations.size)
+        }
+    }
+
+    @Test
+    fun `PORT-01 중첩 소유 타입이 일반 값이면 허용한다`() {
+        val result = inspect(JavaPortFixtures.SafeOwnerPort::class.java)
+        assertTrue(result.evaluated, result.problems.toString())
+        assertEquals(1, result.contractCount)
+        assertEquals(emptyList(), result.violations)
+    }
+
+    @Test
+    fun `PORT-11 운영 입력 밖 외부 상위의 공개 중첩 계약도 검사한다`() {
+        val port = JavaPortFixtures.ExternalNestedPort::class.java
+        val classes = ClassFileImporter().importClasses(port)
+        assertEquals(setOf(port.name), classes.map { it.name }.toSet(), "외부 상위와 중첩 타입은 운영 입력에 넣지 않는다")
+        val result = PortContractIndependence.inspect(ScopeImportResult(mapOf("fixture-module" to classes)), setOf(port.name))
+        assertTrue(result.evaluated, result.problems.toString())
+        assertEquals(1, result.violations.size)
+        val violation = result.violations.single()
+        assertEquals(port.name, violation.originType)
+        assertEquals("com.exchange.architecture.fixtures.externalports.ExternalPortContracts$" + "Parent$" + "Exposed.load()", violation.declaration)
+        assertEquals("return", violation.exposure)
+        assertEquals("java.sql.Connection", violation.targetType)
+        assertEquals("TECHNOLOGY", violation.reason)
+    }
+
+    @Test
+    fun `PORT-11 외부 중첩 계약이 정상 값만 노출하면 허용한다`() {
+        val port = JavaPortFixtures.SafeExternalNestedPort::class.java
+        val result = PortContractIndependence.inspect(ScopeImportResult(mapOf("fixture-module" to ClassFileImporter().importClasses(port))), setOf(port.name))
+        assertTrue(result.evaluated, result.problems.toString())
+        assertEquals(3, result.contractCount, "자식 메서드와 상속 선언 및 중첩 메서드")
+        assertEquals(emptyList(), result.violations)
+    }
+
+    @Test
+    fun `PORT-13 내부 중첩 계약 누락을 외부 파일 수집으로 숨기지 않는다`() {
+        val port = NestedContractPort::class.java
+        val result = PortContractIndependence.inspect(ScopeImportResult(mapOf("fixture-module" to ClassFileImporter().importClasses(port))),
+            setOf(port.name), projectPackagePrefixes = setOf("com.exchange.architecture."))
+        assertFalse(result.evaluated)
+        assertTrue(result.problems.any { it.code == "UNRESOLVED_PORT_CONTRACT" && it.subject == NestedContractPort.Exposed::class.java.name }, result.problems.toString())
+        assertEquals(emptyList(), result.violations)
+    }
+
+    @Test
+    fun `PORT-13 외부 중첩 클래스 파일이 없으면 일부 계약으로 통과하지 않는다`(@org.junit.jupiter.api.io.TempDir directory: java.nio.file.Path) {
+        val port = JavaPortFixtures.ExternalNestedPort::class.java
+        // 원본에 중첩 선언 정보는 남기고 해당 파일만 없는 라이브러리 입력을 만든다.
+        listOf(port, com.exchange.architecture.fixtures.externalports.ExternalPortContracts.Parent::class.java).forEach { type ->
+            val resource = type.name.replace('.', '/') + ".class"
+            val destination = directory.resolve(resource)
+            java.nio.file.Files.createDirectories(destination.parent)
+            type.classLoader.getResourceAsStream(resource)!!.use { java.nio.file.Files.copy(it, destination) }
+        }
+        val classes = ClassFileImporter().importPath(directory)
+        val result = PortContractIndependence.inspect(ScopeImportResult(mapOf("fixture-module" to classes)), setOf(port.name))
+        assertFalse(result.evaluated)
+        assertTrue(result.problems.any { it.code == "UNRESOLVED_PORT_CONTRACT" && it.subject.endsWith("Parent$" + "Exposed") }, result.problems.toString())
+        assertEquals(emptyList(), result.violations)
+    }
+
+    @Test
+    fun `PORT-11 JAR의 외부 중첩 계약도 원본 위치에서 읽는다`(@org.junit.jupiter.api.io.TempDir directory: java.nio.file.Path) {
+        val port = JavaPortFixtures.ExternalNestedPort::class.java
+        val parent = com.exchange.architecture.fixtures.externalports.ExternalPortContracts.Parent::class.java
+        val jar = directory.resolve("external-contracts.jar")
+        java.util.jar.JarOutputStream(java.nio.file.Files.newOutputStream(jar)).use { output ->
+            (listOf(parent) + parent.declaredClasses).forEach { type ->
+                val resource = type.name.replace('.', '/') + ".class"
+                output.putNextEntry(java.util.jar.JarEntry(resource))
+                type.classLoader.getResourceAsStream(resource)!!.use { it.copyTo(output) }
+                output.closeEntry()
+            }
+        }
+        val parentUrl = java.net.URI.create("jar:" + jar.toUri() + "!/" + parent.name.replace('.', '/') + ".class").toURL()
+        val scope = ScopeImportResult(mapOf(
+            "fixture-module" to ClassFileImporter().importClasses(port),
+            "external-fixture" to ClassFileImporter().importUrl(parentUrl),
+        ))
+        val result = PortContractIndependence.inspect(scope, setOf(port.name))
+        assertTrue(result.evaluated, result.problems.toString())
+        assertEquals(listOf("return" to "java.sql.Connection"), result.violations.map { it.exposure to it.targetType })
+        assertTrue(result.violations.single().declaration.endsWith("Parent$" + "Exposed.load()"))
+    }
+
+    @Test
+    fun `PORT-13 원본 클래스가 사라지거나 손상되면 준비 실패로 처리한다`(@org.junit.jupiter.api.io.TempDir directory: java.nio.file.Path) {
+        val port = JavaPortFixtures.SafeOwnerPort::class.java
+        val resource = port.name.replace('.', '/') + ".class"
+        listOf("missing", "broken").forEach { scenario ->
+            val target = directory.resolve(scenario).resolve(resource)
+            java.nio.file.Files.createDirectories(target.parent)
+            port.classLoader.getResourceAsStream(resource)!!.use { java.nio.file.Files.copy(it, target) }
+            val scope = ScopeImportResult(mapOf("fixture-module" to ClassFileImporter().importPath(target)))
+            assertTrue(scope.classesByModule.getValue("fixture-module").get(port).isFullyImported)
+            if (scenario == "missing") java.nio.file.Files.delete(target)
+            else java.nio.file.Files.write(target, byteArrayOf(0, 1, 2))
+            val result = PortContractIndependence.inspect(scope, setOf(port.name))
+            assertFalse(result.evaluated, scenario)
+            assertTrue(result.problems.any { it.code == "CONTRACT_READ_FAILURE" && it.subject.startsWith(port.name) }, result.problems.toString())
+            assertEquals(emptyList(), result.violations)
+        }
+    }
+
     private fun fixtureScope() = ScopeImportResult(mapOf("fixture-module" to
         ClassFileImporter().importPackages("com.exchange.architecture.fixtures.portcontracts")))
 

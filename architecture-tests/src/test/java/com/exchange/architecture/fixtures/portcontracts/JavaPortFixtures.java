@@ -24,4 +24,14 @@ public final class JavaPortFixtures {
         @Override public default String map(Connection connection) { return "fixture"; }
     }
     public interface ResolvedExternalPort extends java.util.function.Supplier<String> {}
+    // 바깥 타입의 인자도 공개 반환/인자/필드/상한에 남아 있는 계약이다.
+    public static class Owner<T> { public class Member<U> {} }
+    public interface OwnerReturnPort { Owner<Connection>.Member<String> load(); }
+    public interface OwnerArgumentPort { void save(List<? extends Owner<Connection>.Member<String>[]> value); }
+    public interface OwnerFieldPort { Owner<Connection>.Member<String> VALUE = null; }
+    public interface OwnerBoundPort<T extends Owner<Connection>.Member<String>> { T load(); }
+    public interface OwnerMethodBoundPort { <T extends Owner<Connection>.Member<String>> T load(); }
+    public interface SafeOwnerPort { Owner<String>.Member<Integer> load(); }
+    public interface ExternalNestedPort extends com.exchange.architecture.fixtures.externalports.ExternalPortContracts.Parent { String load(); }
+    public interface SafeExternalNestedPort extends com.exchange.architecture.fixtures.externalports.ExternalPortContracts.SafeParent { String load(); }
 }

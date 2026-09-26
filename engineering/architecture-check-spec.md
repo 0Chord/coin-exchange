@@ -2,7 +2,7 @@
 
 대상: [#19 공통 구조 검사 기반 구현 및 명세 v1 적용](https://github.com/0Chord/coin-exchange/issues/19). 설계 기준: 통합 브랜치 `feature/phase-2/integration`의 **`d31e0fc0592a8422f8dc4801c5d17b2825a2d48e`**, [PR #27](https://github.com/0Chord/coin-exchange/pull/27) 병합 후 상태. 확인일: 2026-09-26.
 
-합의한 상세 설계로 구현했다. 로컬 구현·검증 완료: **전체 346개 / 구조 103개 테스트 통과, 실패·오류·skip 0**. ARCH-06 로컬 실행과 PR·CI·독립 리뷰·사람의 코드 검토 상태는 구분한다. [실제 구현 흐름과 실행 근거](architecture-06-review.md)를 함께 본다. ARCH-01·02 완료 기록은 이 파일 뒤쪽에 보존한다.
+합의한 상세 설계로 구현했다. 리뷰의 확정 누락 두 건 보완: **구조 112개 통과, 전체 build 성공**. 변경 없는 제품 테스트는 기존 통과 결과를 UP-TO-DATE로 재사용했다. ARCH-06 로컬 실행과 PR·CI·독립 리뷰·사람의 코드 검토 상태는 구분한다. [실제 구현 흐름과 실행 근거](architecture-06-review.md)를 함께 본다. ARCH-01·02 완료 기록은 이 파일 뒤쪽에 보존한다.
 
 ## ARCH-06 · 먼저 읽을 핵심
 
@@ -47,7 +47,7 @@
 | --- | --- |
 | 인자·반환값 | 선언한 공개 메서드와 상속받아 제공하는 메서드. Kotlin의 `val`/`var`도 getter·setter 계약으로 검사 |
 | 공개 필드·상속 선언 | 노출된 필드와 상위 인터페이스 타입. 내부 공통 인터페이스의 계약까지 읽는다. |
-| 타입 안의 타입 | `List<Entity>`, `Map<String, List<Entity>>`, 배열 원소, 와일드카드의 상·하한, 타입 변수의 모든 상한, 상속 선언의 타입 인자. `List`만 보고 멈추지 않는다. |
+| 타입 안의 타입 | `List<Entity>`, `Map<String, List<Entity>>`, 배열 원소, 와일드카드의 상·하한, 타입 변수의 모든 상한, 상속 선언의 타입 인자, `Owner<Connection>.Member<String>`의 소유 타입 인자. `List`만 보고 멈추지 않는다. |
 | 직접 붙은 기술 어노테이션·선언 예외 | 포트·검사 대상 멤버·인자에 바이트코드로 남은 기술 어노테이션 및 throws 타입. 주석의 `@throws` 문장은 분석하지 않는다. |
 
 초기 금지 정책은 다음으로 명시한다. **이 목록 밖의 모든 외부 라이브러리가 안전하다는 인증은 아니다.** 새 기술 도입 시 정책·반대 사례를 같이 검토한다.
@@ -99,7 +99,11 @@
 
 Kotlin getter/setter·브리지·default helper는 실제로 노출하는 시그니처를 기준으로 다룬다. 함수 본문의 호출·지역 변수는 제외한다. Kotlin metadata만 남는 프로퍼티 어노테이션, SOURCE 보존 어노테이션, 타입 별칭 이름, 모든 JVM 생성 형태를 자동 복원한다고 약속하지 않는다. 어노테이션은 직접 붙은 타입을 검사하며 속성 값·메타어노테이션을 재귀 탐색하지 않는다. 기본 메서드 본문의 외부 호출 또한 이번 ARCH-06의 보장이 아니며 리뷰에서 분리해 표시한다.
 
-ArchUnit 1.4.2의 `JavaType.getAllInvolvedRawTypes`는 타입 인자·상하한·배열 원소를 탐색하는 API다. 이를 계약 타입 추출에 재사용하는 것을 추천한다. `toErasure()`만 사용해 제네릭 내부 타입을 잃지 않는다. 로컬 JAR에서 해당 API와 멤버/타입 변수 API의 존재를 확인했다. 현재 Kotlin/Java 예제의 탐지·누락·한계는 PortContractRuleTest에서 실행 검증했다. [버전 고정 JavaType 공식 API](https://javadoc.io/static/com.tngtech.archunit/archunit/1.4.2/com/tngtech/archunit/core/domain/JavaType.html).
+ArchUnit 1.4.2의 `JavaType.getAllInvolvedRawTypes`를 재사용하되 소유 타입의 제네릭 인자는 누락될 수 있어 이것만으로 완료 판정하지 않는다. `PortContractBytecode`가 수집된 클래스의 원본 `Signature`를 JDK 25 클래스 파일 API로 읽어 보완한다. 클래스·메서드 타입 변수의 상한과 사용 자리도 연결하고, 순환 상한은 재방문을 제한한다. `toErasure()`만 사용해 제네릭 내부 타입을 잃지 않는다. 로컬 JAR에서 해당 API와 멤버/타입 변수 API의 존재를 확인했다. 현재 Kotlin/Java 예제의 탐지·누락·한계는 PortContractRuleTest에서 실행 검증했다. [버전 고정 JavaType 공식 API](https://javadoc.io/static/com.tngtech.archunit/archunit/1.4.2/com/tngtech/archunit/core/domain/JavaType.html).
+
+공개 중첩 선언은 원본 `InnerClasses`의 실제 외부 클래스 관계와 public 접근 수준으로 찾는다. 운영 출력에 없는 내부 타입은 준비 실패이고, 외부 타입은 상위 정의와 같은 디렉터리/JAR에서 읽는다. 해당 파일이 없으면 `UNRESOLVED_PORT_CONTRACT`, 원본 파싱·읽기 자체가 실패하면 `CONTRACT_READ_FAILURE`로 미평가한다. 객체 생성·클래스 초기화·메서드 본문 실행은 하지 않는다.
+
+구현 근거: [JDK 25 소유 타입 Signature API](https://docs.oracle.com/en/java/javase/25/docs/api/java.base/java/lang/classfile/Signature.ClassTypeSig.html), [중첩 선언 속성 API](https://docs.oracle.com/en/java/javase/25/docs/api/java.base/java/lang/classfile/attribute/InnerClassesAttribute.html).
 
 새 포트의 **의미를 전부 자동 발견하는 기능은 없다.** 도메인의 미분류 인터페이스는 기존 분류기가 막지만, `app-api`의 새 인터페이스가 포트인지는 리뷰와 등록이 필요하다. 새 포트를 등록한 뒤 누락되면 준비 실패해야 한다. 포트 이름·폴더 정리는 #20–21의 범위다.
 
@@ -121,7 +125,7 @@ ArchUnit 1.4.2의 `JavaType.getAllInvolvedRawTypes`는 타입 인자·상하한�
 | 제네릭 경계 · PORT-08 | 타입 변수의 여러 상한 중 금지 타입, 와일드카드 상·하한, 순환 상한의 정상 예 | 금지 경계만 위반. 반복 탐색 종료. Kotlin이 만들지 않는 모양은 작은 Java 예제로 확인하고 구분 |
 | 어노테이션·예외 · PORT-09 | 포트·getter·인자에 기술 어노테이션, 선언 예외에 SQLException, 반환에 ObjectMapper | 바이트코드에 남은 해당 노출 위반. KDoc·메타데이터만의 표현까지 탐지했다고 주장하지 않음 |
 | 기술 구현과 분리 · PORT-10 | 정상 포트 + JDBC/Spring Data를 쓰는 구현체·Repository | ARCH-06 위반 0. 구현체 생성자·필드·본문을 포트 계약으로 오인하지 않음 |
-| 중첩·기본 메서드 · PORT-11 | public 중첩/companion 계약의 기술 반환, 기본 메서드의 정상 시그니처 + 기술 사용 본문, private 보조 메서드 | 노출 계약만 위반. 본문·private는 제외임을 별도 확인. 브리지·중복 탐색으로 같은 진단을 증식시키지 않음 |
+| 중첩·기본 메서드 · PORT-11 | public 중첩/companion 및 외부 상위의 public 중첩 계약의 기술 반환, 기본 메서드의 정상 시그니처 + 기술 사용 본문, private 보조 메서드 | 노출 계약만 위반. 본문·private는 제외임을 별도 확인. 브리지·중복 탐색으로 같은 진단을 증식시키지 않음 |
 | 대상 누락 · PORT-12 | 포트 등록 0개, 등록한 포트/영속 타입 정의 제거, 클래스인 포트 루트, 읽힌 계약 없음 | 준비 실패·미평가. 위반 0건 통과가 아님 |
 | 해석 실패 · PORT-13 | 기존 수집 오류, 필요한 내부/외부 상위 계약을 해석할 수 없는 입력 | 부분 결과로 통과하지 않음. 기존 누락 테스트는 재사용하고 ARCH-06 진입 연결을 보완 |
 | 결과 재현 · PORT-14 | 정상·위반 포트 혼합, 순서 변경, 같은 타입의 서로 다른 노출 자리 | 명세에서 정한 진단 집합과 정확히 일치. 정렬 안정성·파일/행 정보 부재·명세 링크 확인 |
@@ -141,6 +145,12 @@ ArchUnit 1.4.2의 `JavaType.getAllInvolvedRawTypes`는 타입 인자·상하한�
 
 ARCH-06 완료 뒤에도 **#19에는 ARCH-08과 ARCH-03/04/05의 예제 기반 검증이 남는다.** ARCH-03/04/05의 실제 운영 적용은 #20–21 이행과 연결한다. 번호를 건너뛴 것이 해당 규칙을 삭제했다는 뜻이 아니다.
 
+## PR #28 리뷰 보완
+
+확정 누락 두 건을 회귀 테스트로 재현하고 보완했다. 소유 타입 인자는 반환·인자·필드·타입 변수 상한에서 확인하며 일반 값 반대 사례를 유지한다. 외부 중첩 계약은 디렉터리와 JAR에서 확인하고 내부 출력 누락·외부 파일 누락을 준비 실패로 확인한다.
+
+상위 인터페이스의 static 메서드 범위는 리뷰에서 명세 확인 사항으로 분리했다. 현재 구현의 범위는 유지하며, 사용자에게 ‘상위 static 제외 / 포트 자신의 static 유지’를 추천하고 선택을 확인 중이다. 이 결정을 확정 누락 두 건의 해결 여부와 섞지 않는다.
+
 ## 작은 구현 순서와 인계
 
 | 작은 단위 | 처음 확인할 결과 | 연결 사례 |
@@ -153,7 +163,7 @@ ARCH-06 완료 뒤에도 **#19에는 ARCH-08과 ARCH-03/04/05의 예제 기반 �
 
 후속 실행 예정: `./gradlew :architecture-tests:test --no-daemon --console=plain --rerun-tasks`. 보고서는 `architecture-tests/build/reports/tests/test/index.html` 및 `architecture-tests/build/test-results/test/*.xml`이다. 변경 완료 시 `./gradlew build --no-daemon --console=plain`로 회귀를 확인한다. 전체 빌드에는 기존 Testcontainers 테스트가 있으므로 Docker가 필요하며 독립 구조 검사와 구분한다. **독립 구조 검사와 전체 빌드를 실행해 통과했다.** 최종 집계는 구현 흐름과 검증 기록을 따른다.
 
-사용자가 위 설계를 채택해 구현·검증을 요청했다. 기술 목록 보완·계약 추출 경계는 그대로 적용했다. 구현 파일은 설계의 추천 이름을 사용했으며 PortContractReader로 공개 계약 추출 책임을 분리했다. 결과를 바꿔야 할 추가 설계 결정은 발생하지 않았다. 브리지 중복 보고 결함은 합의한 진단 키에 맞춰 수정했다.
+사용자가 위 설계를 채택해 구현·검증을 요청했다. 기술 목록 보완·계약 추출 경계는 그대로 적용했다. 구현 파일은 설계의 추천 이름을 사용했으며 PortContractReader로 공개 계약 추출 책임을 분리했다. 리뷰에서 상위 static 범위 선택이 추가로 제기됐으며 위 보완 절의 미결정으로 분리한다. 브리지 중복 보고 결함은 합의한 진단 키에 맞춰 수정했다.
 
 <!-- ARCH02_HISTORY_START -->
 
