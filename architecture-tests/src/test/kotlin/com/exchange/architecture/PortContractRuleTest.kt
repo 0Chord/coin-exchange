@@ -295,6 +295,68 @@ class PortContractRuleTest {
     }
 
     @Test
+    fun `PORT-08 메서드 변수 이름이 겹쳐도 클래스 상한과 반환 노출은 같다`() {
+        val port = JavaPortFixtures.ShadowedClassBoundPort::class.java
+        val classT = port.typeParameters[0]
+        val classU = port.typeParameters[1]
+        val method = port.getMethod("load")
+        assertEquals(classT, classU.bounds.single(), "U의 상한은 클래스가 선언한 T다")
+        assertEquals(classU, method.genericReturnType)
+        assertNotEquals<java.lang.reflect.Type>(classT, method.typeParameters.single(), "같은 철자여도 서로 다른 선언이다")
+        listOf(port, JavaPortFixtures.RenamedMethodVariablePort::class.java).forEach { type ->
+            val result = inspect(type)
+            assertTrue(result.evaluated, result.problems.toString())
+            assertEquals(setOf(
+                type.name to "typeParameter[T]",
+                type.name to "typeParameter[U]",
+                type.name + ".load()" to "return",
+            ), result.violations.map { it.declaration to it.exposure }.toSet())
+            assertEquals(3, result.violations.size)
+            assertTrue(result.violations.all { it.targetType == "java.sql.Connection" && it.reason == "TECHNOLOGY" })
+        }
+    }
+
+    @Test
+    fun `PORT-08 클래스 상한의 연결은 메서드 인자와 새 변수의 상한에도 유지된다`() {
+        val port = JavaPortFixtures.ShadowedParameterBoundPort::class.java
+        val method = port.name + ".exchange(" + JavaPortFixtures.Owner.Member::class.java.name + ")"
+        val result = inspect(port)
+        assertTrue(result.evaluated, result.problems.toString())
+        assertEquals(setOf(
+            port.name to "typeParameter[T]",
+            port.name to "typeParameter[U]",
+            method to "typeParameter[V]",
+            method to "parameter[0]",
+            method to "return",
+        ), result.violations.map { it.declaration to it.exposure }.toSet())
+        assertEquals(5, result.violations.size)
+        assertTrue(result.violations.all { it.targetType == "java.sql.Connection" && it.reason == "TECHNOLOGY" })
+    }
+
+    @Test
+    fun `PORT-08 메서드가 선언한 변수에는 같은 이름의 클래스 상한을 적용하지 않는다`() {
+        listOf(JavaPortFixtures.MethodShadowPort::class.java, JavaPortFixtures.RecursiveMethodShadowPort::class.java).forEach { port ->
+            val result = inspect(port)
+            assertTrue(result.evaluated, result.problems.toString())
+            assertEquals(setOf(port.name to "typeParameter[T]", port.name to "typeParameter[U]"),
+                result.violations.map { it.declaration to it.exposure }.toSet())
+            assertEquals(2, result.violations.size, "메서드 반환과 재귀 상한은 JDBC를 노출하지 않는다")
+            assertTrue(result.violations.all { it.targetType == "java.sql.Connection" && it.reason == "TECHNOLOGY" })
+        }
+    }
+
+    @Test
+    fun `PORT-08 메서드의 기술 상한이 클래스의 정상 반환값에 섞이지 않는다`() {
+        val port = JavaPortFixtures.SafeClassBoundShadowPort::class.java
+        val result = inspect(port)
+        assertTrue(result.evaluated, result.problems.toString())
+        assertEquals(listOf(port.name + ".load()" to "typeParameter[T]"),
+            result.violations.map { it.declaration to it.exposure })
+        assertEquals("java.sql.Connection", result.violations.single().targetType)
+        assertEquals("TECHNOLOGY", result.violations.single().reason)
+    }
+
+    @Test
     fun `PORT-01 중첩 소유 타입이 일반 값이면 허용한다`() {
         val result = inspect(JavaPortFixtures.SafeOwnerPort::class.java)
         assertTrue(result.evaluated, result.problems.toString())

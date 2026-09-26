@@ -25,13 +25,15 @@ internal class PortContractBytecode(private val owner: JavaClass) {
     }
     private val classSignature = model.findAttribute(Attributes.signature()).orElse(null)?.asClassSignature()
     private val classBounds = bounds(classSignature?.typeParameters().orEmpty())
+    // 클래스의 U extends T는 메서드가 T를 다시 선언해도 클래스의 T를 가리킨다.
+    private val classTypes = classBounds.keys.associateWith { types(Signature.TypeVarSig.of(it), classBounds) }
 
     init {
         require(model.thisClass().asInternalName().replace('/', '.') == owner.name) { "클래스 원본 이름 불일치: ${owner.name}" }
     }
 
     fun classReferences(): Map<String, Set<String>> = buildMap {
-        classBounds.forEach { (name, _) -> put("typeParameter[$name]", types(Signature.TypeVarSig.of(name), classBounds)) }
+        classTypes.forEach { (name, references) -> put("typeParameter[$name]", references) }
         classSignature?.let { signature ->
             put("supertype", (signature.superinterfaceSignatures() + signature.superclassSignature())
                 .flatMap { types(it, classBounds) }.toSet())
@@ -41,13 +43,12 @@ internal class PortContractBytecode(private val owner: JavaClass) {
     fun methodReferences(method: JavaMethod): Map<String, Set<String>> {
         val declaration = model.methods().single { it.methodName().stringValue() == method.name && it.methodType().stringValue() == method.descriptor }
         val signature = declaration.findAttribute(Attributes.signature()).orElse(null)?.asMethodSignature() ?: return emptyMap()
-        // 메서드의 같은 이름 타입 변수가 클래스 타입 변수를 가린다.
-        val environment = classBounds + bounds(signature.typeParameters())
+        val methodBounds = bounds(signature.typeParameters())
         return buildMap {
-            put("return", types(signature.result(), environment))
-            signature.arguments().forEachIndexed { index, type -> put("parameter[$index]", types(type, environment)) }
-            signature.typeParameters().forEach { put("typeParameter[${it.identifier()}]", types(Signature.TypeVarSig.of(it.identifier()), environment)) }
-            put("throws", signature.throwableSignatures().flatMap { types(it, environment) }.toSet())
+            put("return", types(signature.result(), methodBounds, classTypes))
+            signature.arguments().forEachIndexed { index, type -> put("parameter[$index]", types(type, methodBounds, classTypes)) }
+            signature.typeParameters().forEach { put("typeParameter[${it.identifier()}]", types(Signature.TypeVarSig.of(it.identifier()), methodBounds, classTypes)) }
+            put("throws", signature.throwableSignatures().flatMap { types(it, methodBounds, classTypes) }.toSet())
         }
     }
 
@@ -71,15 +72,23 @@ internal class PortContractBytecode(private val owner: JavaClass) {
         it.identifier() to (listOfNotNull(it.classBound().orElse(null)) + it.interfaceBounds())
     }
 
-    private fun types(signature: Signature, bounds: Map<String, List<Signature.RefTypeSig>>, visiting: Set<String> = emptySet()): Set<String> = when (signature) {
+    private fun types(
+        signature: Signature,
+        bounds: Map<String, List<Signature.RefTypeSig>>,
+        enclosingTypes: Map<String, Set<String>> = emptyMap(),
+        visiting: Set<String> = emptySet(),
+    ): Set<String> = when (signature) {
         is Signature.ClassTypeSig -> buildSet {
             add(signature.classDesc().descriptorString().removePrefix("L").removeSuffix(";").replace('/', '.'))
-            signature.outerType().ifPresent { addAll(types(it, bounds, visiting)) }
-            signature.typeArgs().filterIsInstance<Signature.TypeArg.Bounded>().forEach { addAll(types(it.boundType(), bounds, visiting)) }
+            signature.outerType().ifPresent { addAll(types(it, bounds, enclosingTypes, visiting)) }
+            signature.typeArgs().filterIsInstance<Signature.TypeArg.Bounded>().forEach { addAll(types(it.boundType(), bounds, enclosingTypes, visiting)) }
         }
-        is Signature.ArrayTypeSig -> types(signature.componentSignature(), bounds, visiting)
-        is Signature.TypeVarSig -> if (signature.identifier() in visiting) emptySet() else
-            bounds[signature.identifier()].orEmpty().flatMap { types(it, bounds, visiting + signature.identifier()) }.toSet()
+        is Signature.ArrayTypeSig -> types(signature.componentSignature(), bounds, enclosingTypes, visiting)
+        is Signature.TypeVarSig -> when (val name = signature.identifier()) {
+            !in bounds -> enclosingTypes[name].orEmpty()
+            in visiting -> emptySet()
+            else -> bounds.getValue(name).flatMap { types(it, bounds, enclosingTypes, visiting + name) }.toSet()
+        }
         else -> emptySet()
     }
 }

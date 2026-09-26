@@ -32,6 +32,12 @@ public final class JavaPortFixtures {
     public interface OwnerBoundPort<T extends Owner<Connection>.Member<String>> { T load(); }
     public interface OwnerMethodBoundPort { <T extends Owner<Connection>.Member<String>> T load(); }
     public interface SafeOwnerPort { Owner<String>.Member<Integer> load(); }
+    public interface ShadowedClassBoundPort<T extends Owner<Connection>.Member<String>, U extends T> { <T> U load(); }
+    public interface RenamedMethodVariablePort<T extends Owner<Connection>.Member<String>, U extends T> { <V> U load(); }
+    public interface ShadowedParameterBoundPort<T extends Owner<Connection>.Member<String>, U extends T> { <T, V extends U> V exchange(U value); }
+    public interface MethodShadowPort<T extends Owner<Connection>.Member<String>, U extends T> { <T> T load(); }
+    public interface RecursiveMethodShadowPort<T extends Owner<Connection>.Member<String>, U extends T> { <T extends Comparable<T>> T load(); }
+    public interface SafeClassBoundShadowPort<T extends Owner<String>.Member<Integer>, U extends T> { <T extends Owner<Connection>.Member<String>> U load(); }
     public interface ExternalNestedPort extends com.exchange.architecture.fixtures.externalports.ExternalPortContracts.Parent { String load(); }
     public interface SafeExternalNestedPort extends com.exchange.architecture.fixtures.externalports.ExternalPortContracts.SafeParent { String load(); }
 }

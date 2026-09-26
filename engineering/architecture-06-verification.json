@@ -1,61 +1,42 @@
 {
-  "createdAt": "2026-09-26T16:09:36+09:00",
+  "createdAt": "2026-09-26T16:35:08+09:00",
   "baseCommit": "d31e0fc0592a8422f8dc4801c5d17b2825a2d48e",
-  "changesFromCommit": "3a93ac764ee8e992ad96c2ba87670894476b71df",
+  "changesFromCommit": "2255b9e65fd175d240e8f7d35f9b842a6d441656",
   "branch": "test/port-contracts/19",
-  "snapshot": "PR #28 리뷰 보완 작업 파일. 아래 SHA-256으로 실행 대상 식별.",
+  "snapshot": "PR #28 P3 타입 변수 선언 범위 보완. 아래 SHA-256으로 실행 대상 식별.",
   "result": "passed",
   "commands": [
     {
       "command": "./gradlew :architecture-tests:test --tests '*PortContractRuleTest' --no-daemon --console=plain",
-      "phase": "소유 타입 인자 Red",
-      "tests": 24,
-      "failures": 2,
-      "log": "/tmp/arch06-followup/owner-red.log"
+      "phase": "선언 범위 Red",
+      "tests": 34,
+      "failures": 3,
+      "errors": 0,
+      "skipped": 0,
+      "log": "/tmp/arch06-shadow-fix/red.log"
     },
     {
       "command": "./gradlew :architecture-tests:test --tests '*PortContractRuleTest' --no-daemon --console=plain",
-      "phase": "소유 타입 인자 Green",
-      "tests": 24,
-      "failures": 0,
-      "log": "/tmp/arch06-followup/owner-green.log"
-    },
-    {
-      "command": "./gradlew :architecture-tests:test --tests '*PortContractRuleTest' --no-daemon --console=plain",
-      "phase": "외부 중첩·누락 Red",
-      "tests": 28,
-      "failures": 4,
-      "log": "/tmp/arch06-followup/nested-red.log"
-    },
-    {
-      "command": "./gradlew :architecture-tests:test --tests '*PortContractRuleTest' --no-daemon --console=plain",
-      "phase": "외부 중첩·누락 Green",
-      "tests": 28,
-      "failures": 0,
-      "log": "/tmp/arch06-followup/nested-green.log"
-    },
-    {
-      "command": "./gradlew :architecture-tests:test --no-daemon --console=plain --rerun-tasks",
-      "phase": "JAR 사례 포함 구조 전체",
-      "tests": 111,
+      "phase": "선언 범위 Green",
+      "tests": 34,
       "failures": 0,
       "errors": 0,
       "skipped": 0,
-      "log": "/tmp/arch06-followup/architecture-all.log"
+      "log": "/tmp/arch06-shadow-fix/green.log"
     },
     {
       "command": "./gradlew build --no-daemon --console=plain --continue",
-      "phase": "원본 삭제·손상 사례 포함 최종 빌드",
+      "phase": "구조 전체 실행 및 프로젝트 빌드",
       "exitCode": 0,
-      "architectureTestsExecuted": 112,
-      "tasksExecuted": 2,
-      "tasksUpToDate": 28,
-      "log": "/tmp/arch06-followup/full-build.log"
+      "architectureTestsExecuted": 116,
+      "tasksExecuted": 1,
+      "tasksUpToDate": 29,
+      "log": "/tmp/arch06-shadow-fix/build.log"
     }
   ],
   "testResults": {
     "total": {
-      "tests": 355,
+      "tests": 359,
       "failures": 0,
       "errors": 0,
       "skipped": 0
@@ -68,7 +49,7 @@
         "skipped": 0
       },
       "architecture-tests": {
-        "tests": 112,
+        "tests": 116,
         "failures": 0,
         "errors": 0,
         "skipped": 0
@@ -99,7 +80,7 @@
       }
     }
   },
-  "executionScope": "최종 build에서 변경된 architecture-tests 112개를 실행했다. 다른 모듈은 변경이 없어 기존 통과 결과를 Gradle UP-TO-DATE로 재사용했다. testResults.total은 현재 보고서의 합계이며 이번 명령에서 전부 다시 실행했다는 뜻이 아니다.",
+  "executionScope": "최종 build에서 architecture-tests 116개를 실행했다. 다른 모듈은 기존 통과 결과를 UP-TO-DATE로 재사용했다. 현재 XML 합계 359개를 이번 명령에서 전부 재실행한 것은 아니다.",
   "productionObservation": "P02 평가: ARCH-02 · 코드 직접 참조 + Gradle 직접 선언\n운영 모듈별 클래스: {app-api=33, domain-common=9, domain-fee=16, domain-ledger=11, domain-matching=22, domain-order=22}\n내부 직접 타입 참조: 1473 / main 구성: 12 / 직접 프로젝트 선언: 10\nARCH-08에 남기는 비운영 목적지: []\nARCH-06은 독립된 P03에서 평가합니다. 미평가 규칙: ARCH-03/04/05/07/08. 계산·DB·실행 순서 검증은 포함하지 않습니다.\nARCH-02 통과 · 준비 오류 0, 위반 0\nP01 평가: ARCH-01. ARCH-02는 독립된 P02에서 평가합니다.\nInventory: {app-api=33, domain-common=9, domain-fee=16, domain-ledger=11, domain-matching=22, domain-order=22}\nRoles: pure=71, ports=5, executors=6\nP03 평가: ARCH-06 · 공개 포트 계약\n검사한 포트 5개: com.exchange.core.api.matching.persistence.MatchingEventStore, com.exchange.core.api.matching.publish.MatchingEventPublisher, com.exchange.core.ledger.BalanceStore, com.exchange.core.ledger.LedgerTransactionStore, com.exchange.core.order.OrderReservationStore\n공개 계약 11개 · 등록 영속 모델: [com.exchange.core.api.matching.persistence.MatchingEventEntity]\nARCH-06 통과 · 준비 오류 0, 위반 0. 포트 메서드·DB는 실행하지 않았습니다.\n한계: 미등록 포트의 의미, 임의 DTO 내부, 런타임 값·동작. 미평가 규칙: ARCH-03/04/05/07/08.\n",
   "sourceHashes": {
     "architecture-tests/build.gradle.kts": "df62dcbb2a7e2153daf2534c96bb5bf8429fd241823f92ecd8c9de71a6233628",
@@ -109,18 +90,18 @@
     "architecture-tests/src/test/kotlin/com/exchange/architecture/rules/ExternalTechnologyTypes.kt": "fcb93057e475810d17a30ffd258f8fe11c4a3993e1c780d0eeb4ebd3c8da5610",
     "architecture-tests/src/test/kotlin/com/exchange/architecture/rules/PortContractIndependence.kt": "18c4777a01c9fe3d10756d3cdc705121f6d831d1a4ab434db9888a4c173c0a5c",
     "architecture-tests/src/test/kotlin/com/exchange/architecture/rules/PortContractReader.kt": "3c7b41d0f7df0e6d530dcaec0ddff00209bdd39489e42c0eaeadbd590afc736d",
-    "architecture-tests/src/test/kotlin/com/exchange/architecture/PortContractRuleTest.kt": "ddd1deb99f5eb489afa729f512593b649bb0aaa549474caede70291b580b7619",
+    "architecture-tests/src/test/kotlin/com/exchange/architecture/PortContractRuleTest.kt": "1c5f0bab21862957a6309a2328f659b9bd9211b989204bba307e5bf05c700e5d",
     "architecture-tests/src/test/kotlin/com/exchange/architecture/fixtures/portcontracts/PortFixtures.kt": "0579b81332e65f6b6279b2f0ab759595fe4a2832013716f440c3cda49e862139",
-    "architecture-tests/src/test/java/com/exchange/architecture/fixtures/portcontracts/JavaPortFixtures.java": "0b22795002b91230322f376bbfdad14676f2accffed1451a00a7ab76bc2f72b0",
-    "architecture-tests/src/test/kotlin/com/exchange/architecture/rules/PortContractBytecode.kt": "9e4ebf0a488eb0da1828a3c99add9e07f10799138772b38ce08d5713e732df89",
+    "architecture-tests/src/test/java/com/exchange/architecture/fixtures/portcontracts/JavaPortFixtures.java": "af7033a8ccdbf8e6dc1693787c7d8eb6ed37cd0758784fefae8ca7f4940ecb6e",
+    "architecture-tests/src/test/kotlin/com/exchange/architecture/rules/PortContractBytecode.kt": "5dca4654c37d711f963bac05dda3c619b19fe1b556ea3330ad628dbfdd77af02",
     "architecture-tests/src/test/java/com/exchange/architecture/fixtures/externalports/ExternalPortContracts.java": "b080226e3693d364d7acb091d4b7b6bc84dbb82dceebb76ee21e7f21fdebcb05"
   },
   "review": {
-    "testExpectations": "작성 AI가 명세·독립 리뷰의 재현 입력에 대조. 별도 컨텍스트 재리뷰는 아님.",
-    "independentReview": "3a93ac7에 대한 독립 리뷰에서 누락 2건 발견. 보완된 코드의 독립 재리뷰는 아직.",
+    "testExpectations": "작성 AI가 명세·P3 독립 재현과 대조. reflection으로 클래스 U의 상한이 클래스 T임을 확인하고 이름 변경 대조·반환/인자/상한 누락·정상 반환 오탐·메서드 자체 변수/재귀를 검사. 별도 컨텍스트 검토는 아님.",
+    "independentReview": "2255b9e 독립 재리뷰에서 선언 범위 P3 발견. 이번 수정의 독립 재리뷰는 아직.",
     "humanReview": "완료로 추정하지 않음",
     "pr": "https://github.com/0Chord/coin-exchange/pull/28",
-    "ci": "보완 전 3a93ac7 CI는 성공. 보완 변경의 CI는 이 로컬 기록 생성 시점에 미실행."
+    "ci": "2255b9e의 CI 성공과 구분. 이 로컬 기록 생성 시점에 이번 수정의 원격 CI는 미실행."
   },
   "pendingDecision": "상위 인터페이스 static 제외·포트 자신의 static 유지 추천. 사용자 답변 전으로 기존 동작 유지.",
   "limits": [
@@ -131,72 +112,72 @@
     "ARCH-03/04/05 예제·ARCH-08 등 #19 잔여 범위 있음"
   ],
   "logAvailability": "commands의 /tmp 로그는 로컬 보조 자료이며 저장소에 게시하지 않았다. 실행 명령·집계·운영 관측값·소스 해시는 이 파일에 기록한다.",
+  "redEvidence": [
+    "클래스 T·U 진단은 남지만 load 반환 진단이 누락됨",
+    "클래스 U를 인자·메서드 V의 상한·반환으로 쓰면 해당 3곳이 누락됨",
+    "클래스 U는 일반 값인데 메서드 T의 JDBC 상한이 섞여 반환을 오탐함"
+  ],
+  "corrections": [
+    "최초 reflection 어설션의 Kotlin 타입 추론 컴파일 오류를 수정했다. 컴파일 실패를 의도한 Red로 세지 않는다."
+  ],
   "previousVerification": {
-    "createdAt": "2026-09-26T15:13:16+09:00",
+    "createdAt": "2026-09-26T16:09:36+09:00",
     "baseCommit": "d31e0fc0592a8422f8dc4801c5d17b2825a2d48e",
+    "changesFromCommit": "3a93ac764ee8e992ad96c2ba87670894476b71df",
     "branch": "test/port-contracts/19",
-    "snapshot": "로컬 검증 당시 기준 커밋 위의 작업 파일. 게시 소스와 실행 대상의 일치는 아래 SHA-256 해시로 확인.",
+    "snapshot": "PR #28 리뷰 보완 작업 파일. 아래 SHA-256으로 실행 대상 식별.",
     "result": "passed",
     "commands": [
       {
         "command": "./gradlew :architecture-tests:test --tests '*PortContractRuleTest' --no-daemon --console=plain",
-        "phase": "직접 노출 Red",
-        "tests": 7,
-        "failures": 6,
-        "log": "/tmp/arch06-verification/unit1-red.log"
-      },
-      {
-        "command": "./gradlew :architecture-tests:test --tests '*PortContractRuleTest' --tests '*ArchitectureRuleContractTest' --no-daemon --console=plain",
-        "phase": "첫 단위 Green + ARCH-01 회귀",
-        "tests": 30,
-        "failures": 0,
-        "log": "/tmp/arch06-verification/unit1-green.log"
+        "phase": "소유 타입 인자 Red",
+        "tests": 24,
+        "failures": 2,
+        "log": "/tmp/arch06-followup/owner-red.log"
       },
       {
         "command": "./gradlew :architecture-tests:test --tests '*PortContractRuleTest' --no-daemon --console=plain",
-        "phase": "복합 계약 Red · 테스트 이름 추출 오류 수정 후",
-        "tests": 19,
-        "failures": 9,
-        "log": "/tmp/arch06-verification/unit2-red-corrected.log"
+        "phase": "소유 타입 인자 Green",
+        "tests": 24,
+        "failures": 0,
+        "log": "/tmp/arch06-followup/owner-green.log"
       },
       {
         "command": "./gradlew :architecture-tests:test --tests '*PortContractRuleTest' --no-daemon --console=plain",
-        "phase": "복합 계약 Green",
-        "tests": 19,
+        "phase": "외부 중첩·누락 Red",
+        "tests": 28,
+        "failures": 4,
+        "log": "/tmp/arch06-followup/nested-red.log"
+      },
+      {
+        "command": "./gradlew :architecture-tests:test --tests '*PortContractRuleTest' --no-daemon --console=plain",
+        "phase": "외부 중첩·누락 Green",
+        "tests": 28,
         "failures": 0,
-        "log": "/tmp/arch06-verification/unit2-green-retry.log"
+        "log": "/tmp/arch06-followup/nested-green.log"
       },
       {
         "command": "./gradlew :architecture-tests:test --no-daemon --console=plain --rerun-tasks",
-        "phase": "보완 전 구조 전체",
-        "tests": 101,
+        "phase": "JAR 사례 포함 구조 전체",
+        "tests": 111,
         "failures": 0,
-        "log": "/tmp/arch06-verification/architecture-all.log"
+        "errors": 0,
+        "skipped": 0,
+        "log": "/tmp/arch06-followup/architecture-all.log"
       },
       {
-        "command": "./gradlew :architecture-tests:test --tests '*PortContractRuleTest' --no-daemon --console=plain",
-        "phase": "브리지 중복 회귀 Red",
-        "tests": 21,
-        "failures": 1,
-        "log": "/tmp/arch06-verification/review-regression.log"
-      },
-      {
-        "command": "./gradlew :architecture-tests:test --tests '*PortContractRuleTest' --no-daemon --console=plain",
-        "phase": "브리지 보완 Green",
-        "tests": 21,
-        "failures": 0,
-        "log": "/tmp/arch06-verification/review-regression-fixed.log"
-      },
-      {
-        "command": "./gradlew build --no-daemon --console=plain --continue --rerun-tasks",
-        "phase": "최종 전체 회귀",
+        "command": "./gradlew build --no-daemon --console=plain --continue",
+        "phase": "원본 삭제·손상 사례 포함 최종 빌드",
         "exitCode": 0,
-        "log": "/tmp/arch06-verification/full-build.log"
+        "architectureTestsExecuted": 112,
+        "tasksExecuted": 2,
+        "tasksUpToDate": 28,
+        "log": "/tmp/arch06-followup/full-build.log"
       }
     ],
     "testResults": {
       "total": {
-        "tests": 346,
+        "tests": 355,
         "failures": 0,
         "errors": 0,
         "skipped": 0
@@ -209,7 +190,7 @@
           "skipped": 0
         },
         "architecture-tests": {
-          "tests": 103,
+          "tests": 112,
           "failures": 0,
           "errors": 0,
           "skipped": 0
@@ -240,6 +221,7 @@
         }
       }
     },
+    "executionScope": "최종 build에서 변경된 architecture-tests 112개를 실행했다. 다른 모듈은 변경이 없어 기존 통과 결과를 Gradle UP-TO-DATE로 재사용했다. testResults.total은 현재 보고서의 합계이며 이번 명령에서 전부 다시 실행했다는 뜻이 아니다.",
     "productionObservation": "P02 평가: ARCH-02 · 코드 직접 참조 + Gradle 직접 선언\n운영 모듈별 클래스: {app-api=33, domain-common=9, domain-fee=16, domain-ledger=11, domain-matching=22, domain-order=22}\n내부 직접 타입 참조: 1473 / main 구성: 12 / 직접 프로젝트 선언: 10\nARCH-08에 남기는 비운영 목적지: []\nARCH-06은 독립된 P03에서 평가합니다. 미평가 규칙: ARCH-03/04/05/07/08. 계산·DB·실행 순서 검증은 포함하지 않습니다.\nARCH-02 통과 · 준비 오류 0, 위반 0\nP01 평가: ARCH-01. ARCH-02는 독립된 P02에서 평가합니다.\nInventory: {app-api=33, domain-common=9, domain-fee=16, domain-ledger=11, domain-matching=22, domain-order=22}\nRoles: pure=71, ports=5, executors=6\nP03 평가: ARCH-06 · 공개 포트 계약\n검사한 포트 5개: com.exchange.core.api.matching.persistence.MatchingEventStore, com.exchange.core.api.matching.publish.MatchingEventPublisher, com.exchange.core.ledger.BalanceStore, com.exchange.core.ledger.LedgerTransactionStore, com.exchange.core.order.OrderReservationStore\n공개 계약 11개 · 등록 영속 모델: [com.exchange.core.api.matching.persistence.MatchingEventEntity]\nARCH-06 통과 · 준비 오류 0, 위반 0. 포트 메서드·DB는 실행하지 않았습니다.\n한계: 미등록 포트의 의미, 임의 DTO 내부, 런타임 값·동작. 미평가 규칙: ARCH-03/04/05/07/08.\n",
     "sourceHashes": {
       "architecture-tests/build.gradle.kts": "df62dcbb2a7e2153daf2534c96bb5bf8429fd241823f92ecd8c9de71a6233628",
@@ -248,32 +230,173 @@
       "architecture-tests/src/test/kotlin/com/exchange/architecture/rules/DomainTechnologyIndependence.kt": "280d2cc7d71fe2e843ef81712413894b8ca3e712797bb80d5c477a2e5072c024",
       "architecture-tests/src/test/kotlin/com/exchange/architecture/rules/ExternalTechnologyTypes.kt": "fcb93057e475810d17a30ffd258f8fe11c4a3993e1c780d0eeb4ebd3c8da5610",
       "architecture-tests/src/test/kotlin/com/exchange/architecture/rules/PortContractIndependence.kt": "18c4777a01c9fe3d10756d3cdc705121f6d831d1a4ab434db9888a4c173c0a5c",
-      "architecture-tests/src/test/kotlin/com/exchange/architecture/rules/PortContractReader.kt": "b96b6d783cf83fd73e79797f477f10257703b4630029caa2f66413e1f7991df3",
-      "architecture-tests/src/test/kotlin/com/exchange/architecture/PortContractRuleTest.kt": "340727d7618070ef5aa2cbc8155a2becd291c324513186f68d371af6d46bb822",
+      "architecture-tests/src/test/kotlin/com/exchange/architecture/rules/PortContractReader.kt": "3c7b41d0f7df0e6d530dcaec0ddff00209bdd39489e42c0eaeadbd590afc736d",
+      "architecture-tests/src/test/kotlin/com/exchange/architecture/PortContractRuleTest.kt": "ddd1deb99f5eb489afa729f512593b649bb0aaa549474caede70291b580b7619",
       "architecture-tests/src/test/kotlin/com/exchange/architecture/fixtures/portcontracts/PortFixtures.kt": "0579b81332e65f6b6279b2f0ab759595fe4a2832013716f440c3cda49e862139",
-      "architecture-tests/src/test/java/com/exchange/architecture/fixtures/portcontracts/JavaPortFixtures.java": "5d72aae610d69f1e956453de77b17a01123919ca4e828aa0e9d95ffc3d683c7e"
+      "architecture-tests/src/test/java/com/exchange/architecture/fixtures/portcontracts/JavaPortFixtures.java": "0b22795002b91230322f376bbfdad14676f2accffed1451a00a7ab76bc2f72b0",
+      "architecture-tests/src/test/kotlin/com/exchange/architecture/rules/PortContractBytecode.kt": "9e4ebf0a488eb0da1828a3c99add9e07f10799138772b38ce08d5713e732df89",
+      "architecture-tests/src/test/java/com/exchange/architecture/fixtures/externalports/ExternalPortContracts.java": "b080226e3693d364d7acb091d4b7b6bc84dbb82dceebb76ee21e7f21fdebcb05"
     },
     "review": {
-      "testExpectations": "같은 AI가 명세와 독립된 구체 예시를 대조. 별도 컨텍스트 리뷰는 아님.",
-      "independentReview": "미실행",
+      "testExpectations": "작성 AI가 명세·독립 리뷰의 재현 입력에 대조. 별도 컨텍스트 재리뷰는 아님.",
+      "independentReview": "3a93ac7에 대한 독립 리뷰에서 누락 2건 발견. 보완된 코드의 독립 재리뷰는 아직.",
       "humanReview": "완료로 추정하지 않음",
-      "pr": "미게시",
-      "ci": "이번 변경의 원격 CI 미실행",
-      "capturedAt": "createdAt의 로컬 검증 시점. 게시·CI·리뷰의 이후 상태는 PR 참조."
+      "pr": "https://github.com/0Chord/coin-exchange/pull/28",
+      "ci": "보완 전 3a93ac7 CI는 성공. 보완 변경의 CI는 이 로컬 기록 생성 시점에 미실행."
     },
-    "corrections": [
-      "테스트의 메서드 이름 추출 오류를 수정했다. 이를 의도한 구현 Red로 세지 않는다.",
-      "Optional.toList 컴파일 오류를 수정했다. 행동 수준 Red가 아니다.",
-      "동일 계약의 브리지가 다른 소스 행을 가져 중복 진단하는 결함을 실제 테스트로 발견하고 계약 키로 중복 제거했다."
-    ],
+    "pendingDecision": "상위 인터페이스 static 제외·포트 자신의 static 유지 추천. 사용자 답변 전으로 기존 동작 유지.",
     "limits": [
-      "미등록 포트의 의미는 자동 발견하지 않음",
-      "명시한 기술·영속 타입 정책 밖의 모든 라이브러리 안전성을 보장하지 않음",
-      "임의 DTO 내부·Any/raw 실제 값·본문 I/O·모든 Kotlin metadata와 리플렉션 제외",
-      "예상 밖 RuntimeException 처리 분기는 소스 검토. 모든 손상 바이트코드 예외를 재현하지 않음",
-      "DB 원자성·금액·동시성·실행 순서는 ARCH-06의 보장 밖",
+      "임의 DTO 내부·Any/raw 런타임 값·본문 I/O·모든 Kotlin metadata와 리플렉션 제외",
+      "미등록 포트 의미 및 비-JPA 영속 모델은 역할 등록·리뷰 필요",
+      "원본 파일 삭제·잘린 클래스 파일 실패는 실행했다. 모든 잘못된 바이트코드 조합을 검증한 것은 아님",
+      "DB 원자성·금액·동시성·호출 순서는 보장 밖",
       "ARCH-03/04/05 예제·ARCH-08 등 #19 잔여 범위 있음"
     ],
-    "logAvailability": "commands의 /tmp 로그는 로컬 보조 자료이며 저장소에 게시하지 않았다. 실행 명령·집계·운영 관측값·소스 해시는 이 파일에 기록한다."
+    "logAvailability": "commands의 /tmp 로그는 로컬 보조 자료이며 저장소에 게시하지 않았다. 실행 명령·집계·운영 관측값·소스 해시는 이 파일에 기록한다.",
+    "previousVerification": {
+      "createdAt": "2026-09-26T15:13:16+09:00",
+      "baseCommit": "d31e0fc0592a8422f8dc4801c5d17b2825a2d48e",
+      "branch": "test/port-contracts/19",
+      "snapshot": "로컬 검증 당시 기준 커밋 위의 작업 파일. 게시 소스와 실행 대상의 일치는 아래 SHA-256 해시로 확인.",
+      "result": "passed",
+      "commands": [
+        {
+          "command": "./gradlew :architecture-tests:test --tests '*PortContractRuleTest' --no-daemon --console=plain",
+          "phase": "직접 노출 Red",
+          "tests": 7,
+          "failures": 6,
+          "log": "/tmp/arch06-verification/unit1-red.log"
+        },
+        {
+          "command": "./gradlew :architecture-tests:test --tests '*PortContractRuleTest' --tests '*ArchitectureRuleContractTest' --no-daemon --console=plain",
+          "phase": "첫 단위 Green + ARCH-01 회귀",
+          "tests": 30,
+          "failures": 0,
+          "log": "/tmp/arch06-verification/unit1-green.log"
+        },
+        {
+          "command": "./gradlew :architecture-tests:test --tests '*PortContractRuleTest' --no-daemon --console=plain",
+          "phase": "복합 계약 Red · 테스트 이름 추출 오류 수정 후",
+          "tests": 19,
+          "failures": 9,
+          "log": "/tmp/arch06-verification/unit2-red-corrected.log"
+        },
+        {
+          "command": "./gradlew :architecture-tests:test --tests '*PortContractRuleTest' --no-daemon --console=plain",
+          "phase": "복합 계약 Green",
+          "tests": 19,
+          "failures": 0,
+          "log": "/tmp/arch06-verification/unit2-green-retry.log"
+        },
+        {
+          "command": "./gradlew :architecture-tests:test --no-daemon --console=plain --rerun-tasks",
+          "phase": "보완 전 구조 전체",
+          "tests": 101,
+          "failures": 0,
+          "log": "/tmp/arch06-verification/architecture-all.log"
+        },
+        {
+          "command": "./gradlew :architecture-tests:test --tests '*PortContractRuleTest' --no-daemon --console=plain",
+          "phase": "브리지 중복 회귀 Red",
+          "tests": 21,
+          "failures": 1,
+          "log": "/tmp/arch06-verification/review-regression.log"
+        },
+        {
+          "command": "./gradlew :architecture-tests:test --tests '*PortContractRuleTest' --no-daemon --console=plain",
+          "phase": "브리지 보완 Green",
+          "tests": 21,
+          "failures": 0,
+          "log": "/tmp/arch06-verification/review-regression-fixed.log"
+        },
+        {
+          "command": "./gradlew build --no-daemon --console=plain --continue --rerun-tasks",
+          "phase": "최종 전체 회귀",
+          "exitCode": 0,
+          "log": "/tmp/arch06-verification/full-build.log"
+        }
+      ],
+      "testResults": {
+        "total": {
+          "tests": 346,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0
+        },
+        "byModule": {
+          "app-api": {
+            "tests": 75,
+            "failures": 0,
+            "errors": 0,
+            "skipped": 0
+          },
+          "architecture-tests": {
+            "tests": 103,
+            "failures": 0,
+            "errors": 0,
+            "skipped": 0
+          },
+          "domain-fee": {
+            "tests": 37,
+            "failures": 0,
+            "errors": 0,
+            "skipped": 0
+          },
+          "domain-ledger": {
+            "tests": 16,
+            "failures": 0,
+            "errors": 0,
+            "skipped": 0
+          },
+          "domain-matching": {
+            "tests": 65,
+            "failures": 0,
+            "errors": 0,
+            "skipped": 0
+          },
+          "domain-order": {
+            "tests": 50,
+            "failures": 0,
+            "errors": 0,
+            "skipped": 0
+          }
+        }
+      },
+      "productionObservation": "P02 평가: ARCH-02 · 코드 직접 참조 + Gradle 직접 선언\n운영 모듈별 클래스: {app-api=33, domain-common=9, domain-fee=16, domain-ledger=11, domain-matching=22, domain-order=22}\n내부 직접 타입 참조: 1473 / main 구성: 12 / 직접 프로젝트 선언: 10\nARCH-08에 남기는 비운영 목적지: []\nARCH-06은 독립된 P03에서 평가합니다. 미평가 규칙: ARCH-03/04/05/07/08. 계산·DB·실행 순서 검증은 포함하지 않습니다.\nARCH-02 통과 · 준비 오류 0, 위반 0\nP01 평가: ARCH-01. ARCH-02는 독립된 P02에서 평가합니다.\nInventory: {app-api=33, domain-common=9, domain-fee=16, domain-ledger=11, domain-matching=22, domain-order=22}\nRoles: pure=71, ports=5, executors=6\nP03 평가: ARCH-06 · 공개 포트 계약\n검사한 포트 5개: com.exchange.core.api.matching.persistence.MatchingEventStore, com.exchange.core.api.matching.publish.MatchingEventPublisher, com.exchange.core.ledger.BalanceStore, com.exchange.core.ledger.LedgerTransactionStore, com.exchange.core.order.OrderReservationStore\n공개 계약 11개 · 등록 영속 모델: [com.exchange.core.api.matching.persistence.MatchingEventEntity]\nARCH-06 통과 · 준비 오류 0, 위반 0. 포트 메서드·DB는 실행하지 않았습니다.\n한계: 미등록 포트의 의미, 임의 DTO 내부, 런타임 값·동작. 미평가 규칙: ARCH-03/04/05/07/08.\n",
+      "sourceHashes": {
+        "architecture-tests/build.gradle.kts": "df62dcbb2a7e2153daf2534c96bb5bf8429fd241823f92ecd8c9de71a6233628",
+        "architecture-tests/src/test/kotlin/com/exchange/architecture/ProductionArchitectureTest.kt": "60180102692726f54f3adf5f4710ac43326e12afd0c2442872e5d586f0d3fff1",
+        "architecture-tests/src/test/kotlin/com/exchange/architecture/support/ProductionScope.kt": "af2bae7379aaffbe1b9bca1cdfd758af0418d5d3c310d46934f01ee956339654",
+        "architecture-tests/src/test/kotlin/com/exchange/architecture/rules/DomainTechnologyIndependence.kt": "280d2cc7d71fe2e843ef81712413894b8ca3e712797bb80d5c477a2e5072c024",
+        "architecture-tests/src/test/kotlin/com/exchange/architecture/rules/ExternalTechnologyTypes.kt": "fcb93057e475810d17a30ffd258f8fe11c4a3993e1c780d0eeb4ebd3c8da5610",
+        "architecture-tests/src/test/kotlin/com/exchange/architecture/rules/PortContractIndependence.kt": "18c4777a01c9fe3d10756d3cdc705121f6d831d1a4ab434db9888a4c173c0a5c",
+        "architecture-tests/src/test/kotlin/com/exchange/architecture/rules/PortContractReader.kt": "b96b6d783cf83fd73e79797f477f10257703b4630029caa2f66413e1f7991df3",
+        "architecture-tests/src/test/kotlin/com/exchange/architecture/PortContractRuleTest.kt": "340727d7618070ef5aa2cbc8155a2becd291c324513186f68d371af6d46bb822",
+        "architecture-tests/src/test/kotlin/com/exchange/architecture/fixtures/portcontracts/PortFixtures.kt": "0579b81332e65f6b6279b2f0ab759595fe4a2832013716f440c3cda49e862139",
+        "architecture-tests/src/test/java/com/exchange/architecture/fixtures/portcontracts/JavaPortFixtures.java": "5d72aae610d69f1e956453de77b17a01123919ca4e828aa0e9d95ffc3d683c7e"
+      },
+      "review": {
+        "testExpectations": "같은 AI가 명세와 독립된 구체 예시를 대조. 별도 컨텍스트 리뷰는 아님.",
+        "independentReview": "미실행",
+        "humanReview": "완료로 추정하지 않음",
+        "pr": "미게시",
+        "ci": "이번 변경의 원격 CI 미실행",
+        "capturedAt": "createdAt의 로컬 검증 시점. 게시·CI·리뷰의 이후 상태는 PR 참조."
+      },
+      "corrections": [
+        "테스트의 메서드 이름 추출 오류를 수정했다. 이를 의도한 구현 Red로 세지 않는다.",
+        "Optional.toList 컴파일 오류를 수정했다. 행동 수준 Red가 아니다.",
+        "동일 계약의 브리지가 다른 소스 행을 가져 중복 진단하는 결함을 실제 테스트로 발견하고 계약 키로 중복 제거했다."
+      ],
+      "limits": [
+        "미등록 포트의 의미는 자동 발견하지 않음",
+        "명시한 기술·영속 타입 정책 밖의 모든 라이브러리 안전성을 보장하지 않음",
+        "임의 DTO 내부·Any/raw 실제 값·본문 I/O·모든 Kotlin metadata와 리플렉션 제외",
+        "예상 밖 RuntimeException 처리 분기는 소스 검토. 모든 손상 바이트코드 예외를 재현하지 않음",
+        "DB 원자성·금액·동시성·실행 순서는 ARCH-06의 보장 밖",
+        "ARCH-03/04/05 예제·ARCH-08 등 #19 잔여 범위 있음"
+      ],
+      "logAvailability": "commands의 /tmp 로그는 로컬 보조 자료이며 저장소에 게시하지 않았다. 실행 명령·집계·운영 관측값·소스 해시는 이 파일에 기록한다."
+    }
   }
 }
