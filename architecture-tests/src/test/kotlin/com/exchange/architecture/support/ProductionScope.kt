@@ -8,6 +8,9 @@ import java.nio.file.Path
  * 새 모듈의 등록 누락을 잡으려면 발견 목록을 별도로 받아야 한다.
  */
 object ProductionScope {
+    // 어노테이션을 없애거나 저장 기술을 바꿔도 영속 모델의 포트 노출을 계속 검사한다.
+    val persistenceTypes = setOf("com.exchange.core.api.matching.persistence.MatchingEventEntity")
+
     val requiredTypes = mapOf(
         "domain-common" to setOf("com.exchange.core.common.Amount"),
         "domain-fee" to setOf("com.exchange.core.fee.TradingFeeCalculator"),

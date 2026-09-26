@@ -25,6 +25,9 @@ dependencies {
 	// 위반 예제에 실제 애너테이션을 붙이기 위한 의존성이다. Spring 컨텍스트는 띄우지 않는다.
 	testImplementation("org.springframework:spring-context")
 	testImplementation("jakarta.persistence:jakarta.persistence-api")
+	// 포트 계약 위반 예제에서 실제 기술 타입을 사용한다. 이 의존성으로 서버를 시작하지 않는다.
+	testImplementation("jakarta.transaction:jakarta.transaction-api")
+	testImplementation("tools.jackson.core:jackson-databind")
 	testRuntimeOnly("org.junit.platform:junit-platform-launcher")
 }
 

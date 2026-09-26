@@ -1,7 +1,180 @@
-# 구조 검사 명세 — #19 · ARCH-02 구현 계약
+# 구조 검사 명세 — #19 · ARCH-06 상세 설계
 
-대상: [#19 공통 구조 검사 기반 구현 및 명세 v1 적용](https://github.com/0Chord/coin-exchange/issues/19).
-현재 기준은 통합 브랜치 `feature/phase-2/integration`의 **`0f709c30b446e558060416cad6e0389f9f33ad16`**이다. [PR #26](https://github.com/0Chord/coin-exchange/pull/26)의 대상 준비·ARCH-01은 병합됐다. **ARCH-02의 로컬 구현·검증을 완료했다. 구조 검사 81개, 전체 테스트 324개가 통과했다. 원격 CI·리뷰 상태는 이 문서를 포함한 PR에서 별도로 확인한다.** #19 전체 완료를 뜻하지 않는다.
+대상: [#19 공통 구조 검사 기반 구현 및 명세 v1 적용](https://github.com/0Chord/coin-exchange/issues/19). 설계 기준: 통합 브랜치 `feature/phase-2/integration`의 **`d31e0fc0592a8422f8dc4801c5d17b2825a2d48e`**, [PR #27](https://github.com/0Chord/coin-exchange/pull/27) 병합 후 상태. 확인일: 2026-09-26.
+
+합의한 상세 설계로 구현했다. 앞선 누락 두 건과 후속 P3(타입 변수 선언 범위 혼동)을 보완했다. 상위 인터페이스 static 제외 합의도 적용했다. 공개 inner의 바깥 타입 변수 누락도 보완했다. **구조 129개 통과, 전체 build 성공**. 변경 없는 제품 테스트는 기존 통과 결과를 UP-TO-DATE로 재사용했다. ARCH-06 로컬 실행과 PR·CI·독립 리뷰·사람의 코드 검토 상태는 구분한다. [실제 구현 흐름과 실행 근거](architecture-06-review.md)를 함께 본다. ARCH-01·02 완료 기록은 이 파일 뒤쪽에 보존한다.
+
+## ARCH-06 · 먼저 읽을 핵심
+
+**“저장·발행을 요청할 때 DB나 Spring 타입까지 알아야 하는가?”를 검사한다.** 포트는 애플리케이션이 외부 작업을 요청하는 인터페이스다. 이 인터페이스의 인자·반환값 등에 기술이 새어 나오면 실패시킨다.
+
+| 예 | 추천하는 결과 | 이유 |
+| --- | --- | --- |
+| `reserve(...): Balance` | 허용 | 호출자는 도메인의 잔고 값만 받는다. |
+| `append(events: List<MatchingEvent>)` | 허용 | 목록 안의 값도 도메인 이벤트다. |
+| 포트가 `Connection`이나 `List<MatchingEventEntity>`를 반환 | ARCH-06 위반 | 호출자가 DB 연결이나 영속 모델을 알아야 한다. 목록으로 감싸도 같다. |
+| `JpaMatchingEventStore` 내부에서 엔티티·Spring Data 사용 | ARCH-06 검사 밖 | 저장 구현이 기술을 사용하는 것은 의도한 설계다. |
+
+흐름은 **등록된 포트 찾기 → 외부에 드러나는 타입 읽기 → 금지 타입과 비교 → 통과·위반·준비 실패 보고**다. DB에 연결하거나 포트 메서드를 실행하지 않는다.
+
+## 확인한 코드와 유지할 계약
+
+| 구분 | 사실·합의·추천안 |
+| --- | --- |
+| 확인한 사실 | `ProductionScope.roles.externalPorts`에 아래 5개 인터페이스가 등록돼 있다. 현재 선언은 도메인 값·이벤트·목록·Unit을 사용한다. P03에서도 이 5개 포트·공개 계약 11개에 같은 규칙을 적용해 준비 오류·위반 0건을 확인했다. |
+| 기존 합의 | 도메인에 포트 선언을 둘 수 있다. 순수 도메인의 실제 포트 호출은 ARCH-01, 모듈 방향은 ARCH-02가 검사한다. |
+| 유지할 구현 | `UPDATE … RETURNING`, DB 원자적 갱신, 불변 객체 반환, 주문장·실행기, HTTP 계약과 폴더 배치를 변경하지 않는다. |
+| 현재 구현 | 기존 수집기와 명시적 포트 등록을 재사용한다. 포트 계약만 검사하고, 영속 타입은 등록과 실제 JPA 표식으로 식별한다. |
+| 실행으로 확인한 범위 | Kotlin 프로퍼티·제네릭·중첩 계약, Java 와일드카드·상한·브리지, 내부/외부 상위 계약의 누락과 허용 사례를 실행했다. 모든 JVM 표현의 지원을 뜻하지 않는다. |
+
+| 현재 대상 | 실제 선언·소속 | 확인한 요청과 결과 |
+| --- | --- | --- |
+| `OrderReservationStore` | `domain-order` · `com.exchange.core.order` | 예약 생성·조회·갱신. `OrderReservation`, 식별자, nullable 조회 결과 |
+| `BalanceStore` | `domain-ledger` · `com.exchange.core.ledger` | reserve/release/consumeHold/credit. `Amount`·식별자를 받고 `Balance` 반환 |
+| `LedgerTransactionStore` | `domain-ledger` · `com.exchange.core.ledger` | 검증된 `LedgerTransaction` 추가 |
+| `MatchingEventStore` | `app-api` · `com.exchange.core.api.matching.persistence` | `List<MatchingEvent>` 저장 |
+| `MatchingEventPublisher` | `app-api` · `com.exchange.core.api.matching.publish` | `List<MatchingEvent>` 발행 |
+
+실제 정의: [포트 등록](../architecture-tests/src/test/kotlin/com/exchange/architecture/support/ProductionScope.kt), [잔고 포트](../domain-ledger/src/main/kotlin/com/exchange/core/ledger/BalanceStore.kt), [매칭 저장 포트](../app-api/src/main/kotlin/com/exchange/core/api/matching/persistence/MatchingEventStore.kt), [JPA 저장 구현](../app-api/src/main/kotlin/com/exchange/core/api/matching/persistence/JpaMatchingEventStore.kt), [Spring Data 인터페이스](../app-api/src/main/kotlin/com/exchange/core/api/matching/persistence/MatchingEventRepository.kt).
+
+`MatchingEventRepository : JpaRepository<MatchingEventEntity, Long>`는 저장 구현 내부의 기술 도구다. 이름에 Repository가 붙었다고 외부 포트로 등록하지 않는다. 반대로 `MatchingEventStore`는 지금 `persistence` 패키지에 있지만 포트다. 패키지 이름으로 일괄 제외하면 이 대상을 놓친다.
+
+## 허용·금지와 검사 범위
+
+**포트의 공개 계약에 나타난 타입**을 검사한다. 함수 본문 전체의 의존을 읽는 ARCH-01 규칙을 그대로 포트에 적용하지 않는다.
+
+| 검사하는 자리 | 경계 |
+| --- | --- |
+| 인자·반환값 | 선언한 공개 메서드와 상속받아 제공하는 메서드. 상위 인터페이스의 static은 제외하고, 검사 대상 자신의 static과 상속한 일반/default 메서드는 포함한다. Kotlin의 `val`/`var`도 getter·setter 계약으로 검사 |
+| 공개 필드·상속 선언 | 노출된 필드와 상위 인터페이스 타입. 내부 공통 인터페이스의 계약까지 읽는다. |
+| 타입 안의 타입 | `List<Entity>`, `Map<String, List<Entity>>`, 배열 원소, 와일드카드의 상·하한, 타입 변수의 모든 상한, 상속 선언의 타입 인자, `Owner<Connection>.Member<String>`의 소유 타입 인자. `List`만 보고 멈추지 않는다. |
+| 직접 붙은 기술 어노테이션·선언 예외 | 포트·검사 대상 멤버·인자에 바이트코드로 남은 기술 어노테이션 및 throws 타입. 주석의 `@throws` 문장은 분석하지 않는다. |
+
+초기 금지 정책은 다음으로 명시한다. **이 목록 밖의 모든 외부 라이브러리가 안전하다는 인증은 아니다.** 새 기술 도입 시 정책·반대 사례를 같이 검토한다.
+
+- **기존 기술 목록 재사용:** `DomainTechnologyIndependence`에 있는 Spring, Jakarta/Javax Persistence, JDBC, HTTP·명시적 네트워크 I/O, Kafka·PostgreSQL·Hibernate 타입 판정. `java.*`나 `kotlin.*` 전체를 막지 않는다.
+- **ARCH-06 추가 추천:** 계약에 붙는 `jakarta.transaction.*`·`javax.transaction.*`, 현재 저장 구현의 직렬화 도구인 `tools.jackson.databind.ObjectMapper` 노출도 금지한다. 기존 ARCH-01의 금지 범위까지 함께 확대하지 않는다.
+- **영속 타입:** 현재 `com.exchange.core.api.matching.persistence.MatchingEventEntity`를 명시적으로 등록한다. 운영 출력의 `jakarta.persistence`/`javax.persistence`의 `Entity`, `Embeddable`, `MappedSuperclass` 표식이 붙은 타입도 모은다. 새 JPA 타입을 기존 명단 밖이라고 통과시키지 않는다. 등록한 타입의 정의가 없으면 준비 오류다. 비-JPA 영속 모델은 역할을 검토하여 등록한다.
+- **허용 반대 사례:** `Balance`, `MatchingEvent`, `String`, 숫자·식별자, `List`/`Map`, `URI`, `Instant`, `Unit`, nullable. `CompletableFuture<Balance>` 자체는 이번 금지 목록에 없고, `CompletableFuture<Entity>`의 Entity는 위반이다. 이는 비동기 API의 설계 적합성을 승인하는 뜻이 아니다.
+
+`Balance`를 만났다고 그 객체의 모든 필드와 호출을 끝없이 따라가지 않는다. **시그니처의 제네릭 내부는 탐색하지만 임의 DTO 내부의 객체 그래프는 펼치지 않는다.** 따라서 `Any`, raw collection, 사용자 DTO에 감춘 영속 객체, 런타임 실제 반환값은 이 규칙만으로 보장하지 못한다. 의미 리뷰·도메인 검사와 구분한다.
+
+## 입력 → 판단 → 통과·실패 보고
+
+1. **입력 준비:** 기존 Gradle 경로로 운영 main 출력을 수집하고 모듈 등록·읽기·역할 오류를 확인한다. 도메인만 읽지 않고 `app-api`의 두 포트도 포함한다.
+2. **대상 확인:** 등록된 포트 루트가 모두 실제 인터페이스인지 확인한다. 비어 있는 등록, 사라진 포트, 정의가 없는 영속 타입, 분석에 필요한 상위 계약 누락은 `ARCH-06 미평가 / 준비 실패`다. 읽힌 일부만 통과시키지 않는다.
+3. **계약 추출:** 각 포트가 노출하는 멤버와 상위 계약의 타입을 읽고, 배열·제네릭·타입 상한 안쪽을 펼친다. 타입 변수는 선언 범위를 보존한다. 공개 inner 클래스가 사용하는 바깥 변수는 실제 포함 관계를 따라 바깥부터 해석하며, static 중첩에서는 그 탐색을 끊는다. 필요한 바깥 정의가 없으면 준비 실패로 처리한다. 클래스의 `U extends T`를 메서드의 같은 이름 T로 재해석하지 않으며, 메서드가 직접 선언한 T는 그 메서드의 상한을 따른다. 순환하는 제네릭·반복 상속은 재방문을 제한한다. 어떤 루트 포트의 어떤 선언에서 노출됐는지 보존한다.
+4. **판단:** 기술 정책 또는 영속 타입에 해당하면 그 노출을 위반으로 기록한다. 기술 타입의 전체 클래스 정의가 없어도 이름으로 금지 여부가 확실하면 위반을 낼 수 있다. 반대로 상위 계약을 읽어야 하는데 그 정의가 불완전하면 추측하지 않고 미평가한다.
+5. **보고:** 준비 오류가 없을 때만 위반 0건을 통과로 판정한다. 위반이 있으면 실제 운영 준수 테스트를 실패시킨다. 원본 소스의 행 정보가 없으면 `행 정보 없음`으로 표시한다.
+
+| 결과 | 보여줄 정보 |
+| --- | --- |
+| 준비 실패 | 문제 단계·포트/타입·이유, `ARCH-06 미평가`. API 해석 불가능과 실제 규칙 위반을 구분 |
+| 규칙 위반 | `ARCH-06`, 포트의 실제 모듈·전체 이름, 멤버/상위 선언, 노출 자리, 금지 타입·이유, 가능한 파일·행, 이 명세 링크 |
+| 통과 | 검사한 포트 이름·수, 읽은 계약 수, 위반 0건, 제외 범위. 빈 목록을 정상 결과로 표시하지 않음 |
+
+가상 진단 예: “`MatchingEventStore.load` 반환값 `List<MatchingEventEntity>`에 영속 타입이 노출됐습니다. 호출자에게 도메인 값을 반환하도록 계약을 확인하세요.” 현재 코드에 `load`가 있거나 이 위반을 발견했다는 뜻은 아니다.
+
+중복 제거 단위는 **루트 포트 + 선언 멤버 + 노출 자리 + 금지 타입**으로 잡는다. 상속 선언과 메서드처럼 서로 다른 경로는 남기고, 동일 경로를 여러 번 탐색한 결과만 합친다. 보고 순서는 입력 순서와 무관해야 한다.
+
+<details markdown="1">
+<summary>구현 담당자를 위한 재사용·Kotlin 경계</summary>
+
+### 기존 기반을 재사용하는 방법
+
+| 기존 부분 | 연결할 책임 |
+| --- | --- |
+| `ModuleRegistration` / `ProductionScopeImporter` | 기존 등록·운영 출력·누락 검사 유지. 별도 패키지 검색 수집기를 만들지 않음 |
+| `ProductionScope` / `RoleClassifier` | `externalPorts`의 명시적 루트를 기준으로 검사. 분류 과정의 생성 중첩 타입을 모두 새 포트로 세지 않음. 영속 타입 등록 추가 |
+| `DomainTechnologyIndependence` | 기술 타입 판정 목록만 공통 보조 객체로 추출했다. ARCH-01의 호출 검사·선택 범위·기대 결과는 그대로 유지 |
+| `rules/PortContractIndependence.kt` / `PortContractReader.kt` | 포트 계약 수집·타입 판정·진단을 담당한다. 운영과 예제에서 동일 함수를 사용 |
+| `PortContractRuleTest.kt`, `fixtures/portcontracts/` | 정상·위반·준비 실패의 독립 예제. 전용 테스트 소스 안에 두어 운영 출력과 구분 |
+| `ProductionArchitectureTest` | 독립된 P03 진입점. 매번 준비 조건을 확인하고 실제 포트에 ARCH-06 적용. P01·P02 실행 순서에 의존하지 않음 |
+
+예제 컴파일에 JDBC·트랜잭션·직렬화 라이브러리가 추가로 필요하면 기존 버전 관리에 맞춰 `architecture-tests`의 테스트 의존성에만 넣는다. 가짜 외부 패키지 클래스로 실제 라이브러리와 같은 검증이라고 주장하지 않는다. 새 프레임워크나 버전 업그레이드는 필요하지 않다.
+
+현재 포트 루트는 모두 인터페이스다. 새 루트가 클래스이거나 계약이 전혀 읽히지 않으면 검사 준비 문제로 보고한다. 계약 추출은 public 멤버, 상위 인터페이스와 그 public 계약을 대상으로 한다. public 중첩 타입·companion에 노출된 계약도 포함하되 바이트코드의 포함 관계·접근 수준으로 찾는다. 이름에 `$`가 있다는 이유로 제외하지 않는다. private 메서드 본문·생성자·저장 구현체의 추가 메서드는 포트 계약으로 합치지 않는다.
+
+상속된 제네릭은 `Store<T>`의 선언과 `Store<Entity>`의 실제 타입 인자 양쪽을 읽는다. 제한 없는 `T`/`Any`의 런타임 타입을 추측하지 않는다. 내부 상위 인터페이스의 정의가 없는 경우 기존 내부 누락 검사를 유지한다. 외부 상위 계약은 분석에 필요한 바이트코드 해석 상태를 확인하고, 해석할 수 없으면 준비 문제를 보고한다. 이미 금지된 기술 상위 타입의 내부 API 전체까지 펼칠 필요는 없다.
+
+Kotlin getter/setter·브리지·default helper는 실제로 노출하는 시그니처를 기준으로 다룬다. 함수 본문의 호출·지역 변수는 제외한다. Kotlin metadata만 남는 프로퍼티 어노테이션, SOURCE 보존 어노테이션, 타입 별칭 이름, 모든 JVM 생성 형태를 자동 복원한다고 약속하지 않는다. 어노테이션은 직접 붙은 타입을 검사하며 속성 값·메타어노테이션을 재귀 탐색하지 않는다. 기본 메서드 본문의 외부 호출 또한 이번 ARCH-06의 보장이 아니며 리뷰에서 분리해 표시한다.
+
+ArchUnit 1.4.2의 `JavaType.getAllInvolvedRawTypes`를 재사용하되 소유 타입의 제네릭 인자는 누락될 수 있어 이것만으로 완료 판정하지 않는다. `PortContractBytecode`가 수집된 클래스의 원본 `Signature`를 JDK 25 클래스 파일 API로 읽어 보완한다. 클래스·메서드 타입 변수의 상한과 사용 자리도 연결하고, 순환 상한은 재방문을 제한한다. `toErasure()`만 사용해 제네릭 내부 타입을 잃지 않는다. 로컬 JAR에서 해당 API와 멤버/타입 변수 API의 존재를 확인했다. 현재 Kotlin/Java 예제의 탐지·누락·한계는 PortContractRuleTest에서 실행 검증했다. [버전 고정 JavaType 공식 API](https://javadoc.io/static/com.tngtech.archunit/archunit/1.4.2/com/tngtech/archunit/core/domain/JavaType.html).
+
+공개 중첩 선언은 원본 `InnerClasses`의 실제 외부 클래스 관계와 public 접근 수준으로 찾는다. 운영 출력에 없는 내부 타입은 준비 실패이고, 외부 타입은 상위 정의와 같은 디렉터리/JAR에서 읽는다. 해당 파일이 없으면 `UNRESOLVED_PORT_CONTRACT`, 원본 파싱·읽기 자체가 실패하면 `CONTRACT_READ_FAILURE`로 미평가한다. 객체 생성·클래스 초기화·메서드 본문 실행은 하지 않는다.
+
+구현 근거: [JDK 25 소유 타입 Signature API](https://docs.oracle.com/en/java/javase/25/docs/api/java.base/java/lang/classfile/Signature.ClassTypeSig.html), [중첩 선언 속성 API](https://docs.oracle.com/en/java/javase/25/docs/api/java.base/java/lang/classfile/attribute/InnerClassesAttribute.html).
+
+새 포트의 **의미를 전부 자동 발견하는 기능은 없다.** 도메인의 미분류 인터페이스는 기존 분류기가 막지만, `app-api`의 새 인터페이스가 포트인지는 리뷰와 등록이 필요하다. 새 포트를 등록한 뒤 누락되면 준비 실패해야 한다. 포트 이름·폴더 정리는 #20–21의 범위다.
+
+</details>
+
+## 정상·위반·누락 수용 사례
+
+아래 식별자는 테스트를 연결할 명세 번호다. 테스트 개수나 실행 결과가 아니다. **위반 예제를 잡으면 예제 테스트는 성공하고, 실제 운영 위반을 잡으면 운영 준수 테스트는 실패한다.** 기대값은 아래 계약에서 정하며 구현의 금지 목록을 복사하여 정답을 만들지 않는다.
+
+| 사례 | 입력 | 기대 결과·근거 |
+| --- | --- | --- |
+| 정상 값 전달 · PORT-01 | 도메인 값·식별자·nullable 반환, `List<MatchingEvent>`, URI/Instant, `CompletableFuture<Balance>` | 위반 0. 일반 값·컨테이너 자체를 기술로 오인하지 않음 |
+| 직접 기술 노출 · PORT-02 | 별도 예제로 인자에 JDBC Connection, 반환에 Spring 타입, 공개 필드에 HTTP 클라이언트 | 해당 멤버·자리·기술 타입 위반. 한 자리 예제는 정확히 그 위반만 기대 |
+| 영속 객체 노출 · PORT-03 | 등록된 비-JPA 영속 모델 또는 `MatchingEventEntity` 반환 | 해당 영속 타입 위반. 이름·패키지 대신 역할을 사용 |
+| 새 JPA 모델 · PORT-04 | 명시 목록에 없는 `@Entity`/`@Embeddable`/`@MappedSuperclass` 타입 노출, 이름만 Entity인 일반 값과 비교 | 표식 있는 타입만 위반. 실제 어노테이션 읽기와 등록 누락 우회를 확인 |
+| 목록·배열 내부 · PORT-05 | `List<Entity>`, `Map<String, List<Entity>>`, `Array<Connection>` | 각 예제의 내부 금지 타입을 진단. 바깥 컨테이너만 검사하는 구현을 거절 |
+| 프로퍼티 · PORT-06 | `val connection: Connection`, `var entity: Entity` | getter 반환·setter 인자에서 관측된 금지 노출을 보고. Kotlin 실제 컴파일 결과와 연결 |
+| 상속 · PORT-07 | 내부 상위 포트에 금지 반환, `Parent<Entity>`, 기술 인터페이스 상속 | 루트 포트와 실제 선언/상속 자리·금지 타입을 보존. 기술 상위 타입은 위반 |
+| 제네릭 경계 · PORT-08 | 타입 변수의 여러 상한 중 금지 타입, 와일드카드 상·하한, 순환 상한의 정상 예 | 금지 경계만 위반. 반복 탐색 종료. Kotlin이 만들지 않는 모양은 작은 Java 예제로 확인하고 구분 |
+| 선언 범위 · PORT-08 | 클래스 `U extends T`와 메서드의 같은 이름 T; 이름을 V로 바꾼 대조; 메서드 V가 클래스 U를 상한으로 사용; 클래스 정상·메서드만 기술 상한 | 클래스 변수의 의미가 변하지 않아 반환·인자·상한 위치를 빠뜨리지 않음. 메서드 직접 변수에는 클래스 상한을 적용하지 않고, 정상 클래스 반환에 메서드의 기술 상한을 섞지 않음. 정확한 진단 집합·개수 확인 |
+| 바깥 변수 · PORT-08/13 | 공개 inner의 바깥 T 반환·인자·필드·메서드 상한, 다단계 중첩/이름 가림, static 경계, 상위 inner를 먼저 읽는 입력, 내부/외부 바깥 정의 누락 | 선언 위치의 의미를 유지해 각 사용 자리 보고. 일반 상한·새 변수는 오탐하지 않음. 바깥 정보만 읽는 것을 새 공개 계약으로 세지 않음. 필요한 정의 누락은 미평가이며 클래스패스 복사본으로 대체하지 않음 |
+| 어노테이션·예외 · PORT-09 | 포트·getter·인자에 기술 어노테이션, 선언 예외에 SQLException, 반환에 ObjectMapper | 바이트코드에 남은 해당 노출 위반. KDoc·메타데이터만의 표현까지 탐지했다고 주장하지 않음 |
+| 기술 구현과 분리 · PORT-10 | 정상 포트 + JDBC/Spring Data를 쓰는 구현체·Repository | ARCH-06 위반 0. 구현체 생성자·필드·본문을 포트 계약으로 오인하지 않음 |
+| 중첩·기본 메서드 · PORT-11 | public 중첩/companion 및 외부 상위의 public 중첩 계약의 기술 반환, 기본 메서드의 정상 시그니처 + 기술 사용 본문, private 보조 메서드 | 노출 계약만 위반. 본문·private는 제외임을 별도 확인. 브리지·중복 탐색으로 같은 진단을 증식시키지 않음 |
+| static 상속 경계 · PORT-11 | 다단계 부모 static·자식 자신의 static·부모 별도 등록·상속한 일반/default 메서드·상위이자 공개 중첩인 타입 | 상위 인터페이스 static을 자식의 진단·계약 수에서 제외. 자신의 static과 일반/default 상속은 유지. 부모 등록 시 부모의 위반으로만 보고. 공개 중첩 타입 자신의 static도 유지하며 방문 순서로 누락하지 않음 |
+| 대상 누락 · PORT-12 | 포트 등록 0개, 등록한 포트/영속 타입 정의 제거, 클래스인 포트 루트, 읽힌 계약 없음 | 준비 실패·미평가. 위반 0건 통과가 아님 |
+| 해석 실패 · PORT-13 | 기존 수집 오류, 필요한 내부/외부 상위 계약을 해석할 수 없는 입력 | 부분 결과로 통과하지 않음. 기존 누락 테스트는 재사용하고 ARCH-06 진입 연결을 보완 |
+| 결과 재현 · PORT-14 | 정상·위반 포트 혼합, 순서 변경, 같은 타입의 서로 다른 노출 자리 | 명세에서 정한 진단 집합과 정확히 일치. 정렬 안정성·파일/행 정보 부재·명세 링크 확인 |
+| 실제 전체 적용 · P03 | 최신 운영 출력과 실제 포트·영속 타입 등록 | 등록된 5개가 전부 포함됐음을 확인한 뒤 평가. 실제 P03에서 공개 계약 11개·준비 오류 0·위반 0 확인 |
+
+각 위반 예제는 먼저 **의도한 멤버·타입이 실제 바이트코드 입력에 있는지** 확인한다. 컴파일 실패나 잘못된 예제 수집을 의도한 Red로 세지 않는다. 탐지가 안 되면 위반 사례를 삭제하거나 광범위하게 제외하지 말고 추출 방식·보장 차이를 보고한다.
+
+## 이번 PR의 완료 기준과 제외 범위
+
+- [x] PORT-01–14의 정상·위반·누락 계약을 기대 진단과 대조한다. 예제 전제 확인과 규칙 탐지 결과를 구분한다.
+- [x] P03은 현재 5개 포트를 누락 없이 같은 규칙으로 검사한다. 준비 실패·규칙 위반·통과를 구분해 보고한다.
+- [x] 기존 ARCH-01·02 회귀를 유지한다. 기술 목록 공통화가 기존 ARCH-01의 범위를 바꾸지 않았는지 확인한다.
+- [x] 독립 검사 명령은 서버·DB·Docker 없이 수행되고, 기존 `check`/`build` 경로에도 새 테스트가 포함된다.
+- [x] 실제 실행 명령·입력 커밋·변경 파일·결과·미검증 범위를 기록하고, HTML에서 정상·실패 흐름과 근거 코드/테스트를 연결한다.
+
+제외: 저장 어댑터/Repository의 전면 구조 변경, 파일·유즈케이스 이름 이동, SQL·DB 동시성·금액 계산·롤백 검증, 임의 객체 그래프·런타임 값 추적, 새 검사 플랫폼/CI 정책, ARCH-03–05/07/08 구현, #19 전체 완료 처리.
+
+ARCH-06 완료 뒤에도 **#19에는 ARCH-08과 ARCH-03/04/05의 예제 기반 검증이 남는다.** ARCH-03/04/05의 실제 운영 적용은 #20–21 이행과 연결한다. 번호를 건너뛴 것이 해당 규칙을 삭제했다는 뜻이 아니다.
+
+## PR #28 리뷰 보완
+
+`9406277` 독립 재리뷰의 P3도 반영한다. 공개 inner가 바깥 타입 변수를 쓰는 경우, 원본 InnerClasses의 실제 포함 관계를 따라 선언 환경을 연결한다. 자기 변수와 바깥 변수를 구분하고 static 경계에서 중단한다. 반환뿐 아니라 인자·필드·메서드 상한도 같은 해석을 사용한다. 상속 순서에 의존하지 않으며 필요한 내부/외부 바깥 정의 누락은 준비 실패다.
+
+확정 누락 두 건을 회귀 테스트로 재현하고 보완했다. 소유 타입 인자는 반환·인자·필드·타입 변수 상한에서 확인하며 일반 값 반대 사례를 유지한다. 외부 중첩 계약은 디렉터리와 JAR에서 확인하고 내부 출력 누락·외부 파일 누락을 준비 실패로 확인한다.
+
+사용자가 **상위 인터페이스의 static 제외 / 검사 대상 자신의 static 유지**로 확정했다. 일반/default 메서드는 상속 계약으로 계속 검사한다. 부모를 별도 포트로 등록하면 그 부모 자신의 static은 부모 검사에서 보고한다. 기존 공개 중첩 계약의 범위도 유지하므로, 상위로 먼저 방문한 타입이 공개 중첩으로 노출되면 그 타입 자신의 static을 빠뜨리지 않는다. static 클래스 메서드·공개 필드·본문 검사 범위까지 일괄 제외하는 변경은 아니다.
+
+## 작은 구현 순서와 인계
+
+| 작은 단위 | 처음 확인할 결과 | 연결 사례 |
+| --- | --- | --- |
+| 1. 직접 노출 | 정상 포트는 허용하고 JDBC 인자·영속 반환만 정확히 지적. 기존 수집과 기술 판정 재사용 | PORT-01–04, 10, 12 |
+| 2. 숨은 계약 | 목록·프로퍼티·상속 안쪽의 금지 타입도 같은 근거로 보고. 해석 불가와 허용을 구분 | PORT-05–09, 11, 13–14 |
+| 3. 실제 적용 | 별도 P03에서 5개 포트를 검사하고 ARCH-01·02 회귀 및 보고 흐름 확인 | P03 + 기존 테스트 |
+
+각 단위는 테스트 작성 → 기대값 검토 → 최소 구현 → 실행 검증 순서로 이어간다. 위반 예제가 이미 올바르게 검출된다면 억지로 구현을 깨서 Red를 만들지 않는다. 2단위의 기술 실험은 실제 Kotlin 생성 형태·상속·제네릭 탐지가 수용 사례와 맞는지 확인하는 것이다. 실패하면 해당 계약이 미충족임을 알리고 보완하며, 조용히 보장을 줄이지 않는다.
+
+후속 실행 예정: `./gradlew :architecture-tests:test --no-daemon --console=plain --rerun-tasks`. 보고서는 `architecture-tests/build/reports/tests/test/index.html` 및 `architecture-tests/build/test-results/test/*.xml`이다. 변경 완료 시 `./gradlew build --no-daemon --console=plain`로 회귀를 확인한다. 전체 빌드에는 기존 Testcontainers 테스트가 있으므로 Docker가 필요하며 독립 구조 검사와 구분한다. **독립 구조 검사와 전체 빌드를 실행해 통과했다.** 최종 집계는 구현 흐름과 검증 기록을 따른다.
+
+사용자가 위 설계를 채택해 구현·검증을 요청했다. 기술 목록 보완·계약 추출 경계는 그대로 적용했다. 구현 파일은 설계의 추천 이름을 사용했으며 PortContractReader로 공개 계약 추출 책임을 분리했다. 리뷰에서 제기된 상위 인터페이스 static 범위는 사용자 합의에 따라 상속 경로에서 제외하도록 확정했다. 브리지 중복 보고 결함은 합의한 진단 키에 맞춰 수정했다.
+
+<!-- ARCH02_HISTORY_START -->
+
+# ARCH-02 · 병합된 설계와 실행 기록
+
+ARCH-02는 [PR #27](https://github.com/0Chord/coin-exchange/pull/27)에서 병합됐다. 아래 구현 당시 기준은 `0f709c30b446e558060416cad6e0389f9f33ad16`이며, 구현 검증 커밋은 `3bf24c1`이다. 당시 구조 검사 81개·전체 테스트 324개 통과 기록을 보존한다. **ARCH-06 실행 결과로 재사용하지 않는다.**
 
 ## ARCH-02 · 합의한 계약
 
