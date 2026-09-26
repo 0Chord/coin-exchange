@@ -57,6 +57,52 @@ public final class JavaPortFixtures {
         interface Exposed { static Connection open() { return null; } }
     }
     public interface InheritedAndNestedPort extends NestedStaticParentPort.Exposed, NestedStaticParentPort {}
+    public interface EnclosingVariablePort {
+        class Box<T extends Owner<Connection>.Member<String>> {
+            public class Inner { public T load() { return null; } }
+        }
+    }
+    public interface DirectEnclosingVariablePort {
+        class Box<T extends Owner<Connection>.Member<String>> {
+            public class Inner { public Owner<Connection>.Member<String> load() { return null; } }
+        }
+    }
+    public interface EnclosingMembersPort {
+        class Box<T extends Owner<Connection>.Member<String>> {
+            public class Inner {
+                public T value;
+                public T load() { return null; }
+                public void save(T value) {}
+                public <V extends T> V transform(V value) { return null; }
+            }
+        }
+    }
+    public interface SafeEnclosingVariablePort {
+        class Box<T extends Owner<String>.Member<Integer>> {
+            public class Inner { public T load() { return null; } }
+        }
+    }
+    public interface ShadowedEnclosingVariablePort {
+        class Box<T extends Owner<Connection>.Member<String>, U extends T> {
+            public class Inner<T> {
+                public U inherited() { return null; }
+                public T local() { return null; }
+                public <U> U method() { return null; }
+                public class Deep {
+                    public U load() { return null; }
+                    public T local() { return null; }
+                }
+            }
+        }
+    }
+    public static class StaticScopeContainer<T extends Owner<Connection>.Member<String>> {
+        public interface Port { String load(); }
+    }
+    public interface EnclosingBasePort {
+        class Exposed extends EnclosingVariablePort.Box.Inner {
+            public Exposed(EnclosingVariablePort.Box box) { box.super(); }
+        }
+    }
     public interface ExternalNestedPort extends com.exchange.architecture.fixtures.externalports.ExternalPortContracts.Parent { String load(); }
     public interface SafeExternalNestedPort extends com.exchange.architecture.fixtures.externalports.ExternalPortContracts.SafeParent { String load(); }
 }

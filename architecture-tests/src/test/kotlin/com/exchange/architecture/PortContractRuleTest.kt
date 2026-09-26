@@ -516,6 +516,113 @@ class PortContractRuleTest {
         assertEquals("java.sql.Connection", result.violations.single().targetType)
     }
 
+    @Test
+    fun `PORT-08 inner 반환의 바깥 변수는 직접 타입 반환과 같은 두 노출을 보고한다`() {
+        val outer = JavaPortFixtures.EnclosingVariablePort.Box::class.java
+        val inner = JavaPortFixtures.EnclosingVariablePort.Box.Inner::class.java
+        assertEquals(outer.typeParameters.single(), inner.getMethod("load").genericReturnType,
+            "Inner의 반환 T는 실제로 Box가 선언한 변수다")
+        listOf(JavaPortFixtures.EnclosingVariablePort::class.java, JavaPortFixtures.DirectEnclosingVariablePort::class.java).forEach { port ->
+            listOf(fixtureScope(), ScopeImportResult(mapOf("fixture-module" to ClassFileImporter().importClasses(port)))).forEach { scope ->
+                val result = PortContractIndependence.inspect(scope, setOf(port.name))
+                assertTrue(result.evaluated, result.problems.toString())
+                assertEquals(setOf(port.name + "$" + "Box" to "typeParameter[T]", port.name + "$" + "Box$" + "Inner.load()" to "return"),
+                    result.violations.map { it.declaration to it.exposure }.toSet())
+                assertEquals(2, result.violations.size)
+                assertTrue(result.violations.all { it.targetType == "java.sql.Connection" && it.reason == "TECHNOLOGY" })
+            }
+        }
+    }
+
+    @Test
+    fun `PORT-08 바깥 변수는 inner 필드 인자와 메서드 상한에서도 연결한다`() {
+        val port = JavaPortFixtures.EnclosingMembersPort::class.java
+        val box = JavaPortFixtures.EnclosingMembersPort.Box::class.java.name
+        val inner = JavaPortFixtures.EnclosingMembersPort.Box.Inner::class.java.name
+        val argument = JavaPortFixtures.Owner.Member::class.java.name
+        val result = inspect(port)
+        assertTrue(result.evaluated, result.problems.toString())
+        assertEquals(setOf(
+            box to "typeParameter[T]", inner + ".value" to "field", inner + ".load()" to "return",
+            inner + ".save($argument)" to "parameter[0]", inner + ".transform($argument)" to "parameter[0]",
+            inner + ".transform($argument)" to "return", inner + ".transform($argument)" to "typeParameter[V]",
+        ), result.violations.map { it.declaration to it.exposure }.toSet())
+        assertEquals(7, result.violations.size)
+        assertTrue(result.violations.all { it.targetType == "java.sql.Connection" && it.reason == "TECHNOLOGY" })
+    }
+
+    @Test
+    fun `PORT-01 바깥 변수의 상한이 일반 값이면 inner 반환도 허용한다`() {
+        val result = inspect(JavaPortFixtures.SafeEnclosingVariablePort::class.java)
+        assertTrue(result.evaluated, result.problems.toString())
+        assertEquals(1, result.contractCount)
+        assertEquals(emptyList(), result.violations)
+    }
+
+    @Test
+    fun `PORT-08 깊은 inner에서도 바깥 상한은 유지하고 같은 이름의 새 선언은 구분한다`() {
+        val port = JavaPortFixtures.ShadowedEnclosingVariablePort::class.java
+        val box = JavaPortFixtures.ShadowedEnclosingVariablePort.Box::class.java.name
+        val inner = JavaPortFixtures.ShadowedEnclosingVariablePort.Box.Inner::class.java.name
+        val deep = JavaPortFixtures.ShadowedEnclosingVariablePort.Box.Inner.Deep::class.java.name
+        val result = inspect(port)
+        assertTrue(result.evaluated, result.problems.toString())
+        assertEquals(setOf(box to "typeParameter[T]", box to "typeParameter[U]",
+            inner + ".inherited()" to "return", deep + ".load()" to "return"),
+            result.violations.map { it.declaration to it.exposure }.toSet())
+        assertEquals(4, result.violations.size, "inner의 T와 메서드 U는 바깥 JDBC 상한을 물려받지 않는다")
+        assertTrue(result.violations.all { it.targetType == "java.sql.Connection" && it.reason == "TECHNOLOGY" })
+    }
+
+    @Test
+    fun `PORT-11 static 중첩 포트는 바깥 타입 환경을 요구하지 않는다`() {
+        val port = JavaPortFixtures.StaticScopeContainer.Port::class.java
+        assertTrue(java.lang.reflect.Modifier.isStatic(port.modifiers))
+        val classes = ClassFileImporter().importClasses(port)
+        assertEquals(setOf(port.name), classes.map { it.name }.toSet())
+        val result = PortContractIndependence.inspect(ScopeImportResult(mapOf("fixture-module" to classes)), setOf(port.name),
+            projectPackagePrefixes = setOf("com.exchange.architecture.fixtures.portcontracts."))
+        assertTrue(result.evaluated, result.problems.toString())
+        assertEquals(emptyList(), result.violations)
+    }
+
+    @Test
+    fun `PORT-08 상위 inner를 먼저 만나도 실제 바깥 선언에서 타입 변수를 찾는다`() {
+        val result = inspect(JavaPortFixtures.EnclosingBasePort::class.java)
+        val inner = JavaPortFixtures.EnclosingVariablePort.Box.Inner::class.java.name
+        assertTrue(result.evaluated, result.problems.toString())
+        assertEquals(listOf(inner + ".load()" to "return"), result.violations.map { it.declaration to it.exposure })
+        assertEquals("java.sql.Connection", result.violations.single().targetType)
+    }
+
+    @Test
+    fun `PORT-13 필요한 내부 바깥 선언이 수집에서 빠지면 미평가한다`() {
+        val port = JavaPortFixtures.EnclosingBasePort::class.java
+        val classes = ClassFileImporter().importClasses(port, JavaPortFixtures.EnclosingBasePort.Exposed::class.java,
+            JavaPortFixtures.EnclosingVariablePort.Box.Inner::class.java)
+        val result = PortContractIndependence.inspect(ScopeImportResult(mapOf("fixture-module" to classes)), setOf(port.name),
+            projectPackagePrefixes = setOf("com.exchange.architecture.fixtures.portcontracts."))
+        assertFalse(result.evaluated)
+        assertTrue(result.problems.any { it.code == "UNRESOLVED_PORT_CONTRACT" && it.subject == JavaPortFixtures.EnclosingVariablePort.Box::class.java.name }, result.problems.toString())
+        assertEquals(emptyList(), result.violations)
+    }
+
+    @Test
+    fun `PORT-13 외부 inner의 바깥 원본 파일이 없으면 미평가한다`(@org.junit.jupiter.api.io.TempDir directory: java.nio.file.Path) {
+        val port = JavaPortFixtures.EnclosingBasePort::class.java
+        listOf(port, JavaPortFixtures.EnclosingBasePort.Exposed::class.java,
+            JavaPortFixtures.EnclosingVariablePort.Box.Inner::class.java).forEach { type ->
+            val resource = type.name.replace('.', '/') + ".class"
+            val destination = directory.resolve(resource)
+            java.nio.file.Files.createDirectories(destination.parent)
+            type.classLoader.getResourceAsStream(resource)!!.use { java.nio.file.Files.copy(it, destination) }
+        }
+        val result = PortContractIndependence.inspect(ScopeImportResult(mapOf("fixture-module" to ClassFileImporter().importPath(directory))), setOf(port.name))
+        assertFalse(result.evaluated)
+        assertTrue(result.problems.any { it.code == "UNRESOLVED_PORT_CONTRACT" && it.subject == JavaPortFixtures.EnclosingVariablePort.Box::class.java.name }, result.problems.toString())
+        assertEquals(emptyList(), result.violations)
+    }
+
     private fun fixtureScope() = ScopeImportResult(mapOf("fixture-module" to
         ClassFileImporter().importPackages("com.exchange.architecture.fixtures.portcontracts")))
 

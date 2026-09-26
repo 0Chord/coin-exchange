@@ -7,6 +7,7 @@ import com.tngtech.archunit.core.domain.JavaModifier.STATIC
 import com.tngtech.archunit.core.domain.JavaType
 import com.tngtech.archunit.core.importer.ClassFileImporter
 import java.io.IOException
+import java.net.URL
 
 /** 메서드 본문이 아닌 선언에서 읽은 노출 근거. 루트 포트와 실제 선언 소유자는 다를 수 있다. */
 internal data class ContractReference(
@@ -27,6 +28,8 @@ internal class PortContractReader(
     val problems = mutableListOf<PortContractProblem>()
     private val visited = mutableSetOf<Pair<String, Boolean>>()
     private val contracts = mutableSetOf<String>()
+    private val bytecodes = mutableMapOf<String, PortContractBytecode>()
+    private val resolvingEnclosingTypes = mutableSetOf<String>()
     val contractCount: Int get() = contracts.size
 
     fun read(type: JavaClass, inherited: Boolean = false) {
@@ -37,7 +40,7 @@ internal class PortContractReader(
             problems += PortContractProblem("UNRESOLVED_PORT_CONTRACT", type.name)
             return
         }
-        val bytecode = PortContractBytecode(type)
+        val bytecode = bytecode(type)
         supplement(type, type.name, bytecode.classReferences())
         annotations(type, type.name, "annotation", type.annotations)
         type.typeParameters.forEach { reference(type, type.name, "typeParameter[${it.name}]", it) }
@@ -72,13 +75,27 @@ internal class PortContractReader(
         }
         // 운영 출력에 없어도 원본의 public 포함 관계를 읽는다. 내부 누락은 자동 수집으로 대체하지 않는다.
         bytecode.publicNestedNames().forEach { name ->
-            val nested = types[name] ?: if (projectPrefixes.any { name.startsWith(it) }) null else loadNested(bytecode, name)
+            val nested = types[name] ?: if (projectPrefixes.any { name.startsWith(it) }) null else loadClass(name, bytecode.relatedClassUrl(name))
             if (nested == null) problems += PortContractProblem("UNRESOLVED_PORT_CONTRACT", name) else read(nested)
         }
     }
 
-    private fun loadNested(bytecode: PortContractBytecode, name: String): JavaClass? = try {
-        val url = bytecode.nestedUrl(name)
+    private fun bytecode(type: JavaClass): PortContractBytecode = bytecodes.getOrPut(type.name) {
+        require(resolvingEnclosingTypes.add(type.name)) { "바깥 선언의 포함 관계가 순환함: ${type.name}" }
+        try {
+            PortContractBytecode(type) { name, url ->
+                val enclosing = types[name] ?: if (projectPrefixes.any { name.startsWith(it) }) null else loadClass(name, url)
+                if (enclosing == null || !enclosing.isFullyImported) {
+                    problems += PortContractProblem("UNRESOLVED_PORT_CONTRACT", name)
+                    emptyMap()
+                } else bytecode(enclosing).visibleTypeReferences
+            }
+        } finally {
+            resolvingEnclosingTypes.remove(type.name)
+        }
+    }
+
+    private fun loadClass(name: String, url: URL): JavaClass? = try {
         // importer가 파일 누락을 빈 목록으로 처리하기 전에 실제 원본의 존재를 확인한다.
         url.openStream().use { }
         ClassFileImporter().importUrl(url).firstOrNull { it.name == name }
