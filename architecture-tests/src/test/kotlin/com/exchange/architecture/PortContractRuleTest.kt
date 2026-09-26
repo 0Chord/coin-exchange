@@ -459,6 +459,63 @@ class PortContractRuleTest {
         }
     }
 
+    @Test
+    fun `PORT-11 여러 단계 상위 인터페이스의 static은 자식의 계약에서 제외한다`() {
+        val port = JavaPortFixtures.StaticChildPort::class.java
+        val publicMethods = port.methods.map { it.name }.toSet()
+        assertTrue(publicMethods.containsAll(setOf("load", "label")), "일반 메서드와 default 메서드는 상속된다")
+        assertFalse("open" in publicMethods || "save" in publicMethods, "인터페이스 static은 상속되지 않는다")
+        val result = inspect(port)
+        assertTrue(result.evaluated, result.problems.toString())
+        assertEquals(emptyList(), result.violations)
+        assertEquals(4, result.contractCount, "상속 선언 2개와 일반/default 메서드 2개만 센다")
+    }
+
+    @Test
+    fun `PORT-11 부모도 등록하면 그 부모의 static은 부모 위반으로 보고한다`() {
+        val parent = JavaPortFixtures.StaticParentPort::class.java
+        val child = JavaPortFixtures.StaticChildPort::class.java
+        val result = PortContractIndependence.inspect(fixtureScope(), setOf(parent.name, child.name))
+        assertTrue(result.evaluated, result.problems.toString())
+        assertEquals(setOf(parent.name), result.violations.map { it.originType }.toSet())
+        assertEquals(setOf(parent.name + ".open()" to "return", parent.name + ".save(java.sql.Connection)" to "parameter[0]"),
+            result.violations.map { it.declaration to it.exposure }.toSet())
+        assertEquals(2, result.violations.size)
+        assertTrue(result.violations.all { it.targetType == "java.sql.Connection" && it.reason == "TECHNOLOGY" })
+    }
+
+    @Test
+    fun `PORT-11 자식 자신이 선언한 static은 계속 검사한다`() {
+        val port = JavaPortFixtures.OwnStaticChildPort::class.java
+        val result = inspect(port)
+        assertTrue(result.evaluated, result.problems.toString())
+        assertEquals(listOf(port.name + ".own()" to "return"), result.violations.map { it.declaration to it.exposure })
+        assertEquals("java.sql.Connection", result.violations.single().targetType)
+        assertEquals("TECHNOLOGY", result.violations.single().reason)
+    }
+
+    @Test
+    fun `PORT-11 상속한 일반 메서드와 default 메서드의 위반은 남긴다`() {
+        val parent = JavaPortFixtures.InstanceParentPort::class.java
+        val port = JavaPortFixtures.InstanceChildPort::class.java
+        val result = inspect(port)
+        assertTrue(result.evaluated, result.problems.toString())
+        assertEquals(setOf(parent.name + ".load()", parent.name + ".read()"), result.violations.map { it.declaration }.toSet())
+        assertEquals(2, result.violations.size)
+        assertTrue(result.violations.all { it.originType == port.name && it.exposure == "return" && it.targetType == "java.sql.Connection" })
+    }
+
+    @Test
+    fun `PORT-11 상위로 먼저 읽은 타입도 공개 중첩 계약이면 자신의 static을 검사한다`() {
+        val port = JavaPortFixtures.InheritedAndNestedPort::class.java
+        val nested = JavaPortFixtures.NestedStaticParentPort.Exposed::class.java
+        val result = inspect(port)
+        assertTrue(result.evaluated, result.problems.toString())
+        assertEquals(listOf(nested.name + ".open()" to "return"), result.violations.map { it.declaration to it.exposure })
+        assertEquals(port.name, result.violations.single().originType)
+        assertEquals("java.sql.Connection", result.violations.single().targetType)
+    }
+
     private fun fixtureScope() = ScopeImportResult(mapOf("fixture-module" to
         ClassFileImporter().importPackages("com.exchange.architecture.fixtures.portcontracts")))
 

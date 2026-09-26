@@ -38,6 +38,25 @@ public final class JavaPortFixtures {
     public interface MethodShadowPort<T extends Owner<Connection>.Member<String>, U extends T> { <T> T load(); }
     public interface RecursiveMethodShadowPort<T extends Owner<Connection>.Member<String>, U extends T> { <T extends Comparable<T>> T load(); }
     public interface SafeClassBoundShadowPort<T extends Owner<String>.Member<Integer>, U extends T> { <T extends Owner<Connection>.Member<String>> U load(); }
+    public interface StaticParentPort {
+        static Connection open() { return null; }
+        static void save(Connection value) {}
+        String load();
+        default String label() { return "fixture"; }
+    }
+    public interface StaticMiddlePort extends StaticParentPort {}
+    public interface StaticChildPort extends StaticMiddlePort {}
+    public interface OwnStaticChildPort extends StaticParentPort { static Connection own() { return null; } }
+    public interface InstanceParentPort {
+        static Connection open() { return null; }
+        Connection load();
+        default Connection read() { return null; }
+    }
+    public interface InstanceChildPort extends InstanceParentPort {}
+    public interface NestedStaticParentPort {
+        interface Exposed { static Connection open() { return null; } }
+    }
+    public interface InheritedAndNestedPort extends NestedStaticParentPort.Exposed, NestedStaticParentPort {}
     public interface ExternalNestedPort extends com.exchange.architecture.fixtures.externalports.ExternalPortContracts.Parent { String load(); }
     public interface SafeExternalNestedPort extends com.exchange.architecture.fixtures.externalports.ExternalPortContracts.SafeParent { String load(); }
 }

@@ -3,6 +3,7 @@ package com.exchange.architecture.rules
 import com.tngtech.archunit.core.domain.JavaAnnotation
 import com.tngtech.archunit.core.domain.JavaClass
 import com.tngtech.archunit.core.domain.JavaModifier.PUBLIC
+import com.tngtech.archunit.core.domain.JavaModifier.STATIC
 import com.tngtech.archunit.core.domain.JavaType
 import com.tngtech.archunit.core.importer.ClassFileImporter
 import java.io.IOException
@@ -24,12 +25,13 @@ internal class PortContractReader(
 ) {
     val references = mutableListOf<ContractReference>()
     val problems = mutableListOf<PortContractProblem>()
-    private val visited = mutableSetOf<String>()
+    private val visited = mutableSetOf<Pair<String, Boolean>>()
     private val contracts = mutableSetOf<String>()
     val contractCount: Int get() = contracts.size
 
-    fun read(type: JavaClass) {
-        if (!visited.add(type.name)) return
+    fun read(type: JavaClass, inherited: Boolean = false) {
+        // 상위로 읽었던 타입도 공개 중첩 계약으로 다시 노출되면 자신의 static을 검사한다.
+        if (!visited.add(type.name to inherited)) return
         // ArchUnit이 클래스패스에서 해석했어도 프로젝트 내부 정의는 운영 출력에 실제 있어야 한다.
         if (!type.isFullyImported || (projectPrefixes.any { type.name.startsWith(it) } && type.name !in types)) {
             problems += PortContractProblem("UNRESOLVED_PORT_CONTRACT", type.name)
@@ -45,9 +47,10 @@ internal class PortContractReader(
             reference(type, type.name, "supertype", parent)
             val raw = parent.toErasure()
             // 금지된 상위 타입은 이름만으로 위반 근거가 충분하므로 그 라이브러리 전체를 펼치지 않는다.
-            if (!forbidden(raw.name)) read(types[raw.name] ?: raw)
+            if (!forbidden(raw.name)) read(types[raw.name] ?: raw, inherited = true)
         }
-        type.methods.filter { PUBLIC in it.modifiers }.forEach { method ->
+        // 인터페이스 static은 상속되지 않는다. 루트·공개 중첩 타입 자신의 선언은 포함한다.
+        type.methods.filter { PUBLIC in it.modifiers && !(inherited && type.isInterface && STATIC in it.modifiers) }.forEach { method ->
             contracts += method.fullName
             val line = method.sourceCodeLocation.lineNumber.takeIf { it > 0 }
             supplement(type, method.fullName, bytecode.methodReferences(method), line)
