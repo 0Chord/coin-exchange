@@ -1,6 +1,8 @@
 package com.exchange.architecture
 
 import com.exchange.architecture.rules.DomainTechnologyIndependence
+import com.exchange.architecture.rules.ModuleDependencyDirection
+import com.exchange.architecture.support.ProjectDependencies
 import com.exchange.architecture.support.ModuleRegistration
 import com.exchange.architecture.support.ProductionScope
 import com.exchange.architecture.support.ProductionScopeImporter
@@ -8,7 +10,7 @@ import com.exchange.architecture.support.RoleClassifier
 import kotlin.test.Test
 import kotlin.test.assertTrue
 
-/** 등록·수집·역할 오류가 없는 경우에만 실제 운영 코드에 ARCH-01을 적용한다. */
+/** 실제 운영 출력에 규칙을 적용한다. P01·P02는 각각 준비 조건을 확인하며 실행 순서에 의존하지 않는다. */
 class ProductionArchitectureTest {
     @Test
     fun `P01 전체 운영 출력과 역할을 검증한 뒤 동일 ARCH-01 규칙을 적용한다`() {
@@ -28,9 +30,33 @@ class ProductionArchitectureTest {
                 }
             }
         }
-        println("Active: ARCH-01. Not evaluated: ARCH-02/03/04/05/06/07/08.")
+        println("P01 평가: ARCH-01. ARCH-02는 독립된 P02에서 평가합니다.")
         println("Inventory: ${scope.classesByModule.mapValues { it.value.size }}")
         println("Roles: pure=${classified.roles.pureDomain.size}, ports=${classified.roles.externalPorts.size}, executors=${classified.roles.executors.size}")
         assertTrue(violations.isEmpty(), "Production violations:\n${violations.joinToString("\n")}")
     }
+
+    @Test
+    fun `P02 전체 운영 코드와 Gradle 직접 선언에 ARCH-02를 적용한다`() {
+        val inventory = ProductionScope.inventory()
+        val scope = ProductionScopeImporter().load(ProductionScope.outputs(), ProductionScope.expectations())
+        val snapshot = ProjectDependencies.read(System.getProperty("architecture.projectDependencies"))
+        val result = ModuleDependencyDirection.inspect(scope, snapshot, inventory)
+        assertTrue(result.evaluated, "검사 준비 실패 · ARCH-02 미평가:\n${result.problems.joinToString("\n")}")
+
+        val declarations = snapshot.configurations.flatMap { c -> c.dependencies.map { Triple(c.projectPath, it.targetPath, it.declaredIn) } }.toSet()
+        val excluded = declarations.filter { it.second in inventory.nonProductionModules }.sortedBy { it.toString() }
+        val typeNames = scope.classesByModule.values.flatMap { it.map { type -> type.name } }.toSet()
+        val internalReferences = scope.classesByModule.values.sumOf { classes -> classes.sumOf { type ->
+            type.directDependenciesFromSelf.count { it.targetClass.baseComponentType.name in typeNames }
+        } }
+        println("P02 평가: ARCH-02 · 코드 직접 참조 + Gradle 직접 선언")
+        println("운영 모듈별 클래스: ${scope.classesByModule.mapValues { it.value.size }}")
+        println("내부 직접 타입 참조: $internalReferences / main 구성: ${snapshot.configurations.size} / 직접 프로젝트 선언: ${declarations.size}")
+        println("ARCH-08에 남기는 비운영 목적지: $excluded")
+        println("미평가 규칙: ARCH-03/04/05/06/07/08. 계산·DB·실행 순서 검증은 포함하지 않습니다.")
+        assertTrue(result.violations.isEmpty(), "ARCH-02 위반:\n${result.violations.joinToString("\n") { it.report() }}")
+        println("ARCH-02 통과 · 준비 오류 0, 위반 0")
+    }
+
 }

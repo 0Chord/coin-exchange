@@ -18,6 +18,7 @@ kotlin {
 }
 
 dependencies {
+	testImplementation(gradleTestKit())
 	testImplementation(platform("org.springframework.boot:spring-boot-dependencies:4.1.0"))
 	testImplementation(kotlin("test-junit5"))
 	testImplementation("com.tngtech.archunit:archunit:1.4.2")
@@ -37,6 +38,9 @@ val productionOutputs = productionModules.associateWith { module ->
 	project(":$module").extensions.getByType<SourceSetContainer>()
 		.named("main").get().output.classesDirs
 }
+extra["architecture.productionProjects"] = productionModules.map { ":$it" }
+apply(from = "gradle/project-dependencies.gradle.kts")
+
 val discoveredJvmProjects = providers.provider {
 	rootProject.subprojects.filter {
 		it.extensions.findByType<SourceSetContainer>()?.findByName("main") != null
@@ -52,6 +56,9 @@ val forbiddenOutputs = providers.provider {
 
 tasks.withType<Test> {
 	useJUnitPlatform()
+	inputs.file("gradle/project-dependencies.gradle.kts")
+	systemProperty("architecture.dependencyScript", file("gradle/project-dependencies.gradle.kts").absolutePath)
+	systemProperty("architecture.gradleHome", requireNotNull(gradle.gradleHomeDir).absolutePath)
 	productionModules.forEach { dependsOn(":$it:classes") }
 	productionOutputs.forEach { (module, output) ->
 		inputs.files(output).withPropertyName("productionClasses.$module")

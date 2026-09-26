@@ -1,0 +1,401 @@
+{
+  "createdAt": "2026-09-26T13:17:41+09:00",
+  "base": "0f709c30b446e558060416cad6e0389f9f33ad16",
+  "branch": "test/module-deps/19",
+  "state": "검증한 미커밋 작업 파일. 원격 PR/CI 미실행.",
+  "sourceHashes": {
+    "architecture-tests/build.gradle.kts": "ab9a9dc43c342153c8378c35c152ac7c85ea80a091739b39d84d20671ad5fd8d",
+    "architecture-tests/gradle/project-dependencies.gradle.kts": "50ff0f3ed0d662ad66b050a57ec6e51b982bb4c3c6e984fbd0f266d00d0fcdc9",
+    "architecture-tests/src/test/kotlin/com/exchange/architecture/GradleDependencyWiringTest.kt": "8d001df5441830ec85ac52b89957863a3614f72cc750dc067386098d5d0e0f15",
+    "architecture-tests/src/test/kotlin/com/exchange/architecture/ModuleDependencyContractTest.kt": "2916f8d7b60a0873ab985f5af4a190b4c546be20fe45a321fc31eb540a080045",
+    "architecture-tests/src/test/kotlin/com/exchange/architecture/ProductionArchitectureTest.kt": "3a610d1f946a45d94b687ae0af5dbb4e7f5ad0fe3f3df8400b1e116429f73df2",
+    "architecture-tests/src/test/kotlin/com/exchange/architecture/ProjectDependencyContractTest.kt": "bd983c1e79ae7e811ac0513b15d19c9911e9ad7eb011ed55293cf84f85de0c0b",
+    "architecture-tests/src/test/kotlin/com/exchange/architecture/fixtures/moduledeps/ModuleDependencyFixtures.kt": "43bd0e866af7e86e3d7b2f8f450257d8745e41ed912ea4866aae4e9214e52010",
+    "architecture-tests/src/test/kotlin/com/exchange/architecture/rules/ModuleDependencyDirection.kt": "dd0a5009ee59cd380869faef4a52d4e2529de9813195521adc5aa04654108ea1",
+    "architecture-tests/src/test/kotlin/com/exchange/architecture/support/ProjectDependencies.kt": "7a32a24917f3bf9553c7c3039c58d8fb143fc2f3544ce8ceefae9e04f5bb2005"
+  },
+  "redRuns": [
+    {
+      "stage": "코드 직접 참조",
+      "tests": 3,
+      "failures": 2,
+      "errors": 0,
+      "skipped": 0,
+      "failuresObserved": [
+        {
+          "case": "같은 패키지여도 실제 출력 소속으로 매칭과 수수료를 구분한다()",
+          "message": "org.opentest4j.AssertionFailedError: expected: <[(domain-matching, domain-fee)]> but was: <[]>"
+        },
+        {
+          "case": "컴파일 가능해도 매칭의 수수료 직접 참조는 위반이다()",
+          "message": "org.opentest4j.AssertionFailedError: 매칭의 수수료 직접 참조를 놓쳤다"
+        }
+      ]
+    },
+    {
+      "stage": "Gradle 입력·판정",
+      "tests": 8,
+      "failures": 6,
+      "errors": 0,
+      "skipped": 0,
+      "failuresObserved": [
+        {
+          "case": "빈 구성 기록은 정상이고 빠진 구성 기록은 미평가이다()",
+          "message": "org.opentest4j.AssertionFailedError: Expected value to be false."
+        },
+        {
+          "case": "전달 안 됨과 손상된 형식을 빈 의존으로 바꾸지 않는다()",
+          "message": "org.opentest4j.AssertionFailedError: 잘못된 입력을 무시함: null"
+        },
+        {
+          "case": "새 프로젝트의 등록 누락 또는 정책 누락은 미평가이다()",
+          "message": "org.opentest4j.AssertionFailedError: Expected value to be false."
+        },
+        {
+          "case": "전달 형식은 빈 구성과 특수문자 경로를 손실 없이 읽는다()",
+          "message": "org.opentest4j.AssertionFailedError: expected: <[MainProjectDependencies(projectPath=:fee, usage=compile, configuration=compileClasspath, buildFile=/tmp/한글 경로\t/build.gradle.kts, dependencies=[]), MainProjectDependencies(projectPath=:fee, usage=runtime, configuration=runtimeClasspath, buildFile=/tmp/한글 경로\t/build.gradle.kts, dependencies=[]), MainProjectDependencies(projectPath=:matching, usage=compile, configuration=compileClasspath, buildFile=/tmp/한글 경로\t/build.gradle.kts, dependencies=[ProjectDeclaration(targetPath=:order, declaredIn=api)]), MainProjectDependencies(projectPath=:matching, usage=runtime, configuration=runtimeClasspath, buildFile=/tmp/한글 경로\t/build.gradle.kts, dependencies=[ProjectDeclaration(targetPath=:order, declaredIn=api)]), MainProjectDependencies(projectPath=:order, usage=compile, configuration=compileClasspath, buildFile=/tmp/한글 경로\t/build.gradle.kts, dependencies=[ProjectDeclaration(targetPath=:fee, declaredIn=api)]), MainProjectDependencies(projectPath=:order, usage=runtime, configuration=runtimeClasspath, buildFile=/tmp/한글 경로\t/build.gradle.kts, dependencies=[ProjectDeclaration(targetPath=:fee, declaredIn=api)])]> but was: <[]>"
+        },
+        {
+          "case": "코드 사용 없이 추가한 금지 선언도 근거와 함께 보고한다()",
+          "message": "java.util.NoSuchElementException: List is empty."
+        },
+        {
+          "case": "중복 미등록 잘못된 구성 입력은 통과하지 않는다()",
+          "message": "org.opentest4j.AssertionFailedError: 손상 입력이 통과함: [MainProjectDependencies(projectPath=:fee, usage=compile, configuration=compileClasspath, buildFile=:fee/build.gradle.kts, dependencies=[]), MainProjectDependencies(projectPath=:fee, usage=runtime, configuration=runtimeClasspath, buildFile=:fee/build.gradle.kts, dependencies=[]), MainProjectDependencies(projectPath=:matching, usage=compile, configuration=compileClasspath, buildFile=:matching/build.gradle.kts, dependencies=[ProjectDeclaration(targetPath=:order, declaredIn=api)]), MainProjectDependencies(projectPath=:matching, usage=runtime, configuration=runtimeClasspath, buildFile=:matching/build.gradle.kts, dependencies=[ProjectDeclaration(targetPath=:order, declaredIn=api)]), MainProjectDependencies(projectPath=:order, usage=compile, configuration=compileClasspath, buildFile=:order/build.gradle.kts, dependencies=[ProjectDeclaration(targetPath=:fee, declaredIn=api)]), MainProjectDependencies(projectPath=:order, usage=runtime, configuration=runtimeClasspath, buildFile=:order/build.gradle.kts, dependencies=[ProjectDeclaration(targetPath=:fee, declaredIn=api)]), MainProjectDependencies(projectPath=:fee, usage=compile, configuration=compileClasspath, buildFile=:fee/build.gradle.kts, dependencies=[])]"
+        }
+      ]
+    }
+  ],
+  "commands": [
+    "./gradlew :architecture-tests:test --no-daemon --console=plain",
+    "./gradlew :architecture-tests:test --dry-run --no-daemon --console=plain",
+    "./gradlew build --no-daemon --continue --stacktrace --rerun-tasks"
+  ],
+  "fullBuild": {
+    "result": "SUCCESS",
+    "totals": {
+      "tests": 322,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    "modules": {
+      "app-api": [
+        {
+          "name": "com.exchange.core.ExchangeCoreApplicationTests",
+          "tests": 1,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0
+        },
+        {
+          "name": "com.exchange.core.api.ledger.persistence.PostgresBalanceStoreTest",
+          "tests": 15,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0
+        },
+        {
+          "name": "com.exchange.core.api.ledger.persistence.PostgresLedgerTransactionStoreTest",
+          "tests": 3,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0
+        },
+        {
+          "name": "com.exchange.core.api.matching.MatchingApplicationServicePersistenceFailureTest",
+          "tests": 3,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0
+        },
+        {
+          "name": "com.exchange.core.api.matching.MatchingControllerTest",
+          "tests": 9,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0
+        },
+        {
+          "name": "com.exchange.core.api.matching.persistence.JpaMatchingEventStoreTest",
+          "tests": 8,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0
+        },
+        {
+          "name": "com.exchange.core.api.matching.persistence.MatchingEventPayloadTest",
+          "tests": 4,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0
+        },
+        {
+          "name": "com.exchange.core.api.matching.persistence.MatchingPersistenceIntegrationTest",
+          "tests": 1,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0
+        },
+        {
+          "name": "com.exchange.core.api.matching.persistence.PersistentMatchingEventPublisherTest",
+          "tests": 2,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0
+        },
+        {
+          "name": "com.exchange.core.api.order.OrderFundingServiceTest",
+          "tests": 3,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0
+        },
+        {
+          "name": "com.exchange.core.api.order.OrderLifecycleE2ETest",
+          "tests": 3,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0
+        },
+        {
+          "name": "com.exchange.core.api.order.OrderReservationReleaseServiceTest",
+          "tests": 5,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0
+        },
+        {
+          "name": "com.exchange.core.api.order.TradeSettlementServiceTest",
+          "tests": 7,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0
+        },
+        {
+          "name": "com.exchange.core.api.order.persistence.PostgresOrderReservationStoreTest",
+          "tests": 11,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0
+        }
+      ],
+      "architecture-tests": [
+        {
+          "name": "com.exchange.architecture.ArchitectureRuleContractTest",
+          "tests": 23,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0
+        },
+        {
+          "name": "com.exchange.architecture.GradleDependencyWiringTest",
+          "tests": 2,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0
+        },
+        {
+          "name": "com.exchange.architecture.ImportScopeContractTest",
+          "tests": 22,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0
+        },
+        {
+          "name": "com.exchange.architecture.ModuleDependencyContractTest",
+          "tests": 11,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0
+        },
+        {
+          "name": "com.exchange.architecture.ModuleRegistrationContractTest",
+          "tests": 5,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0
+        },
+        {
+          "name": "com.exchange.architecture.ProductionArchitectureTest",
+          "tests": 2,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0
+        },
+        {
+          "name": "com.exchange.architecture.ProductionOutputWiringTest",
+          "tests": 2,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0
+        },
+        {
+          "name": "com.exchange.architecture.ProjectDependencyContractTest",
+          "tests": 8,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0
+        },
+        {
+          "name": "com.exchange.architecture.RoleClassificationContractTest",
+          "tests": 4,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0
+        }
+      ],
+      "domain-fee": [
+        {
+          "name": "com.exchange.core.fee.FeeRateTest",
+          "tests": 4,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0
+        },
+        {
+          "name": "com.exchange.core.fee.FeeRemainderTest",
+          "tests": 6,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0
+        },
+        {
+          "name": "com.exchange.core.fee.FeeTierResolverTest",
+          "tests": 1,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0
+        },
+        {
+          "name": "com.exchange.core.fee.FeeTierThresholdsTest",
+          "tests": 3,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0
+        },
+        {
+          "name": "com.exchange.core.fee.MakerTakerFeeRatesTest",
+          "tests": 3,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0
+        },
+        {
+          "name": "com.exchange.core.fee.TradingFeeCalculatorTest",
+          "tests": 7,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0
+        },
+        {
+          "name": "com.exchange.core.fee.TradingFeePolicySnapshotTest",
+          "tests": 4,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0
+        },
+        {
+          "name": "com.exchange.core.fee.TradingFeeReserveCalculatorTest",
+          "tests": 5,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0
+        },
+        {
+          "name": "com.exchange.core.fee.TradingFeeScheduleTest",
+          "tests": 4,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0
+        }
+      ],
+      "domain-ledger": [
+        {
+          "name": "com.exchange.core.ledger.BalanceTest",
+          "tests": 8,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0
+        },
+        {
+          "name": "com.exchange.core.ledger.LedgerPostingTest",
+          "tests": 3,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0
+        },
+        {
+          "name": "com.exchange.core.ledger.LedgerTransactionTest",
+          "tests": 5,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0
+        }
+      ],
+      "domain-matching": [
+        {
+          "name": "com.exchange.core.matching.MarketCommandProcessorTest",
+          "tests": 16,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0
+        },
+        {
+          "name": "com.exchange.core.matching.MatchingEngineTest",
+          "tests": 49,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0
+        }
+      ],
+      "domain-order": [
+        {
+          "name": "com.exchange.core.order.BuyOrderFundingQuoteCalculatorTest",
+          "tests": 6,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0
+        },
+        {
+          "name": "com.exchange.core.order.MaximumBuyOrderFundingQuoteCalculatorTest",
+          "tests": 4,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0
+        },
+        {
+          "name": "com.exchange.core.order.OrderFillSettlementCalculatorTest",
+          "tests": 11,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0
+        },
+        {
+          "name": "com.exchange.core.order.OrderReservationCalculatorTest",
+          "tests": 5,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0
+        },
+        {
+          "name": "com.exchange.core.order.OrderReservationTest",
+          "tests": 21,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0
+        },
+        {
+          "name": "com.exchange.core.order.ReservationRequirementTest",
+          "tests": 3,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0
+        }
+      ]
+    }
+  },
+  "productionOutput": "P02 평가: ARCH-02 · 코드 직접 참조 + Gradle 직접 선언\n운영 모듈별 클래스: {app-api=33, domain-common=9, domain-fee=16, domain-ledger=11, domain-matching=22, domain-order=22}\n내부 직접 타입 참조: 1473 / main 구성: 12 / 직접 프로젝트 선언: 10\nARCH-08에 남기는 비운영 목적지: []\n미평가 규칙: ARCH-03/04/05/06/07/08. 계산·DB·실행 순서 검증은 포함하지 않습니다.\nARCH-02 통과 · 준비 오류 0, 위반 0\nP01 평가: ARCH-01. ARCH-02는 독립된 P02에서 평가합니다.\nInventory: {app-api=33, domain-common=9, domain-fee=16, domain-ledger=11, domain-matching=22, domain-order=22}\nRoles: pure=71, ports=5, executors=6\n",
+  "independentReview": "미실행. 테스트 기대값 검토와 구현 검증은 같은 AI의 자체 대조.",
+  "humanReview": "미확인"
+}
