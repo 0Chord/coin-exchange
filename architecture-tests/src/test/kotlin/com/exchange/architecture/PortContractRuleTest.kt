@@ -1,0 +1,285 @@
+package com.exchange.architecture
+
+import com.exchange.architecture.fixtures.portcontracts.*
+import com.exchange.architecture.rules.PortContractIndependence
+import com.exchange.architecture.rules.PortInspection
+import com.exchange.architecture.support.*
+import com.tngtech.archunit.core.importer.ClassFileImporter
+import com.tngtech.archunit.ArchConfiguration
+import com.tngtech.archunit.base.DescribedPredicate
+import kotlin.test.*
+
+class PortContractRuleTest {
+    @Test
+    fun `PORT-01 도메인 값과 일반 컨테이너를 주고받으면 통과한다`() {
+        val result = inspect(ValuePort::class.java)
+        assertTrue(result.evaluated, result.problems.toString())
+        assertEquals(setOf(ValuePort::class.java.name), result.ports)
+        assertTrue(result.contractCount >= 4)
+        assertEquals(emptyList(), result.violations)
+    }
+
+    @Test
+    fun `PORT-02 JDBC 반환과 인자 및 Spring 반환을 각각 정확히 보고한다`() {
+        val cases = listOf(
+            Triple(ConnectionResultPort::class.java, "return", "java.sql.Connection"),
+            Triple(ConnectionArgumentPort::class.java, "parameter[0]", "java.sql.Connection"),
+            Triple(SpringResultPort::class.java, "return", "org.springframework.core.env.Environment"),
+        )
+        cases.forEach { (port, exposure, target) ->
+            val classes = ClassFileImporter().importClasses(port)
+            assertTrue(classes.get(port).directDependenciesFromSelf.any { it.targetClass.name == target }, "예제 전제: $target")
+            assertSingleViolation(inspect(port), port, exposure, target, "TECHNOLOGY")
+        }
+    }
+
+    @Test
+    fun `PORT-03 명시한 비 JPA 영속 모델을 반환하면 위반이다`() {
+        assertSingleViolation(inspect(ManualRowPort::class.java, setOf(ManualRow::class.java.name)),
+            ManualRowPort::class.java, "return", ManualRow::class.java.name, "PERSISTENCE")
+    }
+
+    @Test
+    fun `PORT-04 등록 목록 밖의 JPA 표식도 발견한다`() {
+        listOf(JpaRowPort::class.java to JpaRow::class.java,
+            EmbeddedRowPort::class.java to EmbeddedRow::class.java,
+            BaseRowPort::class.java to BaseRow::class.java).forEach { (port, row) ->
+            val type = ClassFileImporter().importClasses(row).get(row)
+            assertTrue(type.annotations.any { it.rawType.name.startsWith("jakarta.persistence.") })
+            assertSingleViolation(inspect(port), port, "return", row.name, "PERSISTENCE")
+        }
+    }
+
+    @Test
+    fun `PORT-10 구현체의 JDBC 사용은 정상 포트의 계약 위반이 아니다`() {
+        val result = inspect(ValuePort::class.java)
+        val adapter = fixtureScope().classesByModule.getValue("fixture-module").get(JdbcValueAdapter::class.java)
+        assertTrue(adapter.methodCallsFromSelf.any { it.target.owner.name == "java.sql.Connection" })
+        assertTrue(result.evaluated)
+        assertEquals(emptyList(), result.violations)
+    }
+
+    @Test
+    fun `PORT-12 비어 있거나 사라진 포트와 영속 모델은 미평가한다`() {
+        val scope = fixtureScope()
+        listOf(
+            PortContractIndependence.inspect(scope, emptySet()) to "EMPTY_PORTS",
+            PortContractIndependence.inspect(scope, setOf("missing.Port")) to "MISSING_PORT",
+            inspect(ValuePort::class.java, setOf("missing.Row")) to "MISSING_PERSISTENCE_TYPE",
+            inspect(NotAnInterface::class.java) to "INVALID_PORT_TYPE",
+            inspect(EmptyPort::class.java) to "EMPTY_PORT_CONTRACT",
+        ).forEach { (result, code) ->
+            assertFalse(result.evaluated)
+            assertTrue(result.problems.any { it.code == code }, result.problems.toString())
+            assertEquals(emptyList(), result.violations)
+        }
+    }
+
+    @Test
+    fun `PORT-13 기존 수집 문제가 있으면 일부 포트로 통과하지 않는다`() {
+        val partial = fixtureScope().copy(problems = listOf(ScopeProblem(ScopeProblemCode.INCOMPLETE_IMPORT, "lost.Type")))
+        val result = PortContractIndependence.inspect(partial, setOf(ValuePort::class.java.name))
+        assertFalse(result.evaluated)
+        assertTrue(result.problems.any { it.code == "INCOMPLETE_IMPORT" && it.subject.contains("lost.Type") })
+        assertEquals(emptyList(), result.violations)
+    }
+
+    @Test
+    fun `PORT-02 공개 필드의 HTTP 기술 타입을 보고한다`() {
+        val result = inspect(JavaPortFixtures.FieldPort::class.java)
+        assertTrue(result.evaluated, result.problems.toString())
+        assertEquals(listOf("field" to "java.net.http.HttpClient"), result.violations.map { it.exposure to it.targetType })
+    }
+
+    @Test
+    fun `PORT-05 목록 배열 비동기 컨테이너 안의 기술과 영속 타입도 검사한다`() {
+        listOf(NestedListPort::class.java to JpaRow::class.java.name,
+            ArrayPort::class.java to "java.sql.Connection", FutureRowPort::class.java to JpaRow::class.java.name).forEach { (port, target) ->
+            val method = fixtureScope().classesByModule.getValue("fixture-module").get(port).methods.single()
+            assertTrue(method.returnType.allInvolvedRawTypes.any { it.baseComponentType.name == target })
+            assertSingleViolation(inspect(port), port, "return", target, if (target == "java.sql.Connection") "TECHNOLOGY" else "PERSISTENCE")
+        }
+    }
+
+    @Test
+    fun `PORT-06 Kotlin 프로퍼티의 getter와 setter 노출을 모두 보고한다`() {
+        val result = inspect(PropertyPort::class.java)
+        assertTrue(result.evaluated, result.problems.toString())
+        assertEquals(setOf(
+            Triple("getConnection", "return", "java.sql.Connection"),
+            Triple("getEntity", "return", JpaRow::class.java.name),
+            Triple("setEntity", "parameter[0]", JpaRow::class.java.name),
+        ), result.violations.map { Triple(it.declaration.substringBefore('(').substringAfterLast('.'), it.exposure, it.targetType) }.toSet())
+        assertEquals(3, result.violations.size)
+    }
+
+    @Test
+    fun `PORT-07 상속한 반환 계약도 자식 포트의 위반으로 보고한다`() {
+        val result = inspect(ChildPort::class.java)
+        assertTrue(result.evaluated, result.problems.toString())
+        val violation = result.violations.single()
+        assertEquals(ChildPort::class.java.name, violation.originType)
+        assertEquals(ParentPort::class.java.name + ".inherited()", violation.declaration)
+        assertEquals("return", violation.exposure)
+        assertEquals("java.sql.Connection", violation.targetType)
+    }
+
+    @Test
+    fun `PORT-07 상위 제네릭의 실제 인자와 기술 인터페이스 자체를 검사한다`() {
+        val generic = inspect(GenericChildPort::class.java)
+        assertTrue(generic.evaluated, generic.problems.toString())
+        assertEquals(listOf("supertype" to JpaRow::class.java.name), generic.violations.map { it.exposure to it.targetType })
+        val technology = inspect(TechnologyParentPort::class.java)
+        assertTrue(technology.evaluated, technology.problems.toString())
+        assertEquals(listOf("supertype" to "org.springframework.core.env.Environment"), technology.violations.map { it.exposure to it.targetType })
+    }
+
+    @Test
+    fun `PORT-08 상한 하한 다중 상한과 제네릭 배열에 있는 JDBC 타입을 놓치지 않는다`() {
+        val cases = listOf(
+            JavaPortFixtures.UpperPort::class.java to setOf("return"),
+            JavaPortFixtures.LowerPort::class.java to setOf("return"),
+            JavaPortFixtures.BoundPort::class.java to setOf("typeParameter[T]", "return"),
+            JavaPortFixtures.GenericArrayPort::class.java to setOf("typeParameter[T]", "return"),
+            MethodBoundPort::class.java to setOf("typeParameter[T]", "return"),
+        )
+        cases.forEach { (port, exposures) ->
+            val result = inspect(port)
+            assertTrue(result.evaluated, result.problems.toString())
+            assertEquals(exposures, result.violations.map { it.exposure }.toSet(), port.name)
+            assertEquals(exposures.size, result.violations.size)
+            assertTrue(result.violations.all { it.targetType == "java.sql.Connection" && it.ruleId == "ARCH-06" })
+        }
+        val recursive = inspect(JavaPortFixtures.RecursivePort::class.java)
+        assertTrue(recursive.evaluated, recursive.problems.toString())
+        assertEquals(emptyList(), recursive.violations)
+    }
+
+    @Test
+    fun `PORT-09 직접 기술 어노테이션과 선언 예외 및 ObjectMapper를 보고한다`() {
+        val annotated = inspect(AnnotatedPort::class.java)
+        assertTrue(annotated.evaluated, annotated.problems.toString())
+        assertEquals(listOf("annotation" to "jakarta.transaction.Transactional"), annotated.violations.map { it.exposure to it.targetType })
+        val member = inspect(AnnotationMemberPort::class.java)
+        assertTrue(member.evaluated, member.problems.toString())
+        assertEquals(setOf("annotation" to "jakarta.transaction.Transactional",
+            "parameter[0].annotation" to "org.springframework.beans.factory.annotation.Qualifier"),
+            member.violations.map { it.exposure to it.targetType }.toSet())
+        assertEquals(2, member.violations.size)
+        assertSingleViolation(inspect(ThrowsPort::class.java), ThrowsPort::class.java, "throws", "java.sql.SQLException", "TECHNOLOGY")
+        assertSingleViolation(inspect(MapperPort::class.java), MapperPort::class.java, "return", "tools.jackson.databind.ObjectMapper", "TECHNOLOGY")
+    }
+
+    @Test
+    fun `PORT-11 공개 중첩 계약과 companion을 검사하고 본문과 private는 제외한다`() {
+        val nested = inspect(NestedContractPort::class.java)
+        assertTrue(nested.evaluated, nested.problems.toString())
+        assertEquals(setOf(NestedContractPort.Exposed::class.java.name + ".connection()",
+            NestedContractPort.Companion::class.java.name + ".connection()"), nested.violations.map { it.declaration }.toSet())
+        assertEquals(2, nested.violations.size)
+        assertTrue(nested.violations.all { it.originType == NestedContractPort::class.java.name && it.targetType == "java.sql.Connection" })
+        val body = fixtureScope().classesByModule.getValue("fixture-module").get(DefaultBodyPort::class.java)
+        assertTrue(body.directDependenciesFromSelf.any { it.targetClass.name == "java.net.URL" })
+        val result = inspect(DefaultBodyPort::class.java)
+        assertTrue(result.evaluated, result.problems.toString())
+        assertEquals(emptyList(), result.violations)
+    }
+
+    @Test
+    fun `PORT-13 필요한 내부 상위 정의가 출력에 없으면 자동 해석으로 대체하지 않는다`() {
+        val scope = fixtureScope()
+        val reduced = scope.copy(classesByModule = scope.classesByModule.mapValues { (_, classes) ->
+            classes.that(DescribedPredicate.describe("상위 정의 누락") { it.name != ParentPort::class.java.name })
+        })
+        val result = PortContractIndependence.inspect(reduced, setOf(ChildPort::class.java.name),
+            projectPackagePrefixes = setOf("com.exchange.architecture."))
+        assertFalse(result.evaluated)
+        assertTrue(result.problems.any { it.code == "UNRESOLVED_PORT_CONTRACT" && it.subject.contains(ParentPort::class.java.name) })
+    }
+
+    @Test
+    fun `PORT-13 외부 상위 계약을 해석할 수 없으면 빈 계약으로 통과하지 않는다`() {
+        // 전역 설정은 finally로 복원한다. 읽은 바이트코드 자체는 실제 Supplier 상속 예제다.
+        val configuration = ArchConfiguration.get()
+        val previous = configuration.resolveMissingDependenciesFromClassPath()
+        val classes = try {
+            configuration.setResolveMissingDependenciesFromClassPath(false)
+            ClassFileImporter().importClasses(JavaPortFixtures.MissingExternalParentPort::class.java)
+        } finally { configuration.setResolveMissingDependenciesFromClassPath(previous) }
+        assertFalse(classes.get(JavaPortFixtures.MissingExternalParentPort::class.java).rawInterfaces.single().isFullyImported)
+        val result = PortContractIndependence.inspect(ScopeImportResult(mapOf("fixture-module" to classes)),
+            setOf(JavaPortFixtures.MissingExternalParentPort::class.java.name))
+        assertFalse(result.evaluated)
+        assertTrue(result.problems.any { it.code == "UNRESOLVED_PORT_CONTRACT" && it.subject.contains("java.util.function.Supplier") })
+    }
+
+    @Test
+    fun `PORT-14 서로 다른 위치를 보존하고 입력 순서에 관계없이 같은 결과를 낸다`() {
+        val ports = listOf(ValuePort::class.java.name, ConnectionResultPort::class.java.name, ConnectionArgumentPort::class.java.name)
+        val scope = fixtureScope()
+        val first = PortContractIndependence.inspect(scope, ports.toSet())
+        val second = PortContractIndependence.inspect(scope, ports.reversed().toSet())
+        assertTrue(first.evaluated && second.evaluated)
+        assertEquals(first, second)
+        assertEquals(setOf(ConnectionResultPort::class.java.name to "return", ConnectionArgumentPort::class.java.name to "parameter[0]"),
+            first.violations.map { it.originType to it.exposure }.toSet())
+        assertEquals(2, first.violations.size)
+        assertTrue(first.violations.all { it.report().contains("ARCH-06") && it.report().contains("행 정보 없음") })
+    }
+
+    @Test
+    fun `검사 한계 Any raw 목록과 임의 DTO의 내부 필드는 펼치지 않는다`() {
+        listOf(OpaquePort::class.java, JavaPortFixtures.RawPort::class.java).forEach {
+            val result = inspect(it)
+            assertTrue(result.evaluated, result.problems.toString())
+            assertEquals(emptyList(), result.violations)
+        }
+    }
+
+    @Test
+    fun `PORT-14 중복 상속과 JVM 브리지에서도 동일 노출을 한 번만 보고한다`() {
+        val diamond = inspect(JavaPortFixtures.DiamondPort::class.java)
+        assertTrue(diamond.evaluated, diamond.problems.toString())
+        assertEquals(listOf(JavaPortFixtures.ConnectionContract::class.java.name + ".read()"), diamond.violations.map { it.declaration })
+        val type = fixtureScope().classesByModule.getValue("fixture-module").get(JavaPortFixtures.BridgePort::class.java)
+        assertEquals(2, type.methods.count { it.name == "map" }, "실제 JVM 브리지가 있는 예제여야 한다")
+        val bridge = inspect(JavaPortFixtures.BridgePort::class.java)
+        assertTrue(bridge.evaluated, bridge.problems.toString())
+        assertEquals(setOf(
+            JavaPortFixtures.BridgePort::class.java.name + ".map(java.sql.Connection)",
+            JavaPortFixtures.BridgeParent::class.java.name + ".map(java.sql.Connection)",
+        ), bridge.violations.map { it.declaration }.toSet())
+        assertEquals(2, bridge.violations.size, "브리지의 같은 인자 노출은 중복 보고하지 않는다")
+        assertTrue(bridge.violations.all { it.exposure == "parameter[0]" && it.targetType == "java.sql.Connection" })
+    }
+
+    @Test
+    fun `PORT-13 해석 가능한 외부 상위 계약은 허용한다`() {
+        val result = inspect(JavaPortFixtures.ResolvedExternalPort::class.java)
+        assertTrue(result.evaluated, result.problems.toString())
+        assertTrue(result.contractCount >= 2)
+        assertEquals(emptyList(), result.violations)
+    }
+
+    private fun fixtureScope() = ScopeImportResult(mapOf("fixture-module" to
+        ClassFileImporter().importPackages("com.exchange.architecture.fixtures.portcontracts")))
+
+    private fun inspect(port: Class<*>, persistenceTypes: Set<String> = emptySet()) =
+        PortContractIndependence.inspect(fixtureScope(), setOf(port.name), persistenceTypes)
+
+    private fun assertSingleViolation(result: PortInspection, port: Class<*>, exposure: String, target: String, reason: String) {
+        assertTrue(result.evaluated, result.problems.toString())
+        assertEquals(1, result.violations.size, "정확히 한 노출을 보고해야 한다: ${result.violations}")
+        val violation = result.violations.single()
+        assertEquals("ARCH-06", violation.ruleId)
+        assertEquals("fixture-module", violation.originModule)
+        assertEquals(port.name, violation.originType)
+        assertTrue(violation.declaration.startsWith(port.name + "."))
+        assertEquals(exposure, violation.exposure)
+        assertEquals(target, violation.targetType)
+        assertEquals(reason, violation.reason)
+        assertEquals("PortFixtures.kt", violation.sourceFile)
+        assertEquals(null, violation.lineNumber, "추상 계약에 실행 행을 지어내지 않는다")
+        assertEquals("engineering/architecture-check-spec.md", violation.specification)
+    }
+}

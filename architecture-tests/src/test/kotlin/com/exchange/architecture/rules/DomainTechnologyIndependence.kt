@@ -21,19 +21,6 @@ data class ArchitectureViolation(
 )
 
 object DomainTechnologyIndependence {
-    // URI 같은 값 타입까지 막지 않도록 외부 기술과 네트워크 I/O 타입을 명시한다.
-    private val technologyPrefixes = listOf(
-        "org.springframework.", "jakarta.persistence.", "javax.persistence.",
-        "java.sql.", "javax.sql.", "java.net.http.", "javax.net.",
-        "org.apache.kafka.clients.", "org.postgresql.", "org.hibernate.",
-    )
-    private val networkIoTypes = setOf(
-        "java.net.Socket", "java.net.ServerSocket", "java.net.DatagramSocket", "java.net.MulticastSocket",
-        "java.net.URL", "java.net.URLConnection", "java.net.HttpURLConnection", "java.net.JarURLConnection",
-        "java.net.InetAddress", "java.net.Inet4Address", "java.net.Inet6Address",
-        "java.nio.channels.SocketChannel", "java.nio.channels.ServerSocketChannel", "java.nio.channels.DatagramChannel",
-    )
-
     /**
      * 순수 도메인의 직접 기술 의존과 등록된 외부 포트 접근을 검사한다.
      *
@@ -46,7 +33,7 @@ object DomainTechnologyIndependence {
         classes.filter { belongsToRole(it, roles.pureDomain) }.forEach { origin ->
             origin.directDependenciesFromSelf.forEach { dependency ->
                 val target = dependency.targetClass.baseComponentType.name
-                if (technologyPrefixes.any { target.startsWith(it) } || target in networkIoTypes) {
+                if (ExternalTechnologyTypes.contains(target)) {
                     violations += diagnostic(origin, target, dependency.description, dependency.sourceCodeLocation.lineNumber)
                 }
             }
