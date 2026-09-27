@@ -14,7 +14,6 @@ class NamingPlacementIntegrationTest {
     private val type = "$packageName.SubmitOrderUseCase"
     private val folder = AllowedFolder("order", "app-api", "src/main/java", "com/example/order/application", setOf(NamingRole.USE_CASE), "업무 진입점")
     private val policy = LayoutPolicy(listOf(AllowedSourceRoot("app-api", "src/main/java")), listOf(folder))
-    private val binding = NamingBinding(type, NamingRole.USE_CASE, "order")
     private fun prepare(): Pair<ScopeImportResult, MainSourceSnapshot> {
         val source = root.resolve("src/main/java/com/example/order/application/SubmitOrderUseCase.java")
         Files.createDirectories(source.parent)
@@ -25,7 +24,7 @@ class NamingPlacementIntegrationTest {
             MainSourceSnapshot(listOf(MainSourceRoot("app-api", root, "src/main/java", setOf(source))))
     }
     private fun inspect(scope: ScopeImportResult, sources: MainSourceSnapshot, p: LayoutPolicy = policy) =
-        NamingPlacement.inspect(scope, listOf(binding), p, sources, setOf("app-api"))
+        NamingPlacement.inspect(scope, p, sources, setOf("app-api"))
 
     @Test fun `NAME-17 컴파일된 실제 클래스와 원본을 연결해 정상 결과를 낸다`() {
         val (scope, sources) = prepare(); val r = inspect(scope, sources)
@@ -45,7 +44,7 @@ class NamingPlacementIntegrationTest {
         val r = inspect(scope, sources, p)
         assertTrue(r.evaluated, r.problems.toString()); assertEquals(listOf("package"), r.violations.map { it.item })
     }
-    @Test fun `NAME-26 같은 package의 다른 허용 루트도 타입별 지정 위치를 우회할 수 없다`() {
+    @Test fun `NAME-26 같은 package의 다른 역할 루트는 업무 역할을 허용하지 않는다`() {
         val (scope, sources) = prepare()
         val source = sources.roots.single().files.single()
         val moved = root.resolve("src/alternate/java/com/example/order/application/SubmitOrderUseCase.java")
@@ -57,6 +56,15 @@ class NamingPlacementIntegrationTest {
         assertEquals(listOf("sourceRoot"), r.violations.map { it.item })
         assertEquals("src/main/java", r.violations.single().expected)
         assertEquals(moved.toString(), r.violations.single().subject)
+    }
+    @Test fun `AUTO-19 같은 역할에 명시한 두 루트는 모두 허용한다`() {
+        val (scope, sources) = prepare(); val source = sources.roots.single().files.single()
+        val moved = root.resolve("src/alternate/java/com/example/order/application/SubmitOrderUseCase.java")
+        Files.createDirectories(moved.parent); Files.move(source, moved)
+        val p = policy.copy(roots = policy.roots + AllowedSourceRoot("app-api", "src/alternate/java"),
+            folders = policy.folders + folder.copy(id = "alternate", sourceRoot = "src/alternate/java"))
+        val r = inspect(scope, MainSourceSnapshot(listOf(MainSourceRoot("app-api", root, "src/alternate/java", setOf(moved)))), p)
+        assertTrue(r.evaluated, r.problems.toString()); assertEquals(emptyList(), r.violations)
     }
     @Test fun `NAME-22 원본의 package와 클래스 package 불일치 및 소스 누락은 미평가다`() {
         val (scope, sources) = prepare(); val source = sources.roots.single().files.single()

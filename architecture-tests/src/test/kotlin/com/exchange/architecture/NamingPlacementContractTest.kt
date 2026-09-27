@@ -8,81 +8,57 @@ import kotlin.test.*
 
 class NamingPlacementContractTest {
     private val pkg = "com.exchange.architecture.fixtures.naming"
-    private val folder = AllowedFolder("orders", "app-api", "src/main/kotlin", pkg.replace('.', '/'),
-        NamingRole.entries.toSet(), "명명 역할별 독립 예제")
+    private val folder = AllowedFolder("orders", "app-api", "src/main/kotlin", pkg.replace('.', '/'), setOf(NamingRole.USE_CASE, NamingRole.SERVICE, NamingRole.DATA), "명명 예제")
     private val policy = LayoutPolicy(listOf(AllowedSourceRoot("app-api", "src/main/kotlin")), listOf(folder))
-    private val good = NamingBinding(SubmitOrderUseCase::class.java.name, NamingRole.USE_CASE, "orders", "SubmitOrderUseCase")
     private fun scope(vararg types: Class<*>) = ScopeImportResult(mapOf("app-api" to ClassFileImporter().importClasses(*types)))
-    private fun check(type: Class<*>, binding: NamingBinding = good.copy(type = type.name), p: LayoutPolicy = policy) =
-        RoleNamingPlacement.inspectTypes(scope(type), listOf(binding), p, setOf("app-api"))
+    private fun inspect(vararg types: Class<*>, p: LayoutPolicy = policy) = RoleNamingPlacement.inspectTypes(scope(*types), p, p.roots.map { it.module }.toSet())
 
-    @Test fun `NAME-01 역할마다 합의한 접미사와 위치를 사용한다`() {
-        val cases = listOf(SubmitOrderUseCase::class.java to NamingRole.USE_CASE,
-            OrderFundingService::class.java to NamingRole.SERVICE, MatchingCoordinator::class.java to NamingRole.COORDINATOR,
-            TradingFeeCalculator::class.java to NamingRole.CALCULATOR, FeeTierResolver::class.java to NamingRole.RESOLVER,
-            BalanceStore::class.java to NamingRole.STORE_PORT, PostgresBalanceStore::class.java to NamingRole.STORE_IMPLEMENTATION,
-            MatchingEventRepository::class.java to NamingRole.REPOSITORY, MatchingEventPublisher::class.java to NamingRole.PUBLISHER,
-            PersistentMatchingEventPublisher::class.java to NamingRole.PUBLISHER, NoOpMatchingEventPublisher::class.java to NamingRole.PUBLISHER,
-            OrderController::class.java to NamingRole.CONTROLLER, OrderConfig::class.java to NamingRole.CONFIGURATION)
-        for ((type, role) in cases) {
-            val r = check(type, NamingBinding(type.name, role, "orders", technology = if (role == NamingRole.STORE_IMPLEMENTATION) "Postgres" else null,
-                reason = if (role.suffix == null) "합의한 데이터 이름" else null))
-            assertTrue(r.evaluated, r.problems.toString()); assertEquals(emptyList(), r.violations)
-            assertEquals(setOf(type.name), r.evaluatedTypes)
-        }
+    @Test fun `AUTO-02 접미사만 있는 UseCase는 이름 위반이다`() {
+        val r = inspect(UseCase::class.java)
+        assertTrue(r.evaluated, r.problems.toString()); assertEquals(listOf("name"), r.violations.map { it.item })
+        assertEquals("대상+UseCase", r.violations.single().expected)
     }
-    @Test fun `NAME-02 제출 진입점의 기존 이름과 의미 없는 UseCase를 거절한다`() {
-        for (type in listOf(OrderSubmissionService::class.java, UseCase::class.java)) {
-            val r = check(type)
-            assertTrue(r.evaluated); assertEquals(listOf("name"), r.violations.map { it.item })
-            assertEquals(type.name, r.violations.single().subject)
-            assertEquals("SubmitOrderUseCase", r.violations.single().expected)
-        }
+    @Test fun `AUTO-27 허용된 Service와 UseCase 사이 업무 의미는 리뷰한다`() {
+        val r = inspect(OrderSubmissionService::class.java, ReserveOrderUseCase::class.java)
+        assertTrue(r.evaluated, r.problems.toString()); assertEquals(emptyList(), r.violations)
+        assertEquals(setOf(NamingRole.SERVICE), r.classifications.getValue(OrderSubmissionService::class.java.name).roles)
+        assertEquals(setOf(NamingRole.USE_CASE), r.classifications.getValue(ReserveOrderUseCase::class.java.name).roles)
     }
-    @Test fun `NAME-03 이름을 UseCase로 바꿔도 내부 작업의 역할은 바뀌지 않는다`() {
-        val r = check(ReserveOrderUseCase::class.java, good.copy(type = ReserveOrderUseCase::class.java.name,
-            role = NamingRole.SERVICE, exactName = null))
-        assertEquals(listOf("name"), r.violations.map { it.item }); assertEquals("대상+Service", r.violations.single().expected)
-    }
-    @Test fun `NAME-04 계산기와 기준 선택기를 서로 바꾸면 이름 위반이다`() {
-        for ((type, role) in listOf(TradingFeeCalculator::class.java to NamingRole.RESOLVER, FeeTierResolver::class.java to NamingRole.CALCULATOR)) {
-            assertEquals(listOf("name"), check(type, NamingBinding(type.name, role, "orders")).violations.map { it.item })
-        }
-    }
-    @Test fun `NAME-05 저장 포트 구현과 Repository의 이름을 구분한다`() {
-        for ((type, role, tech) in listOf(Triple(BalanceStore::class.java, NamingRole.REPOSITORY, null),
-            Triple(MatchingEventRepository::class.java, NamingRole.STORE_PORT, null),
-            Triple(BalanceStore::class.java, NamingRole.STORE_IMPLEMENTATION, "Postgres"))) {
-            assertEquals(listOf("name"), check(type, NamingBinding(type.name, role, "orders", technology = tech)).violations.map { it.item })
-        }
-    }
-    @Test fun `NAME-06과07과10 이름 패키지 모듈의 틀린 항목을 각각 안정적으로 보고한다`() {
+    @Test fun `AUTO-03 이름 패키지 모듈의 틀린 항목을 각각 보고한다`() {
         val p = policy.copy(roots = policy.roots + AllowedSourceRoot("domain-ledger", "src/main/kotlin"),
             folders = listOf(folder.copy(module = "domain-ledger", folder = "com/exchange/core/ledger")))
-        val r = RoleNamingPlacement.inspectTypes(scope(OrderSubmissionService::class.java),
-            listOf(good.copy(type = OrderSubmissionService::class.java.name)), p, setOf("app-api", "domain-ledger"))
+        val r = inspect(UseCase::class.java, p = p)
+        assertTrue(r.evaluated, r.problems.toString()); assertEquals(setOf("name", "package", "module"), r.violations.map { it.item }.toSet())
+        assertTrue(r.violations.all { it.ruleId == "ARCH-05" && it.lineNumber == null })
+    }
+    @Test fun `AUTO-18 Kt Helper 달러 이름만으로 검사에서 제외하지 않는다`() {
+        val r = inspect(NewHelper::class.java, ForgedKt::class.java, `Forged$Helper`::class.java)
         assertTrue(r.evaluated, r.problems.toString())
-        assertEquals(setOf("name", "package", "module"), r.violations.map { it.item }.toSet())
-        assertEquals(3, r.violations.size); assertTrue(r.violations.all { it.ruleId == "ARCH-05" && it.lineNumber == null })
+        assertEquals(3, r.violations.size); assertEquals(setOf("unclassified"), r.violations.map { it.item }.toSet())
+        assertEquals(3, r.evaluatedTypes.size); assertEquals(emptyMap(), r.generatedOwners)
     }
-    @Test fun `NAME-13 새 타입을 이름이나 위치로 자동 등록하지 않는다`() {
-        for (type in listOf(NewHelper::class.java, ForgedKt::class.java, `Forged$Helper`::class.java)) {
-            val r = RoleNamingPlacement.inspectTypes(scope(SubmitOrderUseCase::class.java, type), listOf(good), policy, setOf("app-api"))
-            assertFalse(r.evaluated); assertTrue(r.problems.any { it.subject == type.name })
-            assertEquals(emptySet(), r.evaluatedTypes); assertEquals(emptyList(), r.violations)
+    @Test fun `AUTO-22 빈 대상과 데이터만 있는 업무 범위는 미평가다`() {
+        for (r in listOf(RoleNamingPlacement.inspectTypes(ScopeImportResult(), policy, setOf("app-api")), inspect(AmendOrderRequest::class.java))) {
+            assertFalse(r.evaluated); assertEquals(emptySet(), r.evaluatedTypes); assertEquals(emptyList(), r.violations)
         }
     }
-    @Test fun `NAME-14 빈 대상 역할 누락과 역할 충돌은 평가하지 않는다`() {
-        val inputs = listOf(ScopeImportResult() to listOf(good), scope(SubmitOrderUseCase::class.java) to emptyList(),
-            scope(SubmitOrderUseCase::class.java) to listOf(good, good.copy(role = NamingRole.SERVICE)))
-        for ((s, b) in inputs) {
-            val r = RoleNamingPlacement.inspectTypes(s, b, policy, setOf("app-api"))
-            assertFalse(r.evaluated); assertEquals(emptyList(), r.violations); assertEquals(emptySet(), r.evaluatedTypes)
-        }
+    @Test fun `AUTO-07 HTTP 데이터의 구조와 이름을 함께 검사한다`() {
+        val p = policy.copy(folders = listOf(folder.copy(dataNames = DataNames.HTTP)))
+        val r = inspect(SubmitOrderUseCase::class.java, SubmitOrderUseCase.Result::class.java, AmendOrderRequest::class.java, OrderState::class.java, p = p)
+        assertTrue(r.evaluated, r.problems.toString())
+        assertEquals(listOf(SubmitOrderUseCase.Result::class.java.name to "name"), r.violations.map { it.subject to it.item })
     }
-    @Test fun `NAME-16 위치만 검사하는 지원 코드도 이유와 업무 대상이 필요하다`() {
-        val binding = NamingBinding(Request::class.java.name, NamingRole.SUPPORT, "orders", reason = "HTTP 데이터")
-        val r = check(Request::class.java, binding)
-        assertFalse(r.evaluated)
+    @Test fun `AUTO-16 공통 오류 데이터도 ErrorResponse 형식을 지켜야 한다`() {
+        val p = policy.copy(folders = listOf(folder.copy(dataNames = DataNames.ERROR)))
+        val r = inspect(SubmitOrderUseCase::class.java, ApiErrorResponse::class.java, AmendOrderRequest::class.java, OrderState::class.java, p = p)
+        assertTrue(r.evaluated, r.problems.toString())
+        assertEquals(setOf(AmendOrderRequest::class.java.name, OrderState::class.java.name), r.violations.map { it.subject }.toSet())
+        assertEquals(setOf("name"), r.violations.map { it.item }.toSet())
+    }
+    @Test fun `AUTO-23 규칙 순서와 폴더 순서는 결과를 바꾸지 않는다`() {
+        val other = folder.copy(id = "other", folder = "com/other")
+        val p = policy.copy(folders = listOf(folder, other))
+        val types = arrayOf(UseCase::class.java, OrderManager::class.java, AmendOrderUseCase::class.java)
+        assertEquals(inspect(*types, p = p), inspect(*types.reversedArray(), p = p.copy(folders = p.folders.reversed(), naming = p.naming.copy(rules = p.naming.rules.reversed()))))
     }
 }

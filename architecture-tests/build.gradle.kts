@@ -26,6 +26,9 @@ dependencies {
 	testImplementation("com.tngtech.archunit:archunit:1.4.2")
 	// 위반 예제에 실제 애너테이션을 붙이기 위한 의존성이다. Spring 컨텍스트는 띄우지 않는다.
 	testImplementation("org.springframework:spring-context")
+	// 역할 분류 예제의 Boot·Spring Data 상속 정보를 읽는다. 앱은 실행하지 않는다.
+	testImplementation("org.springframework.boot:spring-boot-autoconfigure")
+	testImplementation("org.springframework.data:spring-data-jpa")
 	// HTTP 경계 예제의 실제 컨트롤러·응답 타입만 읽으며 서버는 시작하지 않는다.
 	testImplementation("org.springframework:spring-web")
 	testImplementation("org.springframework:spring-jdbc")
@@ -85,6 +88,7 @@ tasks.withType<Test> {
 	inputs.property("registeredNonProductionModules", nonProductionModules)
 	inputs.property("forbiddenOutputPaths", forbiddenOutputs)
 	doFirst {
+		systemProperty("architecture.testRuntime", classpath.asPath)
 		// 등록 목록과 별도로 찾아야 새 모듈의 등록 누락을 잡을 수 있다. 모든 프로젝트 설정이 끝난 뒤 읽는다.
 		systemProperty("architecture.discoveredJvmProjects", discoveredJvmProjects.get().joinToString(","))
 		systemProperty("architecture.registration.production", productionModules.joinToString(",") { ":$it" })

@@ -1,166 +1,138 @@
-# 이름과 폴더를 검사하는 흐름 · ARCH-05
+# 등록 없이 새 코드를 검사하는 흐름 · ARCH-05
 
-> **개정 명세 안내:** 이 문서는 `1a5e377`의 **클래스별 등록 기반 구현**을 설명한다. [최신 상세 명세](architecture-check-spec.md)는 클래스별 등록을 없애고 공통 규칙으로 자동 분류하는 변경을 정의한다. 개정 구현·테스트는 아직 시작하지 않았다. 아래 525개/12개 실행 결과는 이전 구현의 기록이다.
+상태: **자동 분류 구현 · 로컬 검증 완료**. 브랜치 `feat/naming-placement-check/19`, 비교 기준 `3250fd2`의 개정 명세다. 클래스별 등록 입력을 제거했다. 현재 코드와 최종 실행 근거를 연결했다. 원격 CI·독립 리뷰·병합 상태는 [PR #32](https://github.com/0Chord/coin-exchange/pull/32)에서 별도로 확인한다.
 
-상태: **로컬 구현·검증 완료 · 신규 45개 · 전체 빌드 525개 통과**. 기준 `f511105002c6581e8e4b44b94e549bc9d736685d`, 브랜치 `feat/naming-placement-check/19`에서 검증했다. 아래 결과는 로컬 실행 기록이며, 최신 CI·리뷰·병합 상태는 이 변경의 PR에서 확인한다. 테스트 통과를 사람의 검토 완료로 표시하지 않는다.
+## 이번에 달라진 것
 
-## 먼저 읽을 세 가지
+예전에는 새 클래스를 만들면 검사 설정에도 클래스 이름·역할·위치를 써야 했다. 이제는 **제품 소스만 추가하면 기존 공통 규칙이 자동 검사한다.** `NamingFixtures.kt`에 실제 제품 클래스를 복제할 필요도 없다.
 
-1. **이름:** 주문 제출 역할로 등록한 타입이 `OrderSubmissionService`이면 기대한 `SubmitOrderUseCase`와 다르다고 보고한다.
-2. **위치:** package가 맞아도 파일만 엉뚱한 폴더에 있거나, 서로 일치하지만 허용하지 않은 폴더라면 실패한다.
-3. **누락:** 새 타입의 역할 등록이 없거나 파일을 읽지 못하면 일부만 검사한 뒤 통과시키지 않는다. `검사 준비 오류`로 중단한다.
+| 새로 추가한 코드 | 판단 | 결과 |
+| --- | --- | --- |
+| 정상 위치의 `AmendOrderUseCase` | UseCase 이름과 일반 실행 클래스 형태 | 자동 포함, 통과 |
+| `OrderManager` | 공통 역할을 정할 근거가 없음 | `unclassified` 위반 |
+| `data class FooUseCase` | UseCase 이름인데 데이터 선언 | `roleShape` 위반 |
+| `@RestController FooUseCase` | Controller와 UseCase 근거가 충돌 | `roleConflict` 위반 |
+| 읽을 수 없는 클래스·원본·필요한 메타 정보 | 판정에 필요한 입력이 불완전 | 준비 오류, 준수 판정 중단 |
 
-이제 위 세 가지를 검사하는 도구가 있다. **아직 실제 거래 코드의 이름·폴더를 옮기거나 운영 ARCH-05를 켠 것은 아니다.** #19에서는 고의로 틀린 예제를 잡는지 확인했고, #20~21에서 실제 이동과 함께 같은 검사기에 운영 대상의 역할·위치를 연결한다.
+**파일 이름 하나하나를 맞추는 정답표는 없다.** Calculator를 Resolver로 바꾼 것이 업무상 옳은지, 두 허용 영역 사이에서 책임을 옮긴 것이 맞는지는 리뷰한다. 형식·위치가 맞는 변경을 의미 위반까지 잡는다고 주장하지 않는다.
 
 ## 전체 흐름
 
-| 읽기 단위 | 어디서 시작하고 무엇으로 끝나는가 | 정상과 실패의 차이 |
+**전체 클래스·원본 발견 → 입력 확인 → 역할 분류 → 이름·위치·원본 비교 → 통과·위반·준비 오류 보고**
+
+| 읽을 단위 | 구체적인 입력 → 판단 → 결과 | 실제 코드 |
 | --- | --- | --- |
-| 등록에서 빠진 코드 찾기 | 기존 클래스 수집 결과 → 명시한 역할과 소유 관계 → 검사할 타입 확정 | 미등록 타입·중복 역할·빈 업무 대상은 준비 오류 |
-| 역할별 이름과 위치 판단 | 타입·역할·정책 → 이름·모듈·package 비교 → 항목별 위반 | `Service`와 `UseCase` 역할을 이름에서 추측하지 않음 |
-| 허용 폴더 목록 적용 | 원본 경로·수정 가능한 정책 → 정확한 루트·부모 폴더 비교 | 목록에 없는 하위 폴더도 실패 |
-| 원본 package 읽기 | Kotlin PSI 또는 JDK Java 파서 → 실제 선언 → 폴더와 비교 | 주석 속 가짜 선언은 무시, 구문 오류는 준비 오류 |
-| 두 입력 연결 | 읽은 클래스의 SourceFile·모듈·package → 원본 후보 대조 | 후보 0개/복수이면 잘못된 입력으로 중단 |
-| 변경 후 다시 검사 | Gradle의 main 파일·경로·정책 입력 → 파일 이동·정책 수정 → 재실행 | 이전 통과 결과를 그대로 재사용하지 않음 |
+| 새 파일 자동 포함 | Gradle main 출력 전체를 읽음 → 기존 목록과 별개로 발견 → 새 클래스도 검사 | MainSourceSnapshot, ProductionScopeImporter, main-sources.gradle.kts |
+| 역할 판단 | 접미사·선언 형태·상속·어노테이션을 함께 읽음 → 모든 역할 신호 비교 → 하나면 검사, 충돌/미분류는 위반 | RoleNamingPlacement, NamingTypeFacts |
+| 허용 위치 | 자동 역할 → 공통 폴더 정책 → 모듈·package·소스 루트 비교 | NamingClassificationPolicy, ProjectLayoutPolicy |
+| Kotlin 보조 타입 | 실제 생성 관계·다중 파일 part 확인 → 소유자 또는 모든 원본 연결 | NamingTypeFacts, NamingPlacement |
+| 파일 검사 | 실제 소스 파싱 → package와 정확한 부모 폴더 비교 → 이동·미허용 경로 탐지 | SourcePackageParser, SourcePlacement |
+| 다시 실행 | 소스·폴더 정책·명명 정책 입력 변경 → Gradle Test 재실행 → 변경된 결과 | NamingPlacementGradleAutomaticTest |
 
-검사 과정은 소스·바이트코드를 읽는다. 제품의 주문 처리·DB 저장·외부 API를 실행하거나 변경하지 않는다. Gradle 연결 테스트는 임시 프로젝트를 만들고 Java 예제를 컴파일한다.
+제품 주문 처리·DB 저장 코드는 바뀌지 않았다. 검사기는 파일과 바이트코드를 읽고, 테스트는 임시 프로젝트의 예제를 컴파일한다. 제품 객체를 생성하거나 제품 메서드를 실행하지 않는다.
 
-## 1. 새 코드가 목록에서 빠졌는가
+## 1. 새 클래스가 생겼을 때
 
-**입력 → 판단 → 결과:** 운영 수집기에서 `SubmitOrderUseCase`와 `NewHelper`를 읽는다 → 역할 목록에는 제출 타입만 있다 → `NewHelper`의 역할을 모르므로 준비 오류를 반환한다 → 이름 검사의 위반 목록·평가 대상은 비운다.
+`AmendOrderUseCase.java`만 임시 프로젝트에 추가한다. Gradle이 컴파일한 **출력 폴더 전체**를 기존 수집기가 읽는다. 검사기는 `UseCase` 접미사를 발견하고 일반 실행 클래스인지 확인한다. 허용된 module/package/원본 폴더면 통과하며 보고서의 평가 목록에 새 클래스가 남는다.
 
-- `NewHelper`가 옳은 폴더에 있어도 등록 누락이다. 이름이나 어노테이션으로 역할을 자동 승인하지 않는다.
-- 이름 있는 중첩 `Result`는 데이터 역할로 따로 등록한다. 바깥 타입이 UseCase라고 Result에도 UseCase 접미사를 강제하지 않는다.
-- companion은 실제 Kotlin 메타데이터, 익명 클래스는 enclosing 관계를 확인한 경우에만 등록된 소유자에 귀속한다. 이름에 `$`나 `Kt`만 들어간 타입은 자동 제외하지 않는다.
-- 최상위 함수의 운반 타입과 `@file:JvmName` 타입도 구체 이름·이유·위치를 등록한다.
+동일한 방식으로 `OrderManager.java`를 추가하면 읽기는 성공하지만 분류가 안 된다. 그래서 준비 오류가 아니라 **읽은 코드의 규칙 위반**으로 실패한다. 파일을 못 읽는 상황은 별도 준비 오류다. 이 구분 때문에 ‘아무것도 검사하지 않고 위반 0개’인 결과를 통과로 보지 않는다.
 
-근거: [대상 준비 코드](../architecture-tests/src/test/kotlin/com/exchange/architecture/support/NamingPlacementScope.kt), [준비·생성 타입 테스트](../architecture-tests/src/test/kotlin/com/exchange/architecture/NamingPlacementScopeTest.kt). 특히 `NamingPlacementScope.prepare`의 미등록 대상 처리와 준비 오류 반환을 보면 판단을 확인할 수 있다.
+근거: [자동 추가 기대값](../architecture-tests/src/test/kotlin/com/exchange/architecture/NamingPlacementAutoClassificationTest.kt), [실제 Gradle 소스 추가](../architecture-tests/src/test/kotlin/com/exchange/architecture/NamingPlacementGradleAutomaticTest.kt), [별도 Test 프로세스의 검사 호출](../architecture-tests/src/test/kotlin/com/exchange/architecture/NamingPlacementGradleScenario.kt).
 
-## 2. 역할에 맞는 이름과 위치인가
+## 2. 이름만 바꿔서 역할을 속일 수 있는가
 
-예를 들어 제출 유즈케이스의 등록값은 `역할=USE_CASE`, `기대 이름=SubmitOrderUseCase`, `기대 위치=order-application`이다. 이 위치의 정책에서 `app-api`와 `com.exchange.core.api.order.application`을 얻는다.
+검사기는 먼저 맞은 규칙 하나로 끝내지 않는다. 업무 접미사와 기술 어노테이션·상속의 근거를 전부 모은다.
 
-| 실제 입력 | 판단 결과 |
+- `@Service CancelOrderUseCase`: UseCase로 분류한다. Spring Service 어노테이션 자체는 위치를 허가하지 않는다.
+- `@Service OrderManager`: 별도 역할 근거가 없으므로 미분류다.
+- `UseCase.Result`가 data class: Result는 DATA로 독립 분류한다. 바깥 이름을 물려받지 않는다.
+- 이름만 `Request`인 일반 클래스: 실제 데이터 구조가 없으므로 DATA로 면제하지 않는다.
+- data/value/record/enum: 내부 작업·영속·도메인 데이터 위치를 검사한다. HTTP 데이터에는 Request/Response, 오류 데이터에는 ErrorResponse 이름 기준을 더 적용한다.
+- domain-*의 일반 코어: 새 Domain 접미사를 강제하지 않는다. UseCase 같은 예약 역할 신호가 있으면 일반 코어로 숨기지 않는다.
+
+근거: [판단 코드](../architecture-tests/src/test/kotlin/com/exchange/architecture/rules/RoleNamingPlacement.kt), [구조와 이름 반례](../architecture-tests/src/test/kotlin/com/exchange/architecture/NamingPlacementAutoRolesTest.kt), [명명 조건과 한계](../architecture-tests/src/test/kotlin/com/exchange/architecture/NamingPlacementContractTest.kt).
+
+## 3. 저장·발행 구현의 소속은 어떻게 아는가
+
+`PostgresWalletStore`라는 이름에서 Wallet의 뜻을 추측하지 않는다. **실제 구현한 Store 인터페이스의 모듈**을 확인한다. ledger의 포트이면 정책에서 ledger 저장 위치로 연결한다.
+
+| 입력 | 결과 |
 | --- | --- |
-| 맞는 이름·모듈·package | 타입 검사 통과 |
-| `OrderSubmissionService` | 이름 위반. 실제 값과 기대한 `SubmitOrderUseCase`를 보고 |
-| 올바른 이름을 infrastructure에 둠 | package 위반 |
-| 다른 도메인 모듈로 옮김 | module 위반 |
-| 세 항목 모두 틀림 | 항목별 3건. 파일 행 번호를 임의로 만들지 않음 |
+| 같은 영역의 Store 포트 둘 구현 | 하나의 저장 역할로 합침 |
+| order·ledger 포트 동시 구현 | 영역 충돌 |
+| Postgres 이름은 맞지만 Store 포트 구현이 없음 | 선언 형태 위반 |
+| 포트 정의를 읽을 수 없음 | 준비 오류 |
+| 포트가 틀린 폴더에 있음 | 구현 관계는 유지하고 포트 자신의 위치 위반 보고 |
+| `JpaRepository` 실제 상속 인터페이스 | Repository 역할. 이름뿐인 Repository는 형태 위반 |
+| Persistent/NoOp 발행 구현 | 포트 구현과 각 접두사의 지정 위치 모두 확인 |
 
-Store 포트·기술 Store 구현·Spring Data Repository도 등록한 역할을 구분한다. 저장 구현의 `Postgres`·`Jpa`는 검토한 기술 목록이며 임의 접두사를 자동 허용하지 않는다. config는 조립 역할이어도 이름·위치 검사를 받는다.
+근거: [위치 정책](../architecture-tests/src/test/kotlin/com/exchange/architecture/policy/ProjectLayoutPolicy.kt), [공통 이름 정책](../architecture-tests/src/test/kotlin/com/exchange/architecture/policy/NamingClassificationPolicy.kt), [포트·영역 테스트](../architecture-tests/src/test/kotlin/com/exchange/architecture/NamingPlacementPortRolesTest.kt).
 
-근거: [이름·위치 판단](../architecture-tests/src/test/kotlin/com/exchange/architecture/rules/RoleNamingPlacement.kt), [역할별 기대값 테스트](../architecture-tests/src/test/kotlin/com/exchange/architecture/NamingPlacementContractTest.kt). 역할 자체가 실제 업무 책임에 맞는지는 코드 리뷰에서 판단해야 한다.
+## 4. 보이지 않는 Kotlin 클래스도 검사하는가
 
-## 3. 허용 폴더를 추가하거나 제거하면 어떻게 되는가
+컴파일러가 만드는 companion·익명·lambda 보조 타입은 실제 메타데이터와 소유 관계가 있어야 소유자에게 연결한다. 소유자가 없으면 준비 오류다. 이름에 `Kt`나 `$`가 들어갔다는 이유로 제외하지 않는다.
 
-`ProjectLayoutPolicy.target`에 모듈·소스 루트·정확한 폴더·허용 역할·이유를 관리한다. 앱 시작점과 공통 HTTP 오류 위치에는 구체 타입 제한도 있다. **현재 운영 코드가 이미 이 목표 위치라는 뜻은 아니다.**
+최상위 함수와 `@file:JvmName`은 파일 메타데이터로 분류한다. 다중 파일 함수 묶음은 facade 하나의 임의 원본을 고르지 않고 **모든 part와 원본 파일**을 확인한다. part 하나가 없거나 다른 모듈 소속이면 판정을 중단한다. Boot 시작 위치의 함수는 같은 원본에 시작점이 있는지도 확인한다.
 
-원본 파일을 전부 받은 뒤 목록과 대조한다. 허용 폴더만 검색해서 금지 폴더를 놓치는 방식이 아니다.
+메타데이터·상위 계층·내부 합성 어노테이션 정의를 못 읽으면 일반 클래스라고 추측하지 않는다. 외부 라이브러리 전체를 대상에 포함하거나 제품을 실행하는 방식은 사용하지 않는다.
 
-- `order/application` 허용: 그 위치는 통과하지만 `order/application/internal`은 자동 허용하지 않는다.
-- 나중에 `order/application/cancel`이 필요함: 목록에 그 경로와 역할을 추가하고 해당 타입의 위치 연결을 변경한다. 검사 코드는 그대로다.
-- 목록에서 경로 제거: 그곳에 남은 파일은 다시 위반이다.
-- 중복 경로, 없는 모듈·위치, 빈 역할, 모순된 타입 제한: 정책 준비 오류다. 모르는 역할 enum 이름은 정책 코드 컴파일 단계에서도 거절된다.
+근거: [원본·메타 정보 읽기](../architecture-tests/src/test/kotlin/com/exchange/architecture/support/NamingTypeFacts.kt), [생성 소유 관계](../architecture-tests/src/test/kotlin/com/exchange/architecture/NamingPlacementScopeTest.kt), [다중 파일·Java record·합성 어노테이션](../architecture-tests/src/test/kotlin/com/exchange/architecture/NamingPlacementMetadataTest.kt).
 
-package와 실제 폴더가 일치해도 미등록 경로면 `allowedFolder` 위반이다. Gradle에 새 root를 등록한 것만으로 허용되지는 않으며 `sourceRoot`로 보고한다.
+## 5. 폴더는 어디까지 허용하는가
 
-근거: [수정할 정책 파일](../architecture-tests/src/test/kotlin/com/exchange/architecture/policy/ProjectLayoutPolicy.kt), [소스 폴더 비교](../architecture-tests/src/test/kotlin/com/exchange/architecture/support/SourcePlacement.kt), [추가·삭제 반례](../architecture-tests/src/test/kotlin/com/exchange/architecture/SourcePlacementContractTest.kt).
+ProjectLayoutPolicy의 정확한 경로 16개를 유지한다. 새 하위 폴더나 새 source root는 자동 허용하지 않는다. 새 경로가 필요하면 해당 위치의 **공통 역할·이유**를 추가한다. 타입별 등록으로 돌아가지 않는다.
 
-## 4. 파일 위치와 package는 같은가
+Kotlin PSI/JDK 파서로 실제 package를 읽어 원본 부모 폴더와 비교한다. 파일을 옮겼지만 package가 같아도 탐지한다. typealias처럼 클래스 파일이 없는 원본도 보존한다. 한 파일에 여러 타입이 있어도 같은 파일 위반을 반복하지 않는다.
 
-파일 `src/main/kotlin/com/example/order/Submit.kt` 안에 `package com.example.order.application`이 있다고 가정한다.
+같은 역할·package에 소스 루트 두 개를 명시하면 둘 다 허용한다. 다른 역할에만 허용한 루트는 우회 경로가 아니다. 원본 후보가 없거나 둘이면 임의 선택 없이 준비 오류다.
 
-1. 소스 루트를 뺀 부모 폴더는 `com/example/order`다.
-2. 파서가 읽은 package의 단어는 `com`, `example`, `order`, `application`이다.
-3. 기대 폴더 `com/example/order/application`과 다르므로 `sourceFolder` 위반을 보고한다.
+근거: [소스 비교](../architecture-tests/src/test/kotlin/com/exchange/architecture/support/SourcePlacement.kt), [최종 결과 결합](../architecture-tests/src/test/kotlin/com/exchange/architecture/rules/NamingPlacement.kt), [컴파일 원본 연결 테스트](../architecture-tests/src/test/kotlin/com/exchange/architecture/NamingPlacementIntegrationTest.kt), [구문·경로 테스트](../architecture-tests/src/test/kotlin/com/exchange/architecture/SourcePlacementContractTest.kt).
 
-여기서는 `.class`의 폴더를 쓰지 않는다. 컴파일러는 원본이 잘못 놓여도 package에 맞춰 `.class`를 만들 수 있기 때문이다.
+## 6. 정책만 고치면 이전 통과 결과를 재사용하는가
 
-| 경계 사례 | 처리 |
+main 소스의 경로·내용뿐 아니라 정책 Kotlin 파일도 Gradle Test의 입력이다. TestKit은 실제 Test 작업에 현재 검사기 코드를 연결한다. 소스만 추가하거나 정책 값만 바꾼 뒤, 재실행 여부와 **결과의 새 대상·위반 항목**까지 대조한다. 단순히 입력 목록이 바뀌었다는 것만 검사하지 않는다.
+
+예제 정책을 수정했을 때 이름 기준만 바꾼 경우는 이름 위반, 폴더만 바꾼 경우는 위치 위반이어야 한다. 클래스별 정답 목록을 새로 작성하지 않는다.
+
+근거: [실제 Test 작업 검증](../architecture-tests/src/test/kotlin/com/exchange/architecture/NamingPlacementGradleAutomaticTest.kt), [main 전달·생성 소스 검증](../architecture-tests/src/test/kotlin/com/exchange/architecture/NamingPlacementGradleWiringTest.kt), [Gradle 입력](../architecture-tests/gradle/main-sources.gradle.kts).
+
+## 기대값 검토와 실행 근거
+
+- 첫 AUTO-01/02/03/24는 기존 등록 기반 코드에서 **4개 모두 assertion 실패**했다. 등록 목록 없이 정상 검사할 수 없었던 것이 원인이다. API 제거 뒤 같은 기대값이 통과했다.
+- 역할 경계 9개 중 8개가 최소 구현에서 assertion 실패했다. 선언 형태·기술 역할·데이터·도메인 분류를 구현한 뒤 통과했다. 어노테이션만으로 허용하지 않는 기존 1개는 이미 통과했다.
+- 이어서 포트·Kotlin 생성·원본·실제 Gradle 추가 사례를 확인했다. 이미 동작하는 경계에 인위적인 실패를 만들지 않았다.
+- 기대값은 명세의 항목·타입·허용 경로에서 작성했다. 구현의 분류 결과를 정답 생성기로 사용하지 않았다. 입력 불완전과 읽은 코드의 위반을 분리했다.
+- TestKit 설정 스크립트의 `java` 이름 충돌은 테스트 환경 구성 오류로 수정했다. 이것을 제품 동작의 Red 근거로 세지 않는다.
+
+최종 명령은 `./gradlew build --no-daemon --continue --stacktrace --rerun-tasks`다. **30개 작업을 실제 재실행해 551개 테스트가 모두 통과**했다. 실패·오류·건너뛴 테스트는 0개다.
+
+| 검증 범위 | 통과 | 확인한 내용 |
+| --- | ---: | --- |
+| ARCH-05 | 71 | 자동 포함·역할·포트·메타 정보·원본 연결·실제 Gradle 재실행 |
+| 다른 구조 검사 | 237 | 기존 ARCH 규칙의 회귀 |
+| 제품 테스트 | 243 | 기존 도메인·API·DB 통합 테스트 |
+| 전체 | 551 | 기본 환경에서 전체 build, Docker DB 테스트 포함 |
+
+전체 실행을 시작할 때 기록한 구조 검사 소스 95개의 해시와 종료 후 코드가 일치한다. 이후 변경은 설명과 실행 기록뿐이다. [실행 근거](architecture-05-verification.json)에 명령·집계·테스트 묶음·소스 해시를 남겼다. 이전 등록 기반 구현의 525개 기록은 [이전 커밋](https://github.com/0Chord/coin-exchange/blob/1a5e37722c629c8dcc8f3551a3dddcfa46ce53e0/engineering/architecture-05-verification.json)에 보존되며 이번 통과 근거에 합산하지 않았다.
+
+## 어디까지 끝내는 작업인가
+
+#19에서 검사기와 예제를 구현하는 범위다. **운영 코드의 이름·폴더 이동과 ARCH-05 활성화는 #20~21**이다. 다른 ARCH 규칙의 등록 체계 전체를 교체하지 않는다.
+
+새 클래스는 기존 규칙으로 자동 검사한다. 새 역할·기술·정확한 경로를 도입할 때는 공통 정책과 해당 반례를 함께 바꾼다. 역할의 실제 업무 책임과 이름의 의미는 사람이 리뷰한다. 이 변경의 테스트 통과를 사람의 이해·독립 PR 리뷰·병합 완료로 표시하지 않는다.
+
+## 변경 파일과 실제 원문
+
+| 구분 | 변경과 책임 |
 | --- | --- |
-| 주석·문자열 속 `package wrong.path` | 실제 선언으로 쓰지 않음 |
-| 파일 어노테이션·이스케이프 식별자 | Kotlin 구문대로 읽음 |
-| Java 파일 | JDK 파서로 package와 구문 오류를 읽음 |
-| package 없는 파일 | 루트 바로 아래와 비교. 허용 폴더 정책은 별도 적용 |
-| typealias·최상위 함수·package만 있는 파일 | 바이트코드 타입 수와 관계없이 원본 폴더 검사 |
-| 여러 타입을 한 파일에 선언 | 파일당 폴더 항목을 한 번 보고 |
-| 파일 부재·구문 오류·루트 중복·심볼릭 링크 탈출 | 준비 오류. 잘못 읽은 입력으로 준수 판단을 하지 않음 |
-
-근거: [실제 구문 파서](../architecture-tests/src/test/kotlin/com/exchange/architecture/support/SourcePackageParser.kt), [소스 준비·비교](../architecture-tests/src/test/kotlin/com/exchange/architecture/support/SourcePlacement.kt), [구문·파일 경계 테스트](../architecture-tests/src/test/kotlin/com/exchange/architecture/SourcePlacementContractTest.kt).
-
-**기술 선택:** 프로젝트와 같은 Kotlin 2.3.21의 compiler-embeddable PSI를 검사 모듈의 테스트 의존성으로만 사용했다. 환경 생성 API는 K1Deprecation opt-in이 필요하므로 그 호출에 한정해 표시했다. 타입 해석이나 실행은 하지 않는다. 컴파일러 버전을 바꿀 때 파서 계약 테스트도 함께 확인해야 한다. JDK 25에서 파서 라이브러리의 Unsafe 사용 경고가 있지만 테스트 실패는 아니다.
-
-## 5. 소스와 클래스가 같은 대상인가
-
-타입 검사와 파일 검사 각각이 정상이어도, 예전 클래스 출력과 다른 원본이 섞일 수 있다. 최종 `NamingPlacement.inspect`는 클래스의 모듈·package·SourceFile로 원본 후보를 찾는다.
-
-- 후보 1개: 그 타입에 지정한 소스 루트까지 대조한 뒤 두 검사 결과를 합친다. 같은 package를 가진 다른 허용 루트라도 그 타입의 지정 위치가 아니면 `sourceRoot` 위반이다.
-- 후보 0개: 원본 누락 또는 package 불일치이므로 준비 오류다.
-- 후보 2개: 같은 이름의 소스가 두 루트에 있어 모호하므로 준비 오류다.
-- 어느 준비 단계든 오류 있음: `evaluated=false`, 위반·평가 타입·평가 파일 목록을 비운다.
-
-근거: [최종 결과 결합](../architecture-tests/src/test/kotlin/com/exchange/architecture/rules/NamingPlacement.kt), [실제 컴파일과 원본 연결 테스트](../architecture-tests/src/test/kotlin/com/exchange/architecture/NamingPlacementIntegrationTest.kt). 소스가 모두 `.class` 하나씩을 만든다는 가정은 하지 않는다.
-
-## 6. 파일이나 정책을 고치면 다시 실행되는가
-
-`main-sources.gradle.kts`가 기존 운영 모듈 목록을 사용해 각 모듈의 Java·Kotlin **main** 소스 설정을 읽는다. 허용 목록과 독립적으로 모듈·루트·실제 파일을 전달한다. 소스 경로·내용·정책 파일을 Test 작업 입력으로 등록한다.
-
-- 변화가 없으면 Gradle이 이전 결과를 재사용할 수 있다.
-- 파일 이동·추가·삭제, 정책 변경은 검사 입력을 바꾸므로 다시 실행한다.
-- test·JMH·resources는 운영 원본 목록에 넣지 않는다.
-- 생성 소스는 실제 생산 작업을 확인하고, 정책의 루트·생산 작업과 대조한다.
-- 비어 있는 기본 Java 루트는 비활성이다. Java 파일을 넣으면 명시적 루트 허용이 필요하다.
-
-실제 Gradle TestKit 임시 프로젝트에서 변화 전 `UP_TO_DATE`, 변화 후 `SUCCESS`와 바뀐 입력·위반을 확인했다. 이 저장소 6개 모듈의 Kotlin main 원본 전달도 확인했다. **이 연결 확인 테스트가 운영 ARCH-05 준수 검사인 것은 아니다.**
-
-근거: [Gradle 수집·입력](../architecture-tests/gradle/main-sources.gradle.kts), [전달 형식 읽기](../architecture-tests/src/test/kotlin/com/exchange/architecture/support/MainSourceSnapshot.kt), [실제 Gradle 재실행 테스트](../architecture-tests/src/test/kotlin/com/exchange/architecture/NamingPlacementGradleWiringTest.kt).
-
-## 명세와 테스트 기대값
-
-| 명세 사례 | 테스트 파일 · 확인하는 결과 |
-| --- | --- |
-| NAME-01~07·10 | NamingPlacementContractTest: 역할별 정상, 이름·package·module 위반과 대상·기대 값 |
-| NAME-08~09 | NamingPlacementScopeTest와 ContractTest: 도메인/앱 포트·조립·HTTP·발행의 목표 위치와 이름 구분 |
-| NAME-11~16 | NamingPlacementScopeTest와 ContractTest: 중첩/companion/익명/JvmName, 위장·누락·역할 충돌·손상·지원 이유 |
-| NAME-17~22 | SourcePlacementContractTest, NamingPlacementIntegrationTest: Kotlin/Java 원본, classless·복수 선언, 실제 폴더·구문·원본 연결 |
-| NAME-23 | NamingPlacementGradleWiringTest: 실제 main 전달, 파일/정책 변경, 생성 작업 |
-| NAME-24~28 | SourcePlacementContractTest와 Integration/ScopeTest: 정확한 목록, 루트 우회, 잘못된 역할, 정책 추가·삭제·오류 |
-
-기대값은 명세의 구체 이름·경로·오류 항목에서 작성했다. 구현 함수로 기대값을 만들지 않았다. 위반 예제를 정확하게 찾으면 **테스트는 성공**한다. 리뷰는 동일 AI의 별도 검토 단계이며 독립 컨텍스트의 PR 리뷰나 사람의 리뷰를 대신하지 않는다.
-
-첫 이름 검사 9개는 빈 결과를 반환하는 초기 구현에서 모두 실패했다. 폴더 검사 14개도 미구현 결과에서 실패했다. 최종 검토에서 같은 package의 다른 허용 소스 루트로 이동하는 반례를 추가했으며, 6개 연결 테스트 중 그 1개만 실패하는 것을 확인한 뒤 루트 비교를 보완했다. 이후 연결·생성 타입 반례는 기존 동작이 충족하면 인위적으로 실패시키지 않고 회귀 근거로 추가했다. 정상 예제로 DATA만 넣었던 테스트는 업무 대상이 필요하다는 명세와 맞지 않아 수정했다. macOS 경로 표기 차이도 실제 경로로 비교하도록 테스트를 보완했다.
-
-## 실행 근거
-
-- 전용 명령: `./gradlew :architecture-tests:test --tests '*NamingPlacement*Test' --tests '*SourcePlacement*Test' --no-daemon --console=plain`
-- 첫 전용 실행은 **44개, 실패·오류·skip 0**. 이후 소스 루트 반례 1개를 추가한 **ARCH-05 45개**가 전체 빌드에서 통과했다.
-- 전체 회귀: `./gradlew build --no-daemon --continue --stacktrace --rerun-tasks` **성공(5분, 30개 작업 재실행)**. 구조 검사 **282개**, 제품 테스트 **243개**, 합계 **525개**, 실패·오류·skip 모두 0. 첫 실행은 기존 PostgreSQL 통합 테스트의 IPv4 인증 응답 대기로 중단했다. 같은 포트에 IPv4 접속은 타임아웃, IPv6는 즉시 응답함을 확인해 이번 실행에만 `JAVA_TOOL_OPTIONS=-Djava.net.preferIPv6Addresses=true TESTCONTAINERS_HOST_OVERRIDE=localhost`를 적용했다. 저장소 DB 설정과 테스트 기대값은 바꾸지 않았다.
-- 전체 빌드 후 목표 정책의 도메인별 역할 목록을 명세 표에 맞춰 좁혔다. `NamingPlacementScopeTest` **12개**를 다시 통과시켰다. 검사 로직·제품 코드 변경은 없으며, 전체 빌드 당시 해시와 최종 해시를 실행 근거에 각각 보존했다.
-- [실행 근거와 소스 해시](architecture-05-verification.json)에서 명령·집계를 확인할 수 있다.
-- HTML 원문 발췌는 생성 시점의 스냅샷이다. 실행 근거의 해시와 함께 확인하며 자동 최신화된다고 가정하지 않는다.
-
-## 변경 파일이 맡은 일
-
-| 구분 | 파일 · 흐름 |
-| --- | --- |
-| 검증 도구 | NamingPlacementScope.kt · 타입·역할·소유자 준비(1) |
-| 검증 도구 | RoleNamingPlacement.kt · 이름·모듈·package 비교(2) |
-| 검증 정책 | ProjectLayoutPolicy.kt · 목표 폴더·역할 목록과 정책 오류 검사(3) |
-| 검증 도구 | SourcePackageParser.kt, SourcePlacement.kt · 원본 읽기와 위치 판정(3~4) |
-| 검증 도구 | NamingPlacement.kt · 원본 연결과 최종 결과(5) |
-| 빌드·입력 | main-sources.gradle.kts, MainSourceSnapshot.kt, build.gradle.kts · Gradle 입력 전달·테스트 전용 파서 의존(6) |
-| 테스트 | NamingPlacementContractTest, ScopeTest, IntegrationTest, GradleWiringTest, SourcePlacementContractTest · 위 사례 표 |
-| 테스트용 예제 | NamingFixtures.kt, NamedFunctions.kt · 올바른/틀린 이름과 생성 타입·운반 타입의 실제 컴파일 형태 |
-| 명세·설명 | architecture-check-spec.md, 이 문서, architecture-05-verification.json · 계약·흐름·실행 근거 |
-| 별도 로컬 읽기 화면(PR 제외) | 기존 reader/build.py·index.html · 이 문서와 색상·줄 번호가 있는 실제 코드 표시 |
-
-제품 실행 코드는 변경하지 않았다. 아직 적용하지 않은 운영 이름·폴더 정리는 #20~21이다. 역할의 의미적 타당성, 함수·변수명, 거래 계산·DB 원자성·동시성은 이 검사로 판정하지 않는다. 모든 외부 소스 생성기 플러그인을 시험한 것도 아니다.
-
-## 근거 코드 펼치기
-
-GitHub에서는 각 절의 근거 링크로 실제 파일을 확인할 수 있다. 로컬 HTML에서는 같은 파일을 줄 번호·내용 해시와 함께 아래에 펼쳐 보여준다.
+| 검증 도구 | NamingPlacementScope, NamingTypeFacts, RoleNamingPlacement, NamingPlacement: 전체 입력·분류·원본 연결·결과 |
+| 공통 정책 | NamingClassificationPolicy, ProjectLayoutPolicy: 이름 조건·포트 영역·정확한 위치 |
+| 테스트 | NamingPlacement*Test, SourcePlacementContractTest: 위의 각 흐름과 반례 |
+| 테스트 도우미 | NamingPlacementGradleScenario: 임시 프로젝트의 Test 프로세스에서 실제 검사기 호출 |
+| 예제 | naming 폴더의 NamingFixtures, AutomaticRoleFixtures, NamedFunctions, MultiOne, MultiTwo: 정상·위반·생성 구조 |
+| 빌드 | architecture-tests/build.gradle.kts: 실제 Boot/Spring Data 예제 의존성·TestKit 실행 클래스패스. main-sources.gradle.kts는 기존 기반 재사용 |
+| 설명 | 이 문서·상세 명세·실행 근거. 로컬 HTML은 이 문서와 실제 소스를 렌더링 |
 
 <!-- ARCH05_IMPL_SOURCES_START -->
-원문·줄 번호·내용 해시는 HTML 생성 시 파일에서 직접 읽는다.
+HTML에서는 다음 위치에 현재 원문을 문법 색상·줄 번호·내용 해시와 함께 표시한다.
 <!-- ARCH05_IMPL_SOURCES_END -->

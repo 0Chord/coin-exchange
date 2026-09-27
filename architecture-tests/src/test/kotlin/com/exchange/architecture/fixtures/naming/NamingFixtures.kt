@@ -25,3 +25,6 @@ class NewHelper
 class `Forged$Helper`
 class ForgedKt
 fun quoteAmount() = 1
+
+class AmendOrderUseCase
+class OrderManager

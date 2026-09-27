@@ -117,7 +117,7 @@ class SourcePlacementContractTest {
             policy.copy(folders = listOf(folder.copy(roles = emptySet()))),
             policy.copy(folders = listOf(folder.copy(module = "unknown"))),
             policy.copy(folders = listOf(folder.copy(folder = "com/../utils"))),
-            policy.copy(folders = listOf(folder.copy(onlyTypes = setOf("wrong.Type")))))) {
+            policy.copy(folders = listOf(folder.copy(sourceRoot = "missing/root"))))) {
             val r = inspect(file(), p = p).result
             assertFalse(r.evaluated); assertEquals(emptySet(), r.evaluatedFiles); assertEquals(emptyList(), r.violations)
         }
