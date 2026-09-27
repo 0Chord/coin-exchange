@@ -1,3 +1,322 @@
+# 구조 검사 명세 — #19 · ARCH-05 이름과 배치
+
+상태: **ARCH-05 로컬 구현·검증 완료. 신규 45개를 포함한 구조 검사 282개와 제품 테스트 243개가 전체 빌드에서 통과했고, 최종 정책 목록 보완 후 관련 12개를 다시 통과시켰다.** 기준은 PR #31이 병합된 통합 브랜치 `feature/phase-2/integration`의 `f511105002c6581e8e4b44b94e549bc9d736685d`다. 실제 흐름·코드는 [ARCH-05 구현 리뷰](architecture-05-review.md)에 연결한다. 기존 ARCH-04 이하 기록은 보존한다. 명세 작성으로 #19를 완료 처리하지 않는다.
+
+## 먼저 볼 내용
+
+**등록한 역할에 맞는 이름과 위치인지 확인한다.** 예를 들어 ‘주문 제출 유즈케이스’로 등록한 코드라면 `SubmitOrderUseCase`라는 이름과 `order.application` 위치를 기대한다. 내부 예약 작업은 `Service`, 실행 연결은 `Coordinator`이므로 모두 `UseCase`로 바꾸지 않는다.
+
+- **입력:** 컴파일된 클래스와 실제 소속 모듈, 운영 소스 루트·파일 목록·package 선언, 사람이 검토한 역할·기능·이름 기준.
+- **판단:** 대상 누락·역할 충돌부터 확인하고, 준비가 온전할 때만 이름과 위치를 비교한다.
+- **결과:** 정상 / ARCH-05 위반 / 검사 준비 오류를 구분한다. 어느 역할의 어떤 이름·위치가 기대와 다른지 표시한다.
+- **이번 #19:** 작은 정상·위반·누락 예제로 검사기 자체를 검증한다. 실제 운영 이름·패키지는 바꾸지 않는다.
+- **후속 #20~21:** 이름·배치를 정리하는 변경에서 해당 운영 대상에 같은 검사기를 적용한다.
+
+**확정한 위치 범위:** 역할별 허용 `package`·소속 Gradle 모듈과 함께, **실제 소스 폴더의 허용 목록과 package 선언의 일치도 강제한다.** 사용자 선택으로 실제 폴더 검사를 포함했다. 아래 세 조건을 모두 만족해야 한다.
+
+1. 소속 모듈·소스 루트·파일의 부모 폴더가 **명시한 허용 경로 목록**에 있어야 한다.
+2. 유즈케이스 등 등록한 역할에 맞는 package·모듈이어야 한다.
+3. 파일의 소스 루트 아래 폴더는 선언한 package의 각 단어를 `/`로 연결한 경로와 같아야 한다. 이 프로젝트는 `com/exchange/core` 같은 공통 앞부분도 생략하지 않는다.
+
+예를 들어 아래 선언의 파일은 `app-api`의 Kotlin 소스 루트를 기준으로 다음 위치에 있어야 한다.
+
+```text
+package com.exchange.core.api.order.application
+
+정상: app-api/src/main/kotlin/com/exchange/core/api/order/application/SubmitOrderUseCase.kt
+위반: app-api/src/main/kotlin/com/exchange/core/api/order/SubmitOrderUseCase.kt
+```
+
+Kotlin은 package와 파일 폴더가 달라도 사용할 수 있으므로 컴파일 성공만으로 이 규칙을 확인할 수 없다. 언어 제약과 별개로 이번 프로젝트에서 더 엄격한 배치 규칙을 선택했다. 근거: [Kotlin 패키지 명세](https://kotlinlang.org/spec/packages-and-imports.html). 파일명과 클래스명을 무조건 같게 하거나 파일당 클래스 하나를 강제하는 규칙은 아니다.
+
+## 이번 프로젝트에서 고정할 전제
+
+- **모듈 구조 유지:** 기능별 `api`·`application`·`infrastructure`와 조립 `config`는 `app-api`에 둔다. `domain-ledger`, `domain-fee`, `domain-order`, `domain-matching` 등은 기술에 독립적인 Kotlin 코어를 유지한다. 이 명명 작업에서 각 도메인 모듈에 application/infrastructure 계층을 추가하지 않는다.
+- **코어의 의미:** 계산·판단·상태 처리와 합의한 포트 선언을 포함한다. 모든 코드를 순수 함수나 불변 객체로 제한한다는 뜻은 아니며, 기존 가변 주문장과 JDK 기반 실행기는 별도 책임으로 유지한다. DB·웹 기술 구현을 코어로 옮기지 않는다.
+- **UseCase의 의미:** 외부에서 요청하는 하나의 업무를 조율하는 애플리케이션 진입점이다. `SubmitOrderUseCase`, `CancelOrderUseCase`는 구체 클래스여도 된다. 이름을 맞추기 위해 `UseCase` 인터페이스와 `UseCaseImpl` 구현을 형식적으로 분리하지 않는다. 도메인의 인터페이스·구현체는 계산기 등 실제 책임에 맞춰 명명한다.
+- **용어 재사용:** 같은 역할은 같은 접미사를 쓰고, 같은 업무는 검토한 단어를 재사용한다. 주문 취소 `Cancel`과 예약 해제 `Release`처럼 책임이 다른 표현은 구분한다. 코드 전체에서 의미를 자동 추론하는 보장은 하지 않는다.
+
+## 역할별 이름·허용 위치
+
+합의한 C04·C05·C07과 [#18](https://github.com/0Chord/coin-exchange/issues/18), [#20](https://github.com/0Chord/coin-exchange/issues/20), [#21](https://github.com/0Chord/coin-exchange/issues/21)을 구체화한다. 표의 ‘이름 규칙’과 ‘위치’는 목표이며 현재 코드가 이미 이 위치라는 뜻이 아니다.
+
+아래에서 `A`는 `com.exchange.core.api`, `D`는 `com.exchange.core`다. 기능은 클래스 이름에서 추측하지 않고 검토한 소속으로 등록한다. 아래 표의 역할과 뒤의 **구체적인 허용 경로 목록을 함께** 적용한다. 도메인의 이름이 fee라고 `app-api/api/fee/application`까지 자동 허용하지 않는다. 경로는 정확히 일치해야 하며 새 기능·하위 폴더는 목록 변경과 검증 사례를 함께 검토한 뒤 추가한다.
+
+| 등록한 역할 | 이름 규칙·대표 이름 | 허용 모듈 / 패키지 |
+| --- | --- | --- |
+| 실행 진입점 | 동작+대상+`UseCase`; `SubmitOrderUseCase`, `CancelOrderUseCase` | `app-api` / `A.order.application` (현재 제출·취소 진입점) |
+| 내부 예약·해제·정산 | 대상+작업+`Service`; `OrderFundingService`, `OrderReservationReleaseService`, `TradeSettlementService` | `app-api` / `A.order.application` |
+| 실행 연결 | 대상+`Coordinator`; `MatchingCoordinator` | `app-api` / `A.matching.application` |
+| 계산 / 기준 선택 | 대상+`Calculator` / 대상+`Resolver`; `TradingFeeCalculator`, `FeeTierResolver` | `domain-fee` / `D.fee` 또는 `domain-order` / `D.order`; 대상별 소속을 고정하며 두 위치를 자유 선택하지 않음 |
+| 도메인 저장 포트 | 대상+`Store`; `BalanceStore`, `LedgerTransactionStore`, `OrderReservationStore` | 각각 `domain-ledger` / `D.ledger`, `domain-order` / `D.order` 유지 |
+| 애플리케이션 저장 포트 | 대상+`Store`; `MatchingEventStore` | `app-api` / `A.matching.application.port` |
+| 저장 포트 구현 | 기술+대상+`Store`; `PostgresBalanceStore`, `JpaMatchingEventStore` | `app-api` / `A.order.infrastructure.persistence`, `A.ledger.infrastructure.persistence`, `A.matching.infrastructure.persistence` 중 등록한 저장 대상의 위치 |
+| Spring Data 저장 인터페이스 | 대상+`Repository`; `MatchingEventRepository` | `app-api` / `A.matching.infrastructure.persistence` |
+| 발행 포트 | 대상+`Publisher`; `MatchingEventPublisher` | `app-api` / `A.matching.application.port` |
+| 발행 구현 | `PersistentMatchingEventPublisher`, `NoOpMatchingEventPublisher` 이름 유지 | 전자는 `A.matching.infrastructure.persistence`, 후자는 `A.matching.infrastructure.publish`; 둘 다 `app-api` |
+| HTTP 컨트롤러 | 대상+`Controller`; 현 `MatchingController`의 `OrderController` 변경은 #20에서 확정 | `app-api` / `A.order.api` |
+| HTTP DTO·변환 보조 | `SubmitOrderRequest`, `MatchingResponse`, `MatchingEventResponse` 등 검토한 이름 유지. 일괄 `Dto` 접미사 신설 안 함 | `app-api` / `A.order.api`; 최상위 매퍼 함수도 위치 검사 |
+| config 조립 | 대상+`Config`; 기존 4개 Config 이름 유지 | `app-api` / `A.config` 유지 |
+| 기타 도메인 값·엔진·실행기·지원 코드 | 기존 이름에 임의 역할 접미사를 강제하지 않음. 이름 기준 또는 접미사 면제 이유와 위치 기준을 타입별 기록 | 아래 경로 목록의 도메인·실행기 현 위치 유지. 공통 HTTP 예외는 `A.common`, 앱 시작점은 `D`에 한정 |
+
+## 지정한 폴더만 허용하는 규칙
+
+**허용 목록 방식으로 확정한다.** package와 폴더가 서로 일치하더라도 목록에 없는 경로에 운영 소스를 두면 실패한다. 현재 목표 구조에 맞춘 구체적인 목록은 아래와 같다. 이는 #20~21에서 이행할 목표이며 아직 옮기지 않은 운영 코드가 이미 통과한다는 뜻이 아니다.
+
+### 소스 루트와 파일을 둘 수 있는 위치
+
+운영 모듈은 `app-api`, `domain-common`, `domain-fee`, `domain-order`, `domain-ledger`, `domain-matching` 6개이며 현재 사용 중인 소스 루트는 각각의 **`src/main/kotlin`**이다. 이 루트 목록을 Gradle에서 발견한 값과 별도로 유지한다. Gradle 설정에 새 소스 루트를 추가한 것만으로 허용 목록도 자동 확장하지 않는다.
+
+`app-api/src/main/kotlin/` 아래에서 코드 파일을 둘 수 있는 **정확한 부모 폴더**는 다음과 같다. `com/exchange/core/api/order` 같은 중간 폴더는 하위 경로를 담기 위해 존재할 수 있지만, 아래 목록에 없으면 그 폴더에 코드 파일을 직접 놓을 수 없다.
+
+| 허용 폴더 | 그 위치에서 허용할 책임 |
+| --- | --- |
+| `com/exchange/core` | 등록한 앱 시작점 `ExchangeCoreApplication`과 확인된 생성 보조 타입만 |
+| `com/exchange/core/api/config` | 기존 Config 4개 등 명시 등록한 조립 코드 |
+| `com/exchange/core/api/common` | 기존 `ApiExceptionHandler`, `ApiErrorResponse`와 확인된 생성 보조 타입. 범용 util 폴더가 아님 |
+| `com/exchange/core/api/order/api` | 주문 HTTP 컨트롤러·DTO·응답 변환 함수 |
+| `com/exchange/core/api/order/application` | 제출·취소 UseCase, 자금 예약·해제·체결 정산 Service |
+| `com/exchange/core/api/order/infrastructure/persistence` | 주문 예약 저장 구현 |
+| `com/exchange/core/api/ledger/infrastructure/persistence` | 잔고·원장 저장 구현 |
+| `com/exchange/core/api/matching/application` | MatchingCoordinator와 명시 등록한 애플리케이션 지원 코드 |
+| `com/exchange/core/api/matching/application/port` | MatchingEventStore·MatchingEventPublisher |
+| `com/exchange/core/api/matching/infrastructure/persistence` | JpaMatchingEventStore·Repository·영속 모델·PersistentMatchingEventPublisher |
+| `com/exchange/core/api/matching/infrastructure/publish` | NoOpMatchingEventPublisher |
+
+공통 HTTP 오류 처리는 현재 `api/common` 위치를 유지하는 안으로 구체화했다. 이전 전체 역할표의 `api/common/api`는 이동 제안이었으며 이번 허용 목록에는 넣지 않는다. 새 위치가 필요하면 이동 티켓에서 이유와 함께 목록을 변경한다. 이는 공통 오류 응답의 동작 변경이 아니다.
+
+도메인은 각 모듈의 `src/main/kotlin/` 아래에 다음 한 경로를 둔다. 각 모듈 안에 application/infrastructure 폴더를 만들거나 도메인끼리 위치를 바꿔 쓰지 않는다.
+
+| 모듈 | 코드 파일을 둘 수 있는 정확한 부모 폴더 |
+| --- | --- |
+| `domain-common` | `com/exchange/core/common` |
+| `domain-fee` | `com/exchange/core/fee` |
+| `domain-order` | `com/exchange/core/order` |
+| `domain-ledger` | `com/exchange/core/ledger` |
+| `domain-matching` | `com/exchange/core/matching` |
+
+### 허용 목록을 지정하고 변경하는 곳
+
+**목록은 수정할 수 있는 프로젝트 정책이다.** 처음 정한 폴더를 영구 고정하는 것이 아니라, 합의한 목록에 있는 경로만 현재 허용한다. 검사 로직과 목록을 분리하면 새 폴더를 추가할 때 검사기를 고치지 않고 정책 데이터를 바꿀 수 있다.
+
+저장 위치는 `architecture-tests/src/test/kotlin/com/exchange/architecture/policy/ProjectLayoutPolicy.kt`다. **구현한 목표 정책 파일**이며, Kotlin 데이터 목록으로 관리한다. 이번 #19에서는 예제로 검사하고 운영 적용은 #20~21에서 연결한다. 별도 YAML 파서나 설정 DSL은 추가하지 않는다. 이 문서의 표는 사람이 읽는 설명이고, 검사에 전달할 기준은 이 정책 파일 한 곳에서 관리한다. 정책 변경 PR에서 설명도 함께 갱신한다.
+
+등록 항목은 다음과 같다. 아래는 현재 허용할 주문 애플리케이션 폴더 한 건의 예다.
+
+| 항목 | 예시 / 의미 |
+| --- | --- |
+| 모듈 | `app-api` — 기존 모듈 등록 목록의 식별자를 참조 |
+| 소스 루트 | `src/main/kotlin` — 모듈 기준 상대 경로 |
+| 허용 폴더 | `com/exchange/core/api/order/application` — 소스 루트 기준 정확한 상대 경로 |
+| 허용 역할 | 주문 제출·취소 UseCase, 내부 예약·해제·정산 Service |
+| 이유 | 주문 업무의 실행과 내부 작업 조율을 이 위치에 모음 |
+| 특정 타입 제한 | 필요한 위치만 명시. 예: `api/common`은 합의한 오류 처리 타입만 허용 |
+
+역할별 허용 package는 이 경로의 `/`를 `.`으로 바꾼 값에서 얻는다. 검사기 안에 같은 경로 문자열을 다시 적지 않는다. 타입별 역할·기능·정확한 이름 등록은 유지하며 정책의 해당 위치와 연결한다. 따라서 경로를 허용해도 새 타입의 역할 등록이나 이름 검사가 생략되지는 않는다. 모듈 목록도 새로 복제하지 않고 기존 등록 정보를 참조한다.
+
+**추후 추가 예시:** 주문 취소 코드를 따로 묶을 필요가 생겼다고 가정하면 다음과 같이 변경한다. 이 예시 자체로 새 경로를 지금 허용하는 것은 아니다.
+
+1. `order/application/cancel`을 나눌 이유와 허용할 책임을 정한다.
+2. 정책에 전체 경로 `com/exchange/core/api/order/application/cancel`과 허용할 역할을 추가한다. 같은 역할을 여러 위치에서 허용하더라도 각 타입은 검토한 한 위치에 연결한다.
+3. 관련 역할 연결·package·파일 위치를 함께 바꾸고, 새 경로는 통과하며 미등록 형제·하위 폴더와 다른 역할은 여전히 실패하는 예제를 확인한다.
+4. 그 정책 변경을 코드 변경과 같은 PR에서 검토한다. 기존 경로를 더 이상 쓰지 않으면 목록에서도 제거한다.
+
+**확장에 대한 검증 계약:** 동일한 검사기에 다른 정책 목록을 전달했을 때 추가한 정확한 경로만 허용 범위가 넓어져야 한다. 경로를 제거하면 그곳에 남은 파일은 위반이다. 중복 경로 항목, 모르는 모듈·위치, 빈 역할 목록, 모순된 타입 제한은 준비 오류로 보고한다. 역할은 enum으로 표현하므로 존재하지 않는 역할 이름은 정책 코드 컴파일 단계에서 거절된다. 여러 역할은 같은 경로의 한 항목에 명시한다. 실제 파일을 발견했다고 정책에 자동 등록하지 않는다. 경로를 허용할 필요가 타당한지는 PR에서 사람이 판단한다.
+
+### 목록을 적용하는 방식
+
+- **정확한 경로만 허용:** `application`을 허용해도 `application/service`, `application/usecase`, `application/internal`을 자동 허용하지 않는다. `utils`, `impl`, `dto`처럼 새로 만든 폴더도 목록 없이는 실패한다. 기존에 명시한 `matching/application/port`만 별도 허용된다.
+- **역할도 함께 비교:** order.application 자체는 허용 폴더지만 PostgresBalanceStore의 위치는 아니다. 허용 폴더에 있다는 이유로 모든 역할을 허용하지 않는다. 파일에 여러 타입이 있으면 각 타입의 역할 규칙도 모두 만족해야 한다.
+- **전체 발견 후 대조:** 허용된 경로만 스캔하면 금지 폴더의 파일을 놓친다. 발견한 main 소스 파일 전체를 먼저 받고 루트·부모 폴더 목록과 대조한다. package만 있는 파일, typealias·최상위 함수 파일에도 경로 목록을 적용한다.
+- **루트 변경으로 우회 금지:** 발견한 main 루트가 허용 목록 밖이면 `sourceRoot` 위반이다. 루트 설정을 더 깊은 폴더로 바꿔 틀린 위치를 정상처럼 만들 수 없다. 경로에 `..`나 중복 구분자가 있는 정책값은 준비 단계에서 거절하고, 별칭·심볼릭 링크로 소속을 숨기지 않는다.
+- **새 루트·생성 소스:** 현재 기본 `src/main/java`에는 운영 파일이 없음을 확인했다. 빈 기본 Java 루트는 비활성으로 기록하고 실패시키지 않지만 실제 Java 파일을 추가하려면 해당 모듈의 루트를 허용 목록에 명시해야 한다. 생성 main 소스도 생산 작업·구체 루트·허용 package를 명시한 뒤 적용한다. 예제 테스트에서는 Kotlin/Java/생성 루트를 명시 등록해 공통 검사 동작을 검증할 수 있다.
+- **추가 절차:** 새 경로가 필요하면 ‘어떤 모듈·역할이 왜 필요한가’를 정하고, 경로 목록·역할 연결·정상/인접 금지 경로 사례를 함께 변경한다. 포괄적인 `**` 허용이나 AI가 발견 목록을 그대로 정답으로 저장하는 방식은 금지한다.
+- **검사 경계:** 운영 Kotlin/Java 소스 위치를 제한한다. 리소스·문서·테스트·벤치마크·build 출력 전체의 디렉터리 모양을 이 규칙으로 통제하지 않는다. 코드 없는 빈 폴더의 생성 자체를 막는 기능도 아니다. 검사 시점에 목록 밖에 놓인 운영 소스를 실패시킨다.
+
+**보고 구분:** `sourceRoot`는 허용하지 않은 소스 루트 또는 해당 타입에 연결한 위치의 루트 불일치, `allowedFolder`는 목록 밖의 코드 폴더, `sourceFolder`는 실제 폴더와 package의 불일치다. 파일당 항목별로 한 번 보고한다. 명확히 읽은 경로의 정책 위반과 파일을 찾거나 읽을 수 없는 준비 오류를 구분한다.
+
+**표를 적용하는 기준**
+
+1. 역할·기능은 검토한 등록값이다. 이름, 현재 패키지, `@Service`, 인터페이스 구현 여부로 역할을 자동 추정하지 않는다. 접미사가 같은 포트와 구현은 서로 다른 역할이다.
+2. 접미사 앞에 의미 있는 이름 부분이 있어야 한다. `UseCase`·`Service`만으로 된 이름은 실패한다. 기존에 합의한 제출·취소·매칭 연결의 정확한 이름도 별도 기준으로 대조한다. 새 동작의 이름은 등록 시 검토한다.
+3. 저장 구현의 기술 접두사는 검토한 기술(`Postgres`, `Jpa`)과 연결한다. 임의 `FakeBalanceStore`를 ‘기술+Store’ 형식이라는 이유로 허용하지 않는다. 새 기술은 기준과 예제를 먼저 추가한다.
+4. `cancel`과 `release`, `Calculator`와 `Resolver`는 의미가 달라 통합하지 않는다. 같은 개념의 동의어를 모든 코드에서 자동 발견하거나 함수·변수명을 일괄 고치는 것은 이번 범위가 아니다. 표에 없는 명명의 의미는 리뷰한다.
+5. config의 조립 예외는 ARCH-04의 **의존 방향** 예외다. ARCH-05의 이름·위치 검사 면제가 아니다. config 폴더에 숨긴 유즈케이스는 여전히 위치 위반이다.
+6. Store가 실제로 저장 계약인지, Service가 내부 작업인지 등 **등록한 역할 자체의 진실성은 의미 리뷰**다. ARCH-05는 역할 판별 AI나 전체 코드 스타일 검사기가 아니다.
+
+<details markdown="1">
+<summary>현재 코드와 목표의 차이 · 근거 보기</summary>
+
+기준 커밋의 파일·선언을 확인했다. 아래는 이동 계획의 근거이며 ARCH-05를 운영 코드에 실행한 결과가 아니다. `main`의 실제 이름·패키지는 아직 변경 전이다.
+
+| 현재 소스·심볼 | 확인한 사실 | 목표 / 담당 |
+| --- | --- | --- |
+| `OrderSubmissionService`, `OrderCancellationService` | `A.order`; `OrderApplicationConfig`가 Bean으로 조립하고 컨트롤러가 호출 | `SubmitOrderUseCase`, `CancelOrderUseCase` / `A.order.application`; #20 |
+| `OrderFundingService`, `OrderReservationReleaseService`, `TradeSettlementService` | `A.order`; 진입점의 내부 협력 작업 | 이름 유지, `A.order.application`; #20 |
+| `MatchingApplicationService` | `A.matching`; 실행기와 전후 작업 연결 | `MatchingCoordinator` / `A.matching.application`; #20 |
+| `MatchingController`, `MatchingDtos.kt`, `MatchingEventResponseMapper.kt` | `A.matching`; DTO 파일에는 여러 타입, 매퍼에는 최상위 확장 함수가 있음 | `A.order.api`; 컨트롤러 정확한 이름은 #20 확정, DTO·함수 이름 유지 |
+| `BalanceStore`, `LedgerTransactionStore`, `OrderReservationStore` | 도메인 모듈의 인터페이스 | 이름·소속 유지. 저장 포트 선언 때문에 application으로 이동하지 않음 |
+| `MatchingEventStore`, `MatchingEventPublisher` | 각각 `A.matching.persistence`, `A.matching.publish` | `A.matching.application.port`; #21 |
+| `Postgres*Store`, `JpaMatchingEventStore`, `MatchingEventRepository` | 기능별 기존 `persistence`; Repository는 실제 `JpaRepository`를 상속 | 기능별 `infrastructure.persistence`; #21. JDBC 구현에 Repository를 강제하지 않음 |
+| `PersistentMatchingEventPublisher`, `NoOpMatchingEventPublisher` | 저장 위임 / 의도적 미저장 구현 | 위 표의 구체 위치; #21에서 실제 연결·활성 조건 보존 |
+| `FeeTierResolver`, `TradingFeeCalculator`, `QuoteAmountCalculator.kt` | 전자는 등급 선택, 다음은 수치 계산, 마지막은 클래스가 아닌 최상위 함수 | 도메인 위치 유지. 함수의 컴파일 운반 타입에 `Calculator` 접미사 강제 금지 |
+
+현재 `ApplicationRole.APPLICATION`은 진입점과 협력자를 합친 의존 검사 역할이다. ARCH-05에 필요한 UseCase/Service/Coordinator 구분은 그 정보만으로 만들 수 없다. **명명용 세부 역할을 별도로 받되**, 같은 대상의 HTTP·application 역할 등록과 모순되지 않게 적용 시 대조한다. 기존 ARCH-01/03/04 역할 체계를 전면 교체하지 않는다.
+
+<!-- ARCH05_SOURCES_START -->
+HTML의 ‘현재 코드 근거’에서 기준 커밋의 실제 선언과 재사용할 수집 코드를 펼쳐 볼 수 있다. 새 검사기의 구현 코드는 아니다.
+<!-- ARCH05_SOURCES_END -->
+
+</details>
+
+<details markdown="1">
+<summary>대상 수집과 판정 흐름 · 누락을 통과시키지 않기</summary>
+
+## 입력 → 준비 → 판정 → 보고
+
+1. **입력 준비:** `ScopeImportResult`의 모듈별 실제 클래스, Gradle이 전달한 운영 소스 루트·파일 목록, 별도로 유지한 역할·기능·명명 기준을 받는다. 실제 모듈은 컴파일 출력 소속에서 읽고, 기대 모듈·package·이름은 검토한 규칙에서 가져온다. 실제 이름/위치를 복사해 기대값을 만들지 않는다. 필수 역할은 해당 검증 단위에 명시하며, 모든 역할을 매번 요구하지 않는다. 다만 이름·배치 판정을 받는 업무 대상이 0개인 입력은 준비 오류다.
+2. **대상 발견:** 지정한 모듈 출력 전체에서 클래스를 읽고, 같은 모듈의 main 컴파일 입력에서 원본 Kotlin·Java 파일을 독립적으로 수집한다. 정답 접미사나 정답 패키지만 검색하지 않는다. 잘못된 이름이나 엉뚱한 패키지로 옮겨진 타입도 발견된다. #19의 예제도 임시 출력 안의 전체 대상으로 같은 경로를 통과한다.
+3. **준비 검증:** 수집 오류, 빈 대상, 등록 타입 부재, 미등록 발견 타입, 복수 역할, 지원하지 않는 기능/기술/허용 패키지, 동일 타입의 복수 모듈 소속을 확인한다. 소스 파일 누락·읽기/구문 해석 실패·루트 소속 불명확도 준비 오류다. 잘못된 위치의 ‘존재하는 등록 대상’은 준비 오류가 아니라 다음 단계의 위치 위반이다.
+4. **이름·배치 판단:** 역할에 맞는 접미사·필요한 정확한 이름·기술 접두사를 검사하고, 소속 모듈과 정확한 package를 각각 비교한다. 원본 연결 후에는 해당 타입에 지정한 소스 루트도 확인한다. 이와 별도로 각 소스 파일의 실제 폴더와 package 경로를 비교한다. 여러 항목이 틀리면 각각 보고한다. 클래스/인터페이스/object라는 선언 방식만으로 같은 역할의 이름 규칙이 달라지지 않는다.
+5. **결과:** 준비 오류가 있으면 `evaluated=false`, 위반 목록·평가 대상·평가 수는 비운다. 준비가 정상이고 위반이 없으면 통과, 위반이 있으면 ARCH-05 실패다. 준비 오류·위반 모두 테스트는 실패하지만 원인은 구분한다. 준비 실패를 ‘위반 0이므로 통과’로 읽지 않는다.
+
+**발견한 모든 타입의 처리 이유가 남아야 한다.** 일반 역할 검사 / 명시한 지원 코드의 위치 검사 / 검증된 생성 코드의 소유자 귀속 중 하나로 기록한다. 후속 적용 대상을 관리하는 별도 체계는 #19에 추가하지 않는다. 이름이 `Helper`이거나 `$`, `Kt`를 포함한다는 이유로 자동 제외하지 않는다.
+
+## 중첩 타입·Kotlin 코드
+
+- 이름 있는 중첩 업무 타입은 별도 역할을 등록한다. 바깥 UseCase 안의 `Result`까지 `UseCase`로 끝나게 강제하지 않는다. 대신 `Result`가 데이터라는 등록 또는 구체적인 소유·지원 관계를 확인한다.
+- companion, lambda·익명 구현, 컴파일러가 만드는 보조 타입은 실제 enclosing 관계·컴파일 메타데이터로 확인한 경우만 소유자에 귀속한다. 생성 타입 자체에 업무 접미사를 강제하지 않는다. 소유자를 못 찾거나 판정이 불분명하면 자동 제외하지 말고 준비 오류로 남긴다.
+- 최상위 함수의 JVM 운반 타입(예: `MatchingEventResponseMapperKt`)은 해당 파일·기능에 연결한 지원 대상으로 등록한다. `Kt`만 잘라 임의의 클래스로 간주하지 않는다. `@file:JvmName`으로 이름이 달라진 경우도 실제 타입을 등록하고 위치를 검사한다.
+- 현재 `belongsToRole`은 enclosing 관계를 따라 **의존 역할**을 물려준다. 이를 이름 검사에 그대로 적용하면 중첩 DTO에도 접미사를 강제할 수 있으므로 소유관계 확인만 재사용한다.
+- 이는 바이트코드에 존재하는 타입의 분류다. 별도의 소스 폴더 검사는 클래스가 없는 최상위 함수·typealias·package만 있는 파일도 다룬다. 함수·변수명의 의미나 모든 소스 선언의 바이트코드 생성을 보장하지는 않는다.
+
+## 실제 소스 폴더 검사 계약
+
+**기준은 컴파일 출력 폴더가 아니라 원본 `.kt`·`.java` 파일의 폴더다.** `.class` 파일은 컴파일러가 package에 맞게 정리하므로 그것만 검사하면 원본 파일의 잘못된 위치를 놓친다.
+
+- **범위와 수집:** Gradle의 실제 `main` Kotlin·Java 소스 설정에서 모듈·소스 루트·컴파일 대상 파일 목록을 받는다. 수집기는 실제 Gradle 경로를 읽고, 정책은 위의 명시한 소스 루트·폴더 목록과 별도로 대조한다. Gradle에 등록됐다는 이유만으로 자동 허용하지 않는다. 클래스 역할 목록이나 예상 package 경로에서 소스 파일 목록을 역으로 만들지 않는다. `test`, JMH, 스크립트·리소스·외부 라이브러리 소스는 운영 입력과 구분한다. #19에서는 같은 입력 계약을 임시 예제 프로젝트로 검증한다.
+- **루트 소속:** 파일은 하나의 모듈과 하나의 유효 소스 루트로 소속이 결정돼야 한다. 중첩 루트 등으로 기대 경로가 둘 이상이면 임의로 가장 잘 맞는 루트를 고르지 않고 준비 오류로 보고한다. 루트 밖 파일이나 심볼릭 링크로 확인 범위를 벗어난 파일도 조용히 통과시키지 않는다. 기본 Java 루트처럼 존재하지 않고 컴파일 파일도 없는 루트는 그 사실을 구분하며, 전달된 파일의 부재와 혼동하지 않는다.
+- **비교:** 소스 루트에서 파일의 부모 폴더까지 상대 경로를 구하고, **원본 package 선언의 식별자 목록**을 폴더 목록으로 바꾼 값과 정확히 비교한다. 파일 시스템이 대소문자를 무시해도 이 비교는 대소문자를 구분한다. 명시적인 공통 package 접두사 생략 규칙은 도입하지 않는다. package가 없으면 빈 package로 해석해 소스 루트 바로 아래인지 비교하며, 그 타입의 허용 package 검사는 별도로 실패할 수 있다.
+- **선언 해석:** package 문자열을 주석·문자열에서 정규식으로 처음 찾아 쓰지 않는다. Kotlin의 파일 어노테이션·주석·이스케이프 식별자와 Java 문법을 구분할 수 있는 구문 파서를 사용한다. 파일 읽기·구문 해석 실패는 ‘package 없음’으로 바꾸지 않고 준비 오류다. 파일명/클래스명 일치는 강제하지 않으며 `MatchingDtos.kt`처럼 여러 타입이 있는 파일도 폴더 비교는 한 번이다.
+- **소스와 바이트코드:** 두 입력은 같은 모듈의 현재 main 소스/컴파일 작업에서 얻는다. 가능한 경우 모듈·package·SourceFile로 원본을 대조하고, 연결이 필요한데 누락/중복 후보가 있으면 준비 오류로 남긴다. 원본 package와 실제 바이트코드 package가 불일치하는 입력을 정상으로 해석하지 않는다. 모든 원본 파일에 `.class` 하나가 반드시 생긴다고 가정하지 않는다. 바이트코드 생성 타입은 원본 파일 검사를 복제하지 않는다.
+- **생성 소스:** `main` 컴파일에 포함된 생성 `.kt`·`.java`도 해당 생산 작업·소스 루트·허용 package가 목록에 명시되면 같은 폴더 기준을 적용한다. 미등록 생성 루트는 자동 허용하지 않는다. 원본 없이 컴파일러가 만든 `.class`는 앞의 소유관계 기준으로 다룬다. 알 수 없는 입력을 `generated` 이름만으로 제외하지 않는다. Gradle TestKit에서 실제 생성 작업과 main 소스 루트 연결을 확인했다. 모든 외부 생성기 플러그인을 검증했다는 뜻은 아니다.
+- **Gradle 연결:** 소스 루트 목록과 상대 파일 경로·내용을 검사 태스크의 입력으로 등록한다. `main` 컴파일/소스 생산 작업과 실행 순서를 연결하고, package를 그대로 둔 채 파일만 이동해도 검사가 다시 평가돼야 한다. 다른 모듈의 test/JMH 실행을 새 선행 조건으로 추가하지 않는다. 허용 목록·역할별 위치 정책도 태스크 입력이므로 정책 변경 후 이전 통과 결과를 재사용하지 않는다.
+
+**실패 예:** 이름·모듈·package가 올바르지만 파일만 `order/`에 남아 있으면 `sourceFolder` 위반이다. 파일을 찾지 못하거나 package를 읽을 수 없다면 준비 오류다. 파일 폴더와 package가 서로 일치하더라도 둘 다 잘못된 `infrastructure`를 가리키면 유즈케이스의 역할별 package 검사에서 실패한다.
+
+**채택한 구문 분석:** 프로젝트와 같은 `kotlin-compiler-embeddable:2.3.21`의 PSI로 Kotlin을, JDK `JavacTask.parse()`로 Java를 읽는다. 일반 package·주석/문자열 속 가짜 package·파일 어노테이션·이스케이프 식별자·package 없는 파일·구문 오류를 테스트했다. Kotlin 환경 생성에는 제한된 K1Deprecation opt-in이 필요하므로 버전 변경 시 계약 테스트로 호환성을 다시 확인한다. 이 의존은 architecture-tests의 테스트 전용이며 제품 모듈에는 추가하지 않았다. 실제 Gradle main 입력과 생성 작업은 TestKit 및 현재 6개 모듈 전달 검증으로 확인했다.
+
+## 보고 내용
+
+타입 검사는 `ARCH-05 / 대상 타입 / 등록 역할·기능 / 항목(name·package·module) / 실제 값 / 기대 값 / 명세 위치`를 남긴다. 소스 폴더 검사는 `ARCH-05 / 모듈 / 원본 파일 경로 / sourceFolder / 실제 상대 폴더 / package에서 계산한 기대 폴더`를 남긴다. 하나의 파일에서 여러 타입이 나와도 폴더 위반은 파일당 한 번 보고한다. 파일명은 실제 SourceFile 정보를 사용할 수 있지만 클래스 선언의 정확한 행은 바이트코드만으로 보장하지 못한다. 행을 추측하거나 임의 메서드의 행을 붙이지 않는다. 여러 참조 위치가 아니라 대상·항목당 하나로 중복 제거하고 안정적인 순서로 정렬한다.
+
+읽기 예: **“주문 제출 유즈케이스의 이름이 OrderSubmissionService입니다. 기대한 이름은 SubmitOrderUseCase입니다.”** 다른 항목은 **“현재 package는 …order이며, …order.application이어야 합니다.”**처럼 분리한다.
+
+</details>
+
+<details markdown="1">
+<summary>정상·위반·누락 사례와 기대값의 근거</summary>
+
+## 수용 사례
+
+아래는 명세에서 정한 기대 결과다. ARCH-05 테스트 45개에서 통과를 확인했으며, 사례별 연결과 전체 회귀 결과는 [구현 리뷰](architecture-05-review.md)에 기록한다. 정상·위반 예제는 거래 알고리즘을 재구현하지 않고 선언·역할·위치만 최소한으로 만든다. 각 부정 사례는 가능한 한 한 요소만 바꿔 원인을 분리한다.
+
+| 사례 | 입력·조건 | 기대 결과 / 근거 |
+| --- | --- | --- |
+| NAME-01 역할별 정상 | 위 역할표의 UseCase, Service, Coordinator, Calculator, Resolver, 도메인/앱 Store, 기술 Store, Repository, Publisher, HTTP, config 대표 | 준비 정상, 위반 0. 각 역할은 자기 이름·모듈·패키지 기준을 사용 |
+| NAME-02 진입점 이름 | 등록한 제출 진입점이 올바른 application에 있지만 `OrderSubmissionService` 또는 `UseCase`라는 이름 | 이름 위반. 합의한 동작+대상+UseCase/정확한 제출 이름과 불일치 |
+| NAME-03 협력자 구분 | 예약 내부 작업은 `OrderFundingService`일 때 정상, 같은 역할을 `ReserveOrderUseCase`로 명명 | 후자 이름 위반. 역할은 클래스명으로 바뀌지 않음 |
+| NAME-04 계산·선택 구분 | 등급 선택 역할에 `FeeTierCalculator`; 수치 계산 역할에 `TradingFeeResolver` | 각각 이름 위반. Calculator/Resolver 의미를 섞지 않는 C07 |
+| NAME-05 저장 명명 | 포트를 `BalanceRepository`, Spring Data 역할을 `MatchingEventStore`, Postgres 구현을 `BalanceStore`/`FakeBalanceStore`로 명명 | 각각 이름 위반. 포트·기술 구현·Repository와 기술 접두사 구분 |
+| NAME-06 위치 | 정상 이름의 UseCase를 infrastructure/config/다른 기능 application에 배치. `application.extra`, `applicationBackup` 변형 포함 | package 위반. 정확한 기능·패키지 경계, config 예외로 면제 안 함 |
+| NAME-07 소속 모듈 | `D.ledger.BalanceStore`를 domain-order 출력에 두고 ledger 포트로 등록 | module 위반. 이름·package만 맞아도 모듈 이동을 허용하지 않음 |
+| NAME-08 포트 위치 분리 | 도메인 BalanceStore는 domain-ledger 유지, 앱 MatchingEventStore는 matching.application.port | 둘 다 정상. 전자를 앱으로 옮기거나 후자를 infrastructure에 두면 해당 위치/모듈 위반 |
+| NAME-09 조립·발행·HTTP | Config는 A.config, Persistent/NoOp 발행 구현은 각 지정 위치, DTO는 order.api | 정상. 같은 타입의 config/application 또는 publish/persistence 위치 바꿔치기는 package 위반 |
+| NAME-10 여러 결함·출력 | 하나의 대상이 이름·package·module을 모두 위반; 입력 순서 변경 | 3개 항목별 위반, 중복 없음, 같은 정렬·대상·실제/기대 값. 출처 행 없는 경우 null |
+| NAME-11 중첩·함수 | 데이터로 등록한 중첩 Result, 소유자가 확인된 companion/익명·생성 보조, 명시 등록한 최상위 함수 운반 타입 | 업무 접미사 오탐 없음. 이름 있는 중첩 업무 클래스는 자기 규칙 검사. 최상위 함수 운반 타입을 잘못된 package에 놓으면 위치 위반 |
+| NAME-12 생성 코드 위장 | 이름에 `$` 또는 `Kt`가 있지만 소유/메타데이터 근거 없는 새 타입, 미등록 named nested 타입 | 준비 오류. 문자 패턴만으로 누락을 숨기지 못함. @JvmName 운반 타입도 같은 등록 원칙 |
+| NAME-13 새 대상 누락 | 전체 출력에는 새 타입이 있으나 역할 목록에 없음; 올바른 위치와 잘못된 위치 두 변형 | 준비 오류, 미평가. 정답 패키지/접미사로만 대상을 찾으면 안 됨 |
+| NAME-14 등록 오류 | 빈 입력·필수 역할 비어 있음·등록 타입 부재·중복 역할·동일 타입 복수 모듈·모르는 기능/기술 또는 비어 있는 허용 위치 | 준비 오류, 미평가. 등록 오류가 검사 면제로 바뀌면 안 됨 |
+| NAME-15 파일·수집 오류 | 필수 클래스 파일 삭제, 손상 바이트, 읽은 결과에서 파일 일부 누락 | 기존 수집기 오류 유지, 미평가. 등록 최소 타입/파일 대조 경로를 재사용 |
+| NAME-16 지원 코드 범위 | 이름 기준 없는 지원 타입에 구체 이유·위치가 있음 | 위치를 검사하고 접미사 면제 대상을 따로 보고. wildcard 제외, 이유 없는 면제, 업무/지원 중복 분류, 업무 대상 0개는 준비 오류 |
+| NAME-17 실제 폴더 정상 | 올바른 package와 소스 루트 상대 폴더가 일치하는 Kotlin·Java 파일 | sourceFolder 위반 0. 소스 루트가 달라도 각 루트 기준으로 동일 규칙 적용 |
+| NAME-18 파일만 이동 | 클래스 이름·package·모듈을 유지하고 파일만 한 단계 위/다른 기능/대소문자가 다른 폴더로 이동 | 파일당 sourceFolder 위반. 컴파일 성공이나 올바른 `.class` 출력 위치로 면제하지 않음 |
+| NAME-19 선언과 폴더의 동시 이동 | 등록 유즈케이스의 선언과 폴더를 모두 infrastructure로 이동 | 폴더 일치는 통과하지만 역할 package 위반. 두 검사의 책임을 구분 |
+| NAME-20 클래스 없는 파일·복수 선언 | 최상위 함수/확장 함수/typealias/package만 있는 파일, 여러 DTO·중첩 타입이 같은 파일에 있음 | 각 파일의 폴더를 검사. 잘못된 파일당 한 번 보고하며 `.class`가 없다는 이유로 누락하지 않음 |
+| NAME-21 package 읽기 | 주석·문자열 속 가짜 package, 파일 어노테이션, 이스케이프 식별자, package 생략, 구문 오류 | 실제 package만 사용. 생략은 루트 바로 아래와 비교하되 운영의 허용 폴더 목록은 별도로 위반할 수 있음. 구문 오류는 준비 오류. 파서 기대값은 독립 리터럴 |
+| NAME-22 소스 준비 오류 | 전달된 파일 삭제/읽기 실패, 루트 밖·복수 소속, 필요한 소스-바이트코드 연결 누락/충돌 | 준비 오류, 미평가. 미사용 기본 Java 루트 부재는 파일 누락과 구분 |
+| NAME-23 Gradle 전달·재평가 | main의 두 유효 소스 루트·별도 test/JMH 루트, 확인된 생성 main 루트; 검사 후 파일만 이동해 재실행 | 필요한 main 파일이 모두 전달되고 test/JMH는 운영 목록에 없음. 경로 변화가 재평가를 일으켜 sourceFolder 위반을 보고; 생성/중복 루트도 위 계약 적용 |
+| NAME-24 허용 경로 목록 | 정상 order.application과, package/폴더가 모두 일치하는 order.utils·application.service·domain-ledger/application 변형 | 정상 경로만 통과. 나머지는 allowedFolder 위반이며 역할이 있는 타입은 역할별 package 위반도 별도 보고 |
+| NAME-25 루트 변경 우회 | Gradle main에 미등록 custom/generated 루트를 추가하거나 기존 루트를 더 깊게 변경; 빈 기본 Java 루트와 Java 파일 추가 변형 | 미등록 루트는 sourceRoot 위반. 파일이 없는 기본 Java 루트만 비활성 허용. 새 루트로 기대 폴더를 재계산해 면제하지 않음 |
+| NAME-26 허용 폴더의 잘못된 역할 | PostgresBalanceStore를 허용된 order.application에 배치하고 package도 일치시킴. 같은 package를 가진 다른 허용 소스 루트로 옮기는 변형 포함 | 폴더 목록·일치는 정상이어도 역할별 package 또는 해당 타입에 지정한 sourceRoot 위반 |
+| NAME-27 클래스 없는 금지 경로 | 허용 목록 밖 폴더에 package/typealias/최상위 함수만 있는 파일; 경로 목록 변경 뒤 재실행 | 바이트코드 타입 수와 무관하게 allowedFolder 위반. 정책 변경도 재평가되며 발견 목록을 정답 목록으로 자동 복사하지 않음 |
+| NAME-28 정책 목록 변경 | 동일 검사기에 새 정확한 경로와 역할을 추가한 정책 전달 후 제거; 미등록 형제·하위 경로, 다른 역할, 중복·잘못된 정책 변형 | 필요한 역할 연결까지 맞춘 새 경로만 통과하고 인접 미등록 경로·다른 역할은 계속 위반. 제거한 경로의 파일은 다시 위반. 중복·모르는 모듈/역할·빈 역할·모순된 타입 제한은 준비 오류 |
+
+정상 이름을 suffix로 조합한 구현을 기대값 생성에 복사하지 않는다. 각 사례의 입력·기대 값은 표와 독립적인 리터럴로 작성한다. 이름만 검사하다 위치 누락, 역할을 이름으로 추측, 빈 목록 통과, 넓은 package 매칭, 생성 코드 일괄 제외가 있으면 대응 사례가 실패해야 한다.
+
+</details>
+
+<details markdown="1">
+<summary>재사용할 기반·구현 단위·완료 조건</summary>
+
+## 재사용과 작은 구현 단위
+
+기존 `ModuleRegistration`, `ProductionScopeImporter`, `ScopeImportResult`/`ScopeProblem`, `fixtureOutput`과 명세/출처 보고 방식을 재사용한다. 생산 모듈 등록 체계는 재사용한다. 폴더 검사를 위해 Gradle의 main 소스 루트·파일 입력 전달과 package 읽기 단계를 추가한다. Spring 실행·DB·Docker는 추가하지 않는다. 구문 파서가 필요하면 검사 모듈의 테스트 의존성으로만 두고 제품 의존성으로 전파하지 않는다. ARCH-03/04의 큰 역할을 이름 규칙에 억지로 끼워 넣지 않는다.
+
+아래 파일로 구현했다. `support/NamingPlacementScope.kt`는 대상·역할 준비, `rules/RoleNamingPlacement.kt`는 이름·위치 비교를 맡는다. 원본 파일 입력·package 읽기와 실제 폴더 비교는 별도 소스 배치 책임으로 나눠 기존 바이트코드 수집기에 억지로 넣지 않는다. 이름·module·package 비교에는 가짜 의존 대상이 없으므로 기존 의존 위반 모델에 targetType을 억지로 만들지 말고 위 보고 계약을 가진 결과를 둔다. 규칙 엔진과 예제·운영 입력을 분리하며 범용 컨벤션 DSL을 만들지 않는다.
+
+1. **대상과 분류:** NAME-11~16의 준비/생성 코드 경계부터 테스트한다. 컴파일러 보조 타입 분류는 현재 Kotlin/JVM 결과에서 enclosing·메타데이터가 어떻게 관측되는지 확인하고, 확인 불가 시 좁은 명시 등록으로 처리한다. companion의 Kotlin 메타데이터와 익명 타입의 enclosing 관계를 실제 컴파일 예제로 확인했다. 의도한 실패를 확인한 뒤 준비 구현.
+2. **이름·위치:** NAME-01~10을 역할별 독립 예제로 검증한다. 기대값 리뷰 → 실패 원인 확인 → 최소 비교 구현 → 정상·위반 보고 확인 순서. 같은 Kotlin 파일의 여러 선언도 빠지지 않게 한다.
+3. **소스 폴더:** NAME-17~28로 Gradle 소스 입력 → 루트·폴더 허용 목록 → package 읽기 → 상대 폴더 비교를 검증한다. 소스 파일 이동만으로 Gradle 검사 결과가 갱신되는지 포함한다. 정책은 `ProjectLayoutPolicy.kt` 같은 별도 데이터 파일로 받고, 검사기를 고치지 않고 정확한 경로의 추가·삭제가 반영되는지 확인한다.
+4. **연결·회귀:** 실제 컴파일된 예제와 원본 파일 → 기존 수집기/소스 준비 → 새 규칙 → 보고까지 확인하고 기존 구조 검사 전체를 실행한다. 운영 적용 테스트에는 ARCH-05를 아직 연결하지 않는다. HTML에는 예제 통과와 실제 운영 미적용을 구분한다.
+
+실제 실행 명령:
+
+```sh
+./gradlew :architecture-tests:test --tests '*NamingPlacement*Test' --tests '*SourcePlacement*Test' --no-daemon --console=plain
+JAVA_TOOL_OPTIONS=-Djava.net.preferIPv6Addresses=true TESTCONTAINERS_HOST_OVERRIDE=localhost ./gradlew build --no-daemon --continue --stacktrace --rerun-tasks
+./gradlew :architecture-tests:test --tests '*NamingPlacementScopeTest' --no-daemon --console=plain
+```
+
+보고서: `architecture-tests/build/reports/tests/test/`, `architecture-tests/build/test-results/test/`. 구조 검사 자체에는 서버·DB·Docker가 필요하지 않다. 전체 build의 기존 제품 통합 테스트는 Docker를 사용했다. 로컬 Docker의 IPv4 응답 문제로 전체 실행에만 위 IPv6 설정을 적용했으며 저장소 설정은 바꾸지 않았다. 전체 build 등 추가 회귀는 실제 변경 영향과 PR 기준에 따라 선택하고 이번 명세 작성 중 실행했다고 기록하지 않는다.
+
+## #19와 #20~21의 적용 경계
+
+| 작업 | 이번 결과 / 후속 결과 | 완료라고 말하지 않을 것 |
+| --- | --- | --- |
+| #19 ARCH-05 | 역할별 이름·package·모듈 비교와 소스 폴더 일치 검사, 예제의 정상·위반·누락 증거, 보고, 생성 코드 범위·한계 기록 | 실제 거래 코드의 목표 이름·배치 준수, API/Bean·SQL 동작 보존 |
+| #20 | 제출·취소 UseCase, 내부 Service, MatchingCoordinator, 주문 HTTP 이동과 함께 ARCH-03/04/05 해당 운영 대상 활성화. 기존 API·Bean·대표 흐름 검증 | 미이동 저장 포트·구현까지 활성화 완료 |
+| #21 | matching 포트와 기능별 저장 구현·Repository·발행 구현 이동. 관련 이름·package·실제 폴더 및 역할 등록 갱신, 실제 PostgreSQL/JPA·조건부 Bean 계약 확인 | SQL 원자성을 이름 검사만으로 증명 |
+| #19 종료 확인 | ARCH-05 이후에도 이슈의 실행 명령·현재/미적용 목록·검증 기록·흐름 문서 등 완료 조건을 대조 | 이 PR 병합만으로 #19 전체 자동 종료 |
+
+#20에서는 전체 모듈을 발견하되, 아직 #21에서 이동할 타입은 **구체적인 타입·이유·후속 티켓**으로 남긴다. 그 패키지 전체를 검사 제외하지 않는다. 단계별 적용 목록은 운영 호출부의 책임이며, #19에서 범용 예외 관리 엔진을 신설하지 않는다. 도메인의 유지 대상도 역할/현재 위치를 기록하며, 이번 목표 배치와 무관한 common/실행기 역할을 억지로 옮기지 않는다. #21에서는 이동한 대상의 보류 기록을 제거한다. 구현 시 확정할 정확한 운영 등록 목록은 각 이동 티켓의 diff와 대조한다.
+
+## 완료 조건과 남은 판단
+
+- [x] 준비가 온전한 정상 예제는 통과하고, 이름/package/module/sourceRoot/allowedFolder/sourceFolder 위반을 각각 실제·기대 값으로 보고한다.
+- [x] package와 실제 폴더를 함께 확인한다. 클래스 없는 파일·주석/문자열·복수 소스 루트·누락/해석 실패를 다루며, Gradle이 소스 파일의 추가·이동·삭제를 검사 입력 변화로 인식한다.
+- [x] 경로·허용 역할 목록을 검사 로직과 분리한다. 목록 추가·삭제는 해당 정확한 경로에만 반영되고, 잘못된 정책은 준비 오류이며 변경 뒤 검사가 다시 평가된다.
+- [x] 빈 대상·누락·등록 충돌·파일 손상이 거짓 통과하지 않는다. 입력 순서 변경에도 결과가 안정적이다.
+- [x] 중첩 데이터·최상위 함수·컴파일러 보조 코드에 접미사 오탐이 없고, 이름 패턴으로 업무 타입을 숨길 수 없다.
+- [x] 같은 규칙을 운영 입력에 연결할 수 있으나 이번에는 예제만 적용한다. 기존 검사 회귀와 미적용 목록을 기록한다.
+- [x] HTML에서 역할표, 입력→판단→결과, 실제 실행 근거와 한계를 읽을 수 있다. 로컬 실행 근거와 운영 미적용을 구분하며, 최신 PR·CI 상태는 PR에서 확인한다.
+
+**합의:** 역할별 명명 구분, 도메인 모듈·포트 선언 유지, config 조립 유지, package·모듈과 **실제 소스 폴더까지 검사**, #19 예제 후 #20~21 실제 적용.
+
+**합의한 경로 정책:** 명시한 경로만 허용하며 하위 폴더·추가 소스 루트를 자동 허용하지 않는다. 구체 목록은 위 초기 목표 경로를 사용하고 변경 이유·역할·사례를 함께 검토한다.
+
+**구현한 설계:** 역할 기준과 주요 확정 이름의 병행 검사, 검증된 생성 코드 소유관계 분류. 파일 분할·내부 자료 구조는 구현자가 조정 가능하다.
+
+**선택 완료:** 실제 소스 폴더 일치와 명시한 경로 목록까지 검사한다. 사용자에게 같은 선택을 다시 요청하지 않는다. 추가한 소스 입력·비교·누락 사례도 이번 ARCH-05 구현 범위다. package 읽기에 사용할 구문 파서와 Gradle API 연결은 위 기술 확인을 거쳐 구현했다. Kotlin 2.3.21 PSI와 JDK Java 구문 파서를 사용하며, Kotlin 환경 생성 API의 버전 의존은 구현 리뷰에 기록한다.
+
+**비차단 후속:** 컨트롤러의 정확한 이름, 실제 운영 역할별 목록은 #20~21에서 현재 diff와 함께 확정한다. 역할 명명 검사기 자체의 구현을 막지 않는다.
+
+**보장하지 않음:** 역할의 의미적 정당성, 동의어 전수 탐지, 함수/변수·파일명 스타일, 호출 순서, 금액, DB 원자성, 동시성, HTTP/JSON 호환성. 구조 규칙이 정상이어도 이들 검증을 대신하지 않는다.
+
+</details>
+
+<!-- ARCH04_HISTORY_START -->
+
 # 구조 검사 명세 — #19 · ARCH-04 애플리케이션 구현 독립
 
 대상: [#19 공통 구조 검사 기반 구현 및 명세 v1 적용](https://github.com/0Chord/coin-exchange/issues/19). 기준: [PR #30](https://github.com/0Chord/coin-exchange/pull/30)이 병합된 `feature/phase-2/integration`의 **`07d4e0501dc5de7bbc9f6709eaa04ae22eb7741c`**. 확인일: 2026-09-27.

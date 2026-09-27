@@ -1,0 +1,703 @@
+{
+  "createdAt": "2026-09-27T14:15:59+09:00",
+  "baseCommit": "f511105002c6581e8e4b44b94e549bc9d736685d",
+  "branch": "feat/naming-placement-check/19",
+  "workingTree": "로컬 검증 실행 당시의 미커밋 스냅샷. sourceHashes는 게시할 코드·문서 내용을 식별하며, commands의 전체 빌드 해시는 그 실행 시점을 보존한다.",
+  "scope": "#19 ARCH-05 검사기와 예제 검증. 운영 이름·폴더 이동 및 적용은 #20~21.",
+  "sourceHashes": {
+    "architecture-tests/build.gradle.kts": "6d986d7dc02d1dae7047a57b0b652eea1a5fa70e1850be83cf2f5fa9a0414825",
+    "architecture-tests/gradle/main-sources.gradle.kts": "f5d0a8111e0264a9a990d6e7eb1ee445c00ede4064bef3adff131cac0b465d04",
+    "architecture-tests/src/test/kotlin/com/exchange/architecture/NamingPlacementContractTest.kt": "f5aeca4da9b80e1464ae610f27bed6cd45f938d6667efad7a17c103617e1ee05",
+    "architecture-tests/src/test/kotlin/com/exchange/architecture/NamingPlacementGradleWiringTest.kt": "b94d97c71bbc59307bf01bbeca52b982195f8bf1cefd2a0a2f6dd64ecaebb2df",
+    "architecture-tests/src/test/kotlin/com/exchange/architecture/NamingPlacementIntegrationTest.kt": "8550ecbf2826e489741def39f9952d9c226f8579023fe3593e6f309d49aa6dc5",
+    "architecture-tests/src/test/kotlin/com/exchange/architecture/NamingPlacementScopeTest.kt": "0cdddf20d5c919868b3d4f70e4f8345d4e5eeeee8fd3bb1b2ce93b127f1fda28",
+    "architecture-tests/src/test/kotlin/com/exchange/architecture/SourcePlacementContractTest.kt": "38c7706ed0eebafadd89ee681b328b7c090a4fea433a58982211a3060a979ad1",
+    "architecture-tests/src/test/kotlin/com/exchange/architecture/fixtures/naming/NamedFunctions.kt": "5bc2a20e3d6105b03d4bb91edcfce510f55d94c9cb9d7f7217c199ba66e7bedd",
+    "architecture-tests/src/test/kotlin/com/exchange/architecture/fixtures/naming/NamingFixtures.kt": "fdfc70ab562247b32e81e3c70154a35940ea6e07f7c31702e44c498a4cf63159",
+    "architecture-tests/src/test/kotlin/com/exchange/architecture/policy/ProjectLayoutPolicy.kt": "be11656f5e94bdd1539cef521a5119d9bf4bed09e1722bfa28d1d2d7a2466f48",
+    "architecture-tests/src/test/kotlin/com/exchange/architecture/rules/NamingPlacement.kt": "a36c597a58a1f48d128968536f312ec7f5dfab7aacb42aac86909fb9542be8c9",
+    "architecture-tests/src/test/kotlin/com/exchange/architecture/rules/RoleNamingPlacement.kt": "9619e32996a2c04a0e8e196ede511f57998845ec55e84db018426fe4078c6192",
+    "architecture-tests/src/test/kotlin/com/exchange/architecture/support/MainSourceSnapshot.kt": "6c0ccf1301bdcfcee43d7e57a2deb9a9c523780fd451a737d3d538e1cb19b9ab",
+    "architecture-tests/src/test/kotlin/com/exchange/architecture/support/NamingPlacementScope.kt": "aa623ed5b59b0719fa0bb97ae7d04a28856615b8a5bdd196b35ff5c54a78db09",
+    "architecture-tests/src/test/kotlin/com/exchange/architecture/support/SourcePackageParser.kt": "629ba8cb4d82775bb9fd1712d199b21a6565876f962cf891d0990dd668774608",
+    "architecture-tests/src/test/kotlin/com/exchange/architecture/support/SourcePlacement.kt": "f742fab3085a1fef6b6f9b3c5a69c2e83797a66617c0ca738ada88f483d53db5",
+    "engineering/architecture-05-review.md": "ccf6b4dd866bb5f40f5428698b60824f25bd8c15fda2ba0827cdca708549f606",
+    "engineering/architecture-check-spec.md": "5746d4b45288833fcb14db251f8e3585717d4ed901901da64f31a63bfedab2b1"
+  },
+  "redEvidence": [
+    {
+      "stage": "이름·역할 초기 Red",
+      "tests": 9,
+      "failures": 9,
+      "errors": 0,
+      "skipped": 0,
+      "failedCases": [
+        {
+          "name": "NAME-01 역할마다 합의한 접미사와 위치를 사용한다()",
+          "errorType": "org.opentest4j.AssertionFailedError"
+        },
+        {
+          "name": "NAME-05 저장 포트 구현과 Repository의 이름을 구분한다()",
+          "errorType": "org.opentest4j.AssertionFailedError"
+        },
+        {
+          "name": "NAME-13 새 타입을 이름이나 위치로 자동 등록하지 않는다()",
+          "errorType": "org.opentest4j.AssertionFailedError"
+        },
+        {
+          "name": "NAME-16 위치만 검사하는 지원 코드도 이유와 업무 대상이 필요하다()",
+          "errorType": "org.opentest4j.AssertionFailedError"
+        },
+        {
+          "name": "NAME-03 이름을 UseCase로 바꿔도 내부 작업의 역할은 바뀌지 않는다()",
+          "errorType": "org.opentest4j.AssertionFailedError"
+        },
+        {
+          "name": "NAME-14 빈 대상 역할 누락과 역할 충돌은 평가하지 않는다()",
+          "errorType": "org.opentest4j.AssertionFailedError"
+        },
+        {
+          "name": "NAME-06과07과10 이름 패키지 모듈의 틀린 항목을 각각 안정적으로 보고한다()",
+          "errorType": "org.opentest4j.AssertionFailedError"
+        },
+        {
+          "name": "NAME-04 계산기와 기준 선택기를 서로 바꾸면 이름 위반이다()",
+          "errorType": "org.opentest4j.AssertionFailedError"
+        },
+        {
+          "name": "NAME-02 제출 진입점의 기존 이름과 의미 없는 UseCase를 거절한다()",
+          "errorType": "org.opentest4j.AssertionFailedError"
+        }
+      ]
+    },
+    {
+      "stage": "소스 폴더 초기 Red",
+      "tests": 14,
+      "failures": 14,
+      "errors": 0,
+      "skipped": 0,
+      "failedCases": [
+        {
+          "name": "NAME-22 파일 삭제와 루트 밖 경로는 준비 오류다()",
+          "errorType": "org.opentest4j.AssertionFailedError"
+        },
+        {
+          "name": "NAME-17 정상 Kotlin 폴더와 package는 일치한다()",
+          "errorType": "org.opentest4j.AssertionFailedError"
+        },
+        {
+          "name": "NAME-28 정책 추가는 정확한 경로에만 반영되고 제거하면 다시 위반이다()",
+          "errorType": "org.opentest4j.AssertionFailedError"
+        },
+        {
+          "name": "NAME-20 여러 선언과 package만 있는 파일을 각각 한번 평가한다()",
+          "errorType": "org.opentest4j.AssertionFailedError"
+        },
+        {
+          "name": "NAME-17 Java 구문도 JDK 파서로 읽고 오류는 준비 실패로 남긴다()",
+          "errorType": "org.opentest4j.AssertionFailedError"
+        },
+        {
+          "name": "NAME-21 주석 문자열 파일 어노테이션 속 가짜 package는 선언이 아니다()",
+          "errorType": "java.util.NoSuchElementException"
+        },
+        {
+          "name": "NAME-18 파일만 위로 옮기면 클래스가 없어도 폴더 불일치를 보고한다()",
+          "errorType": "org.opentest4j.AssertionFailedError"
+        },
+        {
+          "name": "NAME-28 중복 빈 역할 미등록 모듈과 잘못된 상대 경로 정책은 준비 오류다()",
+          "errorType": "org.opentest4j.AssertionFailedError"
+        },
+        {
+          "name": "NAME-25 새 루트는 자동 허용하지 않으며 빈 기본 Java 루트만 비활성이다()",
+          "errorType": "org.opentest4j.AssertionFailedError"
+        },
+        {
+          "name": "NAME-18 대소문자가 다른 폴더도 불일치다()",
+          "errorType": "org.opentest4j.AssertionFailedError"
+        },
+        {
+          "name": "NAME-24와27 package와 폴더가 일치해도 미등록 경로는 위반이다()",
+          "errorType": "org.opentest4j.AssertionFailedError"
+        },
+        {
+          "name": "NAME-22 중첩 루트와 심볼릭 링크 탈출로 소속을 숨길 수 없다()",
+          "errorType": "org.opentest4j.AssertionFailedError"
+        },
+        {
+          "name": "NAME-21 구문 오류를 package 없음으로 바꾸지 않는다()",
+          "errorType": "org.opentest4j.AssertionFailedError"
+        },
+        {
+          "name": "NAME-21 이스케이프 식별자와 package 없는 파일을 구문대로 읽는다()",
+          "errorType": "java.util.NoSuchElementException"
+        }
+      ]
+    },
+    {
+      "stage": "타입별 지정 루트 누락 재현",
+      "tests": 6,
+      "failures": 1,
+      "errors": 0,
+      "skipped": 0,
+      "failedCases": [
+        {
+          "name": "NAME-26 같은 package의 다른 허용 루트도 타입별 지정 위치를 우회할 수 없다()",
+          "errorType": "org.opentest4j.AssertionFailedError"
+        }
+      ]
+    }
+  ],
+  "commands": [
+    {
+      "command": "./gradlew :architecture-tests:test --tests '*NamingPlacement*Test' --tests '*SourcePlacement*Test' --no-daemon --console=plain",
+      "tests": 44,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0,
+      "note": "소스 루트 우회 반례 추가 전의 전용 실행"
+    },
+    {
+      "command": "./gradlew build --no-daemon --continue --stacktrace --rerun-tasks",
+      "status": "aborted",
+      "cause": "기존 PostgreSQL 통합 테스트의 인증 응답 대기. 컨테이너 내부는 준비됐으나 호스트 127.0.0.1은 3초 probe timeout, ::1은 즉시 PostgreSQL SSL 응답 N. 응답 없는 실행을 종료함."
+    },
+    {
+      "command": "JAVA_TOOL_OPTIONS=-Djava.net.preferIPv6Addresses=true TESTCONTAINERS_HOST_OVERRIDE=localhost ./gradlew build --no-daemon --continue --stacktrace --rerun-tasks",
+      "status": "success",
+      "duration": "5m",
+      "executedTasks": 30,
+      "tests": 525,
+      "architectureTests": 282,
+      "newArch05Tests": 45,
+      "productTests": 243,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0,
+      "sourceHashes": {
+        "architecture-tests/gradle/main-sources.gradle.kts": "f5d0a8111e0264a9a990d6e7eb1ee445c00ede4064bef3adff131cac0b465d04",
+        "architecture-tests/src/test/kotlin/com/exchange/architecture/SourcePlacementContractTest.kt": "38c7706ed0eebafadd89ee681b328b7c090a4fea433a58982211a3060a979ad1",
+        "architecture-tests/src/test/kotlin/com/exchange/architecture/support/SourcePlacement.kt": "f742fab3085a1fef6b6f9b3c5a69c2e83797a66617c0ca738ada88f483d53db5",
+        "architecture-tests/src/test/kotlin/com/exchange/architecture/policy/ProjectLayoutPolicy.kt": "00795f24d9d6b2d3028003b81b91dc4099420badfe1e39e5975d7de1028e09ef",
+        "architecture-tests/src/test/kotlin/com/exchange/architecture/NamingPlacementGradleWiringTest.kt": "b94d97c71bbc59307bf01bbeca52b982195f8bf1cefd2a0a2f6dd64ecaebb2df",
+        "architecture-tests/build.gradle.kts": "6d986d7dc02d1dae7047a57b0b652eea1a5fa70e1850be83cf2f5fa9a0414825",
+        "architecture-tests/src/test/kotlin/com/exchange/architecture/support/SourcePackageParser.kt": "629ba8cb4d82775bb9fd1712d199b21a6565876f962cf891d0990dd668774608",
+        "architecture-tests/src/test/kotlin/com/exchange/architecture/NamingPlacementContractTest.kt": "f5aeca4da9b80e1464ae610f27bed6cd45f938d6667efad7a17c103617e1ee05",
+        "architecture-tests/src/test/kotlin/com/exchange/architecture/NamingPlacementIntegrationTest.kt": "8550ecbf2826e489741def39f9952d9c226f8579023fe3593e6f309d49aa6dc5",
+        "architecture-tests/src/test/kotlin/com/exchange/architecture/support/NamingPlacementScope.kt": "aa623ed5b59b0719fa0bb97ae7d04a28856615b8a5bdd196b35ff5c54a78db09",
+        "architecture-tests/src/test/kotlin/com/exchange/architecture/NamingPlacementScopeTest.kt": "34a41b2d1345741207aa0098eba5092ef89206ee410d811abdd3f6b03160f315",
+        "architecture-tests/src/test/kotlin/com/exchange/architecture/fixtures/naming/NamedFunctions.kt": "5bc2a20e3d6105b03d4bb91edcfce510f55d94c9cb9d7f7217c199ba66e7bedd",
+        "architecture-tests/src/test/kotlin/com/exchange/architecture/rules/RoleNamingPlacement.kt": "9619e32996a2c04a0e8e196ede511f57998845ec55e84db018426fe4078c6192",
+        "architecture-tests/src/test/kotlin/com/exchange/architecture/support/MainSourceSnapshot.kt": "6c0ccf1301bdcfcee43d7e57a2deb9a9c523780fd451a737d3d538e1cb19b9ab",
+        "architecture-tests/src/test/kotlin/com/exchange/architecture/rules/NamingPlacement.kt": "a36c597a58a1f48d128968536f312ec7f5dfab7aacb42aac86909fb9542be8c9",
+        "architecture-tests/src/test/kotlin/com/exchange/architecture/fixtures/naming/NamingFixtures.kt": "fdfc70ab562247b32e81e3c70154a35940ea6e07f7c31702e44c498a4cf63159"
+      },
+      "suites": [
+        {
+          "module": "domain-ledger",
+          "suite": "com.exchange.core.ledger.LedgerPostingTest",
+          "tests": 3,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0
+        },
+        {
+          "module": "domain-ledger",
+          "suite": "com.exchange.core.ledger.LedgerTransactionTest",
+          "tests": 5,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0
+        },
+        {
+          "module": "domain-ledger",
+          "suite": "com.exchange.core.ledger.BalanceTest",
+          "tests": 8,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0
+        },
+        {
+          "module": "app-api",
+          "suite": "com.exchange.core.api.order.OrderFundingServiceTest",
+          "tests": 3,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0
+        },
+        {
+          "module": "app-api",
+          "suite": "com.exchange.core.api.matching.MatchingApplicationServicePersistenceFailureTest",
+          "tests": 3,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0
+        },
+        {
+          "module": "app-api",
+          "suite": "com.exchange.core.api.ledger.persistence.PostgresBalanceStoreTest",
+          "tests": 15,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0
+        },
+        {
+          "module": "app-api",
+          "suite": "com.exchange.core.api.ledger.persistence.PostgresLedgerTransactionStoreTest",
+          "tests": 3,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0
+        },
+        {
+          "module": "app-api",
+          "suite": "com.exchange.core.api.matching.persistence.MatchingEventPayloadTest",
+          "tests": 4,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0
+        },
+        {
+          "module": "app-api",
+          "suite": "com.exchange.core.ExchangeCoreApplicationTests",
+          "tests": 1,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0
+        },
+        {
+          "module": "app-api",
+          "suite": "com.exchange.core.api.order.OrderLifecycleE2ETest",
+          "tests": 3,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0
+        },
+        {
+          "module": "app-api",
+          "suite": "com.exchange.core.api.order.TradeSettlementServiceTest",
+          "tests": 7,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0
+        },
+        {
+          "module": "app-api",
+          "suite": "com.exchange.core.api.matching.MatchingControllerTest",
+          "tests": 9,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0
+        },
+        {
+          "module": "app-api",
+          "suite": "com.exchange.core.api.matching.persistence.JpaMatchingEventStoreTest",
+          "tests": 8,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0
+        },
+        {
+          "module": "app-api",
+          "suite": "com.exchange.core.api.matching.persistence.MatchingPersistenceIntegrationTest",
+          "tests": 1,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0
+        },
+        {
+          "module": "app-api",
+          "suite": "com.exchange.core.api.matching.persistence.PersistentMatchingEventPublisherTest",
+          "tests": 2,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0
+        },
+        {
+          "module": "app-api",
+          "suite": "com.exchange.core.api.order.OrderReservationReleaseServiceTest",
+          "tests": 5,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0
+        },
+        {
+          "module": "app-api",
+          "suite": "com.exchange.core.api.order.persistence.PostgresOrderReservationStoreTest",
+          "tests": 11,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0
+        },
+        {
+          "module": "domain-matching",
+          "suite": "com.exchange.core.matching.MarketCommandProcessorTest",
+          "tests": 16,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0
+        },
+        {
+          "module": "domain-matching",
+          "suite": "com.exchange.core.matching.MatchingEngineTest",
+          "tests": 49,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0
+        },
+        {
+          "module": "architecture-tests",
+          "suite": "com.exchange.architecture.ApplicationBoundaryReferenceTest",
+          "tests": 9,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0
+        },
+        {
+          "module": "architecture-tests",
+          "suite": "com.exchange.architecture.NamingPlacementContractTest",
+          "tests": 9,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0
+        },
+        {
+          "module": "architecture-tests",
+          "suite": "com.exchange.architecture.IsolationDependencyContractTest",
+          "tests": 6,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0
+        },
+        {
+          "module": "architecture-tests",
+          "suite": "com.exchange.architecture.ModuleDependencyContractTest",
+          "tests": 11,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0
+        },
+        {
+          "module": "architecture-tests",
+          "suite": "com.exchange.architecture.NonProductionTargetsTest",
+          "tests": 7,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0
+        },
+        {
+          "module": "architecture-tests",
+          "suite": "com.exchange.architecture.HttpEntryBoundaryContractTest",
+          "tests": 18,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0
+        },
+        {
+          "module": "architecture-tests",
+          "suite": "com.exchange.architecture.ModuleRegistrationContractTest",
+          "tests": 5,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0
+        },
+        {
+          "module": "architecture-tests",
+          "suite": "com.exchange.architecture.NamingPlacementIntegrationTest",
+          "tests": 6,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0
+        },
+        {
+          "module": "architecture-tests",
+          "suite": "com.exchange.architecture.ImportScopeContractTest",
+          "tests": 22,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0
+        },
+        {
+          "module": "architecture-tests",
+          "suite": "com.exchange.architecture.RoleClassificationContractTest",
+          "tests": 4,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0
+        },
+        {
+          "module": "architecture-tests",
+          "suite": "com.exchange.architecture.ProductionArchitectureTest",
+          "tests": 4,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0
+        },
+        {
+          "module": "architecture-tests",
+          "suite": "com.exchange.architecture.ProductionOutputWiringTest",
+          "tests": 2,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0
+        },
+        {
+          "module": "architecture-tests",
+          "suite": "com.exchange.architecture.ProjectDependencyContractTest",
+          "tests": 8,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0
+        },
+        {
+          "module": "architecture-tests",
+          "suite": "com.exchange.architecture.ArchitectureRuleContractTest",
+          "tests": 23,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0
+        },
+        {
+          "module": "architecture-tests",
+          "suite": "com.exchange.architecture.HttpBoundaryScopeTest",
+          "tests": 12,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0
+        },
+        {
+          "module": "architecture-tests",
+          "suite": "com.exchange.architecture.ApplicationBoundaryImportTest",
+          "tests": 9,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0
+        },
+        {
+          "module": "architecture-tests",
+          "suite": "com.exchange.architecture.ProductionDependencyIsolationTest",
+          "tests": 9,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0
+        },
+        {
+          "module": "architecture-tests",
+          "suite": "com.exchange.architecture.HttpBoundaryImportTest",
+          "tests": 7,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0
+        },
+        {
+          "module": "architecture-tests",
+          "suite": "com.exchange.architecture.ApplicationBoundaryScopeTest",
+          "tests": 12,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0
+        },
+        {
+          "module": "architecture-tests",
+          "suite": "com.exchange.architecture.IsolationGradleWiringTest",
+          "tests": 7,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0
+        },
+        {
+          "module": "architecture-tests",
+          "suite": "com.exchange.architecture.PortContractRuleTest",
+          "tests": 47,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0
+        },
+        {
+          "module": "architecture-tests",
+          "suite": "com.exchange.architecture.NamingPlacementGradleWiringTest",
+          "tests": 4,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0
+        },
+        {
+          "module": "architecture-tests",
+          "suite": "com.exchange.architecture.SourcePlacementContractTest",
+          "tests": 14,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0
+        },
+        {
+          "module": "architecture-tests",
+          "suite": "com.exchange.architecture.ApplicationBoundaryContractTest",
+          "tests": 11,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0
+        },
+        {
+          "module": "architecture-tests",
+          "suite": "com.exchange.architecture.NamingPlacementScopeTest",
+          "tests": 12,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0
+        },
+        {
+          "module": "architecture-tests",
+          "suite": "com.exchange.architecture.GradleDependencyWiringTest",
+          "tests": 4,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0
+        },
+        {
+          "module": "domain-fee",
+          "suite": "com.exchange.core.fee.MakerTakerFeeRatesTest",
+          "tests": 3,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0
+        },
+        {
+          "module": "domain-fee",
+          "suite": "com.exchange.core.fee.TradingFeePolicySnapshotTest",
+          "tests": 4,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0
+        },
+        {
+          "module": "domain-fee",
+          "suite": "com.exchange.core.fee.TradingFeeReserveCalculatorTest",
+          "tests": 5,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0
+        },
+        {
+          "module": "domain-fee",
+          "suite": "com.exchange.core.fee.TradingFeeScheduleTest",
+          "tests": 4,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0
+        },
+        {
+          "module": "domain-fee",
+          "suite": "com.exchange.core.fee.TradingFeeCalculatorTest",
+          "tests": 7,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0
+        },
+        {
+          "module": "domain-fee",
+          "suite": "com.exchange.core.fee.FeeTierThresholdsTest",
+          "tests": 3,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0
+        },
+        {
+          "module": "domain-fee",
+          "suite": "com.exchange.core.fee.FeeTierResolverTest",
+          "tests": 1,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0
+        },
+        {
+          "module": "domain-fee",
+          "suite": "com.exchange.core.fee.FeeRemainderTest",
+          "tests": 6,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0
+        },
+        {
+          "module": "domain-fee",
+          "suite": "com.exchange.core.fee.FeeRateTest",
+          "tests": 4,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0
+        },
+        {
+          "module": "domain-order",
+          "suite": "com.exchange.core.order.OrderReservationCalculatorTest",
+          "tests": 5,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0
+        },
+        {
+          "module": "domain-order",
+          "suite": "com.exchange.core.order.OrderFillSettlementCalculatorTest",
+          "tests": 11,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0
+        },
+        {
+          "module": "domain-order",
+          "suite": "com.exchange.core.order.BuyOrderFundingQuoteCalculatorTest",
+          "tests": 6,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0
+        },
+        {
+          "module": "domain-order",
+          "suite": "com.exchange.core.order.MaximumBuyOrderFundingQuoteCalculatorTest",
+          "tests": 4,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0
+        },
+        {
+          "module": "domain-order",
+          "suite": "com.exchange.core.order.OrderReservationTest",
+          "tests": 21,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0
+        },
+        {
+          "module": "domain-order",
+          "suite": "com.exchange.core.order.ReservationRequirementTest",
+          "tests": 3,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0
+        }
+      ]
+    },
+    {
+      "command": "./gradlew :architecture-tests:test --tests '*NamingPlacementScopeTest' --no-daemon --console=plain",
+      "status": "success",
+      "tests": 12,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0,
+      "scope": "최종 ProjectLayoutPolicy의 도메인별 허용 역할 목록과 관련 기대값 수정. 검사 알고리즘과 제품 코드는 앞의 전체 빌드 이후 변경하지 않음."
+    }
+  ],
+  "review": {
+    "testExpectations": "명세 리터럴과 정상·위반·누락 반례를 사용. 같은 AI의 단계별 검토이며 독립 컨텍스트 리뷰는 아님.",
+    "humanReview": "미확인",
+    "pr": "미게시",
+    "ci": "미실행",
+    "productionArch05": "미적용 (#20~21)",
+    "statusAsOf": "검증 기록 작성 시점(createdAt). 게시 이후 PR·CI·사람 리뷰 상태는 GitHub PR에서 확인한다."
+  },
+  "limits": [
+    "등록 역할과 이름 의미의 타당성은 사람의 리뷰 대상",
+    "코드 실행·금액·DB 원자성·동시성을 이름 검사로 보장하지 않음",
+    "Kotlin PSI 환경 생성 API는 버전 의존 및 opt-in 사용. 컴파일러 업그레이드 시 계약 재확인",
+    "생성 소스는 실제 Gradle 생산 작업 예제로 검증했으며 모든 외부 플러그인 조합을 검증한 것은 아님"
+  ]
+}

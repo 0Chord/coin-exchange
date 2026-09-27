@@ -21,6 +21,8 @@ dependencies {
 	testImplementation(gradleTestKit())
 	testImplementation(platform("org.springframework.boot:spring-boot-dependencies:4.1.0"))
 	testImplementation(kotlin("test-junit5"))
+	// 원본 package 구문과 Kotlin 생성 타입 메타데이터를 읽는다. 제품에는 전파하지 않는다.
+	testImplementation("org.jetbrains.kotlin:kotlin-compiler-embeddable:2.3.21")
 	testImplementation("com.tngtech.archunit:archunit:1.4.2")
 	// 위반 예제에 실제 애너테이션을 붙이기 위한 의존성이다. Spring 컨텍스트는 띄우지 않는다.
 	testImplementation("org.springframework:spring-context")
@@ -52,6 +54,7 @@ val productionOutputs = productionModules.associateWith { module ->
 extra["architecture.productionProjects"] = productionModules.map { ":$it" }
 apply(from = "gradle/project-dependencies.gradle.kts")
 apply(from = "gradle/isolation-inputs.gradle.kts")
+apply(from = "gradle/main-sources.gradle.kts")
 
 val discoveredJvmProjects = providers.provider {
 	rootProject.subprojects.filter {
