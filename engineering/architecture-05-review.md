@@ -2,6 +2,29 @@
 
 상태: **개별 규칙과 Bean 조립 구현 · 로컬 구조 317개 통과**. 2026-10-01, 브랜치 `feat/naming-placement-check/19`, 기준 `fa85119` 이후 변경이다. 전체 구조 회귀와 빌드가 통과했다. 원격 게시·CI·독립 리뷰·병합 상태는 [PR #32](https://github.com/0Chord/coin-exchange/pull/32)에서 별도로 확인한다.
 
+## 새 클래스가 생겼을 때 — 현재 기준
+
+**일반 `OrderManager`는 이름을 모른다는 이유로 실패하지 않는다.** 모든 클래스에 역할을 붙이던 이전 자동 분류를 제거했기 때문이다. `Manager`가 좋은 이름인지와 어떤 업무를 맡는지는 리뷰한다.
+
+1. 새 소스를 추가하면 Gradle이 컴파일하고, 기존 수집기가 **main 출력 전체**를 읽는다. 클래스별 등록은 필요 없다.
+2. 이름 검사에서는 `UseCase`·`Controller` 같은 명시적 단서가 있는 타입을 고른다. 단서 없는 `OrderManager`는 이 이름 검사의 대상이 아니다.
+3. 이름 검사에 선택되지 않아도 **원본 파일의 허용 폴더와 package 일치**는 검사한다.
+4. 별도 Bean 조립 검사에서는 이름과 관계없이 금지 어노테이션을 확인한다. `@Service OrderManager`라면 업무 자동 등록 위반이다.
+
+| 추가한 코드 | 현재 기대 결과 |
+| --- | --- |
+| 허용 폴더·package의 일반 `OrderManager` | 이름 검사 대상 없음. 파일 검사는 통과. 업무 역할·이름은 리뷰 |
+| 허용 위치의 `AmendOrderUseCase` | UseCase 이름·선언·위치 검사와 파일 검사 대상. 조건을 충족하면 통과 |
+| 허용하지 않은 폴더의 `OrderManager` | 이름과 무관하게 파일 위치 위반 |
+| `@Service OrderManager` | 이름 규칙에 선택되지 않아도 별도 Bean 조립 검사에서 위반 |
+| 필수 출력·원본 파일을 읽지 못함 | 준비 오류. 정상적인 ‘이름 검사 대상 없음’과 다름 |
+
+**읽은 클래스가 이름 검사 대상이 아닌 것과, 클래스 자체를 못 읽은 것은 다르다.** 전자는 현재 허용한 검사 범위이고, 후자는 검사 입력이 불완전한 오류다. 이름 평가 목록에 `OrderManager`가 없다는 사실만으로 수집 누락이라고 판단하지 않는다.
+
+근거: [소스 추가 회귀 테스트 AUTO-25](../architecture-tests/src/test/kotlin/com/exchange/architecture/NamingPlacementGradleAutomaticTest.kt)의 59–61행은 일반 `OrderManager` 추가 후 테스트가 성공하고 이름 평가 목록에는 포함하지 않는 기대값을 확인한다. 폴더 검사는 [SourcePlacement](../architecture-tests/src/test/kotlin/com/exchange/architecture/support/SourcePlacement.kt), 자동 등록 금지는 [BeanAssemblyRules](../architecture-tests/src/test/kotlin/com/exchange/architecture/rules/BeanAssemblyRules.kt)에 연결된다. 이 설명은 검사기를 검증하는 예제 기준이며, 실제 운영 이름·폴더 전체의 활성화는 #20~21이다.
+
+설명 정정: 2026-10-01. `9536d6d`에서 검증한 코드·테스트는 그대로다. 아래 이전 기록은 현재 계약으로 사용하지 않으며, HTML의 본문과 ‘원문 보기’에는 현재 설명만 표시한다. 이전 설명은 별도 기록으로 분리한다.
+
 ## Service 이름과 자동 Bean 등록은 별개다
 
 `OrderFundingService`라는 **이름은 허용**한다. 클래스에 `@Service`를 붙여 **자동으로 Bean을 등록하는 방식은 금지**한다. 업무 객체는 config의 `@Bean`에서 만들고 필요한 협력자를 연결한다. HTTP 객체의 `@RestController`·`@RestControllerAdvice`는 사용자 선택에 따라 유지한다.
@@ -199,7 +222,11 @@ Kotlin의 익명·local·synthetic 타입과 파일 운반 kind 2/4/5만 이름 
 <!-- ARCH05_IMPL_SOURCES_END -->
 
 <!-- ARCH05_REVIEW_BEFORE_SIMPLIFICATION -->
-# 등록 없이 새 코드를 검사하는 흐름 · ARCH-05
+# 이전 설계 기록 · 현재 적용하지 않음
+
+**아래는 폐기한 자동 분류 방식의 설명이다. 현재 구현·완료 근거로 사용하지 않는다.** 당시의 `OrderManager → unclassified` 실패, 모든 타입의 역할 분류, data/value 구분과 역할 충돌 계약은 제거했다. 현재 기준은 이 문서 앞부분의 ‘새 클래스가 생겼을 때 — 현재 기준’이다. HTML에서는 이 기록을 현재 설명과 별도 항목으로 표시한다.
+
+## 당시 설명: 등록 없이 새 코드를 검사하는 흐름 · ARCH-05
 
 상태: **자동 분류 구현 · 로컬 검증 완료**. 브랜치 `feat/naming-placement-check/19`, 비교 기준 `3250fd2`의 개정 명세다. 클래스별 등록 입력을 제거했다. 현재 코드와 최종 실행 근거를 연결했다. 원격 CI·독립 리뷰·병합 상태는 [PR #32](https://github.com/0Chord/coin-exchange/pull/32)에서 별도로 확인한다.
 

@@ -182,5 +182,17 @@
     "rejected": "업무 객체의 Component 계열 자동 등록, 허용 config 밖의 Bean 팩토리 선언",
     "review": "기대값은 사용자 합의·명세에 대조함. 같은 AI의 검토이며 독립 리뷰로 표시하지 않음.",
     "limit": "바이트코드 어노테이션·메서드 선언 소속 검사. 실제 Spring 컨텍스트·주입 성공·임의 런타임 등록은 실행하지 않음."
+  },
+  "documentationRevision": {
+    "updatedAt": "2026-10-01T16:43:30+09:00",
+    "reason": "OrderManager의 현재 계약을 앞에 명시하고 폐기한 자동 분류 기록을 분리. HTML 원문 보기의 범위도 현재 문서로 한정.",
+    "verifiedCodeCommit": "9536d6dbfcec03c34af21ca8cd2079fab5b1b2fe",
+    "unchangedCodeAndBuildFiles": 96,
+    "testsRerun": false,
+    "executionRecord": "createdAt·commands·counts·sourceHashes는 기존 실행 당시 기록을 보존함. 설명 정정으로 새 실행 결과를 주장하지 않음.",
+    "documentHashes": {
+      "engineering/architecture-check-spec.md": "ecf6f47df6b942e3b70f03d6b989ca38a16aec031d63fea5a4a52a17dacb3dcd",
+      "engineering/architecture-05-review.md": "8cee2c4cf621f3f676b462adc163524262fb87b325f21d3af898e9f452eadc8b"
+    }
   }
 }
