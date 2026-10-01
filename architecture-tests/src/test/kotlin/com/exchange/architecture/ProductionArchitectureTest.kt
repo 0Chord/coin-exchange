@@ -1,6 +1,9 @@
 package com.exchange.architecture
 
 import com.exchange.architecture.rules.ProductionDependencyIsolation
+import com.exchange.architecture.rules.BeanAssemblyRules
+import com.exchange.architecture.policy.ProjectLayoutPolicy
+import com.exchange.architecture.support.NamingPlacementScope
 import com.exchange.architecture.support.IsolationInputs
 import com.exchange.architecture.rules.DomainTechnologyIndependence
 import com.exchange.architecture.rules.ModuleDependencyDirection
@@ -13,7 +16,7 @@ import com.exchange.architecture.support.RoleClassifier
 import kotlin.test.Test
 import kotlin.test.assertTrue
 
-/** 실제 운영 출력에 규칙을 적용한다. P01·P02·P03·P04는 각각 준비 조건을 확인하며 실행 순서에 의존하지 않는다. */
+/** 실제 운영 출력에 규칙을 적용한다. 각 검사는 준비 조건을 확인하며 실행 순서에 의존하지 않는다. */
 class ProductionArchitectureTest {
     @Test
     fun `P01 전체 운영 출력과 역할을 검증한 뒤 동일 ARCH-01 규칙을 적용한다`() {
@@ -58,7 +61,7 @@ class ProductionArchitectureTest {
         println("운영 모듈별 클래스: ${scope.classesByModule.mapValues { it.value.size }}")
         println("내부 직접 타입 참조: $internalReferences / main 구성: ${snapshot.configurations.size} / 직접 프로젝트 선언: ${declarations.size}")
         println("ARCH-08에 남기는 비운영 목적지: $excluded")
-        println("ARCH-06은 독립된 P03에서 평가합니다. 미평가 규칙: ARCH-03/04/05/07. 계산·DB·실행 순서 검증은 포함하지 않습니다.")
+        println("ARCH-06은 P03, Bean 조립은 P05에서 평가합니다. 미평가 규칙: ARCH-03/04/05 이름·폴더/07. 계산·DB·실행 순서 검증은 포함하지 않습니다.")
         assertTrue(result.violations.isEmpty(), "ARCH-02 위반:\n${result.violations.joinToString("\n") { it.report() }}")
         println("ARCH-02 통과 · 준비 오류 0, 위반 0")
     }
@@ -81,7 +84,7 @@ class ProductionArchitectureTest {
         println("공개 계약 ${result.contractCount}개 · 등록 영속 모델: ${ProductionScope.persistenceTypes}")
         assertTrue(result.violations.isEmpty(), "ARCH-06 위반:\n${result.violations.joinToString("\n") { it.report() }}")
         println("ARCH-06 통과 · 준비 오류 0, 위반 0. 포트 메서드·DB는 실행하지 않았습니다.")
-        println("한계: 미등록 포트의 의미, 임의 DTO 내부, 런타임 값·동작. 미평가 규칙: ARCH-03/04/05/07.")
+        println("한계: 미등록 포트의 의미, 임의 DTO 내부, 런타임 값·동작. 미평가 규칙: ARCH-03/04/05 이름·폴더/07. Bean 조립은 P05에서 평가합니다.")
     }
 
     @Test
@@ -102,4 +105,22 @@ class ProductionArchitectureTest {
         println("한계: 현재 모델에 나타난 직접 선언/바이트코드 참조와 명시 도구 목록. 전이·동적 로딩·임의 복사본·파일 의존 전체 감사, 테스트 품질·DB 동작은 포함하지 않습니다.")
     }
 
+    @Test
+    fun `P05 실제 운영 코드의 업무 자동 등록 금지와 config Bean 선언을 검사한다`() {
+        val registration = ModuleRegistration.inspect(ProductionScope.inventory())
+        assertTrue(registration.isEmpty(), "Bean 조립 검사 준비 실패: $registration")
+        val scope = ProductionScopeImporter().load(ProductionScope.outputs(), ProductionScope.expectations(), ProductionScope.nonProductionTargets())
+        val policy = ProjectLayoutPolicy.target
+        val input = NamingPlacementScope.prepare(scope, policy, ProductionScope.requiredTypes.keys)
+        assertTrue(input.problems.isEmpty(), "Bean 조립 미평가 · 준비 오류: ${input.problems}")
+        val config = policy.folders.single { it.id == "config" }
+        val registrationRule = BeanAssemblyRules.noAutomaticBusinessRegistration()
+        val factoryRule = BeanAssemblyRules.configFactories(input.modules, config)
+        scope.classesByModule.toSortedMap().forEach { (_, classes) ->
+            registrationRule.check(classes)
+            factoryRule.check(classes)
+        }
+        println("P05 통과 · 운영 ${input.classes.size}개 타입에 업무 자동 등록 금지와 config Bean 선언 검사 적용")
+        println("HTTP Controller·Advice 자동 등록은 허용합니다. 이름·폴더 전체 검사는 #20~21에서 활성화하며 실제 Spring 주입 성공을 검증한 것은 아닙니다.")
+    }
 }

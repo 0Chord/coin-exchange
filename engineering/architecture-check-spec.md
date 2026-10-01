@@ -1,6 +1,6 @@
 # ARCH-05 개별 규칙 상세 명세 — 이름·폴더 검사와 실행 분리
 
-**상태: 적용 방향 합의 · 개별 규칙 구현 및 로컬 검증 완료.** 2026-10-01, [이슈 #19](https://github.com/0Chord/coin-exchange/issues/19)와 [PR #32](https://github.com/0Chord/coin-exchange/pull/32)의 `4e4956e`를 기준으로 작성했다. 원격 PR에는 아직 전체 역할 분류 방식이 남아 있다. 이번 기록은 그 구현을 단순화하기 위한 명세이며, 새 구현의 통과 보고가 아니다. 이전 명세는 뒤에 보존한다.
+**상태: 개별 규칙과 명시적 Bean 조립 검사 구현·검증 완료.** 2026-10-01, [이슈 #19](https://github.com/0Chord/coin-exchange/issues/19)와 [PR #32](https://github.com/0Chord/coin-exchange/pull/32)의 `fa85119` 이후 변경이다. 개별 이름·폴더 규칙은 원격 PR에 반영됐으며, 아래 Bean 조립 규칙은 사용자와 추가 합의했다. 이전 명세는 뒤에 보존한다.
 
 목표는 **새 파일을 일일이 등록하지 않고, 이름·어노테이션·상속으로 확인할 수 있는 규칙과 실제 폴더 제한을 지키는 것**이다. 각 규칙을 사람이 읽고 정상·위반 사례로 판단할 수 있어야 한다.
 
@@ -16,6 +16,27 @@
 | 정상·위반·누락 예제로 검사기의 탐지력 검증 | 실제 운영 코드 전체가 새 컨벤션을 준수한다는 뜻은 아니다. |
 
 **합의한 선택:** 허용 폴더의 `OrderWorker`처럼 단서가 없는 이름은 폴더만 자동 검사하고, 역할·이름의 적절성은 리뷰한다. 클래스별 등록과 미분류 자동 실패를 요구하지 않는다. 이름에 해당하는 규칙이 여러 개면 각각 검사한다.
+
+## 명시적 Bean 조립 — 추가 합의
+
+업무 객체는 `app-api`의 `com.exchange.core.api.config`에서 `@Configuration`과 `@Bean`으로 조립한다. `…Service`라는 클래스 이름은 허용하지만, 업무 객체의 `@Service`·`@Component`·`@Repository` 자동 등록은 금지한다. 역할·접미사·폴더로 대상을 제한하지 않으므로, 역할을 모르는 `OrderWorker`도 자동 등록 어노테이션이 있으면 위반이다.
+
+사용자 선택에 따라 `@RestController`·`@RestControllerAdvice`는 기존 자동 등록을 유지한다. 표준 대응 어노테이션인 `@Controller`·`@ControllerAdvice`, 조립 설정 `@Configuration`, 시작점 `@SpringBootApplication`도 허용한다. 해당 어노테이션과 금지 어노테이션을 함께 붙이면 금지 위반은 유지한다.
+
+| 입력 | 기대 결과와 근거 |
+| --- | --- |
+| 어노테이션 없는 업무 객체 + 허용 config의 `@Bean` 메서드 | 통과. 객체 생성·연결을 config에서 명시함 |
+| `@Service CancelOrderUseCase`, `@Component OrderWorker`, `@Repository` 저장 구현 | `ARCH-05/bean-registration` 위반. 이름이 맞아도 자동 등록은 금지 |
+| Component를 포함하는 사용자 정의 합성 어노테이션이 붙은 업무 객체 | 같은 위반. ArchUnit의 기본 meta-annotation 판정을 사용함 |
+| 표준 HTTP·Configuration·Boot 어노테이션 | 자동 등록 예외. 어노테이션 선언 자체는 Bean 객체가 아니므로 제외 |
+| `@RestController @Service` 또는 `@Configuration @Repository` | 금지 위반. 허용 단서가 다른 금지 단서를 지우지 않음 |
+| config 밖·다른 모듈·Configuration 없는 클래스의 `@Bean` | `ARCH-05/bean-factories` 위반. 메서드의 선언 소속을 검사 |
+| `@Bean`을 포함하는 합성 어노테이션의 메서드 | 같은 소속 검사 적용 |
+| Bean 메서드가 없는 유효한 클래스 | 팩토리 대상 없음. 모든 도메인 객체를 Bean으로 만들도록 요구하지 않음 |
+
+이 두 규칙은 이름 검사와 독립된 작은 `ArchRule`로 작성한다. 기존 운영 출력 수집·누락 검증을 재사용하고, **현재 운영 코드에도 이 조립 검사만 즉시 활성화**한다. 이름·폴더 전체의 이행과 활성화는 #20~21이다. 검사에서는 Spring 컨텍스트를 시작하지 않으며, 실제 Bean 개수·주입 성공·임의 런타임 등록 전체를 증명하지 않는다.
+
+이번 문답: 사용자 “Service 사용까지 금지하게 해야지 우리는 Bean으로만 DI조립할꺼야” → HTTP 객체도 config 조립으로 바꿀지 Ask → 사용자 “RestController, RestControllerAdvice는 그대로 가면 될 것 같아”. 따라서 업무 자동 등록 금지와 HTTP 예외를 함께 반영한다.
 
 **첫 구현 단위는 컨트롤러 검사 한 묶음**이다. 전체 타입에서 후보를 고르고, 이름·어노테이션·위치를 확인하여 어떤 조건이 틀렸는지 보고한다. 아래 컨트롤러 수용 사례를 테스트 작성의 첫 입력으로 사용한다.
 
@@ -241,7 +262,7 @@ flowchart TD
 | 3. 폴더·입력 연결 정리 | 정확한 경로 검사 보존, 역할·생성 그래프 의존 제거, 원본 추가·정책 변경 재실행 확인 |
 | 4. 전체 회귀와 설명 | 기존 ARCH 테스트와 거래 테스트를 실행하고, 실제 결과에 맞춰 HTML·PR의 보장 변경과 결함 수정 내역 설명 |
 
-최종 실행은 `./gradlew build --offline --continue`다. 아키텍처 306개(ARCH-05 69개 + 기존 검사 237개)를 실행하여 실패·오류·skip 없이 통과했다. 변경하지 않은 제품 test 작업은 UP-TO-DATE였으며 기존 243개 기록을 이번에 재실행했다고 하지 않는다. 관련 단위만 실행할 때는 다음 명령을 사용한다.
+최종 실행은 `./gradlew build --offline --continue`다. 아키텍처 317개(ARCH-05 예제·회귀 79개 + 기존 검사 237개 + 운영 Bean 조립 검사 1개)를 실행하여 실패·오류·skip 없이 통과했다. 변경하지 않은 제품 test 작업은 UP-TO-DATE였으며 기존 243개 기록을 이번에 재실행했다고 하지 않는다. 관련 단위만 실행할 때는 다음 명령을 사용한다.
 
 ```sh
 ./gradlew :architecture-tests:test --tests '*NamingPlacement*' --tests '*SourcePlacementContractTest'

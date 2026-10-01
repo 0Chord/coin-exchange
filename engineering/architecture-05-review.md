@@ -1,6 +1,37 @@
 # 하나씩 읽는 이름 검사 · ARCH-05 구현 흐름
 
-상태: **개별 규칙 구현 · 로컬 구조 306개 통과**. 2026-10-01, 브랜치 `feat/naming-placement-check/19`, 기준 `4e4956e` 이후 작업 파일이다. 전체 구조 회귀와 빌드가 통과했다. 원격 게시·CI·독립 리뷰·병합 상태는 [PR #32](https://github.com/0Chord/coin-exchange/pull/32)에서 별도로 확인한다.
+상태: **개별 규칙과 Bean 조립 구현 · 로컬 구조 317개 통과**. 2026-10-01, 브랜치 `feat/naming-placement-check/19`, 기준 `fa85119` 이후 변경이다. 전체 구조 회귀와 빌드가 통과했다. 원격 게시·CI·독립 리뷰·병합 상태는 [PR #32](https://github.com/0Chord/coin-exchange/pull/32)에서 별도로 확인한다.
+
+## Service 이름과 자동 Bean 등록은 별개다
+
+`OrderFundingService`라는 **이름은 허용**한다. 클래스에 `@Service`를 붙여 **자동으로 Bean을 등록하는 방식은 금지**한다. 업무 객체는 config의 `@Bean`에서 만들고 필요한 협력자를 연결한다. HTTP 객체의 `@RestController`·`@RestControllerAdvice`는 사용자 선택에 따라 유지한다.
+
+이번 추가 흐름은 **운영 클래스 읽기 → 자동 등록 어노테이션 검사 + Bean 팩토리 선언 위치 검사 → 통과 또는 정확한 클래스·메서드 위반 보고**다. 역할 이름을 모르더라도 `@Component OrderWorker`는 잡는다. 정상 config와 HTTP 예외는 통과시키고, HTTP 클래스에 `@Service`까지 추가하면 위반을 보고한다.
+
+| 예제 | 이번 추가 검사의 기대 결과 |
+| --- | --- |
+| 어노테이션 없는 서비스 + config의 `@Bean` | 통과 |
+| `@Service CancelOrderUseCase` | 자동 등록 위반. 기존 이름 검사만 통과하는 것과 구분 |
+| `@Component OrderWorker` / `@Repository` 저장 구현 | 자동 등록 위반 |
+| Component를 포함하는 합성 어노테이션 | 자동 등록 위반. ArchUnit의 기본 기능으로 확인 |
+| `@RestController` / `@RestControllerAdvice` | 기존 HTTP 자동 등록 유지 |
+| `@RestController @Service` | Service 금지 위반 유지 |
+| config 밖이나 Configuration 없는 클래스의 `@Bean` | 팩토리 선언 위치 위반 |
+
+이 표의 클래스는 **검사기를 시험하는 예제**다. Spring 서버·DB를 실행하지 않는다. 현재 운영 코드에도 두 조립 규칙을 독립적으로 적용하며, 제품의 실제 DI 성공 여부를 실행 검증한 것으로 확대하지 않는다.
+
+문답 기록: 사용자 “Bean으로만 DI 조립” → AI가 HTTP 객체 범위를 Ask → 사용자 “RestController, RestControllerAdvice는 그대로”. 업무 자동 등록을 금지하고 표준 HTTP·설정·시작점 예외를 유지하는 것으로 반영했다. 테스트 기대값 검토와 실행은 AI가 수행하며, 사용자가 코드를 검토 완료한 것으로 기록하지 않는다.
+
+### 이번 규칙이 실제로 판단하는 순서
+
+1. `P05`가 기존 수집기로 **운영 main 출력과 모듈 소속**을 읽는다. 누락·중복·빈 입력 또는 정책 오류가 있으면 준비 실패로 중단한다.
+2. 모듈별로 `BeanAssemblyRules.noAutomaticBusinessRegistration()`을 실행한다. 클래스의 어노테이션마다 Component 계열인지 확인한다. 표준 HTTP·Configuration·Boot 어노테이션은 허용하고, 다른 Component 계열 어노테이션이 하나라도 있으면 그 클래스의 위반을 보고한다. 어노테이션 선언 자체는 Bean 객체가 아니므로 이 검사에서 제외한다.
+3. 앞 검사가 통과하면 `configFactories()`로 Bean 메서드를 선택한다. 표준 `@Bean`과 이를 포함하는 합성 어노테이션 모두 해당한다. 선언 클래스가 app-api의 정확한 config package에 있고 `@Configuration`을 직접 사용했는지 확인한다. Bean 메서드가 없는 모듈은 이 팩토리 규칙의 대상 없음으로 허용한다.
+4. 첫 규칙 위반에서 해당 `check()`가 실패하므로 P05는 전체 성공을 보고하지 않는다. 뒤의 규칙·모듈도 전부 평가했다고 표시하지 않는다. 끝까지 위반이 없을 때만 P05 성공을 출력한다.
+
+읽을 코드는 [두 Bean 조립 규칙](../architecture-tests/src/test/kotlin/com/exchange/architecture/rules/BeanAssemblyRules.kt), [10개 기대값 테스트](../architecture-tests/src/test/kotlin/com/exchange/architecture/BeanAssemblyRuleTest.kt), [인위적 정상·위반 예제](../architecture-tests/src/test/kotlin/com/exchange/architecture/fixtures/beanassembly/BeanAssemblyFixtures.kt), [실제 운영 적용 P05](../architecture-tests/src/test/kotlin/com/exchange/architecture/ProductionArchitectureTest.kt)다. 새로운 역할 분류기·등록 목록·Spring 실행기는 만들지 않았다.
+
+추가 테스트 10개와 실제 운영 검사 P01~P05 5개가 통과했다. 최종 전체 빌드에서도 구조 317개가 모두 실행·통과했다. P05는 운영 113개 타입을 검사했다. 준비용 미구현 규칙에서는 금지 사례 7개가 위반을 놓쳐 assertion 실패한 것을 먼저 확인했다. 그 실패는 환경·컴파일 오류가 아니라 아직 규칙을 구현하지 않아 금지 사례가 통과한 것이었다.
 
 ## 두 위치 검사는 왜 필요한가
 
@@ -44,7 +75,8 @@
 | 어노테이션 없는 OrderController | 선언 조건 위반 |
 | 업무 접두사가 없는 Controller | 이름 위반 |
 | 다른 허용 폴더 / 다른 모듈 | 각각 package / module 위반 |
-| 단서 없는 Helper·Kt·달러 이름·Service 어노테이션만 있는 Manager | 이름 규칙 대상 없음. 의미는 리뷰하고 파일 검사 유지 |
+| 단서 없는 Helper·Kt·달러 이름 | 이름 규칙 대상 없음. 의미는 리뷰하고 파일 검사 유지 |
+| Service 어노테이션만 있는 Manager | 이름 규칙에는 선택하지 않음. 별도 Bean 조립 검사에서는 자동 등록 위반 |
 | extra 루트 추가 | Endpoint 이름 위반 유지 |
 | Configuration과 RestController가 겹친 DualController | 양쪽 규칙 실행. 역할 충돌 하나로 나머지 검사 중단하지 않음 |
 | 프로젝트 전용 합성 어노테이션 | 재귀 분류하지 않음 |
@@ -60,7 +92,7 @@
 
 ## 나머지 이름 규칙을 읽는 순서
 
-같은 타입에 서로 다른 단서가 있으면 **각 규칙을 모두 실행**한다. 먼저 맞은 하나의 역할로 나머지를 지우지 않는다. `@Service`만 붙은 Manager를 자동으로 Service라고 추론하지 않으며, UseCase·Service·Coordinator 접미사는 자기 규칙의 단서다.
+같은 타입에 서로 다른 단서가 있으면 **각 이름 규칙을 모두 실행**한다. 먼저 맞은 하나의 역할로 나머지를 지우지 않는다. `@Service`만 붙은 Manager를 이름 검사에서 Service 역할로 추론하지 않으며, UseCase·Service·Coordinator 접미사는 자기 규칙의 단서다. **이름 검사를 통과해도 별도 Bean 조립 검사의 금지를 면제하지 않는다.** 기존 이름 테스트의 `@Service CancelOrderUseCase`는 이름·위치만 확인하는 예제이며, 새 Bean 조립 검사에 넣으면 금지 위반이다.
 
 | 단서 | 실제 판단 | 관측할 결과 |
 | --- | --- | --- |
@@ -131,9 +163,11 @@ Kotlin의 익명·local·synthetic 타입과 파일 운반 kind 2/4/5만 이름 
 | 구분 | 파일과 책임 |
 | --- | --- |
 | 개별 검사 규칙 | NamingRules: 위 모든 이름·위치·실제 상속의 ArchRule 함수 |
+| Bean 조립 검사 | BeanAssemblyRules: 업무 자동 등록 금지 + config Bean 팩토리 위치. ProductionArchitectureTest의 P05로 운영에 적용 |
 | 입력·결과 | NamingPlacementScope: 모듈 소속, 정책 오류, 대상과 결과. NamingPlacement: 타입 검사와 원본 검사 결합 |
 | 영역·폴더 정책 | PortPlacementPolicy, ProjectLayoutPolicy: 포트 매핑과 정확한 16개 폴더. 역할 목록은 제거 |
 | 예제와 테스트 | NamingFixtures, AutomaticRoleFixtures: 고의 반례/정상 선언. NamingPlacementContract/Rule/Port/Scope/Integration/SimplificationTest와 SourcePlacementContractTest: 각 기대값 검증 |
+| 조립 예제와 테스트 | BeanAssemblyFixtures, BeanAssemblyRuleTest: 정상 config·금지 어노테이션·HTTP 예외·합성 어노테이션·잘못된 팩토리 선언 |
 | 실제 Gradle 테스트 | NamingPlacementGradleAutomatic/GradleWiring/GradleScenario: 새 소스·정책 변경과 결과 보고 |
 | 빌드 | architecture-tests/build.gradle.kts: 기존 파서와 예제 의존성의 이유 설명을 현재 범위에 맞춤 |
 | 제거 | NamingTypeFacts와 전체 자동 분류·metadata 그래프 테스트. 새로운 의미 분류기로 대체하지 않음 |
@@ -145,16 +179,17 @@ Kotlin의 익명·local·synthetic 타입과 파일 운반 kind 2/4/5만 이름 
 
 | 범위 | 결과 | 이번 실행 여부 |
 | --- | --- | --- |
-| ARCH-05 | 69개 통과 | 이번 전체 architecture-tests:test에서 실행 |
+| ARCH-05 예제·회귀 | 79개 통과 | 기존 69개 + Bean 조립 예제 10개 |
+| 운영 Bean 조립 | 1개 통과 | P05에서 현재 운영 113개 타입에 실제 적용 |
 | 다른 구조 검사 | 237개 통과 | 동일 테스트 작업에서 실행. 해당 규칙·테스트의 코드는 변경하지 않음 |
 | 제품 테스트 | 기존 243개 성공 기록 | 입력 변경이 없어 UP-TO-DATE. 이번에 DB 테스트를 재실행한 근거로 사용하지 않음 |
 | 전체 빌드 | 성공 | 새 구조 검사 결과와 변경 없는 제품 산출물을 포함 |
 
-실행한 구조 테스트는 실패·오류·skip 0개다. 빌드 시작 시 기록한 코드·빌드 입력 93개 해시가 종료 후 일치한다. 문서·HTML 갱신은 이후 설명 변경이며 테스트를 약화한 변경이 아니다. [명령·집계·소스 해시](architecture-05-verification.json)를 확인할 수 있다.
+실행한 구조 테스트는 실패·오류·skip 0개다. 빌드 시작 시 기록한 코드·빌드 입력 96개 해시가 종료 후 일치한다. 문서·HTML 갱신은 이후 설명 변경이며 테스트를 약화한 변경이 아니다. [명령·집계·소스 해시](architecture-05-verification.json)를 확인할 수 있다.
 
 첫 Helper 회귀와 외부 포트 선택 반례는 수정 전 assertion 실패를 확인했다. 잘못 이름 붙인 Entity 반례는 테스트 예제 오류로 바로잡았으며 제품 결함의 Red로 세지 않는다. 테스트 기대값·완료 검토는 같은 AI의 명세 대조이며 독립 PR 리뷰로 표시하지 않는다.
 
-#19/#32는 검사기와 예제 검증까지 완료했다. #20~21에서 실제 운영 이름·폴더 이행과 ARCH-05 활성화를 한다. 이름의 업무 의미와 책임 이동은 사람의 리뷰가 필요하다. Nebula·PIT·SonarQube·Trivy는 이번 작업에 추가하지 않았다.
+#19/#32는 검사기와 예제 검증을 완료했고, Bean 조립 검사는 현재 운영 코드에도 활성화했다. #20~21에서 실제 운영 이름·폴더 이행과 나머지 ARCH-05 활성화를 한다. 이름의 업무 의미와 책임 이동은 사람의 리뷰가 필요하다. Nebula·PIT·SonarQube·Trivy는 이번 작업에 추가하지 않았다.
 
 ## 실제 코드와 테스트
 
