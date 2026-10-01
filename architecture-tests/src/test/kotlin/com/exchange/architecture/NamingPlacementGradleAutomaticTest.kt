@@ -17,7 +17,7 @@ class NamingPlacementGradleAutomaticTest {
         write("app-api/build.gradle.kts", "plugins { java }")
         write("app-api/src/main/java/com/example/order/SubmitOrderUseCase.java", "package com.example.order; public class SubmitOrderUseCase {}")
         write("$policyDir/ProjectLayoutPolicy.kt", "const val allowedFolder = \"com/example/order\"")
-        write("$policyDir/NamingClassificationPolicy.kt", "const val suffix = \"UseCase\"")
+        write("$policyDir/PortPlacementPolicy.kt", "const val reason = \"업무 진입점\"")
         write("runtime.txt", System.getProperty("architecture.testRuntime"))
         val script = root.resolve("gradle/main-sources.gradle.kts"); Files.createDirectories(script.parent)
         Files.copy(Path.of(System.getProperty("architecture.mainSourcesScript")), script)
@@ -48,19 +48,21 @@ class NamingPlacementGradleAutomaticTest {
         .let { if (fail) it.buildAndFail() else it.build() }
     private fun report() = Files.readString(root.resolve("build/naming-result.txt"))
 
-    @Test fun `AUTO-25 소스만 추가해 실제 Test 재실행과 전체 분류 실패를 확인한다`() {
+    @Test fun `AUTO-25 소스 추가만으로 실제 Test 재실행과 선택 대상 포함을 확인한다`() {
         prepare()
         assertEquals(TaskOutcome.SUCCESS, run().task(":test")?.outcome)
         assertEquals(TaskOutcome.UP_TO_DATE, run().task(":test")?.outcome)
         write("app-api/src/main/java/com/example/order/AmendOrderUseCase.java", "package com.example.order; public class AmendOrderUseCase {}")
         assertEquals(TaskOutcome.SUCCESS, run().task(":test")?.outcome)
         assertTrue(report().contains("type=com.example.order.AmendOrderUseCase"))
-        assertTrue(report().contains("classification=com.example.order.AmendOrderUseCase:[USE_CASE]"))
+        assertTrue(report().contains("rule=UseCase:targets=com.example.order.AmendOrderUseCase"))
         write("app-api/src/main/java/com/example/order/OrderManager.java", "package com.example.order; public class OrderManager {}")
+        assertEquals(TaskOutcome.SUCCESS, run().task(":test")?.outcome)
+        assertFalse(report().contains("type=com.example.order.OrderManager"))
+        write("app-api/src/main/java/com/example/order/UseCase.java", "package com.example.order; public class UseCase {}")
         assertEquals(TaskOutcome.FAILED, run(true).task(":test")?.outcome)
         assertTrue(report().contains("evaluated=true"))
-        assertTrue(report().contains("type=com.example.order.OrderManager"))
-        assertTrue(report().contains("violation=com.example.order.OrderManager:unclassified:"))
+        assertTrue(report().contains("violation=com.example.order.UseCase:name:대상+UseCase"))
     }
     @Test fun `AUTO-26 폴더 정책과 명명 정책만 바꿔도 실제 Test와 결과가 바뀐다`() {
         prepare()
@@ -71,9 +73,9 @@ class NamingPlacementGradleAutomaticTest {
         assertTrue(report().contains("violation=com.example.order.SubmitOrderUseCase:package:com.example.other"))
         write("$policyDir/ProjectLayoutPolicy.kt", "const val allowedFolder = \"com/example/order\"")
         assertEquals(TaskOutcome.SUCCESS, run().task(":test")?.outcome)
-        write("$policyDir/NamingClassificationPolicy.kt", "const val suffix = \"Action\"")
-        assertEquals(TaskOutcome.FAILED, run(true).task(":test")?.outcome)
-        assertTrue(report().contains("violation=com.example.order.SubmitOrderUseCase:name:대상+Action"))
-        assertFalse(report().contains(":package:"))
+        write("$policyDir/PortPlacementPolicy.kt", "const val reason = \"변경된 정책 이유\"")
+        assertEquals(TaskOutcome.SUCCESS, run().task(":test")?.outcome)
+        assertTrue(report().contains("policyReason=변경된 정책 이유"))
+        assertFalse(report().contains("violation="))
     }
 }

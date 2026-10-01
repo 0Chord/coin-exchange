@@ -21,12 +21,12 @@ dependencies {
 	testImplementation(gradleTestKit())
 	testImplementation(platform("org.springframework.boot:spring-boot-dependencies:4.1.0"))
 	testImplementation(kotlin("test-junit5"))
-	// 원본 package 구문과 Kotlin 생성 타입 메타데이터를 읽는다. 제품에는 전파하지 않는다.
+	// Kotlin 원본의 package 구문을 읽는다. 컴파일러 의존성은 검증 모듈에만 둔다.
 	testImplementation("org.jetbrains.kotlin:kotlin-compiler-embeddable:2.3.21")
 	testImplementation("com.tngtech.archunit:archunit:1.4.2")
 	// 위반 예제에 실제 애너테이션을 붙이기 위한 의존성이다. Spring 컨텍스트는 띄우지 않는다.
 	testImplementation("org.springframework:spring-context")
-	// 역할 분류 예제의 Boot·Spring Data 상속 정보를 읽는다. 앱은 실행하지 않는다.
+	// 개별 이름 규칙의 Boot 어노테이션·Spring Data 상속 예제에 사용한다.
 	testImplementation("org.springframework.boot:spring-boot-autoconfigure")
 	testImplementation("org.springframework.data:spring-data-jpa")
 	// HTTP 경계 예제의 실제 컨트롤러·응답 타입만 읽으며 서버는 시작하지 않는다.

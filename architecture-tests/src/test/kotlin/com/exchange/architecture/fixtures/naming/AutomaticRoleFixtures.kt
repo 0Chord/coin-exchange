@@ -56,3 +56,20 @@ fun bootstrapName() = "example"
 object SweepUseCase
 abstract class AbstractUseCase
 enum class EnumUseCase { ONE }
+
+@RestController class Controller
+@Configuration @RestController class DualController
+@LocalHttp class ComposedEndpoint
+interface RuleCalculator
+enum class EnumResolver { ONE }
+@Configuration class Config
+@SpringBootApplication class BootEntry
+@RestControllerAdvice class WrongAdvice
+@Entity class EntityRow
+class OrderResponse
+class ErrorResponse
+interface WalletContract : WalletStore
+class PostgresInheritedStore : WalletContract
+interface JpaEvents : JpaRepository<JournalEntity, Long>
+
+class NamedContainer { companion object RefreshUseCase }

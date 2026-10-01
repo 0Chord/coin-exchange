@@ -1,3 +1,169 @@
+# 하나씩 읽는 이름 검사 · ARCH-05 구현 흐름
+
+상태: **개별 규칙 구현 · 로컬 구조 306개 통과**. 2026-10-01, 브랜치 `feat/naming-placement-check/19`, 기준 `4e4956e` 이후 작업 파일이다. 전체 구조 회귀와 빌드가 통과했다. 원격 게시·CI·독립 리뷰·병합 상태는 [PR #32](https://github.com/0Chord/coin-exchange/pull/32)에서 별도로 확인한다.
+
+## 두 위치 검사는 왜 필요한가
+
+사용자 질문: **“왜 위치 검사가 두 가지인지 설명이 더 필요해”**.
+
+| 검사 | 확인할 사실 | Controller를 persistence에 옮긴 경우 |
+| --- | --- | --- |
+| 파일 검사 | 실제 부모 폴더가 허용 목록에 있는가? package가 그 폴더와 일치하는가? | package까지 persistence로 바꾸면 파일 검사는 통과한다 |
+| Controller 위치 검사 | Controller가 `app-api`의 주문 HTTP 영역에 있는가? | persistence는 HTTP 영역이 아니므로 위치 위반이다 |
+
+두 검사는 중복이 아니다. 파일 검사는 모든 원본에 적용하고, Controller 규칙은 역할 단서가 있는 타입에 적용한다. 반대로 package는 HTTP인데 실제 파일만 persistence로 옮기면 파일 검사가 불일치를 잡는다.
+
+**문답 기록:** AI는 위 두 반례로 설명했다. 사용자가 추가 설명을 요청한 사실을 기록하며, 이해 완료나 승인으로 표시하지 않는다. 이 문답은 이미 허용한 구현을 계속하기 위한 재승인이 아니다.
+
+## 이번 변경의 전체 지도
+
+**Gradle이 main 전체 발견 → 입력 확인 → 개별 이름 규칙 / 실제 원본 폴더 검사 → 위반·준비 오류·대상 없음 보고**.
+
+| 읽을 흐름 | 입력 → 판단 → 결과 | 실제 근거 |
+| --- | --- | --- |
+| Controller 한 묶음 | 전체 타입에서 이름 또는 표준 어노테이션 선택 → 이름·어노테이션·HTTP 위치 확인 → 대상명과 위반 보고 | NamingRules.controllers, NamingPlacementContractTest |
+| 나머지 이름 규칙 | UseCase·Service·Config 등의 직접 단서 → 규칙마다 독립 검사 → 여러 규칙이 동시에 적용될 수 있음 | NamingRules, NamingPlacementRuleTest |
+| Store·Publisher 관계 | 실제 직접/간접 포트 상속 → 포트 영역과 구현 영역 대조 → 정상·영역 위반·상위 정의 누락 | NamingPlacementPortTest |
+| 원본 검사 | Gradle의 실제 main 파일 → package 구문 읽기와 정확한 경로 비교 → 폴더 위반 또는 읽기 준비 오류 | SourcePlacement, NamingPlacementIntegrationTest, SourcePlacementContractTest |
+| 재실행·보고 | 원본·정책 변경 → Gradle Test 재실행 → ArchUnit 결과와 JUnit 보고서 | NamingPlacementGradleAutomaticTest, NamingPlacementGradleWiringTest |
+
+이 변경은 **개발 검증 도구**다. 주문 제출·취소·DB 저장 동작은 바꾸지 않는다. 테스트의 Controller·Store는 정상/위반을 재현하는 예제이며 제품 기능을 추가한 것이 아니다.
+
+## 먼저 완료한 Controller 흐름
+
+1. 입력은 올바른 HTTP 폴더만이 아니라 **전체 운영 타입**이다.
+2. `Controller` 접미사 또는 직접 표준 `Controller`/`RestController` 어노테이션이 있으면 선택한다.
+3. 이름에 업무 대상이 있는지, 표준 어노테이션이 있는지, 모듈·package가 HTTP 영역인지 검사한다.
+4. ArchUnit의 `evaluate`가 조건 위반을 모으고 `check`는 위반이 있으면 테스트를 실패시킨다.
+5. 대상이 없으면 `targets=0`이다. 전체 입력이 비었다는 준비 오류와 구분한다.
+
+| 실제 테스트 예제 | 기대와 실행 결과 |
+| --- | --- |
+| 정상 HttpOrderController | 선택되어 위반 없음 |
+| RestController가 붙은 OrderEndpoint | 이름 위반. 잘못된 이름이라도 선택에서 빠지지 않음 |
+| 어노테이션 없는 OrderController | 선언 조건 위반 |
+| 업무 접두사가 없는 Controller | 이름 위반 |
+| 다른 허용 폴더 / 다른 모듈 | 각각 package / module 위반 |
+| 단서 없는 Helper·Kt·달러 이름·Service 어노테이션만 있는 Manager | 이름 규칙 대상 없음. 의미는 리뷰하고 파일 검사 유지 |
+| extra 루트 추가 | Endpoint 이름 위반 유지 |
+| Configuration과 RestController가 겹친 DualController | 양쪽 규칙 실행. 역할 충돌 하나로 나머지 검사 중단하지 않음 |
+| 프로젝트 전용 합성 어노테이션 | 재귀 분류하지 않음 |
+| 개별 ArchRule.check | 정상 통과, 이름 위반 반례에서 AssertionError와 대상 확인 |
+
+기대값은 합의한 명세의 대상·위반 조건에서 가져왔다. 구현 반환값을 정답으로 복제하지 않았다. 테스트 검토는 같은 AI가 수행했으므로 독립 리뷰라고 부르지 않는다.
+
+## Red에서 실제로 바뀐 계약
+
+`NewHelper` 하나를 전달한 회귀 테스트는 기존 코드에서 `unclassified` 위반 때문에 실패했다. 준비나 컴파일 오류가 아니라 **기존 판단과 새 명세의 차이**가 확인된 Red다. 개별 규칙 구현 후 동일한 기대값이 통과했다.
+
+자동 역할 추론을 없앤 결과, 단서 없는 이름을 자동 거절하는 보장은 제외된다. data/value/record의 의미 분류와 생성 타입 소유자·원본 연결 그래프도 만들지 않는다. 업무 책임과 이름의 적절성은 사람의 리뷰로 남긴다.
+
+## 나머지 이름 규칙을 읽는 순서
+
+같은 타입에 서로 다른 단서가 있으면 **각 규칙을 모두 실행**한다. 먼저 맞은 하나의 역할로 나머지를 지우지 않는다. `@Service`만 붙은 Manager를 자동으로 Service라고 추론하지 않으며, UseCase·Service·Coordinator 접미사는 자기 규칙의 단서다.
+
+| 단서 | 실제 판단 | 관측할 결과 |
+| --- | --- | --- |
+| UseCase·Service·Coordinator 접미사 | 업무 접두사, 구체 클래스/object, 각 application 영역 | 이름·선언·모듈·package 위반을 각각 보고 |
+| Calculator·Resolver 접미사 | 클래스/일반 인터페이스, fee 또는 order 코어 영역 | 다른 코어 모듈이라고 자동 허용하지 않음 |
+| Config 이름 / 직접 Configuration | 이름, Configuration, config 영역 | 이름만 Config이면 어노테이션 없는 선언 위반 |
+| 직접 SpringBootApplication | Application 이름과 앱 루트 | Boot의 표준 Configuration 의미는 Config 선택에서 제외 |
+| 직접 Advice / Entity | ExceptionHandler / Entity 이름과 자기 영역 | 어노테이션 단서의 정상·틀린 이름·위치 검사 |
+| Request·Response / ErrorResponse 접미사 | 각각 HTTP / 공통 오류 영역 | 클래스가 data인지 추론하지 않음. ErrorResponse는 일반 Response 규칙에서 분리 |
+
+`data class DataUseCase`는 이번의 단순 선언 검사에서 일반 구체 클래스처럼 판단한다. 이전의 data/value/record 구분 보장은 의도적으로 제외했다. 이름이 실제 업무 책임에 맞는지는 리뷰한다.
+
+근거: [개별 ArchRule 함수](../architecture-tests/src/test/kotlin/com/exchange/architecture/rules/NamingRules.kt), [정상·반례 테스트](../architecture-tests/src/test/kotlin/com/exchange/architecture/NamingPlacementRuleTest.kt).
+
+## Store 관계: 이름의 의미 대신 실제 상속을 본다
+
+**구현 타입 → 실제 내부 Store 포트 → 포트의 module/package → 대응 저장 영역 → 구현의 이름과 위치**.
+
+`PostgresWalletStore`의 Wallet 단어로 ledger라고 추측하지 않는다. WalletStore가 domain-ledger의 허용 포트 영역에 있으면 정책의 `domain-ledger → ledger-persistence`를 따라간다. 간접 상속도 ArchUnit이 읽은 관계로 확인한다.
+
+| 분기 | 실제 결과 |
+| --- | --- |
+| 같은 영역의 포트 둘 | 정상. 하나의 저장 영역으로 합침 |
+| main/extra 루트의 서로 다른 위치 ID가 같은 module/package를 가리킴 | 정상. ID 개수 때문에 모호하다고 거절하지 않음 |
+| 대응 위치 ID가 실제로 다른 module/package를 가리킴 | Store 영역 위반 |
+| 이름만 Postgres…Store이고 내부 포트 구현이 없음 | 선언·구현 관계 위반 |
+| 읽을 수 있는 포트가 허용 package 밖에 있음 | 포트 위치 위반 + 구현 매핑 위반. 임의의 정상 영역을 추측하지 않음 |
+| 필요한 내부 포트·상위 정의 또는 영역 매핑 누락 | 준비 오류. 부분 위반 목록을 성공 증거로 사용하지 않음 |
+| 외부 라이브러리의 Store/Publisher를 구현한 단서 없는 Adapter | 내부 포트 구현 대상으로 선택하지 않음 |
+
+Publisher는 실제 내부 포트 관계를 확인하고 Persistent/NoOp 이름의 대응 위치를 검사한다. Repository는 접미사 또는 Spring Data 상속으로 선택한 뒤 **일반 인터페이스·실제 상속·Repository 이름·영속 위치**를 확인한다.
+
+검증 중 외부 라이브러리의 포트를 내부 포트로 잘못 선택하는 반례를 추가했다. 수정 전 실제 assertion 실패를 확인했고, 내부 운영 입력에 있는 포트만 선택 근거로 사용하도록 고친 뒤 통과했다.
+
+근거: [포트 영역 매핑](../architecture-tests/src/test/kotlin/com/exchange/architecture/policy/PortPlacementPolicy.kt), [동등 영역·외부 포트·간접 상속 테스트](../architecture-tests/src/test/kotlin/com/exchange/architecture/NamingPlacementPortTest.kt).
+
+## 파일 검사와 타입 검사를 어떻게 합치는가
+
+파일은 Gradle의 main 원본 목록에서 받는다. **정책 목록에서 파일을 찾아 만드는 방식이 아니다.** 각 파일의 구문을 읽어 package와 실제 부모 폴더를 비교하고, 소스 루트·정확한 허용 폴더·생산 작업도 확인한다. 클래스 없는 파일에도 적용한다.
+
+- 허용하지 않은 `application/internal`에 새 파일: 폴더 위반.
+- package는 그대로 두고 파일만 이동: 실제 폴더/package 불일치.
+- 허용 목록에 있는 persistence에 package까지 맞춰 Controller 이동: 파일 조건 충족, Controller 위치 위반.
+- 파일 삭제·구문 오류·소속 중복·외부 심볼릭 링크: 준비 오류.
+- 유효한 전체 입력에 해당 이름 규칙의 대상이 없음: 그 규칙의 대상 0으로 보고. 전체 입력이 비었거나 필수 모듈이 누락된 것과 구분.
+
+Kotlin의 익명·local·synthetic 타입과 파일 운반 kind 2/4/5만 이름 검사에서 제외한다. 이 필터를 기존 공통 수집기에 적용하지 않으므로 다른 ARCH의 의존·호출 검사 대상은 줄이지 않는다. named nested·companion은 자신의 이름 단서로 검사한다.
+
+**제외한 보장:** 모든 컴파일 타입과 원본 파일의 일대일 연결, 다중 파일의 소유 그래프·metadata 본문 무결성. 대신 실제 원본 전체의 독립적인 폴더 검사를 유지한다. 두 허용 루트에 같은 파일명이 있어도 각각 실제 파일을 검사한다.
+
+근거: [원본 검사](../architecture-tests/src/test/kotlin/com/exchange/architecture/support/SourcePlacement.kt), [두 검사 결합](../architecture-tests/src/test/kotlin/com/exchange/architecture/rules/NamingPlacement.kt), [위치 구분과 이동 테스트](../architecture-tests/src/test/kotlin/com/exchange/architecture/NamingPlacementIntegrationTest.kt), [입력·Kotlin 필터 테스트](../architecture-tests/src/test/kotlin/com/exchange/architecture/NamingPlacementScopeTest.kt).
+
+## 변경되면 다시 검사되는가
+
+실제 임시 Gradle 프로젝트에 소스만 추가하여 전체 출력 수집과 검사 재실행을 확인했다. 정상 AmendOrderUseCase는 새 대상에 포함된다. 단서 없는 OrderManager는 이름 검사 대상이 아니지만 원본 파일로 계속 검사된다. 접두사 없는 UseCase는 새 대상에 포함되고 이름 위반으로 테스트 작업이 실패한다.
+
+폴더 정책만 바꾸면 다시 실행하여 새 package·허용 폴더 조건을 적용한다. 정책의 이유만 바꾼 경우도 다시 실행하여 이전 결과를 재사용하지 않는다. TestKit의 별도 Test 프로세스에서 같은 검사기를 호출하며, 여기서만 쓰는 예제 정책 상수를 운영 설정 언어로 도입하지 않는다.
+
+근거: [실제 재실행과 새 대상](../architecture-tests/src/test/kotlin/com/exchange/architecture/NamingPlacementGradleAutomaticTest.kt), [소스 루트·생산 작업·파일 이동](../architecture-tests/src/test/kotlin/com/exchange/architecture/NamingPlacementGradleWiringTest.kt).
+
+## 기존 PR 리뷰의 두 지적
+
+- 동등한 Store 위치 ID를 모호하다고 거절한 지적은 **유지하는 계약의 결함 수정**이다. 동등 module/package는 합치고 다른 영역은 위반으로 검증했다.
+- DATA/ANY 루트가 HTTP 데이터 이름 조건을 지운 지적은 **전체 DTO 추론을 제외하는 보장 변경**으로 처리했다. 원래의 모든 DATA/HTTP 규칙을 그대로 고쳤다고 주장하지 않는다. 대신 extra 루트를 추가해도 활성 Controller 이름 위반이 남는 회귀를 검증했다.
+
+## 어떤 파일이 어떤 흐름에 속하는가
+
+| 구분 | 파일과 책임 |
+| --- | --- |
+| 개별 검사 규칙 | NamingRules: 위 모든 이름·위치·실제 상속의 ArchRule 함수 |
+| 입력·결과 | NamingPlacementScope: 모듈 소속, 정책 오류, 대상과 결과. NamingPlacement: 타입 검사와 원본 검사 결합 |
+| 영역·폴더 정책 | PortPlacementPolicy, ProjectLayoutPolicy: 포트 매핑과 정확한 16개 폴더. 역할 목록은 제거 |
+| 예제와 테스트 | NamingFixtures, AutomaticRoleFixtures: 고의 반례/정상 선언. NamingPlacementContract/Rule/Port/Scope/Integration/SimplificationTest와 SourcePlacementContractTest: 각 기대값 검증 |
+| 실제 Gradle 테스트 | NamingPlacementGradleAutomatic/GradleWiring/GradleScenario: 새 소스·정책 변경과 결과 보고 |
+| 빌드 | architecture-tests/build.gradle.kts: 기존 파서와 예제 의존성의 이유 설명을 현재 범위에 맞춤 |
+| 제거 | NamingTypeFacts와 전체 자동 분류·metadata 그래프 테스트. 새로운 의미 분류기로 대체하지 않음 |
+| 기록 | 상세 명세·이 흐름 문서·실행 근거. 이전 기록은 문서의 보존 영역에 남김 |
+
+## 최종 실행 근거와 남은 범위
+
+최종 명령: `./gradlew build --offline --continue`. **BUILD SUCCESSFUL**, 30개 작업 중 2개 실행·28개 UP-TO-DATE였다.
+
+| 범위 | 결과 | 이번 실행 여부 |
+| --- | --- | --- |
+| ARCH-05 | 69개 통과 | 이번 전체 architecture-tests:test에서 실행 |
+| 다른 구조 검사 | 237개 통과 | 동일 테스트 작업에서 실행. 해당 규칙·테스트의 코드는 변경하지 않음 |
+| 제품 테스트 | 기존 243개 성공 기록 | 입력 변경이 없어 UP-TO-DATE. 이번에 DB 테스트를 재실행한 근거로 사용하지 않음 |
+| 전체 빌드 | 성공 | 새 구조 검사 결과와 변경 없는 제품 산출물을 포함 |
+
+실행한 구조 테스트는 실패·오류·skip 0개다. 빌드 시작 시 기록한 코드·빌드 입력 93개 해시가 종료 후 일치한다. 문서·HTML 갱신은 이후 설명 변경이며 테스트를 약화한 변경이 아니다. [명령·집계·소스 해시](architecture-05-verification.json)를 확인할 수 있다.
+
+첫 Helper 회귀와 외부 포트 선택 반례는 수정 전 assertion 실패를 확인했다. 잘못 이름 붙인 Entity 반례는 테스트 예제 오류로 바로잡았으며 제품 결함의 Red로 세지 않는다. 테스트 기대값·완료 검토는 같은 AI의 명세 대조이며 독립 PR 리뷰로 표시하지 않는다.
+
+#19/#32는 검사기와 예제 검증까지 완료했다. #20~21에서 실제 운영 이름·폴더 이행과 ARCH-05 활성화를 한다. 이름의 업무 의미와 책임 이동은 사람의 리뷰가 필요하다. Nebula·PIT·SonarQube·Trivy는 이번 작업에 추가하지 않았다.
+
+## 실제 코드와 테스트
+
+아래 코드는 현재 작업 파일이다. 큰 파일은 필요한 함수만 먼저 찾아 읽고, 위 흐름과 연결한다.
+
+<!-- ARCH05_IMPL_SOURCES_START -->
+<!-- ARCH05_IMPL_SOURCES_END -->
+
+<!-- ARCH05_REVIEW_BEFORE_SIMPLIFICATION -->
 # 등록 없이 새 코드를 검사하는 흐름 · ARCH-05
 
 상태: **자동 분류 구현 · 로컬 검증 완료**. 브랜치 `feat/naming-placement-check/19`, 비교 기준 `3250fd2`의 개정 명세다. 클래스별 등록 입력을 제거했다. 현재 코드와 최종 실행 근거를 연결했다. 원격 CI·독립 리뷰·병합 상태는 [PR #32](https://github.com/0Chord/coin-exchange/pull/32)에서 별도로 확인한다.

@@ -1,3 +1,283 @@
+# ARCH-05 개별 규칙 상세 명세 — 이름·폴더 검사와 실행 분리
+
+**상태: 적용 방향 합의 · 개별 규칙 구현 및 로컬 검증 완료.** 2026-10-01, [이슈 #19](https://github.com/0Chord/coin-exchange/issues/19)와 [PR #32](https://github.com/0Chord/coin-exchange/pull/32)의 `4e4956e`를 기준으로 작성했다. 원격 PR에는 아직 전체 역할 분류 방식이 남아 있다. 이번 기록은 그 구현을 단순화하기 위한 명세이며, 새 구현의 통과 보고가 아니다. 이전 명세는 뒤에 보존한다.
+
+목표는 **새 파일을 일일이 등록하지 않고, 이름·어노테이션·상속으로 확인할 수 있는 규칙과 실제 폴더 제한을 지키는 것**이다. 각 규칙을 사람이 읽고 정상·위반 사례로 판단할 수 있어야 한다.
+
+## 먼저 읽을 확정 범위
+
+**이번 #32는 기존 architecture-tests 모듈에서 개별 ArchUnit 규칙을 만들고 기존 JUnit·Gradle로 실행한다. 실제 폴더 검사는 별도로 유지한다.** 넷플릭스의 규칙 작성·실행 분리를 참고하되, 공용 배포를 위한 Nebula 도입은 후속으로 둔다.
+
+| 이번에 만들 결과 | 자동 검사의 경계 |
+| --- | --- |
+| Controller, UseCase, Store 등 명시적 단서의 이름·위치 검사 | 모든 클래스의 업무 역할을 알아내지는 않는다. |
+| 정확한 허용 소스 루트·폴더와 package 일치 검사 | 허용되지 않은 하위 폴더도 위반이다. 클래스 없는 파일도 검사한다. |
+| 실제 Store 포트 구현 관계에 따른 저장 영역 검사 | 이름의 업무 단어로 영역을 추측하지 않는다. |
+| 정상·위반·누락 예제로 검사기의 탐지력 검증 | 실제 운영 코드 전체가 새 컨벤션을 준수한다는 뜻은 아니다. |
+
+**합의한 선택:** 허용 폴더의 `OrderWorker`처럼 단서가 없는 이름은 폴더만 자동 검사하고, 역할·이름의 적절성은 리뷰한다. 클래스별 등록과 미분류 자동 실패를 요구하지 않는다. 이름에 해당하는 규칙이 여러 개면 각각 검사한다.
+
+**첫 구현 단위는 컨트롤러 검사 한 묶음**이다. 전체 타입에서 후보를 고르고, 이름·어노테이션·위치를 확인하여 어떤 조건이 틀렸는지 보고한다. 아래 컨트롤러 수용 사례를 테스트 작성의 첫 입력으로 사용한다.
+
+## 유지할 것과 제외할 것
+
+| 유지 | 제외 | 제외하면서 줄어드는 보장 |
+| --- | --- | --- |
+| 기존 운영 클래스·main 원본 자동 수집과 입력 무결성 | 모든 타입에 정확히 하나의 역할 부여 | 단서가 없는 이름이나 업무 책임을 자동 판정하지 않는다. |
+| 합의한 이름·모듈·package 조건 | Kotlin data/value/record를 해석한 전체 데이터 분류 | 이름이 없는 DTO와 data class의 업무 적절성은 리뷰한다. |
+| 정확한 폴더 목록, 실제 package 구문 확인 | 생성 타입에 소유자의 역할을 상속시키는 그래프 | companion·lambda·파일 운반 타입의 소유 관계 완전성을 검사하지 않는다. |
+| Store 구현과 포트 영역 비교 | 모든 .class와 원본의 일대일 연결 | 컴파일된 타입마다 실제 소스 경로를 입증하는 보장을 제외한다. 원본 파일 수집·폴더 검사는 유지한다. |
+| 준비 오류·위반·대상 없음 구분 | 소스 루트별 이름 완화, 사용자 정의 합성 어노테이션의 재귀 해석 | 루트마다 이름 예외를 만들지 않는다. 임의 합성 어노테이션만 있는 클래스는 자동 선택을 보장하지 않는다. |
+
+ARCH-01/02/03/04/06/08의 의존·호출 검사 입력은 그대로 유지한다. 아래의 이름 검사 대상 제외를 공통 수집기의 제외 설정으로 옮기지 않는다.
+
+<details markdown="1">
+<summary>검사 계약 펼치기 — 대상 선택, 이름, 모듈·package와 실제 폴더</summary>
+
+## 개별 이름·위치 규칙
+
+**입력은 기존 수집기가 읽은 전체 운영 타입과 타입별 모듈 소속이다.** 허용 package에 있는 타입만 먼저 고르지 않는다. 잘못된 모듈·package에 놓인 타입도 동일한 이름·어노테이션·상속 조건으로 선택한다.
+
+표의 `…`는 비어 있지 않은 이름 부분이다. 예를 들어 `UseCase`, `PostgresStore`만 있는 이름은 불충분하다. 대상을 고를 때에는 먼저 접미사 자체를 확인하므로 이런 이름도 누락하지 않고 위반을 보고한다. 업무상 정확한 단어 선택은 리뷰한다.
+
+| 검사 묶음 | 전체 입력에서 고르는 조건 | 검사할 조건 | 정확한 허용 영역 |
+| --- | --- | --- | --- |
+| 컨트롤러 | 이름이 `Controller`로 끝나거나 표준 Controller/RestController 어노테이션이 있음 | `…Controller` 이름과 표준 어노테이션 모두 필요 | app-api · `api/order/api` |
+| 유즈케이스·내부 작업·조율 | 이름이 `UseCase`/`Service`/`Coordinator`로 끝남 | 비어 있지 않은 앞 이름. 실제 구현 선언이어야 함: 인터페이스·enum·어노테이션·abstract 선언 거절 | UseCase·Service: app-api · `api/order/application`. Coordinator: app-api · `api/matching/application` |
+| 계산·결정 | 이름이 `Calculator`/`Resolver`로 끝남 | 비어 있지 않은 앞 이름. 클래스 또는 일반 인터페이스 허용, enum·어노테이션 선언 거절 | domain-fee · `fee`, domain-order · `order` |
+| 저장 포트 | 인터페이스 선언이고 이름이 `Store`로 끝남 | 어노테이션이 아닌 일반 인터페이스와 `…Store` 이름 | domain-order · `order`, domain-ledger · `ledger`, app-api · `api/matching/application/port` |
+| 저장 구현 | 비인터페이스의 `Store` 접미사 또는 실제 내부 Store 포트 구현 관계 | 실제 포트 구현과 `Postgres…Store`/`Jpa…Store` 이름. enum·어노테이션 선언 거절 | 아래 Store 영역 매핑 적용 |
+| 발행 포트·구현 | `Publisher` 접미사 또는 실제 내부 Publisher 포트 구현 관계 | 포트는 일반 인터페이스와 `…Publisher` 이름. 구현은 실제 포트 구현과 `Persistent…Publisher`/`NoOp…Publisher` 이름 | 포트: matching application/port. Persistent: matching persistence. NoOp: matching publish. 모두 app-api |
+| Spring Data 저장 인터페이스 | `Repository` 접미사 또는 실제 Spring Data Repository 상속 | 일반 인터페이스, `…Repository` 이름, 실제 Repository 상속 모두 필요 | app-api · `api/matching/infrastructure/persistence` |
+| 조립 설정 | `Config` 접미사 또는 표준 Configuration 어노테이션 | `…Config` 이름과 Configuration 모두 필요 | app-api · `api/config` |
+| 시작점 | 표준 SpringBootApplication 어노테이션 | `…Application` 이름 | app-api · 앱 루트 |
+| HTTP 예외 처리 | 표준 ControllerAdvice/RestControllerAdvice 어노테이션 | `…ExceptionHandler` 이름 | app-api · `api/common` |
+| 저장 엔티티 | 표준 Entity 어노테이션 | `…Entity` 이름 | app-api · order/ledger/matching의 infrastructure/persistence |
+| HTTP 입력·출력 이름 | `Request`/`Response` 접미사. `ErrorResponse` 접미사는 별도 대상으로 구분 | 비어 있지 않은 앞 이름과 위치. 실제 DTO인지 추론하지 않음 | 일반 Request/Response: app-api · `api/order/api`. ErrorResponse: app-api · `api/common`만 허용 |
+
+위 약식 경로는 `com.exchange.core` 아래다. 예: `api/order/application`은 `com.exchange.core.api.order.application`. package와 모듈은 둘 다 맞아야 한다. 하위 package를 암묵적으로 허용하지 않는다.
+
+**어노테이션의 범위:** 직접 선언한 `org.springframework.stereotype.Controller`, `org.springframework.web.bind.annotation.RestController`, `org.springframework.context.annotation.Configuration`, `org.springframework.boot.autoconfigure.SpringBootApplication`, `org.springframework.web.bind.annotation.ControllerAdvice`/`RestControllerAdvice`, `jakarta.persistence.Entity`를 사용한다. RestController와 RestControllerAdvice는 각각 표준 대응 어노테이션으로 명시적으로 인정한다. 임의의 사용자 정의 meta-annotation을 따라가지 않는다.
+
+SpringBootApplication의 표준 설정 의미를 인정하되, **Boot 시작점에는 Configuration 단서만으로 Config 검사까지 추가하지 않는다.** 이름 자체가 `…Config`면 Config 검사에도 해당한다. `@Service`/`@Component`만으로는 위 업무 역할을 선택하지 않는다.
+
+**선언 형태 축소:** Kotlin class/object/data/value와 Java record의 업무 의미를 추가로 해석하지 않는다. JVM에서 직접 확인할 인터페이스·enum·어노테이션·abstract 조건만 사용한다. 따라서 정상 위치의 구체 `data class CancelOrderUseCase`는 data라는 이유만으로 거절하지 않는다.
+
+### 생성 타입과 상속 자료의 경계
+
+이름 규칙은 익명·로컬·synthetic 타입과 Kotlin 파일 운반 타입(`kotlin.Metadata.kind`의 2/4/5)을 제외한다. 이는 단순 플래그·헤더 확인에 한정하며 metadata 본문, data/value 판별, 소유 관계를 해석하지 않는다. 이름에 `$`가 있거나 `Kt`로 끝난다는 이유만으로 제외하지 않는다. 이름을 가진 중첩 클래스·companion은 자신의 명시적 단서가 있으면 검사하고, 바깥 타입의 역할은 물려받지 않는다.
+
+이 제외는 이름 검사에만 적용한다. 원본 파일과 다른 ARCH의 의존 검사에는 그대로 포함한다. 잘못된 .class 파일을 읽은 실패는 준비 오류지만, 이름 검사에 쓰지 않는 Kotlin metadata 본문의 완전성을 별도로 보장하지 않는다.
+
+Store/Publisher/Repository는 ArchUnit이 읽은 실제 상위 관계를 사용하며 간접 상속도 포함한다. 필요한 내부 상위 타입이 누락되었거나 해당 관계를 판정하는 상위 정의가 읽히지 않았다면 준비 오류다. 이 확인은 관계가 필요한 규칙에 한정한다. 다른 클래스의 업무 역할을 모른다는 이유는 준비 오류가 아니다.
+
+### Store 구현의 영역 결정
+
+| 실제 구현한 내부 포트의 모듈·정확한 package | 구현의 모듈·정확한 package |
+| --- | --- |
+| domain-order · `com.exchange.core.order` | app-api · `com.exchange.core.api.order.infrastructure.persistence` |
+| domain-ledger · `com.exchange.core.ledger` | app-api · `com.exchange.core.api.ledger.infrastructure.persistence` |
+| app-api · `com.exchange.core.api.matching.application.port` | app-api · `com.exchange.core.api.matching.infrastructure.persistence` |
+
+비인터페이스 구현 타입에 대해서만 이 매핑을 적용한다. **영역의 비교 키는 `(모듈, package)`다.** main·extra 루트의 서로 다른 위치 ID가 같은 키를 가리키면 같은 영역이다. 각 원본의 루트·폴더 허용 여부는 별도로 검사한다.
+
+같은 영역의 여러 Store 포트를 구현하면 허용한다. 서로 다른 영역의 포트를 함께 구현하면 저장 영역 위반이다. 잘못된 package에 선언된 포트는 포트 위치 위반이며, 구현에서도 허용 매핑을 찾지 못한 위반을 보고한다. 읽을 자료가 없는 준비 오류와 실제로 잘못 선언한 위반을 구분한다. 포트의 업무 이름으로 정답 영역을 추측하지 않는다.
+
+## 실제 폴더와 package
+
+**6개 모듈·16개 정확한 폴더를 유지한다.** 기본 루트는 `src/main/kotlin`. 아래 모든 약식 경로는 그 루트의 `com/exchange/core/` 아래이며, ‘앱 루트’만 `com/exchange/core` 자체다.
+
+| 모듈 | 허용 폴더 |
+| --- | --- |
+| app-api | 앱 루트 |
+| app-api | `api/config` |
+| app-api | `api/common` |
+| app-api | `api/order/api` |
+| app-api | `api/order/application` |
+| app-api | `api/order/infrastructure/persistence` |
+| app-api | `api/ledger/infrastructure/persistence` |
+| app-api | `api/matching/application` |
+| app-api | `api/matching/application/port` |
+| app-api | `api/matching/infrastructure/persistence` |
+| app-api | `api/matching/infrastructure/publish` |
+| domain-common | `common` |
+| domain-fee | `fee` |
+| domain-order | `order` |
+| domain-ledger | `ledger` |
+| domain-matching | `matching` |
+
+Gradle의 실제 main 원본 목록에 포함된 Kotlin·Java 파일을 기존 구문 파서로 읽는다. 폴더는 package 경로와 정확히 일치해야 하며, 파일명과 클래스명 일치를 새로 강제하지 않는다. 클래스 없는 Kotlin 파일도 폴더와 package를 검사한다. `application/internal`은 별도로 허용하지 않았으므로 위반이다.
+
+새 폴더·루트는 **한 프로젝트 정책 목록**에 경로와 이유를 추가한다. 새 클래스는 등록하지 않는다. 같은 모듈·package를 두 루트에 허용해도 이름 규칙은 동일하다. 비어 있는 기본 Java 루트와 실제 Java·생성 소스의 기존 구분, 루트 생산 작업과 실제 main 입력의 검증을 유지한다.
+
+경로 형식 오류, 중복 등록, 소속 중복, 파일 누락·읽기 실패와 별칭 경로에 대한 기존 검증을 보존한다. 정책의 루트·폴더에는 역할 집합과 DTO 이름 예외를 두지 않는다. 폴더 허용 목록과 개별 이름 규칙의 허용 영역은 같은 프로젝트 정책을 참조하되, 폴더 자체가 업무 역할을 결정하지 않는다.
+
+</details>
+
+## 입력 → 검사 → 보고 흐름
+
+1. 기존 Gradle 연결로 운영 main 산출물, 모듈 소속, 실제 원본·소스 루트와 프로젝트 경로 정책을 받는다. 테스트·벤치마크 산출물은 운영 대상에 섞지 않는다.
+2. 기존 수집 오류와 정책의 누락·중복을 확인한다. 원본의 읽기·구문 오류도 준비 오류로 모은다. 준비가 실패하면 **전체 검사 성공**을 내지 않는다.
+3. 준비된 전체 운영 타입에서 규칙마다 대상을 고른다. 같은 타입에 여러 규칙이 해당하면 각각 평가한다. 별도로 모든 원본의 허용 폴더와 package를 검사한다.
+4. 규칙별 선택 대상, 기대 조건, 실제 위반을 보고한다. 수집한 원본 경로는 파일 검사에서 표시하고, 타입의 전체 원본 경로를 증명하지 못했다면 추측하여 표시하지 않는다.
+
+```mermaid
+flowchart TD
+    A[운영 타입·모듈·원본·정책 받기] --> B{입력과 정책을 읽을 수 있는가}
+    B -->|아니오| C[준비 오류와 실패 보고]
+    B -->|예| D[규칙별 대상 선택과 ArchUnit 평가]
+    B -->|예| E[원본 폴더와 package 검사]
+    D --> F[규칙별 대상·조건·결과 보고]
+    E --> F
+    F --> G[위반 없음·위반·대상 없음 구분]
+```
+
+| 결과 | 의미와 실패 기준 |
+| --- | --- |
+| 준비 오류 | 자료를 못 읽었거나 필수 입력이 빠졌다. 전체 성공으로 표시하지 않으며 원인을 보고한다. |
+| 규칙 위반 | 선택한 대상이 조건을 어겼다. 운영 검사는 실패해야 한다. 위반 예제 테스트는 의도한 위반을 확인해야 성공한다. |
+| 위반 없음 | 선택한 대상은 해당 조건을 지켰다. 업무 의미·금액·DB 동작 검증으로 확대하지 않는다. |
+| 대상 없음 | 유효한 입력은 있으나 해당 개별 이름 규칙의 대상이 0개다. 선택 규칙의 탐지력을 증명한 것으로 표시하지 않는다. |
+| 운영 미적용 | #19/#32의 새 ARCH-05는 예제로 검증한다. #20~21의 이행·활성화 전에는 운영 준수 완료로 표시하지 않는다. |
+
+개별 규칙의 빈 대상은 선택적 규칙의 `allowEmptyShould` 등으로 명시적으로 다룬다. 전체 검사에서 빈 대상 허용을 일괄 켜지 않는다. 기존 필수 운영 모듈의 빈 산출물과 빈 전체 수집은 준비 오류로 유지한다. 입력은 유효하지만 모든 타입이 이름 규칙 대상 밖이라면 파일 검사는 수행한다.
+
+보고는 **예제/운영 구분, 규칙 ID·읽을 수 있는 이름, 선택한 대상 수와 타입명, 조건과 실제 위반**을 제공한다. `ARCH-05/controller-name`, `ARCH-05/controller-annotation`, `ARCH-05/controller-location`처럼 기존 ARCH-05 아래에서 식별한다. 위반마다 별도의 역할 추론 자료형을 만들지 않으며 ArchUnit의 평가·실패 설명과 Gradle 보고서를 사용한다.
+
+<details markdown="1">
+<summary>수용 사례 펼치기 — 먼저 만들 컨트롤러 검사와 남은 회귀</summary>
+
+## 정상·위반·누락 사례와 기대값의 근거
+
+아래는 **테스트로 옮길 계약이며 실행 결과가 아니다.** 정상·위반 예제는 선택된 타입명까지 확인한다. ‘아무 위반 하나가 있다’만으로 성공 처리하지 않으며, 의도한 타입과 조건의 위반이 실제 평가 결과에 있어야 한다.
+
+### 첫 구현 단위: 컨트롤러
+
+표의 파일 입력은 루트·폴더·package가 일치하도록 준비한다. 이를 어기는 사례는 파일 검사에서 따로 검증한다.
+
+| 입력 | 기대 결과 | 이유 |
+| --- | --- | --- |
+| app-api order/api의 `@RestController OrderController` | 선택됨. 이름·어노테이션·위치 위반 없음 | 세 조건을 모두 지킴 |
+| 같은 위치의 `@RestController OrderHandler` | 선택됨. controller-name 위반 | 이름이 틀려도 어노테이션으로 발견 |
+| 같은 위치의 어노테이션 없는 `OrderController` | 선택됨. controller-annotation 위반 | 이름만으로도 발견하고 빠진 어노테이션을 검사 |
+| 같은 위치의 `@RestController Controller` | 선택됨. controller-name 위반 | 대상 선택에서 비어 있는 앞 이름을 누락하지 않음 |
+| app-api의 허용된 order persistence에 정상 어노테이션·이름을 둠 | 선택됨. controller-location의 package 위반 | 폴더 자체가 허용돼도 Controller의 위치는 아님 |
+| domain-order/order에 정상 어노테이션·이름을 둠 | 선택됨. controller-location의 모듈·package 위반 | 정답 모듈 밖에서도 선택해야 함 |
+| 허용된 application의 `OrderWorker`만 있는 유효한 입력 | 컨트롤러 대상 없음. 파일 검사 수행 | 업무 역할을 추론하거나 미분류 위반을 만들지 않음 |
+| 잘못된 이름의 Controller가 있는 입력에 동일 영역의 빈 extra 루트 정책을 추가 | 원래 controller-name 위반 유지 | 루트 추가로 이름 조건이 완화되지 않음 |
+
+### 남은 이름·관계 검사
+
+| 입력·짝 예제 | 기대 결과와 근거 |
+| --- | --- |
+| application에 새 `CancelOrderUseCase` 추가 / 허용된 persistence로 이동 | 등록 없이 선택하여 정상 / UseCase 위치 위반. fixture에 새 운영 클래스를 복제하지 않음 |
+| `interface CancelOrderUseCase`, 이름이 `UseCase`뿐인 클래스 / 정상 구체 UseCase | 각각 선언 형태·이름 위반 / 정상. 접미사 선택과 형태 검사를 분리하여 확인 |
+| 정상 `data class CancelOrderUseCase`, 단서 없는 `data class InternalState` | data라는 이유만으로 거절하지 않음. 각각 해당 이름 규칙 / 이름 규칙 미적용과 파일 검사 |
+| Service·Coordinator·Calculator·Resolver의 정상 위치 / 다른 허용 위치 | 각 묶음이 정상 대상을 선택하고 위치 반례를 보고함. Calculator/Resolver의 일반 인터페이스 정상 예제도 포함 |
+| 정상 내부 Store 포트와 실제 구현 / 이름이 잘못된 실제 구현 | 정상 / 실제 상속으로 선택한 구현의 이름 위반. 단순 접미사 선택만으로 구현을 놓치지 않음 |
+| `PostgresSomethingStore`지만 실제 포트 구현이 없음 | 선언·구현 관계 위반. 기술 접두사만으로 정상 구현으로 인정하지 않음 |
+| ledger 포트 구현을 허용된 order persistence에 둠 | Store 구현 영역 위반. 실제 포트의 모듈·package에 근거함 |
+| 같은 Store 영역의 포트 둘을 구현 / order·ledger 포트를 함께 구현 | 정상 / 영역 충돌 위반. 역할 분류 순서가 아니라 매핑한 영역으로 판단 |
+| 같은 Store 영역을 main·extra 루트의 서로 다른 ID로 허용 | 정상. 각 파일의 루트 검사는 수행하고 영역은 모듈·package로 통합 |
+| 읽을 수 있지만 허용 package 밖에 있는 Store 포트와 그 구현 | 포트 위치·구현 매핑 위반. 자료 누락인 준비 오류로 오인하지 않음 |
+| Publisher 포트와 Persistent/NoOp 구현 / 이름 또는 위치 하나를 어긴 구현 | 정상 / 해당 이름·위치 위반. 접미사·실제 구현 관계 양쪽의 선택 경로를 검증 |
+| Repository 상속·이름·위치를 모두 지킨 인터페이스 / 조건 하나씩 제거 | 정상 / 해당 이름·선언·위치 위반. 상속만 있는 잘못된 이름도 발견 |
+| 정상 Config / Config 이름만 있는 클래스 / Configuration을 붙인 잘못된 이름 | 정상 / 어노테이션 위반 / 이름 위반. 선택 단서 양쪽 검증 |
+| 앱 루트의 정상 SpringBootApplication | 시작점 정상, Configuration의 표준 의미만으로 Config 규칙에 선택되지 않음 |
+| 표준 Advice·Entity, Request/Response/ErrorResponse의 정상 / 조건 하나씩 위반 | 각 이름·위치 조건의 정상과 반례를 확인. 단서 없는 DTO를 전부 추론하는 검사로 확대하지 않음 |
+| Config와 Controller 단서가 함께 있는 한 타입 | 해당 규칙들을 모두 실행. 일반 roleConflict 준비 오류와 규칙 간 우선순위로 위반을 지우지 않음 |
+| 익명·synthetic 타입, Kotlin 파일 운반 타입 / 직접 선언한 이름이 `ForgedKt`인 타입 | 앞의 타입은 이름 검사 제외, 원본 검사는 유지. 후자는 문자열만으로 제외하지 않음 |
+
+### 원본·준비·Gradle 회귀
+
+| 입력 | 기대 결과와 근거 |
+| --- | --- |
+| package를 유지하고 파일만 다른 허용 폴더로 이동 | 실제 폴더/package 불일치. 컴파일된 package만으로 통과 불가 |
+| `application/internal`에 새 파일 / 클래스 없는 Kotlin 파일을 금지 폴더에 추가 | 정확한 허용 폴더 위반. 타입 선택과 무관하게 실제 원본 자동 포함 |
+| 허용되지 않은 소스 루트 / 생산 작업이 정책과 다른 생성 루트 | 루트 조건 위반. 허용 폴더 목록만 확인하여 통과하지 않음 |
+| 전달된 원본 삭제·읽기 실패·구문 오류, 손상된 .class | 준비 오류. 부분 결과가 있어도 전체 성공으로 표시하지 않음 |
+| 빈 전체 수집, 필수 모듈 누락·빈 산출물, 중복 클래스·원본 소속 | 기존 수집 준비 오류 보존. 역할별 최소 개수를 새로 만들지는 않음 |
+| 잘못된 정책 경로·중복·필요한 Store 매핑 누락 | 정책 준비 오류. 업무 클래스 미분류와 구분 |
+| 필요한 상위 정의 누락 / 실제 읽은 정상 간접 상속 | 해당 관계의 준비 오류 / 정상 판단. 상속을 확인하지 않고 통과시키지 않음 |
+| 예제의 위반 타입이 선택되지 않아서 위반 0건 | 예제 테스트 실패. 대상명과 해당 위반을 함께 확인하기 때문 |
+| 원본 파일 추가·수정, 정책만 수정, 새 허용 루트 연결 | 기존 Gradle 입력·재실행 경로를 통해 변경 포함. 오래된 성공 결과 재사용 방지 |
+| 기존 ARCH 검사에 이름 검사 제외 타입이 남아 있음 | 기존 의존·호출 검사 입력과 결과 보존. 이름 필터가 공통 입력을 줄이지 않음 |
+
+</details>
+
+## 기존 코드에서 바꿀 책임
+
+다음 책임으로 구현했다. 개별 규칙은 `NamingRules`의 독립된 `ArchRule` 함수로 제공한다.
+
+| 현재 코드 | 이번 변경 책임 |
+| --- | --- |
+| `rules/NamingRules.kt` | 전체 분류·미분류·역할 우선순위 처리를 개별 `ArchRule` 작성으로 대체. 가까운 규칙을 같은 파일에 두고, Store 영역 같은 조건만 작은 `ArchCondition`/함수로 작성 |
+| `support/NamingTypeFacts.kt` | Kotlin metadata 본문 해석, 외부 전체 재탐색, 생성 타입 소유 그래프 제거. 필요한 단순 대상 필터와 실제 상속 확인만 해당 규칙 가까이에 둠 |
+| `support/NamingPlacementScope.kt` | 기존 입력 준비와 모듈 소속 유지. `TypeClassification`, 생성 소유 결과, 전 타입 역할 성공 전제 제거 |
+| `policy/ProjectLayoutPolicy.kt` / `PortPlacementPolicy.kt` | 경로·이유·소스 루트와 규칙별 허용 영역·Store 매핑 유지. `NamingRole` 전 목록 검증, 폴더의 roles·dataNames와 모든 역할의 등록 요구 제거 |
+| `rules/NamingPlacement.kt` | 입력 준비 → 개별 규칙 평가 + 원본 검사 → 결과 보고의 연결로 단순화. .class/원본 전체 연결 그래프 제거 |
+| `support/SourcePlacement.kt` / `SourcePackageParser.kt` | 실제 폴더·package 구문·읽기 오류 검사 유지. 역할 조건을 제거한 경로 정책을 사용 |
+| `architecture-tests/build.gradle.kts`와 main 입력 스크립트 | 기존 main 출력·원본·정책 입력 연결과 기본 보고서 유지. 원본 구문 파서가 쓰는 Kotlin compiler 의존성을 역할 해석 제거만으로 삭제하지 않음 |
+
+공통 규칙 작성·평가는 ArchUnit의 `ArchRule`·선택 조건·`evaluate/check`를 사용한다. 규칙을 예제와 후속 운영 검사에서 같은 함수로 호출한다. 새로운 역할 DSL, 클래스 등록 시스템, 공용 실행 플러그인, 생성 관계 해석기를 이번 결과로 만들지 않는다.
+
+## 기존 테스트와 PR 리뷰 처리
+
+| 현재 보장·지적 | 후속 구현에서 할 일 |
+| --- | --- |
+| 미분류 Helper/Manager 거절, data/value/record 분류, 생성 소유 그래프 관련 테스트 | 더 이상 요구하지 않는 계약임을 명시하고 해당 테스트·사용처 제거 또는 변경. 허용 폴더의 단서 없는 타입 정상 사례와 이름 대상 없음 검증으로 대체 |
+| 정상·위반 이름과 실제 폴더, 입력 누락·손상, Gradle 재실행 | 새 규칙 구조로 기대값을 맞추어 유지. 다른 ARCH의 테스트는 변경하지 않음 |
+| [다른 루트의 DATA/ANY 조건이 HTTP 이름 위반을 지운 리뷰](https://github.com/0Chord/coin-exchange/pull/32#discussion_r4115831001) | 전체 DTO 추론 자체가 제외되므로 원래 DATA/HTTP 기대값은 의도적인 보장 변경. 별도로 ‘extra 루트를 추가해도 Controller 이름 위반이 유지됨’을 회귀 검증 |
+| [동등한 Store 위치 ID를 모호하다고 거절한 리뷰](https://github.com/0Chord/coin-exchange/pull/32#discussion_r4115831004) | 유지하는 Store 계약의 결함 수정 대상. 모듈·package 기준 통합, 복수 루트 정상·다른 영역 충돌 반례로 검증 |
+
+**Store 동등 영역 결함은 회귀 테스트로 수정했고, DTO 추론 지적은 합의한 보장 변경으로 처리했다.** extra 루트가 활성 Controller 이름 조건을 완화하지 않는 회귀도 통과했다. 기준 `4e4956e` 이후 현재 작업 파일에서 검증했으며 이전 551개 기록은 이번 근거로 재사용하지 않는다.
+
+## 작은 구현 단위와 검증 방법
+
+| 순서 | 결과와 완료 증거 |
+| --- | --- |
+| 1. 컨트롤러 한 묶음 | 위 첫 수용 사례로 테스트 작성 → 기대값 검토 → 개별 규칙 구현 → 선택 대상과 실패 이유 확인. 전체 역할 분류를 호출하지 않아도 동작해야 함 |
+| 2. 남은 이름·저장 관계 | 표의 남은 규칙과 Store 영역 회귀를 같은 방식으로 옮김. 규칙 간 중복 선택과 빈 대상 구분 확인 |
+| 3. 폴더·입력 연결 정리 | 정확한 경로 검사 보존, 역할·생성 그래프 의존 제거, 원본 추가·정책 변경 재실행 확인 |
+| 4. 전체 회귀와 설명 | 기존 ARCH 테스트와 거래 테스트를 실행하고, 실제 결과에 맞춰 HTML·PR의 보장 변경과 결함 수정 내역 설명 |
+
+최종 실행은 `./gradlew build --offline --continue`다. 아키텍처 306개(ARCH-05 69개 + 기존 검사 237개)를 실행하여 실패·오류·skip 없이 통과했다. 변경하지 않은 제품 test 작업은 UP-TO-DATE였으며 기존 243개 기록을 이번에 재실행했다고 하지 않는다. 관련 단위만 실행할 때는 다음 명령을 사용한다.
+
+```sh
+./gradlew :architecture-tests:test --tests '*NamingPlacement*' --tests '*SourcePlacementContractTest'
+./gradlew :architecture-tests:test
+./gradlew test
+```
+
+보고서는 `architecture-tests/build/reports/tests/test/index.html`과 `architecture-tests/build/test-results/test/`를 확인한다. 정상 예제 통과뿐 아니라 **위반을 의도한 조건으로 탐지했는지와 준비 오류를 성공으로 바꾸지 않았는지**가 완료 근거다. 새 규칙에 관한 테스트 클래스명을 변경하면 위 선택 실행 명령도 맞춘다.
+
+새 업무 클래스를 기존 구조에 추가할 때마다 fixture에 복제하지 않는다. 새 구조적 조건·예외를 도입하거나 검사기의 누락을 발견했을 때 규칙과 예제를 갱신한다. 사용자 리뷰는 이름이 책임을 설명하는지, 허용 영역 이동이 업무상 맞는지, 단서 없는 타입이 기존 경계를 우회하는지에 집중한다.
+
+## 이후 실제 Nebula 도입으로 확장한다면
+
+넷플릭스에서 가져온 것은 **개별 규칙 작성과 실행·배포 책임의 분리**다. 공개 구조는 일반 `ArchRule`을 규칙 라이브러리에 두고 Nebula로 실행·보고한다. 등록 대상은 검사 규칙이며 업무 클래스 전체 목록이 아니다. [Netflix 기술블로그](https://netflixtechblog.com/scaling-archunit-with-nebula-archrules-b4642c464c5a), [Nebula 공식 작성·실행 가이드](https://github.com/nebula-plugins/nebula-archrules-plugin)
+
+두 번째 저장소에서 같은 규칙을 함께 관리할 필요가 생기면 공통 규칙 하나를 골라 공식 library/runner와 고정 버전으로 실험한다. 거래소 전용 폴더 정책과 실제 원본 검사는 로컬에 남긴다. source set, 의존 클래스, 모듈 누락, 로컬·CI 결과와 제품 실행 의존성 분리를 확인한 뒤 공유 범위를 정한다.
+
+**이번 PR에서는 도입하지 않으며 호환성도 미검증이다.** 현재 Gradle 9.5.1·Java 25·Kotlin 2.3.21·ArchUnit 1.4.2를 유지한다. Nebula의 공개 테스트 목록만으로 이 조합을 검증했다고 주장하지 않는다. [공식 호환성 테스트 목록](https://github.com/nebula-plugins/nebula-archrules-plugin/blob/main/nebula-archrules-gradle-plugin/src/test/kotlin/com/netflix/nebula/archrules/gradle/SupportedGradleVersions.kt)
+
+## 명세 준비와 구현 완료 기준
+
+**명세 준비 완료:** 이번 적용 방향, 남길 조건·제외할 보장, 대상과 실패 흐름, 수용 사례, 수정 대상과 첫 구현 단위를 정했다. 현재 구현을 막는 추가 사용자 선택은 없다. 새로 드러나는 기술 문제가 보장을 바꾸면 그때 해당 항목을 논의한다.
+
+로컬 구현에서 확인한 완료 조건은 다음과 같다.
+
+- [x] 개별 규칙이 전체 역할 분류 없이 정상·위반·빈 대상 예제를 평가한다.
+- [x] 이름·모듈·package와 정확한 원본 폴더 검사가 각각 수용 사례를 만족한다.
+- [x] Store 동등 영역 결함이 수정되고 루트 추가가 활성 이름 규칙을 완화하지 않는다.
+- [x] 미분류 자동 거절·Kotlin 세부 분류·생성 소유 그래프의 요구와 사용처를 제거한다.
+- [x] 입력 오류와 Gradle 변경 재실행, 기존 ARCH와 거래 테스트의 회귀를 확인한다.
+- [x] 실제 결과와 줄어든 보장을 HTML·PR 갱신용 설명에 반영하고 두 리뷰의 처리 방식을 구분했다. 원격 게시·CI·리뷰 상태는 PR에서 별도로 확인한다.
+
+**#19/#32의 끝은 검사기와 예제 검증이다.** #20~21에서 실제 제품 이름·폴더를 이행하고 운영 ARCH-05를 활성화한다. 이번 PR은 거래 동작·DB 원자적 갱신·다른 병합된 ARCH 검사를 재설계하지 않는다. PIT·SonarQube·Trivy와 공용 규칙 배포는 별도 작업이다.
+
+<!-- ARCH05_PRE_SIMPLIFICATION_HISTORY_START -->
+
 # 구조 검사 명세 — #19 · ARCH-05 공통 규칙으로 이름과 배치 검사
 
 상태: **규칙 기반 자동 분류 구현 · 로컬 검증 완료**. 대상은 [PR #32](https://github.com/0Chord/coin-exchange/pull/32)다. `3250fd2`에서 확정한 아래 계약을 바탕으로 클래스별 `NamingBinding` 입력을 제거했다. 현재 코드·자연어 흐름과 551개 전체 회귀 결과는 [구현 리뷰](architecture-05-review.md)에서 확인한다. 원격 CI·독립 리뷰·병합은 별도 상태이며, ARCH-04 이하 이전 기록은 보존한다.

@@ -13,7 +13,7 @@ import kotlin.test.*
 
 class NamingPlacementGradleWiringTest {
     @TempDir lateinit var root: Path
-    private val folder = AllowedFolder("order", "app-api", "src/main/java", "com/example/order", setOf(NamingRole.USE_CASE), "예제 업무")
+    private val folder = AllowedFolder("order", "app-api", "src/main/java", "com/example/order", "예제 업무")
     private val policy = LayoutPolicy(listOf(AllowedSourceRoot("app-api", "src/main/java")), listOf(folder))
     private fun write(path: String, content: String): Path = root.resolve(path).also { Files.createDirectories(it.parent); Files.writeString(it, content) }
     private fun prepare(generated: Boolean = false) {

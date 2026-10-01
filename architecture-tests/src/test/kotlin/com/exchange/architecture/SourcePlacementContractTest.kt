@@ -9,7 +9,7 @@ import kotlin.test.*
 class SourcePlacementContractTest {
     @TempDir lateinit var root: Path
     private val folder = AllowedFolder("orders", "app-api", "src/main/kotlin", "com/example/order/application",
-        setOf(NamingRole.USE_CASE), "주문 실행")
+        "주문 실행")
     private val policy = LayoutPolicy(listOf(AllowedSourceRoot("app-api", "src/main/kotlin")), listOf(folder))
     private fun file(path: String = "com/example/order/application/Submit.kt", code: String = "package com.example.order.application\nclass SubmitOrderUseCase", sourceRoot: String = "src/main/kotlin"): Path =
         root.resolve("$sourceRoot/$path").also { Files.createDirectories(it.parent); Files.writeString(it, code) }
@@ -112,9 +112,9 @@ class SourcePlacementContractTest {
         assertEquals(listOf("allowedFolder"), inspect(child, p = p).result.violations.map { it.item })
         assertEquals(listOf("allowedFolder"), inspect(source).result.violations.map { it.item })
     }
-    @Test fun `NAME-28 중복 빈 역할 미등록 모듈과 잘못된 상대 경로 정책은 준비 오류다`() {
+    @Test fun `NAME-28 중복 빈 이유 미등록 모듈과 잘못된 상대 경로 정책은 준비 오류다`() {
         for (p in listOf(policy.copy(folders = listOf(folder, folder.copy(id = "duplicate"))),
-            policy.copy(folders = listOf(folder.copy(roles = emptySet()))),
+            policy.copy(folders = listOf(folder.copy(reason = ""))),
             policy.copy(folders = listOf(folder.copy(module = "unknown"))),
             policy.copy(folders = listOf(folder.copy(folder = "com/../utils"))),
             policy.copy(folders = listOf(folder.copy(sourceRoot = "missing/root"))))) {
