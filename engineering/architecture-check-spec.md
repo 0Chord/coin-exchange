@@ -1,3 +1,562 @@
+# ARCH-05 개별 규칙 상세 명세 — 이름·폴더 검사와 실행 분리
+
+**상태: 개별 규칙과 명시적 Bean 조립 검사 구현·검증 완료.** 2026-10-01, [이슈 #19](https://github.com/0Chord/coin-exchange/issues/19)와 [PR #32](https://github.com/0Chord/coin-exchange/pull/32)의 `fa85119` 이후 변경이다. 개별 이름·폴더 규칙은 원격 PR에 반영됐으며, 아래 Bean 조립 규칙은 사용자와 추가 합의했다. 이전 명세는 뒤에 보존한다.
+
+목표는 **새 파일을 일일이 등록하지 않고, 이름·어노테이션·상속으로 확인할 수 있는 규칙과 실제 폴더 제한을 지키는 것**이다. 각 규칙을 사람이 읽고 정상·위반 사례로 판단할 수 있어야 한다.
+
+## 먼저 읽을 확정 범위
+
+**이번 #32는 기존 architecture-tests 모듈에서 개별 ArchUnit 규칙을 만들고 기존 JUnit·Gradle로 실행한다. 실제 폴더 검사는 별도로 유지한다.** 넷플릭스의 규칙 작성·실행 분리를 참고하되, 공용 배포를 위한 Nebula 도입은 후속으로 둔다.
+
+| 이번에 만들 결과 | 자동 검사의 경계 |
+| --- | --- |
+| Controller, UseCase, Store 등 명시적 단서의 이름·위치 검사 | 모든 클래스의 업무 역할을 알아내지는 않는다. |
+| 정확한 허용 소스 루트·폴더와 package 일치 검사 | 허용되지 않은 하위 폴더도 위반이다. 클래스 없는 파일도 검사한다. |
+| 실제 Store 포트 구현 관계에 따른 저장 영역 검사 | 이름의 업무 단어로 영역을 추측하지 않는다. |
+| 정상·위반·누락 예제로 검사기의 탐지력 검증 | 실제 운영 코드 전체가 새 컨벤션을 준수한다는 뜻은 아니다. |
+
+**합의한 선택:** 허용 폴더의 일반 `OrderWorker`·`OrderManager`처럼 단서가 없는 이름은 이름 검사에서 제외하고, 원본의 폴더·package는 자동 검사한다. 역할·이름의 적절성은 리뷰한다. 클래스별 등록과 미분류 자동 실패를 요구하지 않는다. 이름에 해당하는 규칙이 여러 개면 각각 검사한다. 별도 Bean 조립 금지는 이름 검사 대상 여부와 무관하게 적용한다.
+
+| 새 클래스의 예 | 현재 계약 |
+| --- | --- |
+| 허용 폴더·package의 일반 `OrderManager` | 이름 검사 대상 없음. 파일 검사는 통과하며 업무 책임·이름은 리뷰 |
+| 금지 폴더의 `OrderManager` | 파일 위치 위반 |
+| `@Service OrderManager` | 별도 `ARCH-05/bean-registration` 위반 |
+| 필수 출력·원본을 읽지 못함 | 준비 오류. 이름 검사 대상 없음과 구분 |
+
+수집은 main 전체를 읽고 이름 규칙은 그중 해당 대상을 선택한다. 특정 이름 규칙의 대상이 0개인 것만으로 입력 누락이라고 판단하지 않는다. **‘OrderManager를 분류하지 못하면 실패한다’는 이전 계약은 현재 적용하지 않는다.** [현재 구현 흐름](architecture-05-review.md)의 첫 사례와 AUTO-25 테스트를 근거로 삼는다.
+
+## 명시적 Bean 조립 — 추가 합의
+
+업무 객체는 `app-api`의 `com.exchange.core.api.config`에서 `@Configuration`과 `@Bean`으로 조립한다. `…Service`라는 클래스 이름은 허용하지만, 업무 객체의 `@Service`·`@Component`·`@Repository` 자동 등록은 금지한다. 역할·접미사·폴더로 대상을 제한하지 않으므로, 역할을 모르는 `OrderWorker`도 자동 등록 어노테이션이 있으면 위반이다.
+
+사용자 선택에 따라 `@RestController`·`@RestControllerAdvice`는 기존 자동 등록을 유지한다. 표준 대응 어노테이션인 `@Controller`·`@ControllerAdvice`, 조립 설정 `@Configuration`, 시작점 `@SpringBootApplication`도 허용한다. 해당 어노테이션과 금지 어노테이션을 함께 붙이면 금지 위반은 유지한다.
+
+| 입력 | 기대 결과와 근거 |
+| --- | --- |
+| 어노테이션 없는 업무 객체 + 허용 config의 `@Bean` 메서드 | 통과. 객체 생성·연결을 config에서 명시함 |
+| `@Service CancelOrderUseCase`, `@Component OrderWorker`, `@Repository` 저장 구현 | `ARCH-05/bean-registration` 위반. 이름이 맞아도 자동 등록은 금지 |
+| Component를 포함하는 사용자 정의 합성 어노테이션이 붙은 업무 객체 | 같은 위반. ArchUnit의 기본 meta-annotation 판정을 사용함 |
+| 표준 HTTP·Configuration·Boot 어노테이션 | 자동 등록 예외. 어노테이션 선언 자체는 Bean 객체가 아니므로 제외 |
+| `@RestController @Service` 또는 `@Configuration @Repository` | 금지 위반. 허용 단서가 다른 금지 단서를 지우지 않음 |
+| config 밖·다른 모듈·Configuration 없는 클래스의 `@Bean` | `ARCH-05/bean-factories` 위반. 메서드의 선언 소속을 검사 |
+| `@Bean`을 포함하는 합성 어노테이션의 메서드 | 같은 소속 검사 적용 |
+| Bean 메서드가 없는 유효한 클래스 | 팩토리 대상 없음. 모든 도메인 객체를 Bean으로 만들도록 요구하지 않음 |
+
+이 두 규칙은 이름 검사와 독립된 작은 `ArchRule`로 작성한다. 기존 운영 출력 수집·누락 검증을 재사용하고, **현재 운영 코드에도 이 조립 검사만 즉시 활성화**한다. 이름·폴더 전체의 이행과 활성화는 #20~21이다. 검사에서는 Spring 컨텍스트를 시작하지 않으며, 실제 Bean 개수·주입 성공·임의 런타임 등록 전체를 증명하지 않는다.
+
+이번 문답: 사용자 “Service 사용까지 금지하게 해야지 우리는 Bean으로만 DI조립할꺼야” → HTTP 객체도 config 조립으로 바꿀지 Ask → 사용자 “RestController, RestControllerAdvice는 그대로 가면 될 것 같아”. 따라서 업무 자동 등록 금지와 HTTP 예외를 함께 반영한다.
+
+**첫 구현 단위는 컨트롤러 검사 한 묶음**이다. 전체 타입에서 후보를 고르고, 이름·어노테이션·위치를 확인하여 어떤 조건이 틀렸는지 보고한다. 아래 컨트롤러 수용 사례를 테스트 작성의 첫 입력으로 사용한다.
+
+## 유지할 것과 제외할 것
+
+| 유지 | 제외 | 제외하면서 줄어드는 보장 |
+| --- | --- | --- |
+| 기존 운영 클래스·main 원본 자동 수집과 입력 무결성 | 모든 타입에 정확히 하나의 역할 부여 | 단서가 없는 이름이나 업무 책임을 자동 판정하지 않는다. |
+| 합의한 이름·모듈·package 조건 | Kotlin data/value/record를 해석한 전체 데이터 분류 | 이름이 없는 DTO와 data class의 업무 적절성은 리뷰한다. |
+| 정확한 폴더 목록, 실제 package 구문 확인 | 생성 타입에 소유자의 역할을 상속시키는 그래프 | companion·lambda·파일 운반 타입의 소유 관계 완전성을 검사하지 않는다. |
+| Store 구현과 포트 영역 비교 | 모든 .class와 원본의 일대일 연결 | 컴파일된 타입마다 실제 소스 경로를 입증하는 보장을 제외한다. 원본 파일 수집·폴더 검사는 유지한다. |
+| 준비 오류·위반·대상 없음 구분 | 소스 루트별 이름 완화, 사용자 정의 합성 어노테이션의 재귀 해석 | 루트마다 이름 예외를 만들지 않는다. 임의 합성 어노테이션만 있는 클래스는 자동 선택을 보장하지 않는다. |
+
+ARCH-01/02/03/04/06/08의 의존·호출 검사 입력은 그대로 유지한다. 아래의 이름 검사 대상 제외를 공통 수집기의 제외 설정으로 옮기지 않는다.
+
+<details markdown="1">
+<summary>검사 계약 펼치기 — 대상 선택, 이름, 모듈·package와 실제 폴더</summary>
+
+## 개별 이름·위치 규칙
+
+**입력은 기존 수집기가 읽은 전체 운영 타입과 타입별 모듈 소속이다.** 허용 package에 있는 타입만 먼저 고르지 않는다. 잘못된 모듈·package에 놓인 타입도 동일한 이름·어노테이션·상속 조건으로 선택한다.
+
+표의 `…`는 비어 있지 않은 이름 부분이다. 예를 들어 `UseCase`, `PostgresStore`만 있는 이름은 불충분하다. 대상을 고를 때에는 먼저 접미사 자체를 확인하므로 이런 이름도 누락하지 않고 위반을 보고한다. 업무상 정확한 단어 선택은 리뷰한다.
+
+| 검사 묶음 | 전체 입력에서 고르는 조건 | 검사할 조건 | 정확한 허용 영역 |
+| --- | --- | --- | --- |
+| 컨트롤러 | 이름이 `Controller`로 끝나거나 표준 Controller/RestController 어노테이션이 있음 | `…Controller` 이름과 표준 어노테이션 모두 필요 | app-api · `api/order/api` |
+| 유즈케이스·내부 작업·조율 | 이름이 `UseCase`/`Service`/`Coordinator`로 끝남 | 비어 있지 않은 앞 이름. 실제 구현 선언이어야 함: 인터페이스·enum·어노테이션·abstract 선언 거절 | UseCase·Service: app-api · `api/order/application`. Coordinator: app-api · `api/matching/application` |
+| 계산·결정 | 이름이 `Calculator`/`Resolver`로 끝남 | 비어 있지 않은 앞 이름. 클래스 또는 일반 인터페이스 허용, enum·어노테이션 선언 거절 | domain-fee · `fee`, domain-order · `order` |
+| 저장 포트 | 인터페이스 선언이고 이름이 `Store`로 끝남 | 어노테이션이 아닌 일반 인터페이스와 `…Store` 이름 | domain-order · `order`, domain-ledger · `ledger`, app-api · `api/matching/application/port` |
+| 저장 구현 | 비인터페이스의 `Store` 접미사 또는 실제 내부 Store 포트 구현 관계 | 실제 포트 구현과 `Postgres…Store`/`Jpa…Store` 이름. enum·어노테이션 선언 거절 | 아래 Store 영역 매핑 적용 |
+| 발행 포트·구현 | `Publisher` 접미사 또는 실제 내부 Publisher 포트 구현 관계 | 포트는 일반 인터페이스와 `…Publisher` 이름. 구현은 실제 포트 구현과 `Persistent…Publisher`/`NoOp…Publisher` 이름 | 포트: matching application/port. Persistent: matching persistence. NoOp: matching publish. 모두 app-api |
+| Spring Data 저장 인터페이스 | `Repository` 접미사 또는 실제 Spring Data Repository 상속 | 일반 인터페이스, `…Repository` 이름, 실제 Repository 상속 모두 필요 | app-api · `api/matching/infrastructure/persistence` |
+| 조립 설정 | `Config` 접미사 또는 표준 Configuration 어노테이션 | `…Config` 이름과 Configuration 모두 필요 | app-api · `api/config` |
+| 시작점 | 표준 SpringBootApplication 어노테이션 | `…Application` 이름 | app-api · 앱 루트 |
+| HTTP 예외 처리 | 표준 ControllerAdvice/RestControllerAdvice 어노테이션 | `…ExceptionHandler` 이름 | app-api · `api/common` |
+| 저장 엔티티 | 표준 Entity 어노테이션 | `…Entity` 이름 | app-api · order/ledger/matching의 infrastructure/persistence |
+| HTTP 입력·출력 이름 | `Request`/`Response` 접미사. `ErrorResponse` 접미사는 별도 대상으로 구분 | 비어 있지 않은 앞 이름과 위치. 실제 DTO인지 추론하지 않음 | 일반 Request/Response: app-api · `api/order/api`. ErrorResponse: app-api · `api/common`만 허용 |
+
+위 약식 경로는 `com.exchange.core` 아래다. 예: `api/order/application`은 `com.exchange.core.api.order.application`. package와 모듈은 둘 다 맞아야 한다. 하위 package를 암묵적으로 허용하지 않는다.
+
+**어노테이션의 범위:** 직접 선언한 `org.springframework.stereotype.Controller`, `org.springframework.web.bind.annotation.RestController`, `org.springframework.context.annotation.Configuration`, `org.springframework.boot.autoconfigure.SpringBootApplication`, `org.springframework.web.bind.annotation.ControllerAdvice`/`RestControllerAdvice`, `jakarta.persistence.Entity`를 사용한다. RestController와 RestControllerAdvice는 각각 표준 대응 어노테이션으로 명시적으로 인정한다. 임의의 사용자 정의 meta-annotation을 따라가지 않는다.
+
+SpringBootApplication의 표준 설정 의미를 인정하되, **Boot 시작점에는 Configuration 단서만으로 Config 검사까지 추가하지 않는다.** 이름 자체가 `…Config`면 Config 검사에도 해당한다. `@Service`/`@Component`만으로는 위 업무 역할을 선택하지 않는다.
+
+**선언 형태 축소:** Kotlin class/object/data/value와 Java record의 업무 의미를 추가로 해석하지 않는다. JVM에서 직접 확인할 인터페이스·enum·어노테이션·abstract 조건만 사용한다. 따라서 정상 위치의 구체 `data class CancelOrderUseCase`는 data라는 이유만으로 거절하지 않는다.
+
+### 생성 타입과 상속 자료의 경계
+
+이름 규칙은 익명·로컬·synthetic 타입과 Kotlin 파일 운반 타입(`kotlin.Metadata.kind`의 2/4/5)을 제외한다. 이는 단순 플래그·헤더 확인에 한정하며 metadata 본문, data/value 판별, 소유 관계를 해석하지 않는다. 이름에 `$`가 있거나 `Kt`로 끝난다는 이유만으로 제외하지 않는다. 이름을 가진 중첩 클래스·companion은 자신의 명시적 단서가 있으면 검사하고, 바깥 타입의 역할은 물려받지 않는다.
+
+이 제외는 이름 검사에만 적용한다. 원본 파일과 다른 ARCH의 의존 검사에는 그대로 포함한다. 잘못된 .class 파일을 읽은 실패는 준비 오류지만, 이름 검사에 쓰지 않는 Kotlin metadata 본문의 완전성을 별도로 보장하지 않는다.
+
+Store/Publisher/Repository는 ArchUnit이 읽은 실제 상위 관계를 사용하며 간접 상속도 포함한다. 필요한 내부 상위 타입이 누락되었거나 해당 관계를 판정하는 상위 정의가 읽히지 않았다면 준비 오류다. 이 확인은 관계가 필요한 규칙에 한정한다. 다른 클래스의 업무 역할을 모른다는 이유는 준비 오류가 아니다.
+
+### Store 구현의 영역 결정
+
+| 실제 구현한 내부 포트의 모듈·정확한 package | 구현의 모듈·정확한 package |
+| --- | --- |
+| domain-order · `com.exchange.core.order` | app-api · `com.exchange.core.api.order.infrastructure.persistence` |
+| domain-ledger · `com.exchange.core.ledger` | app-api · `com.exchange.core.api.ledger.infrastructure.persistence` |
+| app-api · `com.exchange.core.api.matching.application.port` | app-api · `com.exchange.core.api.matching.infrastructure.persistence` |
+
+비인터페이스 구현 타입에 대해서만 이 매핑을 적용한다. **영역의 비교 키는 `(모듈, package)`다.** main·extra 루트의 서로 다른 위치 ID가 같은 키를 가리키면 같은 영역이다. 각 원본의 루트·폴더 허용 여부는 별도로 검사한다.
+
+같은 영역의 여러 Store 포트를 구현하면 허용한다. 서로 다른 영역의 포트를 함께 구현하면 저장 영역 위반이다. 잘못된 package에 선언된 포트는 포트 위치 위반이며, 구현에서도 허용 매핑을 찾지 못한 위반을 보고한다. 읽을 자료가 없는 준비 오류와 실제로 잘못 선언한 위반을 구분한다. 포트의 업무 이름으로 정답 영역을 추측하지 않는다.
+
+## 실제 폴더와 package
+
+**6개 모듈·16개 정확한 폴더를 유지한다.** 기본 루트는 `src/main/kotlin`. 아래 모든 약식 경로는 그 루트의 `com/exchange/core/` 아래이며, ‘앱 루트’만 `com/exchange/core` 자체다.
+
+| 모듈 | 허용 폴더 |
+| --- | --- |
+| app-api | 앱 루트 |
+| app-api | `api/config` |
+| app-api | `api/common` |
+| app-api | `api/order/api` |
+| app-api | `api/order/application` |
+| app-api | `api/order/infrastructure/persistence` |
+| app-api | `api/ledger/infrastructure/persistence` |
+| app-api | `api/matching/application` |
+| app-api | `api/matching/application/port` |
+| app-api | `api/matching/infrastructure/persistence` |
+| app-api | `api/matching/infrastructure/publish` |
+| domain-common | `common` |
+| domain-fee | `fee` |
+| domain-order | `order` |
+| domain-ledger | `ledger` |
+| domain-matching | `matching` |
+
+Gradle의 실제 main 원본 목록에 포함된 Kotlin·Java 파일을 기존 구문 파서로 읽는다. 폴더는 package 경로와 정확히 일치해야 하며, 파일명과 클래스명 일치를 새로 강제하지 않는다. 클래스 없는 Kotlin 파일도 폴더와 package를 검사한다. `application/internal`은 별도로 허용하지 않았으므로 위반이다.
+
+새 폴더·루트는 **한 프로젝트 정책 목록**에 경로와 이유를 추가한다. 새 클래스는 등록하지 않는다. 같은 모듈·package를 두 루트에 허용해도 이름 규칙은 동일하다. 비어 있는 기본 Java 루트와 실제 Java·생성 소스의 기존 구분, 루트 생산 작업과 실제 main 입력의 검증을 유지한다.
+
+경로 형식 오류, 중복 등록, 소속 중복, 파일 누락·읽기 실패와 별칭 경로에 대한 기존 검증을 보존한다. 정책의 루트·폴더에는 역할 집합과 DTO 이름 예외를 두지 않는다. 폴더 허용 목록과 개별 이름 규칙의 허용 영역은 같은 프로젝트 정책을 참조하되, 폴더 자체가 업무 역할을 결정하지 않는다.
+
+</details>
+
+## 입력 → 검사 → 보고 흐름
+
+1. 기존 Gradle 연결로 운영 main 산출물, 모듈 소속, 실제 원본·소스 루트와 프로젝트 경로 정책을 받는다. 테스트·벤치마크 산출물은 운영 대상에 섞지 않는다.
+2. 기존 수집 오류와 정책의 누락·중복을 확인한다. 원본의 읽기·구문 오류도 준비 오류로 모은다. 준비가 실패하면 **전체 검사 성공**을 내지 않는다.
+3. 준비된 전체 운영 타입에서 규칙마다 대상을 고른다. 같은 타입에 여러 규칙이 해당하면 각각 평가한다. 별도로 모든 원본의 허용 폴더와 package를 검사한다.
+4. 규칙별 선택 대상, 기대 조건, 실제 위반을 보고한다. 수집한 원본 경로는 파일 검사에서 표시하고, 타입의 전체 원본 경로를 증명하지 못했다면 추측하여 표시하지 않는다.
+
+```mermaid
+flowchart TD
+    A[운영 타입·모듈·원본·정책 받기] --> B{입력과 정책을 읽을 수 있는가}
+    B -->|아니오| C[준비 오류와 실패 보고]
+    B -->|예| D[규칙별 대상 선택과 ArchUnit 평가]
+    B -->|예| E[원본 폴더와 package 검사]
+    D --> F[규칙별 대상·조건·결과 보고]
+    E --> F
+    F --> G[위반 없음·위반·대상 없음 구분]
+```
+
+| 결과 | 의미와 실패 기준 |
+| --- | --- |
+| 준비 오류 | 자료를 못 읽었거나 필수 입력이 빠졌다. 전체 성공으로 표시하지 않으며 원인을 보고한다. |
+| 규칙 위반 | 선택한 대상이 조건을 어겼다. 운영 검사는 실패해야 한다. 위반 예제 테스트는 의도한 위반을 확인해야 성공한다. |
+| 위반 없음 | 선택한 대상은 해당 조건을 지켰다. 업무 의미·금액·DB 동작 검증으로 확대하지 않는다. |
+| 대상 없음 | 유효한 입력은 있으나 해당 개별 이름 규칙의 대상이 0개다. 선택 규칙의 탐지력을 증명한 것으로 표시하지 않는다. |
+| 운영 미적용 | #19/#32의 새 ARCH-05는 예제로 검증한다. #20~21의 이행·활성화 전에는 운영 준수 완료로 표시하지 않는다. |
+
+개별 규칙의 빈 대상은 선택적 규칙의 `allowEmptyShould` 등으로 명시적으로 다룬다. 전체 검사에서 빈 대상 허용을 일괄 켜지 않는다. 기존 필수 운영 모듈의 빈 산출물과 빈 전체 수집은 준비 오류로 유지한다. 입력은 유효하지만 모든 타입이 이름 규칙 대상 밖이라면 파일 검사는 수행한다.
+
+보고는 **예제/운영 구분, 규칙 ID·읽을 수 있는 이름, 선택한 대상 수와 타입명, 조건과 실제 위반**을 제공한다. `ARCH-05/controller-name`, `ARCH-05/controller-annotation`, `ARCH-05/controller-location`처럼 기존 ARCH-05 아래에서 식별한다. 위반마다 별도의 역할 추론 자료형을 만들지 않으며 ArchUnit의 평가·실패 설명과 Gradle 보고서를 사용한다.
+
+<details markdown="1">
+<summary>수용 사례 펼치기 — 먼저 만들 컨트롤러 검사와 남은 회귀</summary>
+
+## 정상·위반·누락 사례와 기대값의 근거
+
+아래는 **테스트로 옮길 계약이며 실행 결과가 아니다.** 정상·위반 예제는 선택된 타입명까지 확인한다. ‘아무 위반 하나가 있다’만으로 성공 처리하지 않으며, 의도한 타입과 조건의 위반이 실제 평가 결과에 있어야 한다.
+
+### 첫 구현 단위: 컨트롤러
+
+표의 파일 입력은 루트·폴더·package가 일치하도록 준비한다. 이를 어기는 사례는 파일 검사에서 따로 검증한다.
+
+| 입력 | 기대 결과 | 이유 |
+| --- | --- | --- |
+| app-api order/api의 `@RestController OrderController` | 선택됨. 이름·어노테이션·위치 위반 없음 | 세 조건을 모두 지킴 |
+| 같은 위치의 `@RestController OrderHandler` | 선택됨. controller-name 위반 | 이름이 틀려도 어노테이션으로 발견 |
+| 같은 위치의 어노테이션 없는 `OrderController` | 선택됨. controller-annotation 위반 | 이름만으로도 발견하고 빠진 어노테이션을 검사 |
+| 같은 위치의 `@RestController Controller` | 선택됨. controller-name 위반 | 대상 선택에서 비어 있는 앞 이름을 누락하지 않음 |
+| app-api의 허용된 order persistence에 정상 어노테이션·이름을 둠 | 선택됨. controller-location의 package 위반 | 폴더 자체가 허용돼도 Controller의 위치는 아님 |
+| domain-order/order에 정상 어노테이션·이름을 둠 | 선택됨. controller-location의 모듈·package 위반 | 정답 모듈 밖에서도 선택해야 함 |
+| 허용된 application의 `OrderWorker`만 있는 유효한 입력 | 컨트롤러 대상 없음. 파일 검사 수행 | 업무 역할을 추론하거나 미분류 위반을 만들지 않음 |
+| 잘못된 이름의 Controller가 있는 입력에 동일 영역의 빈 extra 루트 정책을 추가 | 원래 controller-name 위반 유지 | 루트 추가로 이름 조건이 완화되지 않음 |
+
+### 남은 이름·관계 검사
+
+| 입력·짝 예제 | 기대 결과와 근거 |
+| --- | --- |
+| application에 새 `CancelOrderUseCase` 추가 / 허용된 persistence로 이동 | 등록 없이 선택하여 정상 / UseCase 위치 위반. fixture에 새 운영 클래스를 복제하지 않음 |
+| `interface CancelOrderUseCase`, 이름이 `UseCase`뿐인 클래스 / 정상 구체 UseCase | 각각 선언 형태·이름 위반 / 정상. 접미사 선택과 형태 검사를 분리하여 확인 |
+| 정상 `data class CancelOrderUseCase`, 단서 없는 `data class InternalState` | data라는 이유만으로 거절하지 않음. 각각 해당 이름 규칙 / 이름 규칙 미적용과 파일 검사 |
+| Service·Coordinator·Calculator·Resolver의 정상 위치 / 다른 허용 위치 | 각 묶음이 정상 대상을 선택하고 위치 반례를 보고함. Calculator/Resolver의 일반 인터페이스 정상 예제도 포함 |
+| 정상 내부 Store 포트와 실제 구현 / 이름이 잘못된 실제 구현 | 정상 / 실제 상속으로 선택한 구현의 이름 위반. 단순 접미사 선택만으로 구현을 놓치지 않음 |
+| `PostgresSomethingStore`지만 실제 포트 구현이 없음 | 선언·구현 관계 위반. 기술 접두사만으로 정상 구현으로 인정하지 않음 |
+| ledger 포트 구현을 허용된 order persistence에 둠 | Store 구현 영역 위반. 실제 포트의 모듈·package에 근거함 |
+| 같은 Store 영역의 포트 둘을 구현 / order·ledger 포트를 함께 구현 | 정상 / 영역 충돌 위반. 역할 분류 순서가 아니라 매핑한 영역으로 판단 |
+| 같은 Store 영역을 main·extra 루트의 서로 다른 ID로 허용 | 정상. 각 파일의 루트 검사는 수행하고 영역은 모듈·package로 통합 |
+| 읽을 수 있지만 허용 package 밖에 있는 Store 포트와 그 구현 | 포트 위치·구현 매핑 위반. 자료 누락인 준비 오류로 오인하지 않음 |
+| Publisher 포트와 Persistent/NoOp 구현 / 이름 또는 위치 하나를 어긴 구현 | 정상 / 해당 이름·위치 위반. 접미사·실제 구현 관계 양쪽의 선택 경로를 검증 |
+| Repository 상속·이름·위치를 모두 지킨 인터페이스 / 조건 하나씩 제거 | 정상 / 해당 이름·선언·위치 위반. 상속만 있는 잘못된 이름도 발견 |
+| 정상 Config / Config 이름만 있는 클래스 / Configuration을 붙인 잘못된 이름 | 정상 / 어노테이션 위반 / 이름 위반. 선택 단서 양쪽 검증 |
+| 앱 루트의 정상 SpringBootApplication | 시작점 정상, Configuration의 표준 의미만으로 Config 규칙에 선택되지 않음 |
+| 표준 Advice·Entity, Request/Response/ErrorResponse의 정상 / 조건 하나씩 위반 | 각 이름·위치 조건의 정상과 반례를 확인. 단서 없는 DTO를 전부 추론하는 검사로 확대하지 않음 |
+| Config와 Controller 단서가 함께 있는 한 타입 | 해당 규칙들을 모두 실행. 일반 roleConflict 준비 오류와 규칙 간 우선순위로 위반을 지우지 않음 |
+| 익명·synthetic 타입, Kotlin 파일 운반 타입 / 직접 선언한 이름이 `ForgedKt`인 타입 | 앞의 타입은 이름 검사 제외, 원본 검사는 유지. 후자는 문자열만으로 제외하지 않음 |
+
+### 원본·준비·Gradle 회귀
+
+| 입력 | 기대 결과와 근거 |
+| --- | --- |
+| package를 유지하고 파일만 다른 허용 폴더로 이동 | 실제 폴더/package 불일치. 컴파일된 package만으로 통과 불가 |
+| `application/internal`에 새 파일 / 클래스 없는 Kotlin 파일을 금지 폴더에 추가 | 정확한 허용 폴더 위반. 타입 선택과 무관하게 실제 원본 자동 포함 |
+| 허용되지 않은 소스 루트 / 생산 작업이 정책과 다른 생성 루트 | 루트 조건 위반. 허용 폴더 목록만 확인하여 통과하지 않음 |
+| 전달된 원본 삭제·읽기 실패·구문 오류, 손상된 .class | 준비 오류. 부분 결과가 있어도 전체 성공으로 표시하지 않음 |
+| 빈 전체 수집, 필수 모듈 누락·빈 산출물, 중복 클래스·원본 소속 | 기존 수집 준비 오류 보존. 역할별 최소 개수를 새로 만들지는 않음 |
+| 잘못된 정책 경로·중복·필요한 Store 매핑 누락 | 정책 준비 오류. 업무 클래스 미분류와 구분 |
+| 필요한 상위 정의 누락 / 실제 읽은 정상 간접 상속 | 해당 관계의 준비 오류 / 정상 판단. 상속을 확인하지 않고 통과시키지 않음 |
+| 예제의 위반 타입이 선택되지 않아서 위반 0건 | 예제 테스트 실패. 대상명과 해당 위반을 함께 확인하기 때문 |
+| 원본 파일 추가·수정, 정책만 수정, 새 허용 루트 연결 | 기존 Gradle 입력·재실행 경로를 통해 변경 포함. 오래된 성공 결과 재사용 방지 |
+| 기존 ARCH 검사에 이름 검사 제외 타입이 남아 있음 | 기존 의존·호출 검사 입력과 결과 보존. 이름 필터가 공통 입력을 줄이지 않음 |
+
+</details>
+
+## 기존 코드에서 바꿀 책임
+
+다음 책임으로 구현했다. 개별 규칙은 `NamingRules`의 독립된 `ArchRule` 함수로 제공한다.
+
+| 현재 코드 | 이번 변경 책임 |
+| --- | --- |
+| `rules/NamingRules.kt` | 전체 분류·미분류·역할 우선순위 처리를 개별 `ArchRule` 작성으로 대체. 가까운 규칙을 같은 파일에 두고, Store 영역 같은 조건만 작은 `ArchCondition`/함수로 작성 |
+| `support/NamingTypeFacts.kt` | Kotlin metadata 본문 해석, 외부 전체 재탐색, 생성 타입 소유 그래프 제거. 필요한 단순 대상 필터와 실제 상속 확인만 해당 규칙 가까이에 둠 |
+| `support/NamingPlacementScope.kt` | 기존 입력 준비와 모듈 소속 유지. `TypeClassification`, 생성 소유 결과, 전 타입 역할 성공 전제 제거 |
+| `policy/ProjectLayoutPolicy.kt` / `PortPlacementPolicy.kt` | 경로·이유·소스 루트와 규칙별 허용 영역·Store 매핑 유지. `NamingRole` 전 목록 검증, 폴더의 roles·dataNames와 모든 역할의 등록 요구 제거 |
+| `rules/NamingPlacement.kt` | 입력 준비 → 개별 규칙 평가 + 원본 검사 → 결과 보고의 연결로 단순화. .class/원본 전체 연결 그래프 제거 |
+| `support/SourcePlacement.kt` / `SourcePackageParser.kt` | 실제 폴더·package 구문·읽기 오류 검사 유지. 역할 조건을 제거한 경로 정책을 사용 |
+| `architecture-tests/build.gradle.kts`와 main 입력 스크립트 | 기존 main 출력·원본·정책 입력 연결과 기본 보고서 유지. 원본 구문 파서가 쓰는 Kotlin compiler 의존성을 역할 해석 제거만으로 삭제하지 않음 |
+
+공통 규칙 작성·평가는 ArchUnit의 `ArchRule`·선택 조건·`evaluate/check`를 사용한다. 규칙을 예제와 후속 운영 검사에서 같은 함수로 호출한다. 새로운 역할 DSL, 클래스 등록 시스템, 공용 실행 플러그인, 생성 관계 해석기를 이번 결과로 만들지 않는다.
+
+## 기존 테스트와 PR 리뷰 처리
+
+| 현재 보장·지적 | 후속 구현에서 할 일 |
+| --- | --- |
+| 미분류 Helper/Manager 거절, data/value/record 분류, 생성 소유 그래프 관련 테스트 | 더 이상 요구하지 않는 계약임을 명시하고 해당 테스트·사용처 제거 또는 변경. 허용 폴더의 단서 없는 타입 정상 사례와 이름 대상 없음 검증으로 대체 |
+| 정상·위반 이름과 실제 폴더, 입력 누락·손상, Gradle 재실행 | 새 규칙 구조로 기대값을 맞추어 유지. 다른 ARCH의 테스트는 변경하지 않음 |
+| [다른 루트의 DATA/ANY 조건이 HTTP 이름 위반을 지운 리뷰](https://github.com/0Chord/coin-exchange/pull/32#discussion_r4115831001) | 전체 DTO 추론 자체가 제외되므로 원래 DATA/HTTP 기대값은 의도적인 보장 변경. 별도로 ‘extra 루트를 추가해도 Controller 이름 위반이 유지됨’을 회귀 검증 |
+| [동등한 Store 위치 ID를 모호하다고 거절한 리뷰](https://github.com/0Chord/coin-exchange/pull/32#discussion_r4115831004) | 유지하는 Store 계약의 결함 수정 대상. 모듈·package 기준 통합, 복수 루트 정상·다른 영역 충돌 반례로 검증 |
+
+**Store 동등 영역 결함은 회귀 테스트로 수정했고, DTO 추론 지적은 합의한 보장 변경으로 처리했다.** extra 루트가 활성 Controller 이름 조건을 완화하지 않는 회귀도 통과했다. 기준 `4e4956e` 이후 현재 작업 파일에서 검증했으며 이전 551개 기록은 이번 근거로 재사용하지 않는다.
+
+## 작은 구현 단위와 검증 방법
+
+| 순서 | 결과와 완료 증거 |
+| --- | --- |
+| 1. 컨트롤러 한 묶음 | 위 첫 수용 사례로 테스트 작성 → 기대값 검토 → 개별 규칙 구현 → 선택 대상과 실패 이유 확인. 전체 역할 분류를 호출하지 않아도 동작해야 함 |
+| 2. 남은 이름·저장 관계 | 표의 남은 규칙과 Store 영역 회귀를 같은 방식으로 옮김. 규칙 간 중복 선택과 빈 대상 구분 확인 |
+| 3. 폴더·입력 연결 정리 | 정확한 경로 검사 보존, 역할·생성 그래프 의존 제거, 원본 추가·정책 변경 재실행 확인 |
+| 4. 전체 회귀와 설명 | 기존 ARCH 테스트와 거래 테스트를 실행하고, 실제 결과에 맞춰 HTML·PR의 보장 변경과 결함 수정 내역 설명 |
+
+최종 실행은 `./gradlew build --offline --continue`다. 아키텍처 317개(ARCH-05 예제·회귀 79개 + 기존 검사 237개 + 운영 Bean 조립 검사 1개)를 실행하여 실패·오류·skip 없이 통과했다. 변경하지 않은 제품 test 작업은 UP-TO-DATE였으며 기존 243개 기록을 이번에 재실행했다고 하지 않는다. 관련 단위만 실행할 때는 다음 명령을 사용한다.
+
+```sh
+./gradlew :architecture-tests:test --tests '*NamingPlacement*' --tests '*SourcePlacementContractTest'
+./gradlew :architecture-tests:test
+./gradlew test
+```
+
+보고서는 `architecture-tests/build/reports/tests/test/index.html`과 `architecture-tests/build/test-results/test/`를 확인한다. 정상 예제 통과뿐 아니라 **위반을 의도한 조건으로 탐지했는지와 준비 오류를 성공으로 바꾸지 않았는지**가 완료 근거다. 새 규칙에 관한 테스트 클래스명을 변경하면 위 선택 실행 명령도 맞춘다.
+
+새 업무 클래스를 기존 구조에 추가할 때마다 fixture에 복제하지 않는다. 새 구조적 조건·예외를 도입하거나 검사기의 누락을 발견했을 때 규칙과 예제를 갱신한다. 사용자 리뷰는 이름이 책임을 설명하는지, 허용 영역 이동이 업무상 맞는지, 단서 없는 타입이 기존 경계를 우회하는지에 집중한다.
+
+## 이후 실제 Nebula 도입으로 확장한다면
+
+넷플릭스에서 가져온 것은 **개별 규칙 작성과 실행·배포 책임의 분리**다. 공개 구조는 일반 `ArchRule`을 규칙 라이브러리에 두고 Nebula로 실행·보고한다. 등록 대상은 검사 규칙이며 업무 클래스 전체 목록이 아니다. [Netflix 기술블로그](https://netflixtechblog.com/scaling-archunit-with-nebula-archrules-b4642c464c5a), [Nebula 공식 작성·실행 가이드](https://github.com/nebula-plugins/nebula-archrules-plugin)
+
+두 번째 저장소에서 같은 규칙을 함께 관리할 필요가 생기면 공통 규칙 하나를 골라 공식 library/runner와 고정 버전으로 실험한다. 거래소 전용 폴더 정책과 실제 원본 검사는 로컬에 남긴다. source set, 의존 클래스, 모듈 누락, 로컬·CI 결과와 제품 실행 의존성 분리를 확인한 뒤 공유 범위를 정한다.
+
+**이번 PR에서는 도입하지 않으며 호환성도 미검증이다.** 현재 Gradle 9.5.1·Java 25·Kotlin 2.3.21·ArchUnit 1.4.2를 유지한다. Nebula의 공개 테스트 목록만으로 이 조합을 검증했다고 주장하지 않는다. [공식 호환성 테스트 목록](https://github.com/nebula-plugins/nebula-archrules-plugin/blob/main/nebula-archrules-gradle-plugin/src/test/kotlin/com/netflix/nebula/archrules/gradle/SupportedGradleVersions.kt)
+
+## 명세 준비와 구현 완료 기준
+
+**명세 준비 완료:** 이번 적용 방향, 남길 조건·제외할 보장, 대상과 실패 흐름, 수용 사례, 수정 대상과 첫 구현 단위를 정했다. 현재 구현을 막는 추가 사용자 선택은 없다. 새로 드러나는 기술 문제가 보장을 바꾸면 그때 해당 항목을 논의한다.
+
+로컬 구현에서 확인한 완료 조건은 다음과 같다.
+
+- [x] 개별 규칙이 전체 역할 분류 없이 정상·위반·빈 대상 예제를 평가한다.
+- [x] 이름·모듈·package와 정확한 원본 폴더 검사가 각각 수용 사례를 만족한다.
+- [x] Store 동등 영역 결함이 수정되고 루트 추가가 활성 이름 규칙을 완화하지 않는다.
+- [x] 미분류 자동 거절·Kotlin 세부 분류·생성 소유 그래프의 요구와 사용처를 제거한다.
+- [x] 입력 오류와 Gradle 변경 재실행, 기존 ARCH와 거래 테스트의 회귀를 확인한다.
+- [x] 실제 결과와 줄어든 보장을 HTML·PR 갱신용 설명에 반영하고 두 리뷰의 처리 방식을 구분했다. 원격 게시·CI·리뷰 상태는 PR에서 별도로 확인한다.
+
+**#19/#32의 끝은 검사기와 예제 검증이다.** #20~21에서 실제 제품 이름·폴더를 이행하고 운영 ARCH-05를 활성화한다. 이번 PR은 거래 동작·DB 원자적 갱신·다른 병합된 ARCH 검사를 재설계하지 않는다. PIT·SonarQube·Trivy와 공용 규칙 배포는 별도 작업이다.
+
+<!-- ARCH05_PRE_SIMPLIFICATION_HISTORY_START -->
+
+# 이전 자동 분류 명세 · 현재 적용하지 않음
+
+**아래는 개정 전 계약을 보존한 기록이다.** 모든 타입의 역할 분류와 미분류 실패는 현재 범위에서 제거했다. 따라서 아래의 `OrderManager → unclassified` 기대값과 당시 테스트 수는 현재 판단 근거가 아니다. 현재 계약은 이 문서 앞부분의 개별 규칙 명세와 [현재 구현 흐름](architecture-05-review.md)을 따른다.
+
+## 당시 명세: 구조 검사 — #19 · ARCH-05 공통 규칙으로 이름과 배치 검사
+
+상태: **규칙 기반 자동 분류 구현 · 로컬 검증 완료**. 대상은 [PR #32](https://github.com/0Chord/coin-exchange/pull/32)다. `3250fd2`에서 확정한 아래 계약을 바탕으로 클래스별 `NamingBinding` 입력을 제거했다. 현재 코드·자연어 흐름과 551개 전체 회귀 결과는 [구현 리뷰](architecture-05-review.md)에서 확인한다. 원격 CI·독립 리뷰·병합은 별도 상태이며, ARCH-04 이하 이전 기록은 보존한다.
+
+## 먼저 볼 내용
+
+**클래스를 추가할 때마다 검사 설정에 이름을 적지 않는다.** 전체 main 코드를 자동 수집하고 공통 규칙으로 역할을 분류한 다음, 이름·모듈·package·실제 소스 폴더를 검사한다.
+
+예를 들어 주문 `application` 폴더에 `AmendOrderUseCase`를 추가하면, 기존 UseCase 규칙으로 자동 검사한다. `NamingBinding` 추가나 `NamingFixtures.kt` 수정은 필요 없다. 새 기능의 동작 테스트는 별개이며, 새로운 역할·폴더를 도입하거나 검사기의 누락을 보완할 때만 정책·검사기 테스트를 바꾼다.
+
+| 이번에 바꾸는 것 | 유지하는 것 | 자동 판단하지 않는 것 |
+| --- | --- | --- |
+| 클래스별 역할·기능·정확한 이름·위치 등록 제거 | 전체 대상 수집, 누락·손상 탐지, 정확한 폴더 허용 목록 | 업무 책임과 정확한 업무 이름의 타당성 |
+| 일반 클래스·DTO·중첩 타입·함수 운반 타입 자동 분류 | 실제 package와 원본 폴더 일치, 소스 루트·생산 작업 검사 | Calculator를 Resolver로 바꾼 것이 의미상 옳은지 |
+| 미분류·역할 충돌을 실패로 보고 | config 조립, domain-* 코어 유지, 운영 적용은 #20~21 | 두 허용 영역 사이에서 객체의 업무 소속을 바꾼 것이 옳은지 |
+
+**사용자 결정:** 공통 규칙으로 형식·위치를 검사하고, 업무 책임·정확한 이름은 리뷰한다. 이를 보완한다는 이유로 모든 클래스의 등록표나 사용자 정의 역할 어노테이션을 다시 요구하지 않는다. 아래 분류표와 세부 출력 항목은 이 선택을 실행 가능한 계약으로 구체화한 추천 설계다.
+
+## 개정 전 구현과 변경 책임
+
+| 현재 파일·심볼 | 확인한 사실 | 개정 방향 |
+| --- | --- | --- |
+| `support/NamingPlacementScope.kt` · `NamingBinding`, `prepare` | 발견한 일반 타입이 bindings에 없으면 준비 오류다. exactName·technology·location을 외부에서 받는다. | 발견 타입에서 분류 결과를 만들고 분류 근거를 남긴다. 클래스별 입력 목록을 제거한다. |
+| `rules/RoleNamingPlacement.kt` | 등록된 기대 이름·위치를 실제 타입과 비교한다. | 분류 규칙의 이름·선언 형태·허용 위치 조건을 적용한다. |
+| `policy/ProjectLayoutPolicy.kt` | 6개 모듈·16개 정확한 폴더와 역할 목록이 있다. bootstrap/common은 onlyTypes 제한이다. | 폴더 목록은 유지한다. 일반 분류 정책과 연결하고 구체 클래스 onlyTypes 제한을 역할 조건으로 바꾼다. |
+| `rules/NamingPlacement.kt` | 타입과 원본을 연결한 뒤 등록된 location의 sourceRoot까지 비교한다. | 타입별 location 대신 분류 규칙과 폴더 정책의 허용 root를 비교한다. |
+| `support/MainSourceSnapshot.kt`, `SourcePlacement.kt`, `SourcePackageParser.kt`, `gradle/main-sources.gradle.kts` | main 원본 독립 수집·실제 구문 파싱·소스 경로 검사가 구현돼 있다. | 이 기반을 재사용한다. 분류 정책 변경도 Gradle 입력으로 추적한다. |
+| `NamingPlacement*Test`, `SourcePlacementContractTest`, naming fixtures | 등록 기반 정상·위반·누락 사례를 검증한다. | 새 계약에 맞는 기대값으로 전환하고, 등록 없이 새 타입이 추가되는 통합 사례를 보완한다. |
+
+현재 실제 코드의 `SubmitOrderRequest`·`MatchingResponse`는 Kotlin data class, `MatchingEventEntity`는 JPA Entity, `MatchingEventRepository`는 JpaRepository 상속 인터페이스다. 최상위 변환 함수와 도메인 sealed interface·value class·가변 객체도 존재한다. 이 형태를 다루되 파일·클래스 목록을 정답표로 복제하지 않는다.
+
+기존 525개 전체 빌드·마지막 정책 12개 재검증과 PR의 기존 CI 통과는 **등록 기반 구현의 근거**다. 개정 구현의 통과 근거로 재사용하지 않는다. 이전 기록은 `1a5e377` 커밋에 보존된다.
+
+## 범위와 유지할 설계
+
+- **이번 PR/#19:** 자동 분류와 공통 이름·배치 검사, 소스 검사 연결, 검사기 자체의 정상·위반·누락 예제, 변경 후 Gradle 재실행, 설명·실행 근거 갱신.
+- **#20~21:** 실제 제품 이름·폴더 정리와 ARCH-03/04/05 운영 활성화. 지금 제품 클래스를 옮기거나 운영 ARCH-05를 켜지 않는다.
+- application·infrastructure·HTTP·config는 app-api에 둔다. domain-*는 기술에 독립적인 Kotlin 코어로 유지한다. 도메인 포트 선언, 불변 값 객체, 가변 주문장·실행기의 현재 책임을 보존한다.
+- UseCase 인터페이스·Impl 쌍, 역할 전용 어노테이션, 새 프레임워크를 의무화하지 않는다. 기존 명시적 config Bean 조립을 유지한다.
+- ARCH-01/03/04/06의 역할 등록 체계 전체를 교체하는 작업은 제외한다. ARCH-05가 그 전체 등록표를 필수 입력으로 삼아 새 클래스 등록 부담을 되살려서도 안 된다. 후속 운영 연결에서 같은 대상의 서로 다른 규칙이 모순되는지는 별도로 대조한다.
+- FreezingArchRule 도입, 전체 코딩 스타일·함수/변수명 검사, 거래·DB·동시성 검증은 추가하지 않는다.
+
+## 무엇을 관리하고 언제 수정하는가
+
+| 변화 | 개발자가 바꿀 것 |
+| --- | --- |
+| 기존 역할·폴더에 새 클래스 추가 | 제품 코드와 필요한 기능 테스트. ARCH-05 등록표·fixture는 수정하지 않음 |
+| data class DTO, 이름 있는 중첩 데이터 추가 | 공통 데이터 규칙에 해당하면 자동 검사. 별도 타입 등록 없음 |
+| 새로운 정확한 폴더·소스 루트 도입 | ProjectLayoutPolicy의 경로·허용 역할·이유와 해당 정상/금지 경로 사례 |
+| 새 종류의 협력자·저장 기술·구조 도입 | 공통 분류·명명 규칙과 검사기 사례 |
+| 검사기가 놓친 결함 발견 | 재현용 fixture와 회귀 테스트. 실제 제품 클래스마다 예제를 복제하지 않음 |
+
+정책은 Kotlin으로 관리한다. 폴더 정책은 기존 `ProjectLayoutPolicy.kt`, 분류·명명 조건은 제안 파일 `policy/NamingClassificationPolicy.kt`에 둔다. 위치를 여러 파일에 복사하지 않고 위치 ID를 참조한다. 범용 YAML/DSL이나 매 실행마다 기준 목록을 자동 생성하는 기능은 만들지 않는다.
+
+**초기 개정에는 클래스별 이름 고정·역할 재정의·면제 목록이 없다.** 나중에 명확한 예외가 필요하면 특정 규칙·대상·이유·해소 조건을 별도 합의한다. 예외 기능을 미리 구현하거나 `SUPPORT`로 미분류 대상을 일괄 통과시키지 않는다.
+
+## 허용 위치 정책
+
+아래 경로는 소스 루트 `src/main/kotlin` 아래의 **정확한 부모 폴더**다. `A`는 `com/exchange/core/api`, `D`는 `com/exchange/core`를 뜻한다. 실제 정책에는 전체 경로를 쓴다. package는 경로의 `/`를 `.`으로 바꾼 값과 같아야 한다.
+
+| 모듈·위치 ID | 허용 폴더 | 허용 분류 |
+| --- | --- | --- |
+| app-api · bootstrap | `D` | Boot 앱 시작점, 그 파일의 확인된 함수 운반 타입·생성 보조 타입 |
+| app-api · config | `A/config` | 명시적 설정 조립 |
+| app-api · http-errors | `A/common` | HTTP 예외 처리기, ErrorResponse 데이터, 확인된 생성 보조 타입 |
+| app-api · order-http | `A/order/api` | Controller, Request/Response 데이터·enum, HTTP 변환 함수 운반 타입 |
+| app-api · order-application | `A/order/application` | UseCase, Service, 내부 작업 데이터·enum, 확인된 생성 보조 타입 |
+| app-api · order-persistence | `A/order/infrastructure/persistence` | order 저장 포트 구현, 영속 데이터·Entity·enum, 변환 함수 운반 타입 |
+| app-api · ledger-persistence | `A/ledger/infrastructure/persistence` | ledger 저장 포트 구현, 영속 데이터·Entity·enum, 변환 함수 운반 타입 |
+| app-api · matching-application | `A/matching/application` | Coordinator, 내부 작업 데이터·enum, 확인된 생성 보조 타입 |
+| app-api · matching-ports | `A/matching/application/port` | Store 인터페이스, Publisher 인터페이스 |
+| app-api · matching-persistence | `A/matching/infrastructure/persistence` | matching 저장 구현, Spring Data Repository, 영속 데이터·Entity·enum, Persistent Publisher 구현, 변환 함수 운반 타입 |
+| app-api · matching-publish | `A/matching/infrastructure/publish` | NoOp Publisher 구현 |
+| domain-common · domain-common | `D/common` | 일반 코어·데이터·함수 운반 타입 |
+| domain-fee · domain-fee | `D/fee` | 일반 코어·데이터·함수 운반 타입, Calculator·Resolver |
+| domain-order · domain-order | `D/order` | 일반 코어·데이터·함수 운반 타입, Calculator·Resolver·Store 인터페이스 |
+| domain-ledger · domain-ledger | `D/ledger` | 일반 코어·데이터·함수 운반 타입, Store 인터페이스 |
+| domain-matching · domain-matching | `D/matching` | 일반 코어·데이터·함수 운반 타입. 엔진·주문장·실행기 포함 |
+
+새 폴더와 하위 경로는 자동 허용하지 않는다. Java main 루트는 기존처럼 비어 있을 때만 비활성으로 취급한다. 실제 Java·생성 소스를 추가할 때는 정확한 루트·폴더와 필요한 생산 작업을 정책에 추가한다.
+
+같은 역할·package에 두 소스 루트를 명시적으로 허용한다면 어느 루트를 쓰는지는 정책의 허용 범위다. 이전의 타입별 단일 루트 고정은 제거한다. 역할마다 루트를 제한할 필요가 있으면 폴더 정책으로 표현하며 개별 타입 목록으로 되돌리지 않는다.
+
+**기존 정책에서 달라지는 부분:** bootstrap/common의 개별 클래스 이름 제한을 구조·이름 규칙으로 대체한다. application의 정상 내부 데이터도 자동 처리할 수 있게 해당 위치에 데이터 분류를 허용한다. 임의 Helper·Manager나 최상위 업무 함수를 application에 숨기는 포괄적 지원 역할은 허용하지 않는다.
+
+## 분류와 이름을 판단하는 규칙
+
+**대상 선정과 위치 검사를 분리한다.** 예를 들어 `CancelOrderUseCase`가 infrastructure에 있어도 먼저 UseCase 후보로 발견하고 잘못된 위치를 보고한다. 정답 폴더 안의 클래스만 찾으면 위치 위반을 놓치므로 금지한다.
+
+아래 `…`에는 빈 문자열이 아닌 이름 부분이 필요하다. 자동 검사는 그 단어가 업무상 적절한 동사·대상인지는 판단하지 않는다. 이 표의 역할은 분류 결과이며 사람이 클래스마다 입력하는 값이 아니다.
+
+| 분류 단서 | 추가 검사 | 허용 위치 |
+| --- | --- | --- |
+| 이름이 `…UseCase`, `…Service`, `…Coordinator` | 구체 클래스 또는 Kotlin object. interface·annotation·data/value class·enum은 역할 형태 위반. 접미사만으로 된 `UseCase` 등도 이름 위반 | 각각 order-application / order-application / matching-application |
+| 이름이 `…Calculator`, `…Resolver` | 이름 부분이 비지 않았는지 확인. 클래스·object·인터페이스 형태 허용 | 해당 domain-fee 또는 domain-order의 정확한 위치 |
+| 인터페이스이며 이름이 `…Store` | Spring Data 상속 신호가 함께 있으면 Store와 Repository 충돌 | domain-order, domain-ledger 또는 matching-ports |
+| 비인터페이스가 `…Store` 이름을 쓰거나, 내부 Store 포트를 구현 | 구현 포트가 확인돼야 함. `Postgres` 또는 `Jpa` + 비어 있지 않은 대상 + `Store` | 포트 소속 영역의 persistence 위치 |
+| Spring Data `org.springframework.data.repository.Repository` 상속 계층이거나 `…Repository` 이름 | 인터페이스이며 실제 Spring Data 상속이어야 함. 이름은 `…Repository` | matching-persistence |
+| 인터페이스이며 이름이 `…Publisher` | 발행 포트 형태 | matching-ports |
+| 비인터페이스가 `…Publisher` 이름을 쓰거나 내부 Publisher 포트를 구현 | 포트 구현 확인. `Persistent…Publisher` / `NoOp…Publisher` 형식 구분 | 각각 matching-persistence / matching-publish |
+| `@Controller`·`@RestController` 또는 `…Controller` 이름 | 컨트롤러 어노테이션과 `…Controller` 이름 모두 필요 | order-http |
+| `@Configuration` 또는 `…Config` 이름 | Configuration과 `…Config` 이름 모두 필요. Boot 시작점은 아래 별도 분류 | config |
+| `@SpringBootApplication` | 비어 있지 않은 이름 + `Application`. Boot의 Configuration 메타 어노테이션은 중복 역할로 세지 않음 | bootstrap |
+| `@ControllerAdvice`·`@RestControllerAdvice` | 이름은 `…ExceptionHandler`. 일반 Controller 어노테이션과는 별도 분류 | http-errors |
+| JPA `@Entity` | 이름은 `…Entity`, 일반 DTO보다 구체적인 영속 데이터 분류 | 해당 persistence 위치 |
+| Kotlin data/value class, Java record, enum | 아래 데이터 규칙 적용. 예약 업무 접미사·기술 역할 신호가 있으면 데이터로 우회시키지 않음 | 아래 위치별 기준 |
+| 위 역할 신호가 없는 domain-*의 일반 선언 | 일반 코어로 분류하고 해당 모듈의 정확한 도메인 폴더를 검사 | domain-* 각자의 경로 |
+
+- **이름과 구조는 같이 본다.** `@Service`·`@Component`만으로 역할을 승인하거나 위치를 면제하지 않는다. `@Service CancelOrderUseCase`는 이름 기반 UseCase, `@Service OrderManager`는 다른 단서가 없으면 미분류다. 검사용 어노테이션을 새로 붙일 필요가 없다.
+- **포트 위치 오류도 별도로 잡는다.** 구현한 포트의 후보 역할은 이름·선언 형태로 먼저 식별한다. 포트가 잘못된 폴더에 있어도 구현 관계를 없던 것으로 만들지 않고 포트 자신의 배치 위반을 보고한다.
+- **데이터가 업무 역할을 숨기지 않는다.** `data class FooUseCase`는 정상 DATA가 아니라 UseCase의 선언 형태 위반이다. `@Entity FooService`나 `@RestController FooUseCase`는 서로 다른 역할 신호가 충돌한다.
+- **Store 구현의 소속:** domain-ledger 포트 → ledger-persistence, domain-order 포트 → order-persistence, matching-ports 포트 → matching-persistence로 연결한다. 구체 포트 이름별 목록은 만들지 않는다. 같은 영역의 여러 포트를 구현하면 한 역할로 합치고, 서로 다른 영역의 포트를 구현하면 충돌로 보고한다. 클래스 이름만으로 Balance가 ledger라는 의미를 추측하지 않는다.
+- **Repository와 port 구현 판별:** 실제 import한 인터페이스·상위 타입 관계를 사용한다. 필요한 계층 정보가 없어 판별할 수 없으면 준비 오류다. 외부 라이브러리 전체를 검사 대상으로 넣거나 제품 객체를 생성하지 않는다. 고정된 외부 API 이름은 기술 규칙이며 프로젝트 클래스 전수 등록이 아니다.
+- **공통 기술 어노테이션:** 위에 명시한 FQN과 프로젝트 내부에서 실제 읽은 합성 어노테이션의 메타 관계를 지원한다. 순환은 방문 집합으로 차단한다. 필요한 메타 정보가 없으면 추측하지 않고 준비 오류다. 임의 외부 합성 어노테이션 지원을 검증 없이 주장하지 않는다.
+
+### 데이터·중첩·함수·일반 코어
+
+| 대상 | 자동 처리와 경계 |
+| --- | --- |
+| order-http의 데이터 | data/value class 또는 record는 `…Request`·`…Response` 형식, enum은 접미사 강제 없음. 이름만 Request인 일반 업무 클래스는 데이터로 자동 승인하지 않음 |
+| http-errors의 데이터 | 같은 데이터 형태이면서 `…ErrorResponse`. 특정 ApiErrorResponse 이름을 등록하지 않음 |
+| application 내부 데이터 | data/value class, record, enum은 정확한 부모 위치에서 허용. `Result` 등 이름에 새 Dto 접미사를 강제하지 않음. 일반 Helper는 이 분류에 해당하지 않음 |
+| persistence 데이터 | Entity는 별도 규칙, 나머지 data/value class, record, enum은 해당 정확한 persistence 위치에서 허용. Payload 등의 기존 이름 유지 |
+| domain-* 일반 코어 | 값 객체·sealed 인터페이스·예외·엔진·가변 주문장·실행기 등을 포괄. 임의 Domain 접미사를 강제하지 않음. 예약 역할 신호가 있으면 일반 코어로 떨어뜨리지 않음 |
+| 이름 있는 중첩 타입 | 독립적으로 분류하고 실제 module/package와 원본 경로를 검사. UseCase 안의 data class Result는 별도 등록 없이 DATA가 됨. 중첩된 업무 타입도 숨기지 않음 |
+| companion·익명·lambda | 실제 Kotlin 메타데이터와 enclosing 관계로 소유자를 확인한 경우에만 이름 검사에서 소유자에 귀속. 소유자 누락·손상은 준비 오류 |
+| 최상위 함수 운반 타입 | 실제 Kotlin 파일 facade/part 메타데이터와 원본 연결로 식별. `@file:JvmName`도 이름 등록 없이 처리. domain, order-http, persistence의 명시한 함수 위치 또는 Boot 시작점 원본에서만 허용 |
+| 다중 파일 facade | metadata의 part 연결과 모든 part의 원본·모듈·위치를 확인해야 함. 소유 관계가 불명확하면 준비 오류. 하나의 임의 SourceFile을 골라 통과시키지 않음 |
+| 클래스가 없는 typealias·package 파일 | 타입 분류를 억지로 만들지 않고 원본 폴더·루트 규칙을 적용 |
+
+`SUPPORT`는 미분류 대상을 담는 기본값으로 사용하지 않는다. `Kt`·`$`·`Helper`라는 이름만으로 생성/지원 타입이라 판단하지 않는다. 도메인 기본 코어 분류는 명시한 도메인 모듈에만 적용하고 app-api에는 적용하지 않는다.
+
+데이터 형태나 일반 코어로 분류됐다고 그 안에 비즈니스 로직·금지 의존이 없다는 뜻은 아니다. 역할의 실제 의미는 리뷰, 관련 의존 제한은 기존 ARCH 규칙의 책임이다. Kotlin 메타데이터로 data/value/facade 정보를 읽는 기술은 구현 단계에서 현재 컴파일러 예제로 확인한다.
+
+## 입력 → 분류 → 판단 → 보고
+
+1. **입력:** 기존 모듈별 전체 클래스·main 원본 목록과 루트·폴더·공통 분류 정책을 받는다. 클래스별 NamingBinding 목록은 받지 않는다. 정상 접미사·정답 폴더로 수집 대상을 제한하지 않는다.
+2. **준비:** 모듈/파일 누락·중복·손상·구문 오류, 필요한 상속/메타 정보, 빈 클래스 또는 빈 업무 대상, 잘못된 정책을 확인한다. 정책의 중복 ID·알 수 없는 위치/역할·루트·빈 기술 목록은 준비 오류다.
+3. **원본 연결과 생성 타입 처리:** 모듈·package·SourceFile 및 확인된 Kotlin 생성 관계로 원본을 연결한다. 준비 오류이면 최종 준수 판정으로 넘어가지 않는다. 클래스 없는 원본도 소스 검사에서 보존한다.
+4. **전체 분류:** 각 일반 타입에 적용되는 모든 역할 단서를 모은다. 같은 역할의 여러 근거는 합친다. 기술 전용 분류는 데이터 기본 분류보다 구체적이다. 서로 다른 업무·기술 역할이 동시에 성립하면 충돌이다. 데이터·일반 코어는 업무·기술 역할 단서가 없는 경우에만 적용한다. 정책 목록에서 먼저 나온 한 개를 선택하지 않는다.
+5. **규칙 비교:** 역할별 이름·선언 형태·허용 module/package를 비교한다. 별도로 실제 root·폴더·package 일치를 검사한다. 허용 위치 중 하나를 실제 위치와 비교하되, 클래스마다 하나의 기대 위치를 미리 기록하지 않는다. 정책에 없는 다른 루트는 같은 package라도 실패한다.
+6. **결과:** 준비 오류는 미평가로 중단한다. 입력이 온전하면 미분류/충돌을 포함한 모든 위반을 모아 실패하고, 위반이 없으면 통과한다. 각 대상의 적용 규칙·분류 근거·위치와 생성 타입 소유자를 보고한다.
+
+검사 대상 제품의 메서드·DB·외부 API를 실행하거나 소스·정책을 자동 수정하지 않는다. 준비가 온전한 경우 한 타입의 위반 때문에 다른 타입의 진단을 숨기지는 않는다.
+
+### 결과 계약과 기존 구현에서 달라지는 오류
+
+| 상황 | 결과 |
+| --- | --- |
+| 정상 타입이 새로 추가됨 | 자동 분류·검사, 별도 등록 없이 통과 |
+| app-api의 FooManager처럼 어떤 규칙에도 해당하지 않음 | `evaluated=true`, ARCH-05 `unclassified` 위반. 발견·진단 대상에 포함 |
+| Controller와 UseCase 등 상충하는 역할 단서 | `evaluated=true`, `roleConflict` 위반과 충돌 규칙·근거. 임의 선택하지 않음 |
+| 분류는 가능하나 이름·형태·위치가 틀림 | `name`, `roleShape`, `module`, `package` 등 위반. 가능한 서로 다른 항목을 함께 보고 |
+| 읽기·구문·메타 정보·모듈 입력 누락 또는 정책 자체 오류 | `evaluated=false`. 준수 위반/평가 목록은 비우고 준비 오류만 보고 |
+
+이전의 “미등록 타입이면 준비 오류”는 제거한다. 미분류는 **입력을 못 읽은 상태가 아니라, 읽은 코드가 공통 분류 규칙을 만족하지 않은 상태**다. 정책 설정 자체가 중복/모순인 경우와 실제 타입이 서로 다른 역할 신호를 가진 경우도 구분한다.
+
+보고에는 ARCH-05, 대상 FQN/파일, 적용 규칙 ID·분류 근거, 실제값·허용값, 항목을 남긴다. 행 번호가 없으면 만들지 않는다. 파일당 폴더 위반은 중복 타입 수만큼 반복하지 않는다. 입력·정책 나열 순서가 달라도 결과는 같아야 한다. 준비 오류가 있으면 “위반 0”만으로 성공할 수 없다.
+
+## 정상·위반·누락 수용 사례
+
+아래 AUTO 번호는 **개정 명세의 사례 ID**다. 테스트 메서드 개수와 일대일 대응하지 않는다. 기대값은 아래 계약에서 정하며 구현의 분류 결과나 허용 목록을 복사해 정답으로 쓰지 않는다.
+
+| 사례 | 입력 | 기대와 근거 |
+| --- | --- | --- |
+| AUTO-01 자동 추가 | 기존 정상 주문 application 예제에 AmendOrderUseCase 소스만 추가 | 정책·binding·fixture 등록을 수정하지 않고 통과. 평가 대상에 새 타입이 포함 |
+| AUTO-02 이름 오류 | UseCase라는 이름만 있거나 application에 OrderManager 추가 | 각각 name / unclassified 위반. 알 수 없는 클래스가 검사를 빠져나가지 않음 |
+| AUTO-03 잘못된 위치 | CancelOrderUseCase를 config 또는 persistence에 둠 | UseCase로 발견된 뒤 package 위반. 정답 경로 밖에서도 수집 |
+| AUTO-04 역할 형태 | interface FooUseCase / data class FooService | roleShape 위반. DATA나 포트로 우회하지 않음 |
+| AUTO-05 Service 어노테이션 | @Service CancelOrderUseCase / @Service OrderManager | 전자는 정상 위치면 UseCase로 통과, 후자는 미분류. @Service 자체는 허가가 아님 |
+| AUTO-06 기술 역할 이름 | @RestController OrderEndpoint / @Configuration Wiring | 각각 Controller/Config 이름 위반. @RestController FooUseCase는 roleConflict |
+| AUTO-07 업무 데이터 | UseCase.Result data class, 새 HTTP data class AmendOrderRequest | 별도 등록 없이 통과. Result에 UseCase 접미사 강제 안 함 |
+| AUTO-08 데이터 위장 | 일반 class FooRequest / data class FooUseCase / @Entity FooService | 각각 미분류 / 역할 형태 위반 / 역할 충돌 |
+| AUTO-09 일반 코어 | domain-ledger의 새 BalancePolicy와 기존 엔진·sealed·value 타입 | 해당 모듈의 정확한 도메인 위치면 통과. UseCase 신호를 가진 코어 타입은 일반 코어로 면제 안 함 |
+| AUTO-10 계산과 선택 | fee/order의 정상 FooCalculator·FooResolver | 형식·배치 검사 통과. 의미를 바꾼 이름 교체까지 검출한다고 기대하지 않음 |
+| AUTO-11 Store 구분 | Ledger의 BalanceStore 인터페이스와 이를 구현한 PostgresBalanceStore | 포트와 구현 자동 분류. 구현의 위치는 ledger-persistence |
+| AUTO-12 저장 반례 | FakeBalanceStore: BalanceStore / PostgresBalanceStore가 포트 구현 안 함 / ledger 구현을 order 위치에 둠 | name / roleShape / package 위반 |
+| AUTO-13 포트 복수·누락 | 같은 영역의 두 Store 구현 / order·ledger 두 영역 Store 구현 / 필요한 상위 정의 읽기 실패 | 한 역할로 통과 / roleConflict / 준비 오류 |
+| AUTO-14 Repository | JpaRepository 상속 FooRepository / 동일 상속 FooStore / 상속 없는 FooRepository | 통과 / Store·Repository 역할 충돌 / roleShape 위반 |
+| AUTO-15 Publisher | 포트를 구현한 Persistent…Publisher와 NoOp…Publisher, 둘의 위치 교환 | 각각 지정 분류 위치면 통과, 위치 교환은 위반. 새 접두사 자동 허용 안 함 |
+| AUTO-16 시작점·오류·Entity | Boot 시작점, Advice 처리기, ErrorResponse, JPA Entity | 공통 구조·이름 규칙으로 통과. 특정 클래스 FQN 등록 없이 처리 |
+| AUTO-17 생성 타입 | companion·익명·lambda, 정상 JvmName facade, 다중 파일 facade/parts | 실제 관계 확인 시 자동 처리. 소유·part 누락은 준비 오류 |
+| AUTO-18 이름 위장 | ForgedKt·Forged$Helper 일반 클래스가 app-api에 있음 | metadata 근거 없으면 생성 타입으로 제외하지 않고 미분류 |
+| AUTO-19 경로 허용 | 정상 package라도 미등록 하위 폴더·새 root에 원본을 둠 | allowedFolder / sourceRoot 위반. 전체 소스 수집은 허용 목록과 독립 |
+| AUTO-20 실제 폴더 | package는 유지하고 파일만 다른 폴더로 이동 | sourceFolder 위반. .class 경로가 맞아도 실패 |
+| AUTO-21 원본 경계 | 주석 속 package, classless 파일, 복수 선언, Java 파일, 구문 오류 | 실제 구문·폴더 검사 유지. 구문 오류는 준비 오류, 여러 타입은 파일 위반 중복 없음 |
+| AUTO-22 수집 경계 | 빈 업무 대상, 삭제·손상, 복수 모듈, 모호한 원본, 메타 파싱 실패 | 준비 오류와 evaluated=false. 빈 결과를 통과시키지 않음 |
+| AUTO-23 정책 경계 | 없는 역할·위치, 중복 경로/규칙 ID, 서로 다른 업무 신호 충돌 | 설정 오류는 준비 오류. 온전한 정책에서 타입의 충돌은 roleConflict |
+| AUTO-24 순서 독립 | 같은 타입·정책 입력 순서를 뒤집음 | 분류·위반·준비 오류가 동일. 첫 매칭 우선 통과 없음 |
+| AUTO-25 실제 추가 흐름 | Gradle TestKit에서 main 클래스를 한 파일 추가하고 다시 실행 | Test 작업 재실행, 새 타입이 실제 import→분류→판정→보고에 포함. 정상은 통과, Manager 반례는 검사 실패 |
+| AUTO-26 정책 재실행 | 허용 폴더·명명/분류 정책만 수정 | 검사 재실행, 변경한 정확한 범위만 결과에 반영. 기존 UP_TO_DATE 재사용으로 숨기지 않음 |
+| AUTO-27 이름/폴더 동시 변경 | Calculator를 Resolver로 바꾸고 다른 허용 fee/order 모듈·package로 일관되게 이동 | 공통 형식·위치가 맞으면 ARCH-05는 통과 가능. 의미적 소속은 리뷰라는 합의의 한계 확인 |
+| AUTO-28 실제 적용 경계 | 개정 검사기 예제 전체와 현재 운영 ARCH 테스트 실행 | 예제·기존 운영 규칙 회귀 확인. 운영 ARCH-05 활성화 완료라고 보고하지 않음 |
+
+특히 AUTO-25는 클래스 목록을 테스트 코드에서 importClasses로 수동 열거하는 것만으로 대신할 수 없다. 소스 추가만으로 새 클래스를 발견하는 경로를 실제 컴파일·수집과 연결한다. 고의 위반을 정확하게 검출하면 검사기 테스트는 성공한다.
+
+이전 NAME-01~28 중 소스·폴더·입력 무결성 계약은 유지한다. “타입 미등록·exactName·타입별 location이 필요하다”는 기대값은 위 AUTO 계약으로 교체한다. 기존 테스트를 삭제해 숫자만 맞추거나, 빈 bindings를 자동 허용하는 수정으로 끝내지 않는다.
+
+## 책임 분할과 구현 순서
+
+파일명은 제안이며 계약을 지키는 한 내부 분할은 조정할 수 있다.
+
+| 책임 | 재사용·변경 대상 |
+| --- | --- |
+| 전체 발견·입력 무결성 | ModuleRegistration, ProductionScopeImporter, MainSourceSnapshot 재사용 |
+| 분류·이름 조건 | 제안 NamingClassificationPolicy.kt. 구조 신호·이름 형식·허용 위치 ID·충돌 판단을 명시 |
+| 자동 분류 결과 | NamingPlacementScope.kt. 외부 NamingBinding 제거, 내부 계산 결과에 role/rule/evidence/owner 기록 |
+| 이름·위치 비교 | RoleNamingPlacement.kt. 정확한 클래스 이름 대신 공통 이름·형태·배치 규칙 |
+| 파일·소스 검사 | SourcePlacement, SourcePackageParser 재사용. metadata 원본 연결이 필요한 부분만 보완 |
+| 최종 보고 | NamingPlacement.kt. 준비 오류와 실제 분류 위반 구분, 전체 대상 처리 증거 |
+| Gradle 입력 | main-sources.gradle.kts, build.gradle.kts. 정책 입력 추적과 TestKit 연결 유지 |
+
+1. **첫 작은 단위:** AUTO-01/02/03/24. 한 정책으로 새 UseCase 자동 포함, 미분류 실패, 잘못된 위치 탐지, 순서 독립을 TDD로 만든다. 기존 등록 기반 코드는 이 기대를 충족하지 못함을 확인한다.
+2. **역할·데이터 경계:** AUTO-04~16. 업무 접미사·기술 증거·DTO·일반 코어가 서로를 면제하지 않게 검증한다. test-reviewer 관점으로 기대값을 점검한 후 구현한다.
+3. **생성·원본 연결:** AUTO-17~23. 현재 Kotlin의 data/value/facade/companion 메타데이터와 Java record, 합성 어노테이션·Repository 계층이 실제로 읽히는지 컴파일 예제로 확인한다. 기술적으로 불가능하거나 과도한 추가 범위가 드러나면 해당 보장만 논의한다. 그 사실을 자동 제외로 숨기지 않는다.
+4. **실제 추가·회귀:** AUTO-25~28. Gradle에서 소스만 추가해 재실행·포함을 확인하고 기존 구조 검사를 실행한다. 제품 코드 이동 없이 개정 명세·흐름·실행 근거를 맞춘다.
+
+검증 명령(최종 결과는 구현 리뷰와 실행 근거에서 구분):
+
+```sh
+./gradlew :architecture-tests:test --tests '*NamingPlacement*Test' --tests '*SourcePlacement*Test' --no-daemon --console=plain
+./gradlew :architecture-tests:test --no-daemon --console=plain
+./gradlew build --no-daemon --continue --stacktrace --rerun-tasks
+```
+
+보고서는 `architecture-tests/build/reports/tests/test/`와 `architecture-tests/build/test-results/test/`다. 구조 검사에는 DB·서버·Docker를 요구하지 않는다. 전체 build의 기존 제품 통합 테스트는 Docker가 필요하다. 이전 로컬 IPv6 우회 환경은 새 실행의 필수 조건으로 고정하지 않고 환경 문제가 재현될 때만 별도로 기록한다.
+
+## 완료 기준·후속·남은 확인
+
+- [x] 일반 제품 클래스·DTO·중첩 데이터·확인된 Kotlin 운반 타입에 수동 NamingBinding을 요구하지 않는다.
+- [x] 정책을 바꾸지 않은 채 새 정상 클래스 소스만 추가하면 실제 컴파일·수집·검사가 자동으로 포함한다.
+- [x] 미분류·충돌·형태·이름·위치 위반과 읽기/정책 준비 오류를 구분한다. 모든 발견 대상에 처리 근거가 남는다.
+- [x] 원본 폴더·package, 정확한 허용 경로, 생성 source root, Gradle 변경 추적의 기존 보장을 유지한다.
+- [x] 포괄적인 SUPPORT/무시 목록, 모든 클래스 역할 어노테이션, bindings 자동 생성으로 관리 부담을 옮기지 않는다.
+- [x] 개정 수용 사례·기존 구조 검사·필요한 전체 회귀의 실제 명령/커밋/결과를 기록한다. 기존 525개 결과를 새 완료 증거로 제시하지 않는다.
+- [x] HTML·PR에서 개정 구현과 이전 기록, 자동 보장과 의미 리뷰, #19 예제와 #20~21 운영 적용을 구분한다.
+
+**차단하는 사용자 미결정은 없다.** 역할별 공통 형식·위치 자동 검사와 업무 의미 리뷰의 경계는 사용자가 선택했다. 자동 분류 세부 정책은 위 계약대로 구현했다. 새로운 허용 역할·위치나 실질적 보장 변경이 필요해지면 그때 논의한다. 전체 build에서 ARCH-05 71개·다른 구조 검사 237개·제품 243개가 실패·오류·skip 없이 통과했다. 명령과 실행한 코드의 해시는 [실행 근거](architecture-05-verification.json), 사례와 흐름은 [구현 리뷰](architecture-05-review.md)에 연결했다.
+
+#20~21에서는 실제 이름·폴더 정리와 기존 의존 검사 입력 연결을 진행한다. 아직 이동하지 않은 레거시 예외가 필요한 경우 구체 위반·이유·후속 티켓으로 한정하며 모든 클래스의 일상적 등록표로 사용하지 않는다. 기존 ARCH-03/04 등록 방식의 전면 자동화는 별도 범위다. PR #32나 이 문서만으로 #19 전체를 닫지 않는다.
+
+**설계 근거:** [ArchUnit 공식 가이드](https://www.archunit.org/userguide/html/000_Index.html#_getting_started)는 전체 수집과 조건 기반 규칙을 구분한다. [우아한형제들 기술블로그](https://techblog.woowahan.com/26835/)의 기존 위반 동결은 클래스별 역할 등록과 다른 개념이다. 이번 개정은 그 동결 기능을 도입하는 작업이 아니다.
+
+<!-- ARCH04_HISTORY_START -->
+
 # 구조 검사 명세 — #19 · ARCH-04 애플리케이션 구현 독립
 
 대상: [#19 공통 구조 검사 기반 구현 및 명세 v1 적용](https://github.com/0Chord/coin-exchange/issues/19). 기준: [PR #30](https://github.com/0Chord/coin-exchange/pull/30)이 병합된 `feature/phase-2/integration`의 **`07d4e0501dc5de7bbc9f6709eaa04ae22eb7741c`**. 확인일: 2026-09-27.

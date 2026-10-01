@@ -21,9 +21,14 @@ dependencies {
 	testImplementation(gradleTestKit())
 	testImplementation(platform("org.springframework.boot:spring-boot-dependencies:4.1.0"))
 	testImplementation(kotlin("test-junit5"))
+	// Kotlin 원본의 package 구문을 읽는다. 컴파일러 의존성은 검증 모듈에만 둔다.
+	testImplementation("org.jetbrains.kotlin:kotlin-compiler-embeddable:2.3.21")
 	testImplementation("com.tngtech.archunit:archunit:1.4.2")
 	// 위반 예제에 실제 애너테이션을 붙이기 위한 의존성이다. Spring 컨텍스트는 띄우지 않는다.
 	testImplementation("org.springframework:spring-context")
+	// 개별 이름 규칙의 Boot 어노테이션·Spring Data 상속 예제에 사용한다.
+	testImplementation("org.springframework.boot:spring-boot-autoconfigure")
+	testImplementation("org.springframework.data:spring-data-jpa")
 	// HTTP 경계 예제의 실제 컨트롤러·응답 타입만 읽으며 서버는 시작하지 않는다.
 	testImplementation("org.springframework:spring-web")
 	testImplementation("org.springframework:spring-jdbc")
@@ -52,6 +57,7 @@ val productionOutputs = productionModules.associateWith { module ->
 extra["architecture.productionProjects"] = productionModules.map { ":$it" }
 apply(from = "gradle/project-dependencies.gradle.kts")
 apply(from = "gradle/isolation-inputs.gradle.kts")
+apply(from = "gradle/main-sources.gradle.kts")
 
 val discoveredJvmProjects = providers.provider {
 	rootProject.subprojects.filter {
@@ -82,6 +88,7 @@ tasks.withType<Test> {
 	inputs.property("registeredNonProductionModules", nonProductionModules)
 	inputs.property("forbiddenOutputPaths", forbiddenOutputs)
 	doFirst {
+		systemProperty("architecture.testRuntime", classpath.asPath)
 		// 등록 목록과 별도로 찾아야 새 모듈의 등록 누락을 잡을 수 있다. 모든 프로젝트 설정이 끝난 뒤 읽는다.
 		systemProperty("architecture.discoveredJvmProjects", discoveredJvmProjects.get().joinToString(","))
 		systemProperty("architecture.registration.production", productionModules.joinToString(",") { ":$it" })
