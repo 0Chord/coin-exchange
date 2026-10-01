@@ -10,7 +10,7 @@
 
 사용 기술: Kotlin 2.3.21 · Java 25 · Spring Boot 4.1.0 · PostgreSQL 16 · Flyway · JUnit Jupiter · Testcontainers · JMH 1.37
 
-[거래 예시](#주문-한-건-따라가기) · [처리 흐름](#주문-처리-흐름) · [설계](#핵심-설계) · [실행](#빠르게-검증하기) · [코드 안내](#코드-읽는-순서) · [성능 측정](#성능-측정) · [남은 작업](#현재-경계와-다음-작업)
+[거래 예시](#주문-한-건-따라가기) · [처리 흐름](#주문-처리-흐름) · [설계](#핵심-설계) · [개발 기준](#개발-기준과-검사-상태) · [실행](#빠르게-검증하기) · [코드 안내](#코드-읽는-순서) · [성능 측정](#성능-측정) · [남은 작업](#현재-경계와-다음-작업)
 
 ## 주문 한 건 따라가기
 
@@ -114,6 +114,7 @@ BUY는 부분 체결 후에도 `올림(남은 지정가 대금 × 최대 요율 
 | [`domain-ledger`](domain-ledger) | 잔고, 자산별 균형을 검증하는 원장 모델, 저장소 포트 |
 | [`app-api`](app-api) | Spring Bean 조립, HTTP API, 트랜잭션, PostgreSQL 어댑터 |
 | [`benchmark-jmh`](benchmark-jmh) | 명령 생성·매칭·마켓 프로세서용 JMH 벤치마크 |
+| [`architecture-tests`](architecture-tests) | 운영 코드를 읽는 구조 검사와 정상·고의 위반·누락 예제. 거래 실행 코드가 아님 |
 
 도메인 모듈의 계산은 Spring이나 DB 없이 실행할 수 있습니다. `app-api`에서 application service를 명시적인 `@Bean`으로 조립하고, 저장소 인터페이스에 PostgreSQL 구현체를 연결합니다.
 매칭 이벤트는 JPA로, 잔고·예약·원장은 JDBC로 저장합니다. 잔고의 조건부 UPDATE와 예약 행 잠금은 [PostgresBalanceStore](app-api/src/main/kotlin/com/exchange/core/api/ledger/persistence/PostgresBalanceStore.kt), [PostgresOrderReservationStore](app-api/src/main/kotlin/com/exchange/core/api/order/persistence/PostgresOrderReservationStore.kt)에서 직접 확인할 수 있습니다.
@@ -121,7 +122,15 @@ BUY는 부분 체결 후에도 `올림(남은 지정가 대금 × 최대 요율 
 
 ## 빠르게 검증하기
 
-**준비:** JDK 25, 실행 중인 Docker. Gradle은 저장소의 Wrapper를 사용합니다.
+**구조 검사만 실행:** JDK 25와 저장소의 Gradle Wrapper를 사용합니다. 서버·DB·Docker를 시작하지 않습니다.
+
+```bash
+./gradlew :architecture-tests:test --no-daemon --console=plain
+```
+
+결과는 `architecture-tests/build/reports/tests/test/index.html`과 `architecture-tests/build/test-results/test/TEST-*.xml`에서 확인합니다. 실제 재실행이 필요한 경우 `--rerun-tasks`를 붙이며, `UP-TO-DATE` 결과를 이번 실행으로 기록하지 않습니다.
+
+**전체 검증 준비:** JDK 25, 실행 중인 Docker. Gradle은 저장소의 Wrapper를 사용합니다.
 PostgreSQL은 Testcontainers가 생성·종료하므로 테스트용 DB를 따로 설치하거나 연결 정보를 입력할 필요가 없습니다.
 
 ```bash
@@ -159,11 +168,22 @@ cd coin-exchange
 
 | 검증 계층 | 확인하는 내용 | 대표 테스트 |
 | --- | --- | --- |
+| 구조 | 기술·직접 의존·포트 계약·테스트 역의존·Bean 조립 선언 | [운영 검사](architecture-tests/src/test/kotlin/com/exchange/architecture/ProductionArchitectureTest.kt) · [적용 상태와 근거](engineering/architecture-check-spec.md) |
 | 순수 도메인 | 가격·시간 우선순위, 금액 경계, 수수료 누적, 예약 유지 | [매칭](domain-matching/src/test/kotlin/com/exchange/core/matching/MatchingEngineTest.kt) · [정산 계산](domain-order/src/test/kotlin/com/exchange/core/order/OrderFillSettlementCalculatorTest.kt) |
 | PostgreSQL 통합 | 동결·정산의 원자성, 소수 나머지 저장, 수수료 원장, 실패 시 롤백 | [정산 통합 테스트](app-api/src/test/kotlin/com/exchange/core/api/order/TradeSettlementServiceTest.kt) |
 | HTTP 경계 E2E | 주문 접수부터 예약·매칭·정산, 미체결 주문 취소와 반환 | [주문 E2E 테스트](app-api/src/test/kotlin/com/exchange/core/api/order/OrderLifecycleE2ETest.kt) |
 
 HTTP 경계는 MockMvc로 호출하지만 서비스나 저장소를 mock으로 대체하지 않습니다. 실제 Spring Bean과 PostgreSQL을 사용합니다. 분할 체결·역할 전환·실패 후 재시도는 정산 서비스 통합 테스트의 검증 범위입니다.
+
+## 개발 기준과 검사 상태
+
+- [공통 개발 컨벤션](engineering/conventions-design.md): 역할별 이름, 목표 폴더, config의 명시적 Bean 조립, 도메인·저장 경계와 주석 기준.
+- [개발·주문 흐름과 검증 범위](engineering/flow-and-scope-contract.md): 제출·정산·취소의 순서, 트랜잭션·부분 실패·timeout, 대표 테스트와 검증 한계.
+- [#19 마무리 명세와 완료 근거](engineering/architecture-check-spec.md): 운영 적용·예제 검증·후속 작업, 병합·실행 근거와 로컬/원격 완료 상태.
+
+현재 운영에 적용한 것은 ARCH-01·02·06·08과 업무 자동 등록 금지·config Bean 선언 검사입니다. HTTP·애플리케이션 경계와 이름·폴더 검사는 예제로 검증했고 #20~21에서 실제 이동과 활성화를 진행합니다. 상태 접근·실행 경계는 #22~23의 후속 범위입니다.
+
+구조 검사 통과는 금액·처리 순서·DB 원자성·실제 Spring 주입 성공을 증명하지 않습니다. 불량 예제를 탐지해서 테스트가 통과하는 것과 운영 코드의 준수 검사는 구분합니다. 전체 클래스의 업무 역할을 추론하거나 새 클래스마다 이름을 등록하는 방식도 아닙니다.
 
 ## 코드 읽는 순서
 
