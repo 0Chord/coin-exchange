@@ -2,7 +2,7 @@ package com.exchange.architecture.policy
 
 import com.exchange.architecture.support.*
 
-/** 최종 이름·배치 목표와 #21 이전의 한시적인 네 저장·발행 폴더를 구분한다. */
+/** 운영 코드에 적용하는 이름·배치 정책. 폴더는 명시한 정확한 경로만 허용한다. */
 object ProjectLayoutPolicy {
     val target: LayoutPolicy by lazy {
         val root = "src/main/kotlin"
@@ -31,14 +31,6 @@ object ProjectLayoutPolicy {
                 publisherTargets = mapOf("Persistent" to "matching-persistence", "NoOp" to "matching-publish"),
             ),
         )
-    }
-
-    /** #21 저장 이행이 완료되면 P08에서 target을 사용하고 이 목록을 제거한다. */
-    val duringOrderMigration: LayoutPolicy by lazy {
-        target.copy(folders = target.folders + listOf(
-            "order/persistence", "ledger/persistence", "matching/persistence", "matching/publish",
-        ).map { path -> AllowedFolder("legacy-${path.replace('/', '-')}", "app-api", "src/main/kotlin",
-            "com/exchange/core/api/$path", "#21 저장·발행 이행까지 유지. 이행 완료 후 제거") })
     }
 }
 

@@ -20,6 +20,7 @@ import com.exchange.architecture.support.ProductionScope
 import com.exchange.architecture.support.ProductionScopeImporter
 import com.exchange.architecture.support.RoleClassifier
 import kotlin.test.Test
+import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 
 /** 실제 운영 출력에 규칙을 적용한다. 각 검사는 준비 조건을 확인하며 실행 순서에 의존하지 않는다. */
@@ -78,7 +79,7 @@ class ProductionArchitectureTest {
         println("운영 모듈별 클래스: ${scope.classesByModule.mapValues { it.value.size }}")
         println("내부 직접 타입 참조: $internalReferences / main 구성: ${snapshot.configurations.size} / 직접 프로젝트 선언: ${declarations.size}")
         println("ARCH-08에 남기는 비운영 목적지: $excluded")
-        println("ARCH-06은 P03, Bean 조립은 P05, HTTP·application은 P06~P07, 주문 이름·전체 파일 폴더는 P08에서 평가합니다. ARCH-07·계산·DB·실행 순서 검증은 포함하지 않습니다.")
+        println("ARCH-06은 P03, Bean 조립은 P05, HTTP·application은 P06~P07, 전체 이름·파일 폴더는 P08에서 평가합니다. ARCH-07·계산·DB·실행 순서 검증은 포함하지 않습니다.")
         assertTrue(result.violations.isEmpty(), "ARCH-02 위반:\n${result.violations.joinToString("\n") { it.report() }}")
         println("ARCH-02 통과 · 준비 오류 0, 위반 0")
     }
@@ -138,7 +139,7 @@ class ProductionArchitectureTest {
             factoryRule.check(classes)
         }
         println("P05 통과 · 운영 ${input.classes.size}개 타입에 업무 자동 등록 금지와 config Bean 선언 검사 적용")
-        println("HTTP Controller·Advice 자동 등록은 허용합니다. P08은 주문 이름·전체 파일 폴더를 평가하고 저장 이름·역할 위치는 #21로 남깁니다. 실제 Spring 주입 성공을 검증한 것은 아닙니다.")
+        println("HTTP Controller·Advice 자동 등록은 허용합니다. P08은 저장 포트·구현을 포함한 이름·역할 위치와 전체 파일 폴더를 평가합니다. 실제 Spring 주입 성공을 검증한 것은 아닙니다.")
     }
 
     @Test
@@ -152,12 +153,17 @@ class ProductionArchitectureTest {
     }
 
     @Test
-    fun `P08 주문 이름과 전체 main 원본의 실제 폴더에 ARCH-05를 적용한다`() {
+    fun `P08 전체 이름과 main 원본의 실제 폴더에 ARCH-05를 적용한다`() {
         val modules = ProductionScope.requiredTypes.keys
         val scope = ProductionScopeImporter().load(ProductionScope.outputs(), ProductionBoundaryInputs.expectations(), ProductionScope.nonProductionTargets())
-        val policy = ProjectLayoutPolicy.duringOrderMigration
-        val names = NamingRules.inspectOrderTypes(scope, policy, modules)
+        val policy = ProjectLayoutPolicy.target
+        val names = NamingRules.inspectTypes(scope, policy, modules)
         assertTrue(names.evaluated, "ARCH-05 이름 미평가 · 준비 오류: ${names.problems}")
+        val requiredRules = setOf("controller", "UseCase", "Service", "Coordinator", "Calculator", "Resolver",
+            "store-port", "store-implementation", "publisher-port", "publisher-implementation", "repository",
+            "config", "bootstrap", "advice", "entity", "http-data", "error-response")
+        assertEquals(requiredRules, names.rules.map { it.id }.toSet(), "ARCH-05 필수 이름 규칙의 실행 기록이 빠졌습니다")
+        assertEquals(requiredRules.size, names.rules.size, "ARCH-05 이름 규칙은 각각 한 번 기록해야 합니다")
         val sources = MainSourceSnapshot.read(System.getProperty("architecture.mainSources"), modules)
         assertTrue(sources.problems.isEmpty(), "ARCH-05 원본 미평가 · 준비 오류: ${sources.problems}")
         val placement = SourcePlacement.inspect(sources.roots, policy, modules).result
@@ -167,7 +173,7 @@ class ProductionArchitectureTest {
         placement.evaluatedFiles.forEach { println("원본 검사: $it") }
         assertTrue(names.violations.isEmpty() && placement.violations.isEmpty(),
             "ARCH-05 위반:\n${(names.violations + placement.violations).joinToString("\n")}")
-        println("ARCH-05 통과. #21 이행 폴더: ${policy.folders.filter { it.id.startsWith("legacy-") }}")
-        println("저장 포트·구현·Repository·Entity의 이름·역할 위치 규칙은 #21 미활성. 네 이행 폴더도 원본 읽기·package 일치와 P06~P07 금지 의존 검사를 받습니다. 일반 클래스 이름의 업무 의미는 리뷰합니다.")
+        println("ARCH-05 통과 · 이름 규칙 ${names.rules.size}개와 최종 허용 폴더를 적용했습니다.")
+        println("저장 포트·구현·Repository·Entity의 이름·역할 위치와 전체 main 원본의 파일·package 일치를 확인했습니다. 일반 클래스 이름의 업무 의미는 리뷰합니다.")
     }
 }

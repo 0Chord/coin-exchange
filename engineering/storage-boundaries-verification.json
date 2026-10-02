@@ -1,0 +1,394 @@
+{
+  "base": "525a8cdc5861441fdfec50441e000755e36a1eea",
+  "branch": "refactor/storage-boundaries/21",
+  "worktree": "/Users/0chord/.codex/worktrees/issue21-storage-boundaries/exchange-core",
+  "stage": "PR 게시 전 로컬 구현·검증 시점의 기록. 게시 후 CI·리뷰·병합 상태는 GitHub PR에서 확인",
+  "runs": [
+    {
+      "unit": "1. 포트와 발행 연결",
+      "command": "./gradlew :app-api:test --tests *MatchingPublisherConfigurationTest --tests *PersistentMatchingEventPublisherTest --tests *MatchingCoordinatorPersistenceFailureTest --no-daemon --console=plain",
+      "counts": {
+        "tests": 8,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      "suites": [
+        {
+          "name": "com.exchange.core.api.config.MatchingPublisherConfigurationTest",
+          "tests": 3
+        },
+        {
+          "name": "com.exchange.core.api.matching.application.MatchingCoordinatorPersistenceFailureTest",
+          "tests": 3
+        },
+        {
+          "name": "com.exchange.core.api.matching.persistence.PersistentMatchingEventPublisherTest",
+          "tests": 2
+        }
+      ],
+      "result": "SUCCESS"
+    },
+    {
+      "unit": "2. 저장 이동 후 제품·DB 전체",
+      "command": "./gradlew :app-api:test --no-daemon --console=plain --rerun-tasks",
+      "counts": {
+        "tests": 81,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      "suites": [
+        {
+          "name": "com.exchange.core.ExchangeCoreApplicationTests",
+          "tests": 1
+        },
+        {
+          "name": "com.exchange.core.api.config.LedgerPersistenceConfigurationTest",
+          "tests": 3
+        },
+        {
+          "name": "com.exchange.core.api.config.MatchingPublisherConfigurationTest",
+          "tests": 3
+        },
+        {
+          "name": "com.exchange.core.api.ledger.infrastructure.persistence.PostgresBalanceStoreTest",
+          "tests": 15
+        },
+        {
+          "name": "com.exchange.core.api.ledger.infrastructure.persistence.PostgresLedgerTransactionStoreTest",
+          "tests": 3
+        },
+        {
+          "name": "com.exchange.core.api.matching.application.MatchingCoordinatorPersistenceFailureTest",
+          "tests": 3
+        },
+        {
+          "name": "com.exchange.core.api.matching.infrastructure.persistence.JpaMatchingEventStoreTest",
+          "tests": 8
+        },
+        {
+          "name": "com.exchange.core.api.matching.infrastructure.persistence.MatchingEventPayloadTest",
+          "tests": 4
+        },
+        {
+          "name": "com.exchange.core.api.matching.infrastructure.persistence.MatchingPersistenceIntegrationTest",
+          "tests": 1
+        },
+        {
+          "name": "com.exchange.core.api.matching.infrastructure.persistence.PersistentMatchingEventPublisherTest",
+          "tests": 2
+        },
+        {
+          "name": "com.exchange.core.api.order.api.OrderControllerTest",
+          "tests": 9
+        },
+        {
+          "name": "com.exchange.core.api.order.application.OrderFundingServiceTest",
+          "tests": 3
+        },
+        {
+          "name": "com.exchange.core.api.order.application.OrderLifecycleE2ETest",
+          "tests": 3
+        },
+        {
+          "name": "com.exchange.core.api.order.application.OrderReservationReleaseServiceTest",
+          "tests": 5
+        },
+        {
+          "name": "com.exchange.core.api.order.application.TradeSettlementServiceTest",
+          "tests": 7
+        },
+        {
+          "name": "com.exchange.core.api.order.infrastructure.persistence.PostgresOrderReservationStoreTest",
+          "tests": 11
+        }
+      ],
+      "result": "SUCCESS"
+    },
+    {
+      "unit": "3. 최종 구조 규칙·필수 운영 보고서",
+      "command": "./gradlew :architecture-tests:verifyArchitectureReport --no-daemon --console=plain --rerun-tasks",
+      "counts": {
+        "tests": 353,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      "suites": [
+        {
+          "name": "com.exchange.architecture.ApplicationBoundaryContractTest",
+          "tests": 11
+        },
+        {
+          "name": "com.exchange.architecture.ApplicationBoundaryImportTest",
+          "tests": 9
+        },
+        {
+          "name": "com.exchange.architecture.ApplicationBoundaryReferenceTest",
+          "tests": 9
+        },
+        {
+          "name": "com.exchange.architecture.ApplicationBoundaryScopeTest",
+          "tests": 12
+        },
+        {
+          "name": "com.exchange.architecture.ArchitectureReportVerifierTest",
+          "tests": 18
+        },
+        {
+          "name": "com.exchange.architecture.ArchitectureRuleContractTest",
+          "tests": 23
+        },
+        {
+          "name": "com.exchange.architecture.BeanAssemblyRuleTest",
+          "tests": 10
+        },
+        {
+          "name": "com.exchange.architecture.GradleDependencyWiringTest",
+          "tests": 4
+        },
+        {
+          "name": "com.exchange.architecture.HttpBoundaryImportTest",
+          "tests": 7
+        },
+        {
+          "name": "com.exchange.architecture.HttpBoundaryScopeTest",
+          "tests": 12
+        },
+        {
+          "name": "com.exchange.architecture.HttpEntryBoundaryContractTest",
+          "tests": 18
+        },
+        {
+          "name": "com.exchange.architecture.ImportScopeContractTest",
+          "tests": 22
+        },
+        {
+          "name": "com.exchange.architecture.IsolationDependencyContractTest",
+          "tests": 6
+        },
+        {
+          "name": "com.exchange.architecture.IsolationGradleWiringTest",
+          "tests": 7
+        },
+        {
+          "name": "com.exchange.architecture.ModuleDependencyContractTest",
+          "tests": 11
+        },
+        {
+          "name": "com.exchange.architecture.ModuleRegistrationContractTest",
+          "tests": 5
+        },
+        {
+          "name": "com.exchange.architecture.NamingPlacementContractTest",
+          "tests": 11
+        },
+        {
+          "name": "com.exchange.architecture.NamingPlacementGradleAutomaticTest",
+          "tests": 2
+        },
+        {
+          "name": "com.exchange.architecture.NamingPlacementGradleWiringTest",
+          "tests": 4
+        },
+        {
+          "name": "com.exchange.architecture.NamingPlacementIntegrationTest",
+          "tests": 7
+        },
+        {
+          "name": "com.exchange.architecture.NamingPlacementPortTest",
+          "tests": 11
+        },
+        {
+          "name": "com.exchange.architecture.NamingPlacementRuleTest",
+          "tests": 9
+        },
+        {
+          "name": "com.exchange.architecture.NamingPlacementScopeTest",
+          "tests": 10
+        },
+        {
+          "name": "com.exchange.architecture.NamingPlacementSimplificationTest",
+          "tests": 1
+        },
+        {
+          "name": "com.exchange.architecture.NonProductionTargetsTest",
+          "tests": 7
+        },
+        {
+          "name": "com.exchange.architecture.PortContractRuleTest",
+          "tests": 47
+        },
+        {
+          "name": "com.exchange.architecture.ProductionArchitectureTest",
+          "tests": 8
+        },
+        {
+          "name": "com.exchange.architecture.ProductionBoundaryInputsTest",
+          "tests": 15
+        },
+        {
+          "name": "com.exchange.architecture.ProductionDependencyIsolationTest",
+          "tests": 9
+        },
+        {
+          "name": "com.exchange.architecture.ProductionOutputWiringTest",
+          "tests": 2
+        },
+        {
+          "name": "com.exchange.architecture.ProjectDependencyContractTest",
+          "tests": 8
+        },
+        {
+          "name": "com.exchange.architecture.RoleClassificationContractTest",
+          "tests": 4
+        },
+        {
+          "name": "com.exchange.architecture.SourcePlacementContractTest",
+          "tests": 14
+        }
+      ],
+      "result": "SUCCESS",
+      "requiredProductionChecks": [
+        "P04",
+        "P02",
+        "P05",
+        "P06",
+        "P01",
+        "P03",
+        "P08",
+        "P07"
+      ],
+      "p08RuleRecords": [
+        "이름 규칙 controller: 1개 [com.exchange.core.api.order.api.OrderController]",
+        "이름 규칙 UseCase: 2개 [com.exchange.core.api.order.application.CancelOrderUseCase, com.exchange.core.api.order.application.SubmitOrderUseCase]",
+        "이름 규칙 Service: 3개 [com.exchange.core.api.order.application.OrderFundingService, com.exchange.core.api.order.application.OrderReservationReleaseService, com.exchange.core.api.order.application.TradeSettlementService]",
+        "이름 규칙 Coordinator: 1개 [com.exchange.core.api.matching.application.MatchingCoordinator]",
+        "이름 규칙 Calculator: 6개 [com.exchange.core.fee.TradingFeeCalculator, com.exchange.core.fee.TradingFeeReserveCalculator, com.exchange.core.order.BuyOrderFundingQuoteCalculator, com.exchange.core.order.MaximumBuyOrderFundingQuoteCalculator, com.exchange.core.order.OrderFillSettlementCalculator, com.exchange.core.order.OrderReservationCalculator]",
+        "이름 규칙 Resolver: 1개 [com.exchange.core.fee.FeeTierResolver]",
+        "이름 규칙 store-port: 4개 [com.exchange.core.api.matching.application.port.MatchingEventStore, com.exchange.core.ledger.BalanceStore, com.exchange.core.ledger.LedgerTransactionStore, com.exchange.core.order.OrderReservationStore]",
+        "이름 규칙 store-implementation: 4개 [com.exchange.core.api.ledger.infrastructure.persistence.PostgresBalanceStore, com.exchange.core.api.ledger.infrastructure.persistence.PostgresLedgerTransactionStore, com.exchange.core.api.matching.infrastructure.persistence.JpaMatchingEventStore, com.exchange.core.api.order.infrastructure.persistence.PostgresOrderReservationStore]",
+        "이름 규칙 publisher-port: 1개 [com.exchange.core.api.matching.application.port.MatchingEventPublisher]",
+        "이름 규칙 publisher-implementation: 2개 [com.exchange.core.api.matching.infrastructure.persistence.PersistentMatchingEventPublisher, com.exchange.core.api.matching.infrastructure.publish.NoOpMatchingEventPublisher]",
+        "이름 규칙 repository: 1개 [com.exchange.core.api.matching.infrastructure.persistence.MatchingEventRepository]",
+        "이름 규칙 config: 4개 [com.exchange.core.api.config.LedgerPersistenceConfig, com.exchange.core.api.config.MatchingConfig, com.exchange.core.api.config.MatchingPersistenceConfig, com.exchange.core.api.config.OrderApplicationConfig]",
+        "이름 규칙 bootstrap: 1개 [com.exchange.core.ExchangeCoreApplication]",
+        "이름 규칙 advice: 1개 [com.exchange.core.api.common.ApiExceptionHandler]",
+        "이름 규칙 entity: 1개 [com.exchange.core.api.matching.infrastructure.persistence.MatchingEventEntity]",
+        "이름 규칙 http-data: 3개 [com.exchange.core.api.order.api.MatchingEventResponse, com.exchange.core.api.order.api.MatchingResponse, com.exchange.core.api.order.api.SubmitOrderRequest]",
+        "이름 규칙 error-response: 1개 [com.exchange.core.api.common.ApiErrorResponse]"
+      ]
+    }
+  ],
+  "productMoves": [
+    {
+      "before": "app-api/src/main/kotlin/com/exchange/core/api/matching/persistence/MatchingEventStore.kt",
+      "after": "app-api/src/main/kotlin/com/exchange/core/api/matching/application/port/MatchingEventStore.kt",
+      "bodyUnchanged": true
+    },
+    {
+      "before": "app-api/src/main/kotlin/com/exchange/core/api/matching/publish/MatchingEventPublisher.kt",
+      "after": "app-api/src/main/kotlin/com/exchange/core/api/matching/application/port/MatchingEventPublisher.kt",
+      "bodyUnchanged": true
+    },
+    {
+      "before": "app-api/src/main/kotlin/com/exchange/core/api/matching/persistence/PersistentMatchingEventPublisher.kt",
+      "after": "app-api/src/main/kotlin/com/exchange/core/api/matching/infrastructure/persistence/PersistentMatchingEventPublisher.kt",
+      "bodyUnchanged": true
+    },
+    {
+      "before": "app-api/src/main/kotlin/com/exchange/core/api/matching/publish/NoOpMatchingEventPublisher.kt",
+      "after": "app-api/src/main/kotlin/com/exchange/core/api/matching/infrastructure/publish/NoOpMatchingEventPublisher.kt",
+      "bodyUnchanged": false
+    },
+    {
+      "before": "app-api/src/main/kotlin/com/exchange/core/api/matching/persistence/JpaMatchingEventStore.kt",
+      "after": "app-api/src/main/kotlin/com/exchange/core/api/matching/infrastructure/persistence/JpaMatchingEventStore.kt",
+      "bodyUnchanged": true
+    },
+    {
+      "before": "app-api/src/main/kotlin/com/exchange/core/api/matching/persistence/MatchingEventRepository.kt",
+      "after": "app-api/src/main/kotlin/com/exchange/core/api/matching/infrastructure/persistence/MatchingEventRepository.kt",
+      "bodyUnchanged": true
+    },
+    {
+      "before": "app-api/src/main/kotlin/com/exchange/core/api/matching/persistence/MatchingEventEntity.kt",
+      "after": "app-api/src/main/kotlin/com/exchange/core/api/matching/infrastructure/persistence/MatchingEventEntity.kt",
+      "bodyUnchanged": true
+    },
+    {
+      "before": "app-api/src/main/kotlin/com/exchange/core/api/matching/persistence/MatchingEventPayload.kt",
+      "after": "app-api/src/main/kotlin/com/exchange/core/api/matching/infrastructure/persistence/MatchingEventPayload.kt",
+      "bodyUnchanged": true
+    },
+    {
+      "before": "app-api/src/main/kotlin/com/exchange/core/api/matching/persistence/MatchingEventType.kt",
+      "after": "app-api/src/main/kotlin/com/exchange/core/api/matching/infrastructure/persistence/MatchingEventType.kt",
+      "bodyUnchanged": true
+    },
+    {
+      "before": "app-api/src/main/kotlin/com/exchange/core/api/order/persistence/PostgresOrderReservationStore.kt",
+      "after": "app-api/src/main/kotlin/com/exchange/core/api/order/infrastructure/persistence/PostgresOrderReservationStore.kt",
+      "bodyUnchanged": true
+    },
+    {
+      "before": "app-api/src/main/kotlin/com/exchange/core/api/ledger/persistence/PostgresBalanceStore.kt",
+      "after": "app-api/src/main/kotlin/com/exchange/core/api/ledger/infrastructure/persistence/PostgresBalanceStore.kt",
+      "bodyUnchanged": true
+    },
+    {
+      "before": "app-api/src/main/kotlin/com/exchange/core/api/ledger/persistence/PostgresLedgerTransactionStore.kt",
+      "after": "app-api/src/main/kotlin/com/exchange/core/api/ledger/infrastructure/persistence/PostgresLedgerTransactionStore.kt",
+      "bodyUnchanged": true
+    }
+  ],
+  "sourceHashes": {
+    "app-api/src/main/kotlin/com/exchange/core/api/config/LedgerPersistenceConfig.kt": "4e7f89779b0b8dae5da16a70742f5b45a006feee9f21314bb5dec33cf1bc043c",
+    "app-api/src/main/kotlin/com/exchange/core/api/config/MatchingConfig.kt": "cc207fa7a6745d2ddff7bb162cf504e6502e9dfeb1fee8b8fdd2d1848ff3ed6d",
+    "app-api/src/main/kotlin/com/exchange/core/api/config/MatchingPersistenceConfig.kt": "7b00fb69c70d87537a2c4de42f86a43ffbb6412f25a35ccd492f8ed7c8a56e74",
+    "app-api/src/main/kotlin/com/exchange/core/api/ledger/infrastructure/persistence/PostgresBalanceStore.kt": "0823bfb1ab244db24955abee4daf7f3536bb8a623910b5007fc54f9bcf15efd2",
+    "app-api/src/main/kotlin/com/exchange/core/api/ledger/infrastructure/persistence/PostgresLedgerTransactionStore.kt": "b62d51ce3dca821363c63111c4487445bf08c311aa6f7f1d7fbc118a18c052e0",
+    "app-api/src/main/kotlin/com/exchange/core/api/matching/application/MatchingCoordinator.kt": "498183477b19019de3abb70d6b8d032f0fc1616fd04b36969eb38694402e8441",
+    "app-api/src/main/kotlin/com/exchange/core/api/matching/application/port/MatchingEventPublisher.kt": "b89cc09244c273fb1ff58c5469657cccd6a5a203410e2e0d6bfe2b6e6cf0c816",
+    "app-api/src/main/kotlin/com/exchange/core/api/matching/application/port/MatchingEventStore.kt": "e674f69b18b53fabb294a2b21c0ee5e0518eb042f7ef246bd6dcc98dbb53908c",
+    "app-api/src/main/kotlin/com/exchange/core/api/matching/infrastructure/persistence/JpaMatchingEventStore.kt": "43a18101c24a1e1423ffc65f8c43a085b6994e07bb679d8d14fd8b4b449c6c75",
+    "app-api/src/main/kotlin/com/exchange/core/api/matching/infrastructure/persistence/MatchingEventEntity.kt": "d970abf3df936c7dce566cd3454d9b90fb4d8a21961beb8b8962ff7c3193eccc",
+    "app-api/src/main/kotlin/com/exchange/core/api/matching/infrastructure/persistence/MatchingEventPayload.kt": "9f68b505faabdc242650fad6484f042b5805b75833a3a8e6dd8a83f6e6fec70e",
+    "app-api/src/main/kotlin/com/exchange/core/api/matching/infrastructure/persistence/MatchingEventRepository.kt": "7302ce9b3267c350508c6d901ce393027473f6f991e3992c29d26bea4c0d6d27",
+    "app-api/src/main/kotlin/com/exchange/core/api/matching/infrastructure/persistence/MatchingEventType.kt": "7e8e01e4d143922de4f40d51bfb5bdd073088ea551cdc909d3f1bd369b2db2b3",
+    "app-api/src/main/kotlin/com/exchange/core/api/matching/infrastructure/persistence/PersistentMatchingEventPublisher.kt": "f4ec3a6a5c93fdaf2dad359ce43eb1c0a12baa56b3f1257bbeb5a2afa7da862e",
+    "app-api/src/main/kotlin/com/exchange/core/api/matching/infrastructure/publish/NoOpMatchingEventPublisher.kt": "a9493b899859fe4dc4188b945b8ef713dae615117323fed95766b1e9c95115a7",
+    "app-api/src/main/kotlin/com/exchange/core/api/order/infrastructure/persistence/PostgresOrderReservationStore.kt": "18ef8c799d8a499b2181a4d497dbe042633e093a37c8ff2d46f7b8aacfeeab30",
+    "app-api/src/test/kotlin/com/exchange/core/api/config/LedgerPersistenceConfigurationTest.kt": "248f5d5baf07c3ef47e834c4bf01908eccdd96489cef22bf97bba41649ecfcf1",
+    "app-api/src/test/kotlin/com/exchange/core/api/config/MatchingPublisherConfigurationTest.kt": "c6e13e894fd4c3a2da6d0c9fcad8fd13184d53e7ff4ff6acecb85f9b61340bb5",
+    "app-api/src/test/kotlin/com/exchange/core/api/ledger/infrastructure/persistence/PostgresBalanceStoreTest.kt": "ee919f222209e7056181757bf77cb39643b52deddf0c137051cf1cd1cc261611",
+    "app-api/src/test/kotlin/com/exchange/core/api/ledger/infrastructure/persistence/PostgresLedgerTransactionStoreTest.kt": "4cf9b56ee874323f8aeb73f77b07834b634fd71691aa98d7c7664ef37a38e922",
+    "app-api/src/test/kotlin/com/exchange/core/api/matching/application/MatchingCoordinatorPersistenceFailureTest.kt": "12f85a8794e4e932c752b200df63ffc98ba3af725a32e4823caea279c73440a4",
+    "app-api/src/test/kotlin/com/exchange/core/api/matching/infrastructure/persistence/JpaMatchingEventStoreTest.kt": "bb647b1464c12f59507add9186a4ae9702d63f0fad87fdaf4fb598b9928c332c",
+    "app-api/src/test/kotlin/com/exchange/core/api/matching/infrastructure/persistence/MatchingEventPayloadTest.kt": "a05c7b328195e7797171b346db591ab77fbfddd6a59973b96bf8c48069ba752c",
+    "app-api/src/test/kotlin/com/exchange/core/api/matching/infrastructure/persistence/MatchingPersistenceIntegrationTest.kt": "054f2838cae42717477a00ac505866b47f605dea3912567ee76ebd3450b884c8",
+    "app-api/src/test/kotlin/com/exchange/core/api/matching/infrastructure/persistence/PersistentMatchingEventPublisherTest.kt": "30a62d2c9dbdc22c58440bd6ee65d46fccf61ec0aededb3a90d42f8a340bf281",
+    "app-api/src/test/kotlin/com/exchange/core/api/order/api/OrderControllerTest.kt": "954b6880f02edada45d1754753ee5ad2ebbe5c2098ae4ad3fdc96df0219bf78e",
+    "app-api/src/test/kotlin/com/exchange/core/api/order/infrastructure/persistence/PostgresOrderReservationStoreTest.kt": "abfdfab783404e5cd8b0d7897a510cf05133c722198be503e1b2bbb6b13849d8",
+    "architecture-tests/src/test/kotlin/com/exchange/architecture/ProductionArchitectureTest.kt": "1e35af7c6d3216793b2cc2bfe43fa1f17859b2b76086f64c12f00d77dc2b151a",
+    "architecture-tests/src/test/kotlin/com/exchange/architecture/ProductionBoundaryInputsTest.kt": "a4cb9fa98ca03a6197760f30dec2d59e669ed0fee04a6646d8a1b970243e17ad",
+    "architecture-tests/src/test/kotlin/com/exchange/architecture/policy/ProjectLayoutPolicy.kt": "540e2bc58a27e22a5090125ca90b4db626c1b174304e35a4deb6de3248fe4e68",
+    "architecture-tests/src/test/kotlin/com/exchange/architecture/rules/NamingRules.kt": "f8679d341bcd8990b72b846997a69a15745c08c6ba357e9d5faf0c34e358eede",
+    "architecture-tests/src/test/kotlin/com/exchange/architecture/support/ProductionScope.kt": "924f6b61afa5f70d09e49bbd6601e9713ad624b3dad57adc2e025e9a60e345b6",
+    "domain-matching/src/main/kotlin/com/exchange/core/matching/MarketCommandProcessor.kt": "db4bb38700943f244660c8a809c289274c31c9663c90c52a072c92b11b210051"
+  },
+  "recordedAt": "2026-10-02T18:32:37.863823+09:00",
+  "independentCodeReview": {
+    "result": "수정이 필요한 확정 코드 결함 발견 없음",
+    "scope": "제품 12파일과 이동 테스트7파일, Bean조건6사례, P08/새 FQN/누락·폴더 회귀",
+    "execution": "별도 검토자는 실행하지 않음. 실행 근거는 runs에 기록한 실제 Gradle 결과"
+  },
+  "limitations": [
+    "제품 명령은 app-api만 실행했으며 domain 전체 테스트 재실행이 아니다",
+    "구조는 직접 참조/위치/계약 검사이며 DB 계산/복구 검증을 대신하지 않는다",
+    "새 timeout·전체 미저장모드 HTTP E2E·자동 보상/재처리 실험은 제외",
+    "이 로컬 기록은 PR·원격 CI·병합·사람의 리뷰 완료를 증명하지 않는다"
+  ],
+  "sourceHashScope": "최종 제품 81개·구조 353개 실행 당시 코드. 초기 단위 8개는 부분 이동 시점이며 별도 소스 해시는 기록하지 않았다."
+}

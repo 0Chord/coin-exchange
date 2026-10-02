@@ -23,11 +23,11 @@
 
 도메인에 `Store` 인터페이스를 선언하는 것과 도메인 판단 중 DB를 호출하는 것은 다르다. 필요한 외부 상태는 애플리케이션이 준비한다. 실행기의 콜백이 예약·저장 작업을 호출해도 순수 매칭 엔진의 외부 호출을 허용한다는 뜻은 아니다.
 
-[PostgresBalanceStore](../app-api/src/main/kotlin/com/exchange/core/api/ledger/persistence/PostgresBalanceStore.kt)의 조건부 `UPDATE … RETURNING`은 갱신 조건 확인과 변경 직후 잔고 반환을 한 SQL로 처리하려는 설계다. 이를 읽기→수정→별도 조회로 교체하지 않는다. 생성 시 값 검증과 상태 전이 검증, DB에서의 동시 갱신 보장은 각각 구분한다.
+[PostgresBalanceStore](../app-api/src/main/kotlin/com/exchange/core/api/ledger/infrastructure/persistence/PostgresBalanceStore.kt)의 조건부 `UPDATE … RETURNING`은 갱신 조건 확인과 변경 직후 잔고 반환을 한 SQL로 처리하려는 설계다. 이를 읽기→수정→별도 조회로 교체하지 않는다. 생성 시 값 검증과 상태 전이 검증, DB에서의 동시 갱신 보장은 각각 구분한다.
 
 ## 이름을 맞추는 기준
 
-이름은 역할을 드러내고 같은 개념에는 같은 용어를 쓴다. 아래는 명명 기준이다. #20에서 주문 제출·취소와 매칭 조율자는 UseCase·Coordinator로 이행했다. 저장·발행 배치와 해당 이름 규칙은 #21에 남는다.
+이름은 역할을 드러내고 같은 개념에는 같은 용어를 쓴다. 아래는 명명 기준이다. #20에서 주문 제출·취소와 매칭 조율자는 UseCase·Coordinator로 이행했다. 저장·발행 배치와 해당 이름 규칙은 #21에서 최종 위치로 이행한다. 현재 결과는 [저장 경계 구현 기록](storage-boundaries-review.md)에 둔다.
 
 | 역할 | 이름 기준·예 | 의미 경계 |
 | --- | --- | --- |
@@ -66,7 +66,7 @@ ARCH-05는 이름·어노테이션·상속·포트 구현 관계로 확인 가�
 
 ## 목표 폴더와 확장 방법
 
-`app-api`에는 API·application·infrastructure와 조립 코드가 있고, 도메인 모듈은 Kotlin 코어를 둔다. 허용 루트·폴더의 기준은 [ProjectLayoutPolicy](../architecture-tests/src/test/kotlin/com/exchange/architecture/policy/ProjectLayoutPolicy.kt) 한 곳이다. 아래는 최종 목표 위치다. #20 운영 P08은 전체 main 원본을 검사하며, `duringOrderMigration`은 #21 전까지 기존 order/persistence·ledger/persistence·matching/persistence·matching/publish 네 폴더만 추가 허용한다. 저장 이행 후 `target`으로 전환하고 네 추가 위치를 제거한다.
+`app-api`에는 API·application·infrastructure와 조립 코드가 있고, 도메인 모듈은 Kotlin 코어를 둔다. 허용 루트·폴더의 기준은 [ProjectLayoutPolicy](../architecture-tests/src/test/kotlin/com/exchange/architecture/policy/ProjectLayoutPolicy.kt) 한 곳이다. 아래는 최종 목표 위치다. 운영 P08은 `target`으로 전체 main 원본과 17개 이름 규칙을 검사한다. #21에서 order/persistence·ledger/persistence·matching/persistence·matching/publish 네 이행 폴더를 종료했으므로 그곳에 파일과 package를 함께 되돌려도 위반이다.
 
 모든 루트는 현재 `src/main/kotlin`이다. 표의 경로는 그 루트 아래이며 정확한 폴더를 허용한다. 상위 폴더를 허용했다는 이유로 임의 하위 폴더가 허용되지는 않는다. `package` 선언과 실제 폴더도 일치해야 한다.
 

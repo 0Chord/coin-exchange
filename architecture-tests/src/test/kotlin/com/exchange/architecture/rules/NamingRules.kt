@@ -157,14 +157,7 @@ object NamingRules {
         name(t, input, "error-response", "ErrorResponse") + position(t, input, "error-response", listOf(area(policy, "http-errors")))
     }).allowEmptyShould(true)
 
-    fun inspectTypes(scope: ScopeImportResult, policy: LayoutPolicy, registeredModules: Set<String>): PlacementResult =
-        inspectTypes(scope, policy, registeredModules, orderMigrationOnly = false)
-
-    /** #20은 주문·HTTP·조립 규칙만 활성화한다. 저장 포트·구현·영속 모델의 이름·위치는 #21에서 이행한다. */
-    fun inspectOrderTypes(scope: ScopeImportResult, policy: LayoutPolicy, registeredModules: Set<String>): PlacementResult =
-        inspectTypes(scope, policy, registeredModules, orderMigrationOnly = true)
-
-    private fun inspectTypes(scope: ScopeImportResult, policy: LayoutPolicy, registeredModules: Set<String>, orderMigrationOnly: Boolean): PlacementResult {
+    fun inspectTypes(scope: ScopeImportResult, policy: LayoutPolicy, registeredModules: Set<String>): PlacementResult {
         val input = NamingPlacementScope.prepare(scope, policy, registeredModules)
         if (input.problems.isNotEmpty()) return PlacementResult(problems = input.problems)
         val reports = mutableListOf<NamingRuleResult>()
@@ -186,19 +179,17 @@ object NamingRules {
             evaluate("UseCase", suffixTargets("UseCase"), useCases(input, policy))
             evaluate("Service", suffixTargets("Service"), services(input, policy))
             evaluate("Coordinator", suffixTargets("Coordinator"), coordinators(input, policy))
-            if (!orderMigrationOnly) {
-                evaluate("Calculator", suffixTargets("Calculator"), calculators(input, policy))
-                evaluate("Resolver", suffixTargets("Resolver"), resolvers(input, policy))
-                evaluate("store-port", storePorts, stores(input, policy))
-                evaluate("store-implementation", storeImplementationTargets(input), storeImplementations(input, policy))
-                evaluate("publisher-port", publisherPorts, publishers(input, policy))
-                evaluate("publisher-implementation", publisherImplementationTargets(input), publisherImplementations(input, policy))
-                evaluate("repository", repositoryTargets, repositories(input, policy))
-            }
+            evaluate("Calculator", suffixTargets("Calculator"), calculators(input, policy))
+            evaluate("Resolver", suffixTargets("Resolver"), resolvers(input, policy))
+            evaluate("store-port", storePorts, stores(input, policy))
+            evaluate("store-implementation", storeImplementationTargets(input), storeImplementations(input, policy))
+            evaluate("publisher-port", publisherPorts, publishers(input, policy))
+            evaluate("publisher-implementation", publisherImplementationTargets(input), publisherImplementations(input, policy))
+            evaluate("repository", repositoryTargets, repositories(input, policy))
             evaluate("config", configTargets, configurations(input, policy))
             evaluate("bootstrap", bootTargets, bootstrap(input, policy))
             evaluate("advice", adviceTargets, advice(input, policy))
-            if (!orderMigrationOnly) evaluate("entity", entityTargets, entities(input, policy))
+            evaluate("entity", entityTargets, entities(input, policy))
             evaluate("http-data", httpDataTargets, httpData(input, policy))
             evaluate("error-response", errorTargets, errorResponses(input, policy))
         } catch (error: PolicyInputError) {

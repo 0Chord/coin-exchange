@@ -1,5 +1,7 @@
 # #19 마무리 상세 명세 — 현재 기준·흐름·완료 근거
 
+> **#21 구현 업데이트 — 2026-10-02:** 저장 포트·기술 구현 12개 파일을 이동하고 설정별 Bean 연결과 기존 SQL·트랜잭션을 유지했다. P08에 기존 17개 이름 규칙·최종 폴더 정책을 연결하고 네 이행 폴더를 종료했다. 제품·DB 81개와 구조 353개를 재실행해 실패·오류·skip 없이 통과했고 필수 P01~P08을 확인했다. 로컬 구현 결과이며 PR·원격 CI·병합은 별도다. [명세](storage-boundaries-spec.md)와 [구현 기록](storage-boundaries-review.md)을 현재 근거로 읽는다. 아래 #19/#20의 이전 실행 기록은 보존한다.
+
 > **현재 운영 적용 업데이트 — #20, 2026-10-02:** 주문 제출·취소 UseCase, MatchingCoordinator, OrderController와 내부 Service의 이름·폴더·Bean 연결을 이행했다. 아래 #19 마무리 시점의 커밋·다섯 검사·PR/실행 기록은 역사로 보존한다. 현재 #20 명세는 [상세 설계](order-usecases-spec.md), 실제 흐름·파일·실행 결과는 [구현 기록](order-usecases-review.md)에 둔다.
 
 | 현재 검사 | 실제 적용 | 남은 범위 |
@@ -7,7 +9,7 @@
 | P01~P05 | ARCH-01·02·06·08과 Bean 조립, 기존 적용 유지 | 각 검사에 명시한 직접 참조·계약의 한계 유지 |
 | P06 | 전체 실제 HTTP·변환 코드의 ARCH-03 | HTTP 요청·JSON·금액은 별도 API/DB 테스트 |
 | P07 | 전체 실제 application의 ARCH-04. 일반 보조 코드도 포함 | config는 구현 조립 허용. 실제 Spring 조립·프록시는 통합 테스트 |
-| P08 | 주문·HTTP·조립 이름 9개 규칙과 전체 main 원본의 정확한 폴더·package | 저장·발행·Repository·Entity 및 나머지 이름 규칙 활성화는 #21. 네 이행 폴더도 파일·금지 의존 검사 유지 |
+| P08 | 저장·발행·Repository·Entity를 포함한 이름 17개 규칙과 전체 main 원본의 정확한 폴더·package | 네 이행 폴더 종료. 일반 이름의 업무 의미와 동적 실행은 리뷰·제품 테스트 |
 | 보고서 확인 | P01~P08 각각 한 번 실행·성공. 누락·중복·skip·실패 거절 | 원격 PR·CI·병합은 이번 로컬 구현과 별도 |
 
 
@@ -820,12 +822,12 @@ flowchart TD
 
 | 실제 코드 | 확인한 책임과 ARCH-04 설계 근거 |
 | --- | --- |
-| [OrderSubmissionService](../app-api/src/main/kotlin/com/exchange/core/api/order/OrderSubmissionService.kt), [OrderCancellationService](../app-api/src/main/kotlin/com/exchange/core/api/order/OrderCancellationService.kt) | 진입점이 예약·정산/해제와 매칭 조율을 호출함. 각각 #20에서 SubmitOrderUseCase·CancelOrderUseCase로 이행할 대상 |
-| [OrderFundingService](../app-api/src/main/kotlin/com/exchange/core/api/order/OrderFundingService.kt), [OrderReservationReleaseService](../app-api/src/main/kotlin/com/exchange/core/api/order/OrderReservationReleaseService.kt), [TradeSettlementService](../app-api/src/main/kotlin/com/exchange/core/api/order/TradeSettlementService.kt) | 도메인 계산/상태 전이와 BalanceStore·OrderReservationStore·LedgerTransactionStore를 사용하고 Spring `@Transactional`로 작업 경계를 지정함 |
-| [MatchingApplicationService](../app-api/src/main/kotlin/com/exchange/core/api/matching/MatchingApplicationService.kt) | MarketCommandProcessor와 MatchingEventPublisher를 사용하고 Future 결과를 기다림. #20의 MatchingCoordinator 후보이며 실행기 내부 구현을 application으로 재분류하지 않음 |
+| [OrderSubmissionService](https://github.com/0Chord/coin-exchange/blob/07d4e05/app-api/src/main/kotlin/com/exchange/core/api/order/OrderSubmissionService.kt), [OrderCancellationService](https://github.com/0Chord/coin-exchange/blob/07d4e05/app-api/src/main/kotlin/com/exchange/core/api/order/OrderCancellationService.kt) | 진입점이 예약·정산/해제와 매칭 조율을 호출함. 각각 #20에서 SubmitOrderUseCase·CancelOrderUseCase로 이행할 대상 |
+| [OrderFundingService](https://github.com/0Chord/coin-exchange/blob/07d4e05/app-api/src/main/kotlin/com/exchange/core/api/order/OrderFundingService.kt), [OrderReservationReleaseService](https://github.com/0Chord/coin-exchange/blob/07d4e05/app-api/src/main/kotlin/com/exchange/core/api/order/OrderReservationReleaseService.kt), [TradeSettlementService](https://github.com/0Chord/coin-exchange/blob/07d4e05/app-api/src/main/kotlin/com/exchange/core/api/order/TradeSettlementService.kt) | 도메인 계산/상태 전이와 BalanceStore·OrderReservationStore·LedgerTransactionStore를 사용하고 Spring `@Transactional`로 작업 경계를 지정함 |
+| [MatchingApplicationService](https://github.com/0Chord/coin-exchange/blob/07d4e05/app-api/src/main/kotlin/com/exchange/core/api/matching/MatchingApplicationService.kt) | MarketCommandProcessor와 MatchingEventPublisher를 사용하고 Future 결과를 기다림. #20의 MatchingCoordinator 후보이며 실행기 내부 구현을 application으로 재분류하지 않음 |
 | [LedgerPersistenceConfig](../app-api/src/main/kotlin/com/exchange/core/api/config/LedgerPersistenceConfig.kt), [MatchingPersistenceConfig](../app-api/src/main/kotlin/com/exchange/core/api/config/MatchingPersistenceConfig.kt) | PostgreSQL/JPA 구현과 포트·업무 객체를 연결함. config 조립 예외의 정상 사례 |
 | [MatchingConfig](../app-api/src/main/kotlin/com/exchange/core/api/config/MatchingConfig.kt) | 실행기 구현, NoOp 발행 구현, 조율 서비스를 연결함. 구현 이름에 Store가 없거나 저장 동작이 없어도 조립 역할로 판단 |
-| [PersistentMatchingEventPublisher](../app-api/src/main/kotlin/com/exchange/core/api/matching/persistence/PersistentMatchingEventPublisher.kt) | 발행 포트 구현으로 저장 포트에 위임함. 애플리케이션에서 포트 대신 이 구현을 직접 사용하는 것은 금지 대상 |
+| [PersistentMatchingEventPublisher](https://github.com/0Chord/coin-exchange/blob/07d4e05/app-api/src/main/kotlin/com/exchange/core/api/matching/persistence/PersistentMatchingEventPublisher.kt) | 발행 포트 구현으로 저장 포트에 위임함. 애플리케이션에서 포트 대신 이 구현을 직접 사용하는 것은 금지 대상 |
 
 `MatchingEventPublisher`는 현재 `matching.publish`, `MatchingEventStore`는 `matching.persistence`에 있지만 포트다. `NoOpMatchingEventPublisher`는 저장하지 않아도 구체 구현이다. 옛 위치·이름만으로 허용/금지를 뒤집지 않는다. 현재 역할 예시는 실제 코드 이행 때 전체 출력·역할 목록과 다시 대조하며, 표에 나온 파일만 운영 검사 대상으로 제한하지 않는다.
 
@@ -1005,10 +1007,10 @@ ARCH-04·05 예제는 후속 구현 단위다. ARCH-07의 상태 접근·DB·실
 
 | 실제 코드 | 확인한 책임 / 설계에 반영할 점 |
 | --- | --- |
-| [MatchingController](../app-api/src/main/kotlin/com/exchange/core/api/matching/MatchingController.kt) | `submitOrder`와 `cancelOrder`가 입력 값·명령을 만든 뒤 제출/취소 서비스를 호출하고 결과를 DTO로 변환함 |
-| [MatchingDtos](../app-api/src/main/kotlin/com/exchange/core/api/matching/MatchingDtos.kt), [MatchingEventResponseMapper](../app-api/src/main/kotlin/com/exchange/core/api/matching/MatchingEventResponseMapper.kt) | 주문 enum·매칭 이벤트·값 프로퍼티를 사용함. 매퍼는 Kotlin 최상위 확장 함수라 파일 파사드(컴파일된 함수 보관 클래스)도 대상이어야 함 |
-| [OrderSubmissionService](../app-api/src/main/kotlin/com/exchange/core/api/order/OrderSubmissionService.kt), [OrderCancellationService](../app-api/src/main/kotlin/com/exchange/core/api/order/OrderCancellationService.kt) | 현재 외부 업무 진입점. 내부 예약·정산·예약 해제와 매칭 조율을 호출함. 아직 UseCase로 개명되지 않음 |
-| [MatchingControllerTest](../app-api/src/test/kotlin/com/exchange/core/api/matching/MatchingControllerTest.kt) | 정상 접수·체결·취소, 없는 주문, 가격 0, 중복, 미지원 타입, 타인 취소, 반복 취소 사례가 있음. API 이행 시 재사용할 동작 근거 후보 |
+| [MatchingController](https://github.com/0Chord/coin-exchange/blob/b100276/app-api/src/main/kotlin/com/exchange/core/api/matching/MatchingController.kt) | `submitOrder`와 `cancelOrder`가 입력 값·명령을 만든 뒤 제출/취소 서비스를 호출하고 결과를 DTO로 변환함 |
+| [MatchingDtos](https://github.com/0Chord/coin-exchange/blob/b100276/app-api/src/main/kotlin/com/exchange/core/api/matching/MatchingDtos.kt), [MatchingEventResponseMapper](https://github.com/0Chord/coin-exchange/blob/b100276/app-api/src/main/kotlin/com/exchange/core/api/matching/MatchingEventResponseMapper.kt) | 주문 enum·매칭 이벤트·값 프로퍼티를 사용함. 매퍼는 Kotlin 최상위 확장 함수라 파일 파사드(컴파일된 함수 보관 클래스)도 대상이어야 함 |
+| [OrderSubmissionService](https://github.com/0Chord/coin-exchange/blob/b100276/app-api/src/main/kotlin/com/exchange/core/api/order/OrderSubmissionService.kt), [OrderCancellationService](https://github.com/0Chord/coin-exchange/blob/b100276/app-api/src/main/kotlin/com/exchange/core/api/order/OrderCancellationService.kt) | 현재 외부 업무 진입점. 내부 예약·정산·예약 해제와 매칭 조율을 호출함. 아직 UseCase로 개명되지 않음 |
+| [MatchingControllerTest](https://github.com/0Chord/coin-exchange/blob/b100276/app-api/src/test/kotlin/com/exchange/core/api/matching/MatchingControllerTest.kt) | 정상 접수·체결·취소, 없는 주문, 가격 0, 중복, 미지원 타입, 타인 취소, 반복 취소 사례가 있음. API 이행 시 재사용할 동작 근거 후보 |
 | [ProductionArchitectureTest](../architecture-tests/src/test/kotlin/com/exchange/architecture/ProductionArchitectureTest.kt) | P01·P02·P03·P04가 각각 ARCH-01·02·06·08을 운영 코드에 적용함. ARCH-03 운영 검사는 아직 없음 |
 
 현재 코드로 확인한 허용 데이터의 시작 목록은 `core.common`의 `MarketId`, `OrderId`, `UserId`, `Price`, `Quantity`, `core.order`의 `Side`, `OrderType`, `TimeInForce`, `core.matching`의 제출·취소 명령과 `MatchingEvent` 및 네 이벤트 타입이다. 접두사는 `com.exchange.`이며 패키지 전체 허용 목록이 아니다. #19 예제는 대응하는 최소 데이터 역할을 쓰고, #20에서 실제 전체 이름과 명령/이벤트 상위 계약까지 누락 없이 등록한다.
@@ -1321,7 +1323,7 @@ NP-14는 테스트용 문자열로 Gradle 출력을 흉내 낸 결과만으로 �
 | `MatchingEventStore` | `app-api` · `com.exchange.core.api.matching.persistence` | `List<MatchingEvent>` 저장 |
 | `MatchingEventPublisher` | `app-api` · `com.exchange.core.api.matching.publish` | `List<MatchingEvent>` 발행 |
 
-실제 정의: [포트 등록](../architecture-tests/src/test/kotlin/com/exchange/architecture/support/ProductionScope.kt), [잔고 포트](../domain-ledger/src/main/kotlin/com/exchange/core/ledger/BalanceStore.kt), [매칭 저장 포트](../app-api/src/main/kotlin/com/exchange/core/api/matching/persistence/MatchingEventStore.kt), [JPA 저장 구현](../app-api/src/main/kotlin/com/exchange/core/api/matching/persistence/JpaMatchingEventStore.kt), [Spring Data 인터페이스](../app-api/src/main/kotlin/com/exchange/core/api/matching/persistence/MatchingEventRepository.kt).
+실제 정의: [포트 등록](../architecture-tests/src/test/kotlin/com/exchange/architecture/support/ProductionScope.kt), [잔고 포트](../domain-ledger/src/main/kotlin/com/exchange/core/ledger/BalanceStore.kt), [매칭 저장 포트](https://github.com/0Chord/coin-exchange/blob/525a8cdc5861441fdfec50441e000755e36a1eea/app-api/src/main/kotlin/com/exchange/core/api/matching/persistence/MatchingEventStore.kt), [JPA 저장 구현](https://github.com/0Chord/coin-exchange/blob/525a8cdc5861441fdfec50441e000755e36a1eea/app-api/src/main/kotlin/com/exchange/core/api/matching/persistence/JpaMatchingEventStore.kt), [Spring Data 인터페이스](https://github.com/0Chord/coin-exchange/blob/525a8cdc5861441fdfec50441e000755e36a1eea/app-api/src/main/kotlin/com/exchange/core/api/matching/persistence/MatchingEventRepository.kt).
 
 `MatchingEventRepository : JpaRepository<MatchingEventEntity, Long>`는 저장 구현 내부의 기술 도구다. 이름에 Repository가 붙었다고 외부 포트로 등록하지 않는다. 반대로 `MatchingEventStore`는 지금 `persistence` 패키지에 있지만 포트다. 패키지 이름으로 일괄 제외하면 이 대상을 놓친다.
 

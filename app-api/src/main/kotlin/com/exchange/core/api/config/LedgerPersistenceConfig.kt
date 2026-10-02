@@ -1,11 +1,11 @@
 package com.exchange.core.api.config
 
-import com.exchange.core.api.ledger.persistence.PostgresBalanceStore
-import com.exchange.core.api.ledger.persistence.PostgresLedgerTransactionStore
+import com.exchange.core.api.ledger.infrastructure.persistence.PostgresBalanceStore
+import com.exchange.core.api.ledger.infrastructure.persistence.PostgresLedgerTransactionStore
 import com.exchange.core.api.order.application.OrderFundingService
 import com.exchange.core.api.order.application.OrderReservationReleaseService
 import com.exchange.core.api.order.application.TradeSettlementService
-import com.exchange.core.api.order.persistence.PostgresOrderReservationStore
+import com.exchange.core.api.order.infrastructure.persistence.PostgresOrderReservationStore
 import com.exchange.core.fee.TradingFeeCalculator
 import com.exchange.core.fee.TradingFeeReserveCalculator
 import com.exchange.core.ledger.BalanceStore

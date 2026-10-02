@@ -1,8 +1,8 @@
 package com.exchange.core.api.config
 
 import com.exchange.core.api.matching.application.MatchingCoordinator
-import com.exchange.core.api.matching.publish.MatchingEventPublisher
-import com.exchange.core.api.matching.publish.NoOpMatchingEventPublisher
+import com.exchange.core.api.matching.application.port.MatchingEventPublisher
+import com.exchange.core.api.matching.infrastructure.publish.NoOpMatchingEventPublisher
 import com.exchange.core.matching.InMemoryMarketCommandProcessor
 import com.exchange.core.matching.MarketCommandProcessor
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty
