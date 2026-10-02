@@ -1,7 +1,7 @@
 package com.exchange.core.api.order.api
 
-import com.exchange.core.api.matching.persistence.MatchingEventRepository
-import com.exchange.core.api.matching.persistence.MatchingEventType
+import com.exchange.core.api.matching.infrastructure.persistence.MatchingEventRepository
+import com.exchange.core.api.matching.infrastructure.persistence.MatchingEventType
 import com.exchange.core.common.Amount
 import com.exchange.core.common.OrderId
 import com.exchange.core.common.Quantity

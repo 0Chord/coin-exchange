@@ -1,4 +1,4 @@
-package com.exchange.core.api.matching.persistence
+package com.exchange.core.api.matching.infrastructure.persistence
 
 /**
  * DB에 저장할 matching event 종류.

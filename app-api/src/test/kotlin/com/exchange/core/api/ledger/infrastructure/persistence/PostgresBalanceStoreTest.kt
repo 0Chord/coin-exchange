@@ -1,4 +1,4 @@
-package com.exchange.core.api.ledger.persistence
+package com.exchange.core.api.ledger.infrastructure.persistence
 
 import com.exchange.core.api.config.LedgerPersistenceConfig
 import com.exchange.core.common.Amount

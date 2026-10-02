@@ -1,6 +1,6 @@
 package com.exchange.core.api.matching.application
 
-import com.exchange.core.api.matching.publish.MatchingEventPublisher
+import com.exchange.core.api.matching.application.port.MatchingEventPublisher
 import com.exchange.core.matching.MarketCommandProcessor
 import com.exchange.core.matching.MatchingCommand
 import com.exchange.core.matching.MatchingEvent

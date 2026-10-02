@@ -3,6 +3,7 @@ package com.exchange.architecture
 import com.exchange.architecture.rules.ApplicationImplementationIndependence
 import com.exchange.architecture.rules.HttpEntryBoundary
 import com.exchange.architecture.rules.NamingRules
+import com.exchange.architecture.rules.PortContractIndependence
 import com.exchange.architecture.policy.ProjectLayoutPolicy
 import com.exchange.architecture.support.*
 import com.tngtech.archunit.base.DescribedPredicate
@@ -77,7 +78,7 @@ class ProductionBoundaryInputsTest {
     }
 
     @Test fun `일반 OrderManager도 application 금지 구현 참조를 검사한다`() {
-        val target = "com.exchange.core.api.ledger.persistence.PostgresBalanceStore"
+        val target = "com.exchange.core.api.ledger.infrastructure.persistence.PostgresBalanceStore"
         val input = scope("$app.OrderManager" to "public class OrderManager { private $target store; }")
         val result = ApplicationImplementationIndependence.inspect(input, ProductionBoundaryInputs.application(input))
         assertTrue(result.evaluated, result.problems.toString())
@@ -110,9 +111,11 @@ class ProductionBoundaryInputsTest {
         assertTrue("com.exchange.core.api.config.LedgerPersistenceConfig" in r.configurationTypes)
     }
 
-    @Test fun `Controller가 예약 협력자 조율자 저장 포트를 직접 참조하면 위반이다`() {
+    @Test fun `Controller가 예약 협력자 조율자 저장 발행 포트와 구현을 직접 참조하면 위반이다`() {
         val targets = listOf("$app.OrderFundingService", "com.exchange.core.api.matching.application.MatchingCoordinator",
-            "com.exchange.core.ledger.BalanceStore")
+            "com.exchange.core.ledger.BalanceStore", "com.exchange.core.api.matching.application.port.MatchingEventStore",
+            "com.exchange.core.api.matching.application.port.MatchingEventPublisher",
+            "com.exchange.core.api.matching.infrastructure.persistence.JpaMatchingEventStore")
         val fields = targets.mapIndexed { i, name -> "private $name value$i;" }.joinToString("\n")
         val input = scope("$http.BypassController" to """
             @org.springframework.web.bind.annotation.RestController
@@ -138,15 +141,18 @@ class ProductionBoundaryInputsTest {
     @Test fun `일반 OrderManager의 이름 자체는 거절하지 않는다`() {
         val input = scope("$app.OrderManager" to "public class OrderManager {}")
         val r = ApplicationImplementationIndependence.inspect(input, ProductionBoundaryInputs.application(input))
-        val names = NamingRules.inspectOrderTypes(input, ProjectLayoutPolicy.duringOrderMigration, ProductionScope.requiredTypes.keys)
+        val names = NamingRules.inspectTypes(input, ProjectLayoutPolicy.target, ProductionScope.requiredTypes.keys)
         assertTrue(r.evaluated, r.problems.toString()); assertTrue(names.evaluated, names.problems.toString())
         assertTrue("$app.OrderManager" in r.applicationTypes)
         assertEquals(emptyList(), r.violations); assertEquals(emptyList(), names.violations)
     }
 
-    @Test fun `일반 업무 보조 코드의 HTTP 컨테이너 발행 구현 실행기 구현 의존을 금지한다`() {
+    @Test fun `일반 업무 보조 코드의 HTTP 컨테이너 저장 모델 발행 구현 실행기 구현 의존을 금지한다`() {
         val targets = listOf("org.springframework.http.ResponseEntity", "org.springframework.context.ApplicationContext",
-            "com.exchange.core.api.matching.persistence.PersistentMatchingEventPublisher", "com.exchange.core.matching.InMemoryMarketCommandProcessor")
+            "com.exchange.core.api.matching.infrastructure.persistence.PersistentMatchingEventPublisher",
+            "com.exchange.core.api.matching.infrastructure.persistence.MatchingEventRepository",
+            "com.exchange.core.api.matching.infrastructure.persistence.MatchingEventEntity",
+            "com.exchange.core.matching.InMemoryMarketCommandProcessor")
         val fields = targets.mapIndexed { i, name -> "private $name value$i;" }.joinToString("\n")
         val input = scope("$app.OrderManager" to "public class OrderManager { $fields }")
         val r = ApplicationImplementationIndependence.inspect(input, ProductionBoundaryInputs.application(input))
@@ -156,7 +162,7 @@ class ProductionBoundaryInputsTest {
 
     @Test fun `UseCase로 개명한 포트 구현도 허용 역할로 숨기지 않는다`() {
         val input = scope("$app.BadUseCase" to """
-            public class BadUseCase implements com.exchange.core.api.matching.publish.MatchingEventPublisher {
+            public class BadUseCase implements com.exchange.core.api.matching.application.port.MatchingEventPublisher {
                 public void publish(java.util.List<? extends com.exchange.core.matching.MatchingEvent> events) {}
             }
         """.trimIndent())
@@ -191,34 +197,73 @@ class ProductionBoundaryInputsTest {
         assertEquals(emptyList(), r.violations); assertEquals(0, r.referenceCount)
     }
 
-    @Test fun `이행 저장 폴더의 Controller는 원본 위치 허용과 Controller 위치 위반을 구분한다`() {
-        val type = "com.exchange.core.api.ledger.persistence.MisplacedController"
+    @Test fun `옮긴 저장 발행 포트와 영속 모델의 정의 누락은 ARCH-06 미평가다`() {
+        val input = scope()
+        val missingCases = mapOf(
+            "com.exchange.core.api.matching.application.port.MatchingEventStore" to "MISSING_PORT",
+            "com.exchange.core.api.matching.application.port.MatchingEventPublisher" to "MISSING_PORT",
+            "com.exchange.core.api.matching.infrastructure.persistence.MatchingEventEntity" to "MISSING_PERSISTENCE_TYPE",
+        )
+        missingCases.forEach { (missing, code) ->
+            val filtered = input.copy(classesByModule = input.classesByModule.mapValues { (_, classes) ->
+                classes.that(DescribedPredicate.describe("이동한 정의 누락") { it.name != missing })
+            })
+            val result = PortContractIndependence.inspect(filtered, ProductionScope.roles.externalPorts,
+                ProductionScope.persistenceTypes, ProductionScope.expectations().projectPackagePrefixes)
+            assertTrue(!result.evaluated, missing)
+            assertTrue(result.problems.any { it.code == code && it.subject == missing }, result.toString())
+            assertEquals(emptyList(), result.violations)
+            assertEquals(0, result.contractCount)
+        }
+    }
+
+    @Test fun `최종 저장 폴더의 Controller는 원본 위치 허용과 Controller 위치 위반을 구분한다`() {
+        val type = "com.exchange.core.api.ledger.infrastructure.persistence.MisplacedController"
         val input = scope(type to "@org.springframework.web.bind.annotation.RestController public class MisplacedController {}")
-        val policy = ProjectLayoutPolicy.duringOrderMigration
+        val policy = ProjectLayoutPolicy.target
         val files = SourcePlacement.inspect(listOf(MainSourceRoot("app-api", directory, "src/main/kotlin", setOf(source(type)))),
             policy, ProductionScope.requiredTypes.keys).result
-        val names = NamingRules.inspectOrderTypes(input, policy, ProductionScope.requiredTypes.keys)
+        val names = NamingRules.inspectTypes(input, policy, ProductionScope.requiredTypes.keys)
         assertTrue(files.evaluated, files.problems.toString()); assertEquals(emptyList(), files.violations)
         assertTrue(names.evaluated, names.problems.toString())
         assertTrue(names.violations.any { it.subject == type && it.item == "package" }, names.toString())
     }
 
-    @Test fun `네 이행 폴더만 추가하며 이전 업무 루트를 다시 허용하지 않는다`() {
-        val target = ProjectLayoutPolicy.target
-        val migration = ProjectLayoutPolicy.duringOrderMigration
-        val added = migration.folders - target.folders.toSet()
-        assertEquals(setOf("order/persistence", "ledger/persistence", "matching/persistence", "matching/publish")
-            .map { "com/exchange/core/api/$it" }.toSet(), added.map { it.folder }.toSet())
-        assertTrue(added.all { it.reason.contains("#21") })
-        val names = added.map { it.packageName + ".LegacyHelper" } + "com.exchange.core.api.order.OldOrderHelper"
-        val input = names.map { name -> source(name).also {
-            Files.createDirectories(it.parent); Files.writeString(it, "package ${name.substringBeforeLast('.')}; class ${name.substringAfterLast('.')} {}")
-        } }.toSet()
-        val r = SourcePlacement.inspect(listOf(MainSourceRoot("app-api", directory, "src/main/kotlin", input)),
-            migration, ProductionScope.requiredTypes.keys).result
-        assertTrue(r.evaluated, r.problems.toString())
-        assertEquals(listOf(source(names.last()).toString()), r.violations.map { it.subject })
-        assertEquals("allowedFolder", r.violations.single().item)
-        assertEquals(5, r.evaluatedFiles.size)
+    @Test fun `원본과 package를 함께 네 옛 저장 폴더로 되돌려도 최종 정책은 거절한다`() {
+        val oldFolders = listOf("order/persistence", "ledger/persistence", "matching/persistence", "matching/publish")
+        val currentFolders = listOf("order/infrastructure/persistence", "ledger/infrastructure/persistence",
+            "matching/infrastructure/persistence", "matching/infrastructure/publish")
+        fun helper(folder: String, name: String = "LegacyHelper") = "com.exchange.core.api.${folder.replace('/', '.')}.${name}"
+        fun write(name: String) = source(name).also {
+            Files.createDirectories(it.parent)
+            Files.writeString(it, "package ${name.substringBeforeLast('.')}; class ${name.substringAfterLast('.')} {}")
+        }
+        fun inspect(files: Set<Path>) = SourcePlacement.inspect(
+            listOf(MainSourceRoot("app-api", directory, "src/main/kotlin", files)),
+            ProjectLayoutPolicy.target, ProductionScope.requiredTypes.keys).result
+
+        val current = currentFolders.map { write(helper(it)) }.toSet()
+        val normal = inspect(current)
+        assertTrue(normal.evaluated, normal.problems.toString())
+        assertEquals(emptyList(), normal.violations)
+        assertEquals(current.map { it.toString() }.toSet(), normal.evaluatedFiles)
+
+        val moved = currentFolders.zip(oldFolders).map { (from, to) ->
+            val name = helper(to)
+            val destination = source(name)
+            Files.createDirectories(destination.parent)
+            Files.move(source(helper(from)), destination)
+            Files.writeString(destination, "package ${name.substringBeforeLast('.')}; class LegacyHelper {}")
+            destination
+        }.toSet()
+        val oldRoot = write(helper("order", "OldOrderHelper"))
+        val invalidFiles = moved + setOf(oldRoot)
+        val result = inspect(invalidFiles)
+        assertTrue(result.evaluated, result.problems.toString())
+        assertEquals(invalidFiles.map { it.toString() }.toSet(), result.evaluatedFiles)
+        assertEquals(invalidFiles.map { it.toString() }.toSet(), result.violations.map { it.subject }.toSet())
+        assertEquals(setOf("allowedFolder"), result.violations.map { it.item }.toSet())
+        assertEquals(5, result.violations.size)
+        assertEquals((oldFolders + "order").map { "com/exchange/core/api/$it" }.toSet(), result.violations.map { it.actual }.toSet())
     }
 }

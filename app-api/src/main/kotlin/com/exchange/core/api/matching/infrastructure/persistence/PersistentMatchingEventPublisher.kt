@@ -1,6 +1,7 @@
-package com.exchange.core.api.matching.persistence
+package com.exchange.core.api.matching.infrastructure.persistence
 
-import com.exchange.core.api.matching.publish.MatchingEventPublisher
+import com.exchange.core.api.matching.application.port.MatchingEventStore
+import com.exchange.core.api.matching.application.port.MatchingEventPublisher
 import com.exchange.core.matching.MatchingEvent
 
 /**

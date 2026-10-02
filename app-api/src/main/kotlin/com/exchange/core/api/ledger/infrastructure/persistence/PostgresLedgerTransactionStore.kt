@@ -1,4 +1,4 @@
-package com.exchange.core.api.ledger.persistence
+package com.exchange.core.api.ledger.infrastructure.persistence
 
 import com.exchange.core.ledger.LedgerTransaction
 import com.exchange.core.ledger.LedgerTransactionStore

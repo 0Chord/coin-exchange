@@ -1,4 +1,4 @@
-package com.exchange.core.api.matching.publish
+package com.exchange.core.api.matching.application.port
 
 import com.exchange.core.matching.MatchingEvent
 

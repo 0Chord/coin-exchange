@@ -1,4 +1,4 @@
-package com.exchange.core.api.matching.persistence
+package com.exchange.core.api.matching.infrastructure.persistence
 
 import org.springframework.data.jpa.repository.JpaRepository
 
