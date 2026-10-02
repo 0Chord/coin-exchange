@@ -5,6 +5,7 @@ import com.exchange.architecture.rules.BeanAssemblyRules
 import com.exchange.architecture.rules.HttpEntryBoundary
 import com.exchange.architecture.rules.ApplicationImplementationIndependence
 import com.exchange.architecture.rules.NamingRules
+import com.exchange.architecture.rules.MatchingStateBoundary
 import com.exchange.architecture.policy.ProjectLayoutPolicy
 import com.exchange.architecture.support.NamingPlacementScope
 import com.exchange.architecture.support.ProductionBoundaryInputs
@@ -25,6 +26,17 @@ import kotlin.test.assertTrue
 
 /** 실제 운영 출력에 규칙을 적용한다. 각 검사는 준비 조건을 확인하며 실행 순서에 의존하지 않는다. */
 class ProductionArchitectureTest {
+    @Test
+    fun `P09 실제 app-api의 매칭 상태 직접 참조에 ARCH-07을 적용한다`() {
+        val scope = ProductionScopeImporter().load(ProductionScope.outputs(), ProductionScope.expectations(), ProductionScope.nonProductionTargets())
+        val result = MatchingStateBoundary.inspect(scope)
+        assertTrue(result.evaluated, "ARCH-07 미평가 · 준비 오류: ${result.problems}")
+        assertTrue(result.checkedTypes.isNotEmpty(), "ARCH-07 운영 검사 대상이 없습니다")
+        println("P09 평가: ARCH-07 매칭 접근 · app-api ${result.checkedTypes.size}개: ${result.checkedTypes}")
+        assertTrue(result.violations.isEmpty(), "ARCH-07 위반:\n${result.violations.joinToString("\n")}")
+        println("운영 업무는 processor 계약을 사용합니다. 내부 상태 접근성·콜백·실패·시간 초과는 별도 동작/컴파일 테스트로 확인합니다.")
+    }
+
     @Test
     fun `P07 실제 application 진입점과 협력자에 ARCH-04를 적용한다`() {
         val scope = ProductionScopeImporter().load(ProductionScope.outputs(), ProductionBoundaryInputs.expectations(), ProductionScope.nonProductionTargets())
@@ -79,7 +91,7 @@ class ProductionArchitectureTest {
         println("운영 모듈별 클래스: ${scope.classesByModule.mapValues { it.value.size }}")
         println("내부 직접 타입 참조: $internalReferences / main 구성: ${snapshot.configurations.size} / 직접 프로젝트 선언: ${declarations.size}")
         println("ARCH-08에 남기는 비운영 목적지: $excluded")
-        println("ARCH-06은 P03, Bean 조립은 P05, HTTP·application은 P06~P07, 전체 이름·파일 폴더는 P08에서 평가합니다. ARCH-07·계산·DB·실행 순서 검증은 포함하지 않습니다.")
+        println("ARCH-06은 P03, Bean 조립은 P05, HTTP·application은 P06~P07, 전체 이름·파일 폴더는 P08에서 평가합니다. 매칭 상태 직접 참조는 P09에서 평가합니다. 계산·DB·실행 순서는 이 정적 검사에 포함하지 않습니다.")
         assertTrue(result.violations.isEmpty(), "ARCH-02 위반:\n${result.violations.joinToString("\n") { it.report() }}")
         println("ARCH-02 통과 · 준비 오류 0, 위반 0")
     }
@@ -102,7 +114,7 @@ class ProductionArchitectureTest {
         println("공개 계약 ${result.contractCount}개 · 등록 영속 모델: ${ProductionScope.persistenceTypes}")
         assertTrue(result.violations.isEmpty(), "ARCH-06 위반:\n${result.violations.joinToString("\n") { it.report() }}")
         println("ARCH-06 통과 · 준비 오류 0, 위반 0. 포트 메서드·DB는 실행하지 않았습니다.")
-        println("한계: 미등록 포트의 의미, 임의 DTO 내부, 런타임 값·동작. Bean 조립·HTTP·application·이번 이름·파일 폴더는 P05~P08에서 평가합니다. ARCH-07은 후속 범위입니다.")
+        println("한계: 미등록 포트의 의미, 임의 DTO 내부, 런타임 값·동작. Bean 조립·HTTP·application·이번 이름·파일 폴더는 P05~P08에서 평가합니다. 매칭 상태 직접 참조는 P09에서 평가하며, DB·불변 상태 계약은 #22의 별도 범위입니다.")
     }
 
     @Test

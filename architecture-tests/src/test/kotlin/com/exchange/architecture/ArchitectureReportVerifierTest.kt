@@ -16,7 +16,7 @@ class ArchitectureReportVerifierTest {
     private val suite = "com.exchange.architecture.ProductionArchitectureTest"
     private val portCase = """<testcase name="P03 포트 검사()" classname="$suite"/>"""
     private val normal = """
-        <testsuite name="$suite" tests="8" failures="0" errors="0" skipped="0">
+        <testsuite name="$suite" tests="9" failures="0" errors="0" skipped="0">
           <testcase name="P04 테스트 도구 검사()" classname="$suite"/>
           <testcase name="P02 모듈 검사()" classname="$suite"/>
           <testcase name="P05 Bean 검사()" classname="$suite"/>
@@ -25,6 +25,7 @@ class ArchitectureReportVerifierTest {
           <testcase name="P08 이름과 파일 검사()" classname="$suite"/>
           <testcase name="P06 HTTP 검사()" classname="$suite"/>
           <testcase name="P07 application 검사()" classname="$suite"/>
+          <testcase name="P09 매칭 접근 검사()" classname="$suite"/>
         </testsuite>
     """.trimIndent()
 
@@ -40,7 +41,7 @@ class ArchitectureReportVerifierTest {
     }
 
     @Test
-    fun `운영 검사 여덟 개가 성공하면 순서와 무관하게 통과한다`() {
+    fun `운영 검사 아홉 개가 성공하면 순서와 무관하게 통과한다`() {
         val path = report(normal)
         assertEquals(emptyList(), ArchitectureReportVerifier.problems(path))
         ArchitectureReportVerifier.main(arrayOf(path.toString()))
@@ -62,12 +63,12 @@ class ArchitectureReportVerifierTest {
     }
 
     @Test
-    fun `합계가 여덟 개여도 P03이 빠지면 거절한다`() {
+    fun `합계가 아홉 개여도 P03이 빠지면 거절한다`() {
         reject(normal.replace(portCase, ""), "P03")
     }
 
     @Test
-    fun `P01을 중복해 여덟 개를 채워도 거절한다`() {
+    fun `P01을 중복해 아홉 개를 채워도 거절한다`() {
         val duplicate = """<testcase name="P01 다른 도메인 검사()" classname="$suite"/>"""
         reject(normal.replace(portCase, duplicate), "P01: 정확히 한 번")
     }
@@ -107,14 +108,14 @@ class ArchitectureReportVerifierTest {
         reject(normal.replace("P03 포트", "P030 포트"), "P03")
     }
 
-    private val newCases get() = Regex("<testcase name=\"(P0[678]) [^\"]+\" classname=\"$suite\"/>")
+    private val newCases get() = Regex("<testcase name=\"(P0[6789]) [^\"]+\" classname=\"$suite\"/>")
         .findAll(normal).map { it.groupValues[1] to it.value }.toList()
 
-    @Test fun `P06부터 P08까지 하나라도 누락되면 거절한다`() {
+    @Test fun `P06부터 P09까지 하나라도 누락되면 거절한다`() {
         newCases.forEach { (id, case) -> reject(normal.replace(case, ""), "$id: 정확히 한 번") }
     }
 
-    @Test fun `P06부터 P08까지 중복 실행을 정상 합계로 덮지 못한다`() {
+    @Test fun `P06부터 P09까지 중복 실행을 정상 합계로 덮지 못한다`() {
         newCases.forEach { (id, case) -> reject(normal.replace(case, case + case), "$id: 정확히 한 번") }
     }
 
@@ -124,7 +125,7 @@ class ArchitectureReportVerifierTest {
         } }
     }
 
-    @Test fun `다른 클래스의 P06부터 P08은 운영 실행을 대신하지 못한다`() {
+    @Test fun `다른 클래스의 P06부터 P09는 운영 실행을 대신하지 못한다`() {
         newCases.forEach { (id, case) -> reject(normal.replace(case, case.replace(suite, "ExampleTest")), id) }
     }
 

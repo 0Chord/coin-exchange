@@ -1,0 +1,2056 @@
+{
+  "baseline": "59dfe6c239f7f9c1bd4990fe476ef2c79e2cee00",
+  "branch": "refactor/state-access-boundaries/23",
+  "stages": [
+    {
+      "name": "운영 우회 규칙 Red",
+      "command": "./gradlew -p /Users/0chord/.codex/worktrees/issue23-state-access/exchange-core :architecture-tests:test --tests '*ProductionBoundaryInputsTest*매칭 접근*' --no-daemon --console=plain",
+      "counts": {
+        "tests": 7,
+        "failures": 6,
+        "errors": 0,
+        "skipped": 0
+      },
+      "failures": [
+        {
+          "name": "매칭 접근은 빠진 운영 모듈과 수집 오류를 위반 없는 통과로 바꾸지 않는다()",
+          "reason": "org.opentest4j.AssertionFailedError: Expected value to be true."
+        },
+        {
+          "name": "매칭 접근은 새 업무의 엔진 내부 주문과 실행기 구현 직접 참조를 거절한다()",
+          "reason": "org.opentest4j.AssertionFailedError: expected: <[(com.exchange.core.api.order.application.DirectMatchingWorker, com.exchange.core.matching.MatchingEngine), (com.exchange.core.api.order.application.DirectMatchingWorker, com.exchange.core.matching.BookOrder), (com.exchange.core.api.order.application.DirectMatchingWorker, com.exchange.core.matching.PriceLevel), (com.exchange.core.api.order.application.DirectMatchingWorker, com.exchange.core.matching.OrderBook), (com.exchange.core.api.order.application.DirectMatchingWorker, com.exchange.core.matching.InMemoryMarketCommandProcessor)]> but was: <[]>"
+        },
+        {
+          "name": "매칭 접근의 구현 예외는 정확한 config 위치와 Configuration 선언을 모두 요구한다()",
+          "reason": "org.opentest4j.AssertionFailedError: expected: <[(com.exchange.core.api.order.application.FakeConfiguration, com.exchange.core.matching.InMemoryMarketCommandProcessor), (com.exchange.core.api.config.PlainConfiguration, com.exchange.core.matching.InMemoryMarketCommandProcessor), (com.exchange.core.api.config.extra.NestedConfiguration, com.exchange.core.matching.InMemoryMarketCommandProcessor)]> but was: <[]>"
+        },
+        {
+          "name": "매칭 접근 금지는 이름과 무관하게 HTTP 보조 코드에도 적용한다()",
+          "reason": "org.opentest4j.AssertionFailedError: expected: <[(com.exchange.core.api.order.api.LocalMatchingMapper, com.exchange.core.matching.MatchingEngine)]> but was: <[]>"
+        },
+        {
+          "name": "매칭 접근 대상 코드가 실제 출력에서 빠지면 준비 오류로 중단한다()",
+          "reason": "org.opentest4j.AssertionFailedError: Expected value to be true."
+        },
+        {
+          "name": "매칭 접근은 config에서도 엔진과 내부 주문 직접 참조를 허용하지 않는다()",
+          "reason": "org.opentest4j.AssertionFailedError: expected: <[com.exchange.core.matching.MatchingEngine, com.exchange.core.matching.OrderBook]> but was: <[]>"
+        }
+      ],
+      "sourceHashes": {
+        "architecture-tests/src/test/kotlin/com/exchange/architecture/ProductionBoundaryInputsTest.kt": "a940557daa1805aa7dadc0acbd9b4a0675c8bee0ee5af808be13774535c60186",
+        "architecture-tests/src/test/kotlin/com/exchange/architecture/rules/MatchingStateBoundary.kt": "e04aead0e434f7cfb6a1493e2a4c4cf743a55f386945e59aa7ce7b6e4640b154"
+      }
+    },
+    {
+      "name": "실제 Kotlin 접근성 Red",
+      "command": "./gradlew -p /Users/0chord/.codex/worktrees/issue23-state-access/exchange-core :architecture-tests:test --tests '*MatchingStateAccessCompilationTest' :domain-matching:test --tests '*MatchingStateOwnershipTest' --no-daemon --console=plain",
+      "counts": {
+        "tests": 6,
+        "failures": 4,
+        "errors": 0,
+        "skipped": 0
+      },
+      "failures": [
+        {
+          "name": "외부 소비자는 OrderBook 타입에 접근할 수 없다()",
+          "reason": "org.opentest4j.AssertionFailedError: OrderBook 접근 거절 계약 불충족. 내부 컴파일러/환경 실패는 접근성 거절이 아님:\n[] ==> expected: <COMPILATION_ERROR> but was: <OK>"
+        },
+        {
+          "name": "외부 소비자는 BookOrder 타입에 접근할 수 없다()",
+          "reason": "org.opentest4j.AssertionFailedError: BookOrder 접근 거절 계약 불충족. 내부 컴파일러/환경 실패는 접근성 거절이 아님:\n[] ==> expected: <COMPILATION_ERROR> but was: <OK>"
+        },
+        {
+          "name": "friend 소비자도 주문 잔량에 직접 대입할 수 없다()",
+          "reason": "org.opentest4j.AssertionFailedError: remainingQuantity 접근 거절 계약 불충족. 내부 컴파일러/환경 실패는 접근성 거절이 아님:\n[] ==> expected: <COMPILATION_ERROR> but was: <OK>"
+        },
+        {
+          "name": "외부 소비자는 PriceLevel 타입에 접근할 수 없다()",
+          "reason": "org.opentest4j.AssertionFailedError: PriceLevel 접근 거절 계약 불충족. 내부 컴파일러/환경 실패는 접근성 거절이 아님:\n[] ==> expected: <COMPILATION_ERROR> but was: <OK>"
+        }
+      ],
+      "note": "정상 소비자 2개 성공. public인 세 내부 타입과 setter가 컴파일되어 거절 어설션 4개 실패. 구조 테스트 실패로 domain-matching:test는 실행하지 않음.",
+      "sourceHashes": {
+        "architecture-tests/src/test/kotlin/com/exchange/architecture/MatchingStateAccessCompilationTest.kt": "7fd6a1b2e45b60849e8301d2886d00ba06c7c46232e8b8d7ba8adef977137d43",
+        "domain-matching/src/main/kotlin/com/exchange/core/matching/BookOrder.kt": "18896df8a1e1eaef26dc818b08f8ec4fb402a4d7c384262ca730de99c4490900",
+        "domain-matching/src/main/kotlin/com/exchange/core/matching/PriceLevel.kt": "9a9ef4c1b98591da94f6b494893265da5a39bb6f70880336926af8ba74da8853",
+        "domain-matching/src/main/kotlin/com/exchange/core/matching/OrderBook.kt": "0de53f4bbfab9d2327af10b024f0f2952305eccaf0761026ac3fb8df381693a1"
+      }
+    },
+    {
+      "name": "필수 P09 보고서 Red",
+      "command": "./gradlew -p /Users/0chord/.codex/worktrees/issue23-state-access/exchange-core :architecture-tests:test --tests '*ArchitectureReportVerifierTest' --no-daemon --console=plain",
+      "counts": {
+        "tests": 18,
+        "failures": 4,
+        "errors": 0,
+        "skipped": 0
+      },
+      "note": "현재 필수 목록 P01~P08에서 P09 누락·중복·다른 클래스·비슷한 접두사를 거절하지 못함. 환경 오류가 아닌 기대 어설션 4개 실패.",
+      "failures": [
+        {
+          "name": "다른 클래스의 P06부터 P09는 운영 실행을 대신하지 못한다()",
+          "reason": "org.opentest4j.AssertionFailedError: Expected an exception of class java.lang.IllegalStateException to be thrown, but was completed successfully."
+        },
+        {
+          "name": "P06부터 P09까지 중복 실행을 정상 합계로 덮지 못한다()",
+          "reason": "org.opentest4j.AssertionFailedError: Expected an exception of class java.lang.IllegalStateException to be thrown, but was completed successfully."
+        },
+        {
+          "name": "새 운영 검사도 비슷한 접두사로 대체하지 못한다()",
+          "reason": "org.opentest4j.AssertionFailedError: Expected an exception of class java.lang.IllegalStateException to be thrown, but was completed successfully."
+        },
+        {
+          "name": "P06부터 P09까지 하나라도 누락되면 거절한다()",
+          "reason": "org.opentest4j.AssertionFailedError: Expected an exception of class java.lang.IllegalStateException to be thrown, but was completed successfully."
+        }
+      ],
+      "sourceHashes": {
+        "architecture-tests/src/test/kotlin/com/exchange/architecture/ArchitectureReportVerifierTest.kt": "0fd5f6a29f201170fce0da251a7ad78d481f8cdcb4ff875d09c14dbde882c0e9",
+        "architecture-tests/src/test/kotlin/com/exchange/architecture/support/ArchitectureReportVerifier.kt": "7afa6a8928161a7cce942031ff6fb52775552395dedeb6fa660ea4c4395b6559"
+      }
+    },
+    {
+      "name": "접근·상태·실행 계약 Green",
+      "command": "./gradlew -p /Users/0chord/.codex/worktrees/issue23-state-access/exchange-core :architecture-tests:test --tests '*MatchingStateAccessCompilationTest' --tests '*ProductionBoundaryInputsTest*매칭 접근*' --tests '*ArchitectureReportVerifierTest' :domain-matching:test :app-api:test --tests '*MatchingCoordinatorContractTest' --no-daemon --console=plain --continue",
+      "result": "BUILD SUCCESSFUL",
+      "modules": {
+        "architecture-tests": {
+          "counts": {
+            "tests": 32,
+            "failures": 0,
+            "errors": 0,
+            "skipped": 0
+          },
+          "suites": [
+            {
+              "suite": "com.exchange.architecture.ArchitectureReportVerifierTest",
+              "counts": {
+                "tests": 18,
+                "failures": 0,
+                "errors": 0,
+                "skipped": 0
+              }
+            },
+            {
+              "suite": "com.exchange.architecture.MatchingStateAccessCompilationTest",
+              "counts": {
+                "tests": 6,
+                "failures": 0,
+                "errors": 0,
+                "skipped": 0
+              }
+            },
+            {
+              "suite": "com.exchange.architecture.ProductionBoundaryInputsTest",
+              "counts": {
+                "tests": 8,
+                "failures": 0,
+                "errors": 0,
+                "skipped": 0
+              }
+            }
+          ]
+        },
+        "domain-matching": {
+          "counts": {
+            "tests": 74,
+            "failures": 0,
+            "errors": 0,
+            "skipped": 0
+          },
+          "suites": [
+            {
+              "suite": "com.exchange.core.matching.MarketCommandProcessorTest",
+              "counts": {
+                "tests": 20,
+                "failures": 0,
+                "errors": 0,
+                "skipped": 0
+              }
+            },
+            {
+              "suite": "com.exchange.core.matching.MatchingEngineTest",
+              "counts": {
+                "tests": 49,
+                "failures": 0,
+                "errors": 0,
+                "skipped": 0
+              }
+            },
+            {
+              "suite": "com.exchange.core.matching.MatchingStateOwnershipTest",
+              "counts": {
+                "tests": 5,
+                "failures": 0,
+                "errors": 0,
+                "skipped": 0
+              }
+            }
+          ]
+        },
+        "app-api": {
+          "counts": {
+            "tests": 4,
+            "failures": 0,
+            "errors": 0,
+            "skipped": 0
+          },
+          "suites": [
+            {
+              "suite": "com.exchange.core.api.matching.application.MatchingCoordinatorContractTest",
+              "counts": {
+                "tests": 4,
+                "failures": 0,
+                "errors": 0,
+                "skipped": 0
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "전체 첫 실행의 DB 준비 실패 기록",
+      "command": "./gradlew -p /Users/0chord/.codex/worktrees/issue23-state-access/exchange-core build :architecture-tests:verifyArchitectureReport :benchmark-jmh:compileJmhKotlin --no-daemon --continue --rerun-tasks --console=plain",
+      "modules": {
+        "app-api": {
+          "counts": {
+            "tests": 85,
+            "failures": 8,
+            "errors": 0,
+            "skipped": 0
+          },
+          "suites": [
+            {
+              "suite": "com.exchange.core.ExchangeCoreApplicationTests",
+              "counts": {
+                "tests": 1,
+                "failures": 0,
+                "errors": 0,
+                "skipped": 0
+              },
+              "failures": []
+            },
+            {
+              "suite": "com.exchange.core.api.config.LedgerPersistenceConfigurationTest",
+              "counts": {
+                "tests": 3,
+                "failures": 0,
+                "errors": 0,
+                "skipped": 0
+              },
+              "failures": []
+            },
+            {
+              "suite": "com.exchange.core.api.config.MatchingPublisherConfigurationTest",
+              "counts": {
+                "tests": 3,
+                "failures": 0,
+                "errors": 0,
+                "skipped": 0
+              },
+              "failures": []
+            },
+            {
+              "suite": "com.exchange.core.api.ledger.infrastructure.persistence.PostgresBalanceStoreTest",
+              "counts": {
+                "tests": 15,
+                "failures": 0,
+                "errors": 0,
+                "skipped": 0
+              },
+              "failures": []
+            },
+            {
+              "suite": "com.exchange.core.api.ledger.infrastructure.persistence.PostgresLedgerTransactionStoreTest",
+              "counts": {
+                "tests": 3,
+                "failures": 0,
+                "errors": 0,
+                "skipped": 0
+              },
+              "failures": []
+            },
+            {
+              "suite": "com.exchange.core.api.matching.application.MatchingCoordinatorContractTest",
+              "counts": {
+                "tests": 4,
+                "failures": 0,
+                "errors": 0,
+                "skipped": 0
+              },
+              "failures": []
+            },
+            {
+              "suite": "com.exchange.core.api.matching.application.MatchingCoordinatorPersistenceFailureTest",
+              "counts": {
+                "tests": 3,
+                "failures": 0,
+                "errors": 0,
+                "skipped": 0
+              },
+              "failures": []
+            },
+            {
+              "suite": "com.exchange.core.api.matching.infrastructure.persistence.JpaMatchingEventStoreTest",
+              "counts": {
+                "tests": 8,
+                "failures": 8,
+                "errors": 0,
+                "skipped": 0
+              },
+              "failures": [
+                {
+                  "name": "빈 event 목록은 아무 row도 저장하지 않는다()",
+                  "type": "java.lang.IllegalStateException",
+                  "causes": [
+                    "Caused by: org.springframework.beans.factory.BeanCreationException: Error creating bean with name 'entityManagerFactory' defined in class path resource [org/springframework/boot/hibernate/autoconfigure/HibernateJpaConfiguration.class]: Failed to initialize dependency 'flywayInitializer' of LoadTimeWeaverAware bean 'entityManagerFactory': Error creating bean with name 'flywayInitializer' defined in class path resource [org/springframework/boot/flyway/autoconfigure/FlywayAutoConfiguration$FlywayConfiguration.class]: Unable to obtain connection from database: An error occurred while setting up the SSL connection.",
+                    "Caused by: org.springframework.beans.factory.BeanCreationException: Error creating bean with name 'flywayInitializer' defined in class path resource [org/springframework/boot/flyway/autoconfigure/FlywayAutoConfiguration$FlywayConfiguration.class]: Unable to obtain connection from database: An error occurred while setting up the SSL connection.",
+                    "Caused by: org.flywaydb.core.internal.exception.sqlExceptions.FlywaySqlUnableToConnectToDbException: Unable to obtain connection from database: An error occurred while setting up the SSL connection.",
+                    "Caused by: org.postgresql.util.PSQLException: An error occurred while setting up the SSL connection."
+                  ],
+                  "message": "java.lang.IllegalStateException: Failed to load ApplicationContext for [MergedContextConfiguration@647e955d testClass = com.exchange.core.api.matching.infrastructure.persistence.JpaMatchingEventStoreTest, locations = [], classes = [com.exch"
+                },
+                {
+                  "name": "marketId와 engineSequence 기준으로 오름차순 조회한다()",
+                  "type": "java.lang.IllegalStateException",
+                  "causes": [],
+                  "message": "java.lang.IllegalStateException: ApplicationContext failure threshold (1) exceeded: skipping repeated attempt to load context for [MergedContextConfiguration@647e955d testClass = com.exchange.core.api.matching.infrastructure.persistence.Jpa"
+                },
+                {
+                  "name": "TradeExecuted event를 maker taker 컬럼과 payloadJson으로 저장한다()",
+                  "type": "java.lang.IllegalStateException",
+                  "causes": [],
+                  "message": "java.lang.IllegalStateException: ApplicationContext failure threshold (1) exceeded: skipping repeated attempt to load context for [MergedContextConfiguration@647e955d testClass = com.exchange.core.api.matching.infrastructure.persistence.Jpa"
+                },
+                {
+                  "name": "OrderCancelled event를 취소 주문 컬럼으로 저장한다()",
+                  "type": "java.lang.IllegalStateException",
+                  "causes": [],
+                  "message": "java.lang.IllegalStateException: ApplicationContext failure threshold (1) exceeded: skipping repeated attempt to load context for [MergedContextConfiguration@647e955d testClass = com.exchange.core.api.matching.infrastructure.persistence.Jpa"
+                },
+                {
+                  "name": "같은 marketId와 engineSequence는 중복 저장할 수 없다()",
+                  "type": "java.lang.IllegalStateException",
+                  "causes": [],
+                  "message": "java.lang.IllegalStateException: ApplicationContext failure threshold (1) exceeded: skipping repeated attempt to load context for [MergedContextConfiguration@647e955d testClass = com.exchange.core.api.matching.infrastructure.persistence.Jpa"
+                },
+                {
+                  "name": "OrderEnteredBook event를 주요 컬럼과 payloadJson으로 저장한다()",
+                  "type": "java.lang.IllegalStateException",
+                  "causes": [],
+                  "message": "java.lang.IllegalStateException: ApplicationContext failure threshold (1) exceeded: skipping repeated attempt to load context for [MergedContextConfiguration@647e955d testClass = com.exchange.core.api.matching.infrastructure.persistence.Jpa"
+                },
+                {
+                  "name": "marketId가 다르면 같은 engineSequence도 저장할 수 있다()",
+                  "type": "java.lang.IllegalStateException",
+                  "causes": [],
+                  "message": "java.lang.IllegalStateException: ApplicationContext failure threshold (1) exceeded: skipping repeated attempt to load context for [MergedContextConfiguration@647e955d testClass = com.exchange.core.api.matching.infrastructure.persistence.Jpa"
+                },
+                {
+                  "name": "OrderCancelRejected event를 실패 이유와 함께 저장한다()",
+                  "type": "java.lang.IllegalStateException",
+                  "causes": [],
+                  "message": "java.lang.IllegalStateException: ApplicationContext failure threshold (1) exceeded: skipping repeated attempt to load context for [MergedContextConfiguration@647e955d testClass = com.exchange.core.api.matching.infrastructure.persistence.Jpa"
+                }
+              ]
+            },
+            {
+              "suite": "com.exchange.core.api.matching.infrastructure.persistence.MatchingEventPayloadTest",
+              "counts": {
+                "tests": 4,
+                "failures": 0,
+                "errors": 0,
+                "skipped": 0
+              },
+              "failures": []
+            },
+            {
+              "suite": "com.exchange.core.api.matching.infrastructure.persistence.MatchingPersistenceIntegrationTest",
+              "counts": {
+                "tests": 1,
+                "failures": 0,
+                "errors": 0,
+                "skipped": 0
+              },
+              "failures": []
+            },
+            {
+              "suite": "com.exchange.core.api.matching.infrastructure.persistence.PersistentMatchingEventPublisherTest",
+              "counts": {
+                "tests": 2,
+                "failures": 0,
+                "errors": 0,
+                "skipped": 0
+              },
+              "failures": []
+            },
+            {
+              "suite": "com.exchange.core.api.order.api.OrderControllerTest",
+              "counts": {
+                "tests": 9,
+                "failures": 0,
+                "errors": 0,
+                "skipped": 0
+              },
+              "failures": []
+            },
+            {
+              "suite": "com.exchange.core.api.order.application.OrderFundingServiceTest",
+              "counts": {
+                "tests": 3,
+                "failures": 0,
+                "errors": 0,
+                "skipped": 0
+              },
+              "failures": []
+            },
+            {
+              "suite": "com.exchange.core.api.order.application.OrderLifecycleE2ETest",
+              "counts": {
+                "tests": 3,
+                "failures": 0,
+                "errors": 0,
+                "skipped": 0
+              },
+              "failures": []
+            },
+            {
+              "suite": "com.exchange.core.api.order.application.OrderReservationReleaseServiceTest",
+              "counts": {
+                "tests": 5,
+                "failures": 0,
+                "errors": 0,
+                "skipped": 0
+              },
+              "failures": []
+            },
+            {
+              "suite": "com.exchange.core.api.order.application.TradeSettlementServiceTest",
+              "counts": {
+                "tests": 7,
+                "failures": 0,
+                "errors": 0,
+                "skipped": 0
+              },
+              "failures": []
+            },
+            {
+              "suite": "com.exchange.core.api.order.infrastructure.persistence.PostgresOrderReservationStoreTest",
+              "counts": {
+                "tests": 11,
+                "failures": 0,
+                "errors": 0,
+                "skipped": 0
+              },
+              "failures": []
+            }
+          ]
+        }
+      },
+      "note": "JpaMatchingEventStoreTest 첫 Spring context의 PostgreSQL SSL 연결 준비 실패, 같은 context 후속 7개도 시작 불가. 실패는 제거하거나 정상 통과로 세지 않음. 구조 작업은 계속 실행 중. 같은 코드로 재실행 후 결과를 별도 기록."
+    },
+    {
+      "name": "전체 첫 실행 종료",
+      "result": "BUILD FAILED in 6m 51s",
+      "modules": {
+        "architecture-tests": {
+          "counts": {
+            "tests": 368,
+            "failures": 0,
+            "errors": 0,
+            "skipped": 0
+          },
+          "suites": [
+            {
+              "suite": "com.exchange.architecture.ApplicationBoundaryContractTest",
+              "counts": {
+                "tests": 11,
+                "failures": 0,
+                "errors": 0,
+                "skipped": 0
+              }
+            },
+            {
+              "suite": "com.exchange.architecture.ApplicationBoundaryImportTest",
+              "counts": {
+                "tests": 9,
+                "failures": 0,
+                "errors": 0,
+                "skipped": 0
+              }
+            },
+            {
+              "suite": "com.exchange.architecture.ApplicationBoundaryReferenceTest",
+              "counts": {
+                "tests": 9,
+                "failures": 0,
+                "errors": 0,
+                "skipped": 0
+              }
+            },
+            {
+              "suite": "com.exchange.architecture.ApplicationBoundaryScopeTest",
+              "counts": {
+                "tests": 12,
+                "failures": 0,
+                "errors": 0,
+                "skipped": 0
+              }
+            },
+            {
+              "suite": "com.exchange.architecture.ArchitectureReportVerifierTest",
+              "counts": {
+                "tests": 18,
+                "failures": 0,
+                "errors": 0,
+                "skipped": 0
+              }
+            },
+            {
+              "suite": "com.exchange.architecture.ArchitectureRuleContractTest",
+              "counts": {
+                "tests": 23,
+                "failures": 0,
+                "errors": 0,
+                "skipped": 0
+              }
+            },
+            {
+              "suite": "com.exchange.architecture.BeanAssemblyRuleTest",
+              "counts": {
+                "tests": 10,
+                "failures": 0,
+                "errors": 0,
+                "skipped": 0
+              }
+            },
+            {
+              "suite": "com.exchange.architecture.GradleDependencyWiringTest",
+              "counts": {
+                "tests": 4,
+                "failures": 0,
+                "errors": 0,
+                "skipped": 0
+              }
+            },
+            {
+              "suite": "com.exchange.architecture.HttpBoundaryImportTest",
+              "counts": {
+                "tests": 7,
+                "failures": 0,
+                "errors": 0,
+                "skipped": 0
+              }
+            },
+            {
+              "suite": "com.exchange.architecture.HttpBoundaryScopeTest",
+              "counts": {
+                "tests": 12,
+                "failures": 0,
+                "errors": 0,
+                "skipped": 0
+              }
+            },
+            {
+              "suite": "com.exchange.architecture.HttpEntryBoundaryContractTest",
+              "counts": {
+                "tests": 18,
+                "failures": 0,
+                "errors": 0,
+                "skipped": 0
+              }
+            },
+            {
+              "suite": "com.exchange.architecture.ImportScopeContractTest",
+              "counts": {
+                "tests": 22,
+                "failures": 0,
+                "errors": 0,
+                "skipped": 0
+              }
+            },
+            {
+              "suite": "com.exchange.architecture.IsolationDependencyContractTest",
+              "counts": {
+                "tests": 6,
+                "failures": 0,
+                "errors": 0,
+                "skipped": 0
+              }
+            },
+            {
+              "suite": "com.exchange.architecture.IsolationGradleWiringTest",
+              "counts": {
+                "tests": 7,
+                "failures": 0,
+                "errors": 0,
+                "skipped": 0
+              }
+            },
+            {
+              "suite": "com.exchange.architecture.MatchingStateAccessCompilationTest",
+              "counts": {
+                "tests": 6,
+                "failures": 0,
+                "errors": 0,
+                "skipped": 0
+              }
+            },
+            {
+              "suite": "com.exchange.architecture.ModuleDependencyContractTest",
+              "counts": {
+                "tests": 11,
+                "failures": 0,
+                "errors": 0,
+                "skipped": 0
+              }
+            },
+            {
+              "suite": "com.exchange.architecture.ModuleRegistrationContractTest",
+              "counts": {
+                "tests": 5,
+                "failures": 0,
+                "errors": 0,
+                "skipped": 0
+              }
+            },
+            {
+              "suite": "com.exchange.architecture.NamingPlacementContractTest",
+              "counts": {
+                "tests": 11,
+                "failures": 0,
+                "errors": 0,
+                "skipped": 0
+              }
+            },
+            {
+              "suite": "com.exchange.architecture.NamingPlacementGradleAutomaticTest",
+              "counts": {
+                "tests": 2,
+                "failures": 0,
+                "errors": 0,
+                "skipped": 0
+              }
+            },
+            {
+              "suite": "com.exchange.architecture.NamingPlacementGradleWiringTest",
+              "counts": {
+                "tests": 4,
+                "failures": 0,
+                "errors": 0,
+                "skipped": 0
+              }
+            },
+            {
+              "suite": "com.exchange.architecture.NamingPlacementIntegrationTest",
+              "counts": {
+                "tests": 7,
+                "failures": 0,
+                "errors": 0,
+                "skipped": 0
+              }
+            },
+            {
+              "suite": "com.exchange.architecture.NamingPlacementPortTest",
+              "counts": {
+                "tests": 11,
+                "failures": 0,
+                "errors": 0,
+                "skipped": 0
+              }
+            },
+            {
+              "suite": "com.exchange.architecture.NamingPlacementRuleTest",
+              "counts": {
+                "tests": 9,
+                "failures": 0,
+                "errors": 0,
+                "skipped": 0
+              }
+            },
+            {
+              "suite": "com.exchange.architecture.NamingPlacementScopeTest",
+              "counts": {
+                "tests": 10,
+                "failures": 0,
+                "errors": 0,
+                "skipped": 0
+              }
+            },
+            {
+              "suite": "com.exchange.architecture.NamingPlacementSimplificationTest",
+              "counts": {
+                "tests": 1,
+                "failures": 0,
+                "errors": 0,
+                "skipped": 0
+              }
+            },
+            {
+              "suite": "com.exchange.architecture.NonProductionTargetsTest",
+              "counts": {
+                "tests": 7,
+                "failures": 0,
+                "errors": 0,
+                "skipped": 0
+              }
+            },
+            {
+              "suite": "com.exchange.architecture.PortContractRuleTest",
+              "counts": {
+                "tests": 47,
+                "failures": 0,
+                "errors": 0,
+                "skipped": 0
+              }
+            },
+            {
+              "suite": "com.exchange.architecture.ProductionArchitectureTest",
+              "counts": {
+                "tests": 9,
+                "failures": 0,
+                "errors": 0,
+                "skipped": 0
+              }
+            },
+            {
+              "suite": "com.exchange.architecture.ProductionBoundaryInputsTest",
+              "counts": {
+                "tests": 23,
+                "failures": 0,
+                "errors": 0,
+                "skipped": 0
+              }
+            },
+            {
+              "suite": "com.exchange.architecture.ProductionDependencyIsolationTest",
+              "counts": {
+                "tests": 9,
+                "failures": 0,
+                "errors": 0,
+                "skipped": 0
+              }
+            },
+            {
+              "suite": "com.exchange.architecture.ProductionOutputWiringTest",
+              "counts": {
+                "tests": 2,
+                "failures": 0,
+                "errors": 0,
+                "skipped": 0
+              }
+            },
+            {
+              "suite": "com.exchange.architecture.ProjectDependencyContractTest",
+              "counts": {
+                "tests": 8,
+                "failures": 0,
+                "errors": 0,
+                "skipped": 0
+              }
+            },
+            {
+              "suite": "com.exchange.architecture.RoleClassificationContractTest",
+              "counts": {
+                "tests": 4,
+                "failures": 0,
+                "errors": 0,
+                "skipped": 0
+              }
+            },
+            {
+              "suite": "com.exchange.architecture.SourcePlacementContractTest",
+              "counts": {
+                "tests": 14,
+                "failures": 0,
+                "errors": 0,
+                "skipped": 0
+              }
+            }
+          ]
+        },
+        "domain-matching": {
+          "counts": {
+            "tests": 74,
+            "failures": 0,
+            "errors": 0,
+            "skipped": 0
+          },
+          "suites": [
+            {
+              "suite": "com.exchange.core.matching.MarketCommandProcessorTest",
+              "counts": {
+                "tests": 20,
+                "failures": 0,
+                "errors": 0,
+                "skipped": 0
+              }
+            },
+            {
+              "suite": "com.exchange.core.matching.MatchingEngineTest",
+              "counts": {
+                "tests": 49,
+                "failures": 0,
+                "errors": 0,
+                "skipped": 0
+              }
+            },
+            {
+              "suite": "com.exchange.core.matching.MatchingStateOwnershipTest",
+              "counts": {
+                "tests": 5,
+                "failures": 0,
+                "errors": 0,
+                "skipped": 0
+              }
+            }
+          ]
+        },
+        "domain-order": {
+          "counts": {
+            "tests": 50,
+            "failures": 0,
+            "errors": 0,
+            "skipped": 0
+          },
+          "suites": [
+            {
+              "suite": "com.exchange.core.order.BuyOrderFundingQuoteCalculatorTest",
+              "counts": {
+                "tests": 6,
+                "failures": 0,
+                "errors": 0,
+                "skipped": 0
+              }
+            },
+            {
+              "suite": "com.exchange.core.order.MaximumBuyOrderFundingQuoteCalculatorTest",
+              "counts": {
+                "tests": 4,
+                "failures": 0,
+                "errors": 0,
+                "skipped": 0
+              }
+            },
+            {
+              "suite": "com.exchange.core.order.OrderFillSettlementCalculatorTest",
+              "counts": {
+                "tests": 11,
+                "failures": 0,
+                "errors": 0,
+                "skipped": 0
+              }
+            },
+            {
+              "suite": "com.exchange.core.order.OrderReservationCalculatorTest",
+              "counts": {
+                "tests": 5,
+                "failures": 0,
+                "errors": 0,
+                "skipped": 0
+              }
+            },
+            {
+              "suite": "com.exchange.core.order.OrderReservationTest",
+              "counts": {
+                "tests": 21,
+                "failures": 0,
+                "errors": 0,
+                "skipped": 0
+              }
+            },
+            {
+              "suite": "com.exchange.core.order.ReservationRequirementTest",
+              "counts": {
+                "tests": 3,
+                "failures": 0,
+                "errors": 0,
+                "skipped": 0
+              }
+            }
+          ]
+        },
+        "domain-fee": {
+          "counts": {
+            "tests": 37,
+            "failures": 0,
+            "errors": 0,
+            "skipped": 0
+          },
+          "suites": [
+            {
+              "suite": "com.exchange.core.fee.FeeRateTest",
+              "counts": {
+                "tests": 4,
+                "failures": 0,
+                "errors": 0,
+                "skipped": 0
+              }
+            },
+            {
+              "suite": "com.exchange.core.fee.FeeRemainderTest",
+              "counts": {
+                "tests": 6,
+                "failures": 0,
+                "errors": 0,
+                "skipped": 0
+              }
+            },
+            {
+              "suite": "com.exchange.core.fee.FeeTierResolverTest",
+              "counts": {
+                "tests": 1,
+                "failures": 0,
+                "errors": 0,
+                "skipped": 0
+              }
+            },
+            {
+              "suite": "com.exchange.core.fee.FeeTierThresholdsTest",
+              "counts": {
+                "tests": 3,
+                "failures": 0,
+                "errors": 0,
+                "skipped": 0
+              }
+            },
+            {
+              "suite": "com.exchange.core.fee.MakerTakerFeeRatesTest",
+              "counts": {
+                "tests": 3,
+                "failures": 0,
+                "errors": 0,
+                "skipped": 0
+              }
+            },
+            {
+              "suite": "com.exchange.core.fee.TradingFeeCalculatorTest",
+              "counts": {
+                "tests": 7,
+                "failures": 0,
+                "errors": 0,
+                "skipped": 0
+              }
+            },
+            {
+              "suite": "com.exchange.core.fee.TradingFeePolicySnapshotTest",
+              "counts": {
+                "tests": 4,
+                "failures": 0,
+                "errors": 0,
+                "skipped": 0
+              }
+            },
+            {
+              "suite": "com.exchange.core.fee.TradingFeeReserveCalculatorTest",
+              "counts": {
+                "tests": 5,
+                "failures": 0,
+                "errors": 0,
+                "skipped": 0
+              }
+            },
+            {
+              "suite": "com.exchange.core.fee.TradingFeeScheduleTest",
+              "counts": {
+                "tests": 4,
+                "failures": 0,
+                "errors": 0,
+                "skipped": 0
+              }
+            }
+          ]
+        },
+        "domain-ledger": {
+          "counts": {
+            "tests": 16,
+            "failures": 0,
+            "errors": 0,
+            "skipped": 0
+          },
+          "suites": [
+            {
+              "suite": "com.exchange.core.ledger.BalanceTest",
+              "counts": {
+                "tests": 8,
+                "failures": 0,
+                "errors": 0,
+                "skipped": 0
+              }
+            },
+            {
+              "suite": "com.exchange.core.ledger.LedgerPostingTest",
+              "counts": {
+                "tests": 3,
+                "failures": 0,
+                "errors": 0,
+                "skipped": 0
+              }
+            },
+            {
+              "suite": "com.exchange.core.ledger.LedgerTransactionTest",
+              "counts": {
+                "tests": 5,
+                "failures": 0,
+                "errors": 0,
+                "skipped": 0
+              }
+            }
+          ]
+        },
+        "app-api": {
+          "counts": {
+            "tests": 85,
+            "failures": 8,
+            "errors": 0,
+            "skipped": 0
+          },
+          "suites": [
+            {
+              "suite": "com.exchange.core.ExchangeCoreApplicationTests",
+              "counts": {
+                "tests": 1,
+                "failures": 0,
+                "errors": 0,
+                "skipped": 0
+              }
+            },
+            {
+              "suite": "com.exchange.core.api.config.LedgerPersistenceConfigurationTest",
+              "counts": {
+                "tests": 3,
+                "failures": 0,
+                "errors": 0,
+                "skipped": 0
+              }
+            },
+            {
+              "suite": "com.exchange.core.api.config.MatchingPublisherConfigurationTest",
+              "counts": {
+                "tests": 3,
+                "failures": 0,
+                "errors": 0,
+                "skipped": 0
+              }
+            },
+            {
+              "suite": "com.exchange.core.api.ledger.infrastructure.persistence.PostgresBalanceStoreTest",
+              "counts": {
+                "tests": 15,
+                "failures": 0,
+                "errors": 0,
+                "skipped": 0
+              }
+            },
+            {
+              "suite": "com.exchange.core.api.ledger.infrastructure.persistence.PostgresLedgerTransactionStoreTest",
+              "counts": {
+                "tests": 3,
+                "failures": 0,
+                "errors": 0,
+                "skipped": 0
+              }
+            },
+            {
+              "suite": "com.exchange.core.api.matching.application.MatchingCoordinatorContractTest",
+              "counts": {
+                "tests": 4,
+                "failures": 0,
+                "errors": 0,
+                "skipped": 0
+              }
+            },
+            {
+              "suite": "com.exchange.core.api.matching.application.MatchingCoordinatorPersistenceFailureTest",
+              "counts": {
+                "tests": 3,
+                "failures": 0,
+                "errors": 0,
+                "skipped": 0
+              }
+            },
+            {
+              "suite": "com.exchange.core.api.matching.infrastructure.persistence.JpaMatchingEventStoreTest",
+              "counts": {
+                "tests": 8,
+                "failures": 8,
+                "errors": 0,
+                "skipped": 0
+              }
+            },
+            {
+              "suite": "com.exchange.core.api.matching.infrastructure.persistence.MatchingEventPayloadTest",
+              "counts": {
+                "tests": 4,
+                "failures": 0,
+                "errors": 0,
+                "skipped": 0
+              }
+            },
+            {
+              "suite": "com.exchange.core.api.matching.infrastructure.persistence.MatchingPersistenceIntegrationTest",
+              "counts": {
+                "tests": 1,
+                "failures": 0,
+                "errors": 0,
+                "skipped": 0
+              }
+            },
+            {
+              "suite": "com.exchange.core.api.matching.infrastructure.persistence.PersistentMatchingEventPublisherTest",
+              "counts": {
+                "tests": 2,
+                "failures": 0,
+                "errors": 0,
+                "skipped": 0
+              }
+            },
+            {
+              "suite": "com.exchange.core.api.order.api.OrderControllerTest",
+              "counts": {
+                "tests": 9,
+                "failures": 0,
+                "errors": 0,
+                "skipped": 0
+              }
+            },
+            {
+              "suite": "com.exchange.core.api.order.application.OrderFundingServiceTest",
+              "counts": {
+                "tests": 3,
+                "failures": 0,
+                "errors": 0,
+                "skipped": 0
+              }
+            },
+            {
+              "suite": "com.exchange.core.api.order.application.OrderLifecycleE2ETest",
+              "counts": {
+                "tests": 3,
+                "failures": 0,
+                "errors": 0,
+                "skipped": 0
+              }
+            },
+            {
+              "suite": "com.exchange.core.api.order.application.OrderReservationReleaseServiceTest",
+              "counts": {
+                "tests": 5,
+                "failures": 0,
+                "errors": 0,
+                "skipped": 0
+              }
+            },
+            {
+              "suite": "com.exchange.core.api.order.application.TradeSettlementServiceTest",
+              "counts": {
+                "tests": 7,
+                "failures": 0,
+                "errors": 0,
+                "skipped": 0
+              }
+            },
+            {
+              "suite": "com.exchange.core.api.order.infrastructure.persistence.PostgresOrderReservationStoreTest",
+              "counts": {
+                "tests": 11,
+                "failures": 0,
+                "errors": 0,
+                "skipped": 0
+              }
+            }
+          ]
+        }
+      },
+      "mandatoryChecks": "P01~P09 각각 1회 성공 및 verifyArchitectureReport 성공",
+      "jmh": "compileJmhKotlin 성공",
+      "note": "app-api JPA8개 DB 연결 준비 실패. 변경 단위·나머지 기존 테스트·구조·JMH 성공. 같은 코드로 전체 빌드 재실행, 기존 성공 작업은 Gradle 입력 대조 후 재사용."
+    },
+    {
+      "name": "전체 재실행 완료",
+      "command": "./gradlew -p /Users/0chord/.codex/worktrees/issue23-state-access/exchange-core build :architecture-tests:verifyArchitectureReport :benchmark-jmh:compileJmhKotlin --no-daemon --continue --console=plain",
+      "result": "BUILD SUCCESSFUL in 1m 1s",
+      "modules": {
+        "architecture-tests": {
+          "counts": {
+            "tests": 368,
+            "failures": 0,
+            "errors": 0,
+            "skipped": 0
+          },
+          "suites": [
+            {
+              "suite": "com.exchange.architecture.ApplicationBoundaryContractTest",
+              "timestamp": "2026-10-02T13:43:52.138Z",
+              "counts": {
+                "tests": 11,
+                "failures": 0,
+                "errors": 0,
+                "skipped": 0
+              }
+            },
+            {
+              "suite": "com.exchange.architecture.ApplicationBoundaryImportTest",
+              "timestamp": "2026-10-02T13:43:53.189Z",
+              "counts": {
+                "tests": 9,
+                "failures": 0,
+                "errors": 0,
+                "skipped": 0
+              }
+            },
+            {
+              "suite": "com.exchange.architecture.ApplicationBoundaryReferenceTest",
+              "timestamp": "2026-10-02T13:43:53.780Z",
+              "counts": {
+                "tests": 9,
+                "failures": 0,
+                "errors": 0,
+                "skipped": 0
+              }
+            },
+            {
+              "suite": "com.exchange.architecture.ApplicationBoundaryScopeTest",
+              "timestamp": "2026-10-02T13:43:53.796Z",
+              "counts": {
+                "tests": 12,
+                "failures": 0,
+                "errors": 0,
+                "skipped": 0
+              }
+            },
+            {
+              "suite": "com.exchange.architecture.ArchitectureReportVerifierTest",
+              "timestamp": "2026-10-02T13:43:53.895Z",
+              "counts": {
+                "tests": 18,
+                "failures": 0,
+                "errors": 0,
+                "skipped": 0
+              }
+            },
+            {
+              "suite": "com.exchange.architecture.ArchitectureRuleContractTest",
+              "timestamp": "2026-10-02T13:43:54.012Z",
+              "counts": {
+                "tests": 23,
+                "failures": 0,
+                "errors": 0,
+                "skipped": 0
+              }
+            },
+            {
+              "suite": "com.exchange.architecture.BeanAssemblyRuleTest",
+              "timestamp": "2026-10-02T13:43:54.588Z",
+              "counts": {
+                "tests": 10,
+                "failures": 0,
+                "errors": 0,
+                "skipped": 0
+              }
+            },
+            {
+              "suite": "com.exchange.architecture.GradleDependencyWiringTest",
+              "timestamp": "2026-10-02T13:43:54.804Z",
+              "counts": {
+                "tests": 4,
+                "failures": 0,
+                "errors": 0,
+                "skipped": 0
+              }
+            },
+            {
+              "suite": "com.exchange.architecture.HttpBoundaryImportTest",
+              "timestamp": "2026-10-02T13:45:02.315Z",
+              "counts": {
+                "tests": 7,
+                "failures": 0,
+                "errors": 0,
+                "skipped": 0
+              }
+            },
+            {
+              "suite": "com.exchange.architecture.HttpBoundaryScopeTest",
+              "timestamp": "2026-10-02T13:45:02.494Z",
+              "counts": {
+                "tests": 12,
+                "failures": 0,
+                "errors": 0,
+                "skipped": 0
+              }
+            },
+            {
+              "suite": "com.exchange.architecture.HttpEntryBoundaryContractTest",
+              "timestamp": "2026-10-02T13:45:02.614Z",
+              "counts": {
+                "tests": 18,
+                "failures": 0,
+                "errors": 0,
+                "skipped": 0
+              }
+            },
+            {
+              "suite": "com.exchange.architecture.ImportScopeContractTest",
+              "timestamp": "2026-10-02T13:45:02.627Z",
+              "counts": {
+                "tests": 22,
+                "failures": 0,
+                "errors": 0,
+                "skipped": 0
+              }
+            },
+            {
+              "suite": "com.exchange.architecture.IsolationDependencyContractTest",
+              "timestamp": "2026-10-02T13:45:02.834Z",
+              "counts": {
+                "tests": 6,
+                "failures": 0,
+                "errors": 0,
+                "skipped": 0
+              }
+            },
+            {
+              "suite": "com.exchange.architecture.IsolationGradleWiringTest",
+              "timestamp": "2026-10-02T13:45:02.843Z",
+              "counts": {
+                "tests": 7,
+                "failures": 0,
+                "errors": 0,
+                "skipped": 0
+              }
+            },
+            {
+              "suite": "com.exchange.architecture.MatchingStateAccessCompilationTest",
+              "timestamp": "2026-10-02T13:46:43.960Z",
+              "counts": {
+                "tests": 6,
+                "failures": 0,
+                "errors": 0,
+                "skipped": 0
+              }
+            },
+            {
+              "suite": "com.exchange.architecture.ModuleDependencyContractTest",
+              "timestamp": "2026-10-02T13:46:49.029Z",
+              "counts": {
+                "tests": 11,
+                "failures": 0,
+                "errors": 0,
+                "skipped": 0
+              }
+            },
+            {
+              "suite": "com.exchange.architecture.ModuleRegistrationContractTest",
+              "timestamp": "2026-10-02T13:46:49.644Z",
+              "counts": {
+                "tests": 5,
+                "failures": 0,
+                "errors": 0,
+                "skipped": 0
+              }
+            },
+            {
+              "suite": "com.exchange.architecture.NamingPlacementContractTest",
+              "timestamp": "2026-10-02T13:46:49.646Z",
+              "counts": {
+                "tests": 11,
+                "failures": 0,
+                "errors": 0,
+                "skipped": 0
+              }
+            },
+            {
+              "suite": "com.exchange.architecture.NamingPlacementGradleAutomaticTest",
+              "timestamp": "2026-10-02T13:46:50.022Z",
+              "counts": {
+                "tests": 2,
+                "failures": 0,
+                "errors": 0,
+                "skipped": 0
+              }
+            },
+            {
+              "suite": "com.exchange.architecture.NamingPlacementGradleWiringTest",
+              "timestamp": "2026-10-02T13:48:28.222Z",
+              "counts": {
+                "tests": 4,
+                "failures": 0,
+                "errors": 0,
+                "skipped": 0
+              }
+            },
+            {
+              "suite": "com.exchange.architecture.NamingPlacementIntegrationTest",
+              "timestamp": "2026-10-02T13:48:58.977Z",
+              "counts": {
+                "tests": 7,
+                "failures": 0,
+                "errors": 0,
+                "skipped": 0
+              }
+            },
+            {
+              "suite": "com.exchange.architecture.NamingPlacementPortTest",
+              "timestamp": "2026-10-02T13:49:00.257Z",
+              "counts": {
+                "tests": 11,
+                "failures": 0,
+                "errors": 0,
+                "skipped": 0
+              }
+            },
+            {
+              "suite": "com.exchange.architecture.NamingPlacementRuleTest",
+              "timestamp": "2026-10-02T13:49:00.951Z",
+              "counts": {
+                "tests": 9,
+                "failures": 0,
+                "errors": 0,
+                "skipped": 0
+              }
+            },
+            {
+              "suite": "com.exchange.architecture.NamingPlacementScopeTest",
+              "timestamp": "2026-10-02T13:49:01.462Z",
+              "counts": {
+                "tests": 10,
+                "failures": 0,
+                "errors": 0,
+                "skipped": 0
+              }
+            },
+            {
+              "suite": "com.exchange.architecture.NamingPlacementSimplificationTest",
+              "timestamp": "2026-10-02T13:49:01.806Z",
+              "counts": {
+                "tests": 1,
+                "failures": 0,
+                "errors": 0,
+                "skipped": 0
+              }
+            },
+            {
+              "suite": "com.exchange.architecture.NonProductionTargetsTest",
+              "timestamp": "2026-10-02T13:49:01.825Z",
+              "counts": {
+                "tests": 7,
+                "failures": 0,
+                "errors": 0,
+                "skipped": 0
+              }
+            },
+            {
+              "suite": "com.exchange.architecture.PortContractRuleTest",
+              "timestamp": "2026-10-02T13:49:01.858Z",
+              "counts": {
+                "tests": 47,
+                "failures": 0,
+                "errors": 0,
+                "skipped": 0
+              }
+            },
+            {
+              "suite": "com.exchange.architecture.ProductionArchitectureTest",
+              "timestamp": "2026-10-02T13:49:07.394Z",
+              "counts": {
+                "tests": 9,
+                "failures": 0,
+                "errors": 0,
+                "skipped": 0
+              }
+            },
+            {
+              "suite": "com.exchange.architecture.ProductionBoundaryInputsTest",
+              "timestamp": "2026-10-02T13:49:09.687Z",
+              "counts": {
+                "tests": 23,
+                "failures": 0,
+                "errors": 0,
+                "skipped": 0
+              }
+            },
+            {
+              "suite": "com.exchange.architecture.ProductionDependencyIsolationTest",
+              "timestamp": "2026-10-02T13:49:17.344Z",
+              "counts": {
+                "tests": 9,
+                "failures": 0,
+                "errors": 0,
+                "skipped": 0
+              }
+            },
+            {
+              "suite": "com.exchange.architecture.ProductionOutputWiringTest",
+              "timestamp": "2026-10-02T13:49:17.534Z",
+              "counts": {
+                "tests": 2,
+                "failures": 0,
+                "errors": 0,
+                "skipped": 0
+              }
+            },
+            {
+              "suite": "com.exchange.architecture.ProjectDependencyContractTest",
+              "timestamp": "2026-10-02T13:49:17.783Z",
+              "counts": {
+                "tests": 8,
+                "failures": 0,
+                "errors": 0,
+                "skipped": 0
+              }
+            },
+            {
+              "suite": "com.exchange.architecture.RoleClassificationContractTest",
+              "timestamp": "2026-10-02T13:49:17.788Z",
+              "counts": {
+                "tests": 4,
+                "failures": 0,
+                "errors": 0,
+                "skipped": 0
+              }
+            },
+            {
+              "suite": "com.exchange.architecture.SourcePlacementContractTest",
+              "timestamp": "2026-10-02T13:49:17.885Z",
+              "counts": {
+                "tests": 14,
+                "failures": 0,
+                "errors": 0,
+                "skipped": 0
+              }
+            }
+          ]
+        },
+        "domain-matching": {
+          "counts": {
+            "tests": 74,
+            "failures": 0,
+            "errors": 0,
+            "skipped": 0
+          },
+          "suites": [
+            {
+              "suite": "com.exchange.core.matching.MarketCommandProcessorTest",
+              "timestamp": "2026-10-02T13:42:45.640Z",
+              "counts": {
+                "tests": 20,
+                "failures": 0,
+                "errors": 0,
+                "skipped": 0
+              }
+            },
+            {
+              "suite": "com.exchange.core.matching.MatchingEngineTest",
+              "timestamp": "2026-10-02T13:42:45.788Z",
+              "counts": {
+                "tests": 49,
+                "failures": 0,
+                "errors": 0,
+                "skipped": 0
+              }
+            },
+            {
+              "suite": "com.exchange.core.matching.MatchingStateOwnershipTest",
+              "timestamp": "2026-10-02T13:42:45.822Z",
+              "counts": {
+                "tests": 5,
+                "failures": 0,
+                "errors": 0,
+                "skipped": 0
+              }
+            }
+          ]
+        },
+        "domain-order": {
+          "counts": {
+            "tests": 50,
+            "failures": 0,
+            "errors": 0,
+            "skipped": 0
+          },
+          "suites": [
+            {
+              "suite": "com.exchange.core.order.BuyOrderFundingQuoteCalculatorTest",
+              "timestamp": "2026-10-02T13:42:43.035Z",
+              "counts": {
+                "tests": 6,
+                "failures": 0,
+                "errors": 0,
+                "skipped": 0
+              }
+            },
+            {
+              "suite": "com.exchange.core.order.MaximumBuyOrderFundingQuoteCalculatorTest",
+              "timestamp": "2026-10-02T13:42:43.086Z",
+              "counts": {
+                "tests": 4,
+                "failures": 0,
+                "errors": 0,
+                "skipped": 0
+              }
+            },
+            {
+              "suite": "com.exchange.core.order.OrderFillSettlementCalculatorTest",
+              "timestamp": "2026-10-02T13:42:43.092Z",
+              "counts": {
+                "tests": 11,
+                "failures": 0,
+                "errors": 0,
+                "skipped": 0
+              }
+            },
+            {
+              "suite": "com.exchange.core.order.OrderReservationCalculatorTest",
+              "timestamp": "2026-10-02T13:42:43.103Z",
+              "counts": {
+                "tests": 5,
+                "failures": 0,
+                "errors": 0,
+                "skipped": 0
+              }
+            },
+            {
+              "suite": "com.exchange.core.order.OrderReservationTest",
+              "timestamp": "2026-10-02T13:42:43.107Z",
+              "counts": {
+                "tests": 21,
+                "failures": 0,
+                "errors": 0,
+                "skipped": 0
+              }
+            },
+            {
+              "suite": "com.exchange.core.order.ReservationRequirementTest",
+              "timestamp": "2026-10-02T13:42:43.117Z",
+              "counts": {
+                "tests": 3,
+                "failures": 0,
+                "errors": 0,
+                "skipped": 0
+              }
+            }
+          ]
+        },
+        "domain-fee": {
+          "counts": {
+            "tests": 37,
+            "failures": 0,
+            "errors": 0,
+            "skipped": 0
+          },
+          "suites": [
+            {
+              "suite": "com.exchange.core.fee.FeeRateTest",
+              "timestamp": "2026-10-02T13:42:41.990Z",
+              "counts": {
+                "tests": 4,
+                "failures": 0,
+                "errors": 0,
+                "skipped": 0
+              }
+            },
+            {
+              "suite": "com.exchange.core.fee.FeeRemainderTest",
+              "timestamp": "2026-10-02T13:42:42.042Z",
+              "counts": {
+                "tests": 6,
+                "failures": 0,
+                "errors": 0,
+                "skipped": 0
+              }
+            },
+            {
+              "suite": "com.exchange.core.fee.FeeTierResolverTest",
+              "timestamp": "2026-10-02T13:42:42.046Z",
+              "counts": {
+                "tests": 1,
+                "failures": 0,
+                "errors": 0,
+                "skipped": 0
+              }
+            },
+            {
+              "suite": "com.exchange.core.fee.FeeTierThresholdsTest",
+              "timestamp": "2026-10-02T13:42:42.049Z",
+              "counts": {
+                "tests": 3,
+                "failures": 0,
+                "errors": 0,
+                "skipped": 0
+              }
+            },
+            {
+              "suite": "com.exchange.core.fee.MakerTakerFeeRatesTest",
+              "timestamp": "2026-10-02T13:42:42.052Z",
+              "counts": {
+                "tests": 3,
+                "failures": 0,
+                "errors": 0,
+                "skipped": 0
+              }
+            },
+            {
+              "suite": "com.exchange.core.fee.TradingFeeCalculatorTest",
+              "timestamp": "2026-10-02T13:42:42.056Z",
+              "counts": {
+                "tests": 7,
+                "failures": 0,
+                "errors": 0,
+                "skipped": 0
+              }
+            },
+            {
+              "suite": "com.exchange.core.fee.TradingFeePolicySnapshotTest",
+              "timestamp": "2026-10-02T13:42:42.060Z",
+              "counts": {
+                "tests": 4,
+                "failures": 0,
+                "errors": 0,
+                "skipped": 0
+              }
+            },
+            {
+              "suite": "com.exchange.core.fee.TradingFeeReserveCalculatorTest",
+              "timestamp": "2026-10-02T13:42:42.063Z",
+              "counts": {
+                "tests": 5,
+                "failures": 0,
+                "errors": 0,
+                "skipped": 0
+              }
+            },
+            {
+              "suite": "com.exchange.core.fee.TradingFeeScheduleTest",
+              "timestamp": "2026-10-02T13:42:42.069Z",
+              "counts": {
+                "tests": 4,
+                "failures": 0,
+                "errors": 0,
+                "skipped": 0
+              }
+            }
+          ]
+        },
+        "domain-ledger": {
+          "counts": {
+            "tests": 16,
+            "failures": 0,
+            "errors": 0,
+            "skipped": 0
+          },
+          "suites": [
+            {
+              "suite": "com.exchange.core.ledger.BalanceTest",
+              "timestamp": "2026-10-02T13:42:41.288Z",
+              "counts": {
+                "tests": 8,
+                "failures": 0,
+                "errors": 0,
+                "skipped": 0
+              }
+            },
+            {
+              "suite": "com.exchange.core.ledger.LedgerPostingTest",
+              "timestamp": "2026-10-02T13:42:41.340Z",
+              "counts": {
+                "tests": 3,
+                "failures": 0,
+                "errors": 0,
+                "skipped": 0
+              }
+            },
+            {
+              "suite": "com.exchange.core.ledger.LedgerTransactionTest",
+              "timestamp": "2026-10-02T13:42:41.345Z",
+              "counts": {
+                "tests": 5,
+                "failures": 0,
+                "errors": 0,
+                "skipped": 0
+              }
+            }
+          ]
+        },
+        "app-api": {
+          "counts": {
+            "tests": 85,
+            "failures": 0,
+            "errors": 0,
+            "skipped": 0
+          },
+          "suites": [
+            {
+              "suite": "com.exchange.core.ExchangeCoreApplicationTests",
+              "timestamp": "2026-10-02T13:50:02.443Z",
+              "counts": {
+                "tests": 1,
+                "failures": 0,
+                "errors": 0,
+                "skipped": 0
+              }
+            },
+            {
+              "suite": "com.exchange.core.api.config.LedgerPersistenceConfigurationTest",
+              "timestamp": "2026-10-02T13:50:04.771Z",
+              "counts": {
+                "tests": 3,
+                "failures": 0,
+                "errors": 0,
+                "skipped": 0
+              }
+            },
+            {
+              "suite": "com.exchange.core.api.config.MatchingPublisherConfigurationTest",
+              "timestamp": "2026-10-02T13:50:04.903Z",
+              "counts": {
+                "tests": 3,
+                "failures": 0,
+                "errors": 0,
+                "skipped": 0
+              }
+            },
+            {
+              "suite": "com.exchange.core.api.ledger.infrastructure.persistence.PostgresBalanceStoreTest",
+              "timestamp": "2026-10-02T13:50:05.023Z",
+              "counts": {
+                "tests": 15,
+                "failures": 0,
+                "errors": 0,
+                "skipped": 0
+              }
+            },
+            {
+              "suite": "com.exchange.core.api.ledger.infrastructure.persistence.PostgresLedgerTransactionStoreTest",
+              "timestamp": "2026-10-02T13:50:06.566Z",
+              "counts": {
+                "tests": 3,
+                "failures": 0,
+                "errors": 0,
+                "skipped": 0
+              }
+            },
+            {
+              "suite": "com.exchange.core.api.matching.application.MatchingCoordinatorContractTest",
+              "timestamp": "2026-10-02T13:50:08.052Z",
+              "counts": {
+                "tests": 4,
+                "failures": 0,
+                "errors": 0,
+                "skipped": 0
+              }
+            },
+            {
+              "suite": "com.exchange.core.api.matching.application.MatchingCoordinatorPersistenceFailureTest",
+              "timestamp": "2026-10-02T13:50:11.084Z",
+              "counts": {
+                "tests": 3,
+                "failures": 0,
+                "errors": 0,
+                "skipped": 0
+              }
+            },
+            {
+              "suite": "com.exchange.core.api.matching.infrastructure.persistence.JpaMatchingEventStoreTest",
+              "timestamp": "2026-10-02T13:49:54.176Z",
+              "counts": {
+                "tests": 8,
+                "failures": 0,
+                "errors": 0,
+                "skipped": 0
+              }
+            },
+            {
+              "suite": "com.exchange.core.api.matching.infrastructure.persistence.MatchingEventPayloadTest",
+              "timestamp": "2026-10-02T13:50:15.955Z",
+              "counts": {
+                "tests": 4,
+                "failures": 0,
+                "errors": 0,
+                "skipped": 0
+              }
+            },
+            {
+              "suite": "com.exchange.core.api.matching.infrastructure.persistence.MatchingPersistenceIntegrationTest",
+              "timestamp": "2026-10-02T13:50:15.956Z",
+              "counts": {
+                "tests": 1,
+                "failures": 0,
+                "errors": 0,
+                "skipped": 0
+              }
+            },
+            {
+              "suite": "com.exchange.core.api.matching.infrastructure.persistence.PersistentMatchingEventPublisherTest",
+              "timestamp": "2026-10-02T13:50:17.434Z",
+              "counts": {
+                "tests": 2,
+                "failures": 0,
+                "errors": 0,
+                "skipped": 0
+              }
+            },
+            {
+              "suite": "com.exchange.core.api.order.api.OrderControllerTest",
+              "timestamp": "2026-10-02T13:50:20.410Z",
+              "counts": {
+                "tests": 9,
+                "failures": 0,
+                "errors": 0,
+                "skipped": 0
+              }
+            },
+            {
+              "suite": "com.exchange.core.api.order.application.OrderFundingServiceTest",
+              "timestamp": "2026-10-02T13:50:34.028Z",
+              "counts": {
+                "tests": 3,
+                "failures": 0,
+                "errors": 0,
+                "skipped": 0
+              }
+            },
+            {
+              "suite": "com.exchange.core.api.order.application.OrderLifecycleE2ETest",
+              "timestamp": "2026-10-02T13:50:35.339Z",
+              "counts": {
+                "tests": 3,
+                "failures": 0,
+                "errors": 0,
+                "skipped": 0
+              }
+            },
+            {
+              "suite": "com.exchange.core.api.order.application.OrderReservationReleaseServiceTest",
+              "timestamp": "2026-10-02T13:50:40.236Z",
+              "counts": {
+                "tests": 5,
+                "failures": 0,
+                "errors": 0,
+                "skipped": 0
+              }
+            },
+            {
+              "suite": "com.exchange.core.api.order.application.TradeSettlementServiceTest",
+              "timestamp": "2026-10-02T13:50:41.614Z",
+              "counts": {
+                "tests": 7,
+                "failures": 0,
+                "errors": 0,
+                "skipped": 0
+              }
+            },
+            {
+              "suite": "com.exchange.core.api.order.infrastructure.persistence.PostgresOrderReservationStoreTest",
+              "timestamp": "2026-10-02T13:50:43.155Z",
+              "counts": {
+                "tests": 11,
+                "failures": 0,
+                "errors": 0,
+                "skipped": 0
+              }
+            }
+          ]
+        }
+      },
+      "mandatoryChecks": [
+        "P04 전체 운영 코드와 Gradle 선언에 ARCH-08을 독립 적용한다()",
+        "P02 전체 운영 코드와 Gradle 직접 선언에 ARCH-02를 적용한다()",
+        "P05 실제 운영 코드의 업무 자동 등록 금지와 config Bean 선언을 검사한다()",
+        "P09 실제 app-api의 매칭 상태 직접 참조에 ARCH-07을 적용한다()",
+        "P06 실제 전체 HTTP 진입점에 ARCH-03을 적용한다()",
+        "P01 전체 운영 출력과 역할을 검증한 뒤 동일 ARCH-01 규칙을 적용한다()",
+        "P03 실제 저장 발행 포트의 공개 계약에 ARCH-06을 적용한다()",
+        "P08 전체 이름과 main 원본의 실제 폴더에 ARCH-05를 적용한다()",
+        "P07 실제 application 진입점과 협력자에 ARCH-04를 적용한다()"
+      ],
+      "jmh": "첫 전체 재실행에서 compileJmhKotlin 실행·성공; 최종 빌드에서는 UP-TO-DATE 재사용",
+      "note": "같은 코드로 app-api 전체85개 재실행 통과. 구조368·도메인177개는 직전 전체 --rerun-tasks 성공 결과를 Gradle 입력 대조 후 재사용. 최초 DB준비 실패 기록은 stages에 보존. 환경 문제의 영구 해결을 주장하지 않음."
+    }
+  ],
+  "currentSourceHashes": {
+    "app-api/src/test/kotlin/com/exchange/core/api/matching/application/MatchingCoordinatorContractTest.kt": "d19c22d120427db6853102ac8a19b283564f0bb9f48ca8b6adf29df54a8a8ffe",
+    "architecture-tests/build.gradle.kts": "2893217876791d42dbc709cd72e1a40e2d151508e8a197c78a6164c13d45d2fd",
+    "architecture-tests/src/test/kotlin/com/exchange/architecture/ArchitectureReportVerifierTest.kt": "0fd5f6a29f201170fce0da251a7ad78d481f8cdcb4ff875d09c14dbde882c0e9",
+    "architecture-tests/src/test/kotlin/com/exchange/architecture/MatchingStateAccessCompilationTest.kt": "7fd6a1b2e45b60849e8301d2886d00ba06c7c46232e8b8d7ba8adef977137d43",
+    "architecture-tests/src/test/kotlin/com/exchange/architecture/ProductionArchitectureTest.kt": "921e155033e9d1c89dab58daebd39b0b69fea83a39b69e669a346b5b7093fe51",
+    "architecture-tests/src/test/kotlin/com/exchange/architecture/ProductionBoundaryInputsTest.kt": "5b26661f1f393c0ff3d49e2a3902b1b6c0579e1692218068d1fa0fdde2f15e40",
+    "architecture-tests/src/test/kotlin/com/exchange/architecture/rules/MatchingStateBoundary.kt": "79101a610b510d8d03ef8681bedeaab94de97114da63e08736b5b3a8955bb954",
+    "architecture-tests/src/test/kotlin/com/exchange/architecture/support/ArchitectureReportVerifier.kt": "de0f2b1e815981c701fa9381bf537e9d5447a54f5e451278253b8ea87cbbeb2c",
+    "domain-matching/src/main/kotlin/com/exchange/core/matching/BookOrder.kt": "3a753f2e96d74f090b5322280d9cb01dd960542368fcb3c7724b11c92cd62672",
+    "domain-matching/src/main/kotlin/com/exchange/core/matching/MarketCommandProcessor.kt": "5fc8aac06fbc02ec19e36f373d565a6c7b8c7d1ef4c4b30ca400297062d072e0",
+    "domain-matching/src/main/kotlin/com/exchange/core/matching/OrderBook.kt": "1cc42a7007d0d32d379c2671760e8e0410a5ddd6234987ab556c37ca6b872980",
+    "domain-matching/src/main/kotlin/com/exchange/core/matching/PriceLevel.kt": "a9e8d6be561072a0af1d9cd18624f77b4b1accf77a68b2014334d785528081f7",
+    "domain-matching/src/test/kotlin/com/exchange/core/matching/MarketCommandProcessorTest.kt": "aff38419a8b050ce17ea364e0a398bb257a084290f713423e0341777ea348fe8",
+    "domain-matching/src/test/kotlin/com/exchange/core/matching/MatchingStateOwnershipTest.kt": "d00d1c8b7314e72dffa8406ea928ce4a09f55898a34bcc3c4a90a779ee007163"
+  },
+  "expectationReview": {
+    "result": "명세와 기대값 정적 대조에서 확정 결함 없음. 실행 결과와 함께 판단.",
+    "corrections": [
+      "필드 의존에 항상 행번호가 있다고 가정하지 않고 sourceFile/타입으로 검증. 실제 메서드 호출의 양수 행번호는 별도 사례로 확인.",
+      "다른 마켓 성공을 다음 호출 시작 전에 관측해 다음 호출의 3초 시간 예산을 불필요하게 소모하지 않음."
+    ],
+    "notClaimed": [
+      "AI 팀의 정적 대조가 독립 PR 리뷰를 대신하지 않음",
+      "HTML 생성 및 Ask 답변이 사용자 코드 리뷰 완료를 뜻하지 않음"
+    ]
+  },
+  "sourceHashes": {
+    "app-api/src/main/kotlin/com/exchange/core/api/matching/application/MatchingCoordinator.kt": "498183477b19019de3abb70d6b8d032f0fc1616fd04b36969eb38694402e8441",
+    "app-api/src/test/kotlin/com/exchange/core/api/matching/application/MatchingCoordinatorContractTest.kt": "d19c22d120427db6853102ac8a19b283564f0bb9f48ca8b6adf29df54a8a8ffe",
+    "app-api/src/test/kotlin/com/exchange/core/api/matching/application/MatchingCoordinatorPersistenceFailureTest.kt": "12f85a8794e4e932c752b200df63ffc98ba3af725a32e4823caea279c73440a4",
+    "architecture-tests/build.gradle.kts": "2893217876791d42dbc709cd72e1a40e2d151508e8a197c78a6164c13d45d2fd",
+    "architecture-tests/src/test/kotlin/com/exchange/architecture/ArchitectureReportVerifierTest.kt": "0fd5f6a29f201170fce0da251a7ad78d481f8cdcb4ff875d09c14dbde882c0e9",
+    "architecture-tests/src/test/kotlin/com/exchange/architecture/MatchingStateAccessCompilationTest.kt": "7fd6a1b2e45b60849e8301d2886d00ba06c7c46232e8b8d7ba8adef977137d43",
+    "architecture-tests/src/test/kotlin/com/exchange/architecture/ProductionArchitectureTest.kt": "921e155033e9d1c89dab58daebd39b0b69fea83a39b69e669a346b5b7093fe51",
+    "architecture-tests/src/test/kotlin/com/exchange/architecture/ProductionBoundaryInputsTest.kt": "5b26661f1f393c0ff3d49e2a3902b1b6c0579e1692218068d1fa0fdde2f15e40",
+    "architecture-tests/src/test/kotlin/com/exchange/architecture/rules/MatchingStateBoundary.kt": "79101a610b510d8d03ef8681bedeaab94de97114da63e08736b5b3a8955bb954",
+    "architecture-tests/src/test/kotlin/com/exchange/architecture/support/ArchitectureReportVerifier.kt": "de0f2b1e815981c701fa9381bf537e9d5447a54f5e451278253b8ea87cbbeb2c",
+    "benchmark-jmh/src/jmh/kotlin/com/exchange/core/benchmark/MatchingEngineReplayBenchmark.kt": "32d7542c6998521bc4b3c32466d8343606d9b9af7e350d9b459cd983d9f9b759",
+    "domain-matching/src/main/kotlin/com/exchange/core/matching/BookOrder.kt": "3a753f2e96d74f090b5322280d9cb01dd960542368fcb3c7724b11c92cd62672",
+    "domain-matching/src/main/kotlin/com/exchange/core/matching/MarketCommandProcessor.kt": "5fc8aac06fbc02ec19e36f373d565a6c7b8c7d1ef4c4b30ca400297062d072e0",
+    "domain-matching/src/main/kotlin/com/exchange/core/matching/MatchingCommand.kt": "f71dbb78df982d5efe6cb0dd062eac8d5f942a91fe646aa0c85b4835a31d619d",
+    "domain-matching/src/main/kotlin/com/exchange/core/matching/MatchingEngine.kt": "806cc5d6604e04650aa34849de07d4de68a3b0e98d2aad3a5634dc81d8ff2af4",
+    "domain-matching/src/main/kotlin/com/exchange/core/matching/MatchingEvent.kt": "91ca049265cfc7cff3a8d0430682f642675774faa7ca82513935f78e0aa8ddaa",
+    "domain-matching/src/main/kotlin/com/exchange/core/matching/OrderBook.kt": "1cc42a7007d0d32d379c2671760e8e0410a5ddd6234987ab556c37ca6b872980",
+    "domain-matching/src/main/kotlin/com/exchange/core/matching/PriceLevel.kt": "a9e8d6be561072a0af1d9cd18624f77b4b1accf77a68b2014334d785528081f7",
+    "domain-matching/src/test/kotlin/com/exchange/core/matching/MarketCommandProcessorTest.kt": "aff38419a8b050ce17ea364e0a398bb257a084290f713423e0341777ea348fe8",
+    "domain-matching/src/test/kotlin/com/exchange/core/matching/MatchingStateOwnershipTest.kt": "d00d1c8b7314e72dffa8406ea928ce4a09f55898a34bcc3c4a90a779ee007163"
+  },
+  "completedAt": "2026-10-02T13:51:48.356144+00:00",
+  "status": "로컬 구현·검증 완료. PR 게시 전 실행 스냅샷이며 이후 PR·원격 CI·병합 상태는 원격에서 확인.",
+  "summary": {
+    "tests": 630,
+    "failures": 0,
+    "errors": 0,
+    "skipped": 0,
+    "architectureTests": 368,
+    "productTests": 262,
+    "newBehaviorCases": 13,
+    "mandatoryChecks": 9,
+    "jmhCompiled": true,
+    "firstDatabasePreparationFailureThenUnchangedRetryPassed": true
+  },
+  "verificationScope": {
+    "confirmed": [
+      "internal 세 타입 외부 Kotlin 소비자 접근 거절",
+      "같은 모듈 private setter 대입 거절 및 fill 상태 규칙",
+      "내부 같은 참조 유지와 과거 이벤트 값 안정성",
+      "운영 app-api 전체 직접 참조 P09",
+      "before/engine/publisher/after 순서와 실패 후 같은·다른 마켓",
+      "실제 3초 대기 종료 및 caller interrupt 뒤 worker 비취소",
+      "close 접수 경계·기존 동시성·실제 DB 저장 실패 회귀",
+      "기존 공통 전체 빌드·필수9개 보고서·JMH 컴파일"
+    ],
+    "notClaimed": [
+      "JVM 보안·Java/reflection 차단",
+      "모든 엔진 예외의 무변경 또는 자동 롤백",
+      "모든 스케줄에서 동시성 안전성의 수학적 증명",
+      "#22 DB·불변 계약 전체 완료",
+      "첫 DB 연결 실패의 영구 원인 제거",
+      "벤치마크 성능 실행·PR·원격 CI·병합·사용자 코드 검토 완료"
+    ]
+  },
+  "snapshotType": "baseline commit + sourceHashes; compilation and test snapshot includes all published code changes"
+}

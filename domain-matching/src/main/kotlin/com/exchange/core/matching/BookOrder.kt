@@ -22,19 +22,18 @@ import com.exchange.core.order.Side
  * @property originalQuantity 처음 제출한 전체 수량
  * @property remainingQuantity 아직 체결되지 않은 수량
  */
-data class BookOrder(
+internal class BookOrder(
     val orderId: OrderId,
     val userId: UserId,
     val side: Side,
     val price: Price,
     val originalQuantity: Quantity,
-    /**
-     * 아직 체결되지 않은 수량.
-     *
-     * 체결될 때마다 줄어들기 때문에 var로 둔다.
-     */
-    var remainingQuantity: Quantity,
+    remainingQuantity: Quantity,
 ) {
+    /** 잔량은 같은 내부 주문에서 유지하며, 검증된 [fill]만 값을 바꾼다. */
+    var remainingQuantity: Quantity = remainingQuantity
+        private set
+
     init {
         require(originalQuantity.value > 0) {
             "originalQuantity must be positive"
