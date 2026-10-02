@@ -12,7 +12,7 @@ import org.xml.sax.helpers.DefaultHandler
 /** 기존 운영 검사 XML의 실행·성공 여부만 확인한다. 보고서의 신선도는 Gradle 재실행으로 확보한다. */
 object ArchitectureReportVerifier {
     private const val suite = "com.exchange.architecture.ProductionArchitectureTest"
-    private val required = listOf("P01", "P02", "P03", "P04", "P05", "P06", "P07", "P08")
+    private val required = listOf("P01", "P02", "P03", "P04", "P05", "P06", "P07", "P08", "P09")
 
     fun problems(report: Path): List<String> {
         val parser = DocumentBuilderFactory.newInstance().apply {
@@ -65,6 +65,6 @@ object ArchitectureReportVerifier {
         require(args.size == 1) { "운영 검사 XML 경로가 필요합니다." }
         val errors = problems(Path.of(args.single()))
         check(errors.isEmpty()) { "구조 결과 확인 실패:\n" + errors.joinToString("\n") }
-        println("필수 운영 검사 P01~P08 실행·성공 확인. 제품·DB 검사 결과는 별도로 확인하세요.")
+        println("필수 운영 검사 P01~P09 실행·성공 확인. 제품·DB 검사 결과는 별도로 확인하세요.")
     }
 }

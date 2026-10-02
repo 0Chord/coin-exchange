@@ -30,7 +30,7 @@ import java.util.TreeMap
  * bids는 높은 가격이 먼저 와야 하므로 내림차순으로 정렬하고,
  * asks는 낮은 가격이 먼저 와야 하므로 기본 오름차순 정렬을 사용한다.
  */
-class OrderBook {
+internal class OrderBook {
     /**
      * 매수 book.
      *

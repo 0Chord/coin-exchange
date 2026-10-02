@@ -9,6 +9,7 @@ import com.exchange.core.order.OrderType
 import com.exchange.core.order.Side
 import com.exchange.core.order.TimeInForce
 import java.util.concurrent.CompletableFuture
+import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.ExecutionException
 import java.util.concurrent.Executors
@@ -18,7 +19,10 @@ import java.util.concurrent.atomic.AtomicInteger
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
+import kotlin.test.assertFalse
 import kotlin.test.assertIs
+import kotlin.test.assertNotSame
+import kotlin.test.assertSame
 import kotlin.test.assertTrue
 
 class MarketCommandProcessorTest {
@@ -38,6 +42,96 @@ class MarketCommandProcessorTest {
                 processor.submit(submit(orderId = "b1", side = Side.BUY, price = 100, quantity = 1)).await(),
             )
         } finally {
+            processor.close()
+        }
+    }
+
+    @Test
+    fun `before와 handler는 같은 worker에서 직렬 실행되고 대기 중 다른 market은 진행한다`() {
+        val processor = InMemoryMarketCommandProcessor()
+        val callerThread = Thread.currentThread()
+        val firstBeforeStarted = CountDownLatch(1)
+        val releaseFirstBefore = CountDownLatch(1)
+        val firstHandlerStarted = CountDownLatch(1)
+        val releaseFirstHandler = CountDownLatch(1)
+        val secondBeforeCalls = AtomicInteger(0)
+        val steps = CopyOnWriteArrayList<String>()
+        val callbackThreads = CopyOnWriteArrayList<Thread>()
+        val ethMarket = MarketId("ETH-KRW")
+        val firstExpected = listOf(entered(seq = 1, orderId = "a1", side = Side.SELL, price = 100, quantity = 1))
+        val secondExpected = listOf(trade(seq = 2, maker = "a1", taker = "b1", side = Side.BUY, price = 100, quantity = 1))
+
+        try {
+            val firstFuture = processor.submit(
+                command = submit(orderId = "a1", side = Side.SELL, price = 100, quantity = 1),
+                beforeMatching = {
+                    callbackThreads.add(Thread.currentThread())
+                    steps.add("first-before-start")
+                    firstBeforeStarted.countDown()
+                    releaseFirstBefore.awaitSignal("first before release")
+                    steps.add("first-before-end")
+                },
+                eventHandler = { events ->
+                    callbackThreads.add(Thread.currentThread())
+                    assertEquals(firstExpected, events)
+                    steps.add("first-handler-start")
+                    firstHandlerStarted.countDown()
+                    releaseFirstHandler.awaitSignal("first handler release")
+                    steps.add("first-handler-end")
+                },
+            )
+            firstBeforeStarted.awaitSignal("first before start")
+
+            val secondFuture = processor.submit(
+                command = submit(orderId = "b1", side = Side.BUY, price = 100, quantity = 1),
+                beforeMatching = {
+                    callbackThreads.add(Thread.currentThread())
+                    secondBeforeCalls.incrementAndGet()
+                    steps.add("second-before")
+                },
+                eventHandler = { events ->
+                    callbackThreads.add(Thread.currentThread())
+                    assertEquals(secondExpected, events)
+                    steps.add("second-handler")
+                },
+            )
+
+            assertFalse(firstFuture.isDone)
+            assertFalse(secondFuture.isDone)
+            assertEquals(0, secondBeforeCalls.get())
+            releaseFirstBefore.countDown()
+            firstHandlerStarted.awaitSignal("first handler start")
+
+            assertEquals(
+                listOf(entered(market = ethMarket, seq = 1, orderId = "eth-b1", side = Side.BUY, price = 100, quantity = 1)),
+                processor.submit(
+                    submit(market = ethMarket, orderId = "eth-b1", side = Side.BUY, price = 100, quantity = 1),
+                ).await(),
+            )
+            assertFalse(firstFuture.isDone)
+            assertFalse(secondFuture.isDone)
+            assertEquals(0, secondBeforeCalls.get())
+
+            releaseFirstHandler.countDown()
+            assertEquals(firstExpected, firstFuture.await())
+            assertEquals(secondExpected, secondFuture.await())
+            assertEquals(
+                listOf(
+                    "first-before-start",
+                    "first-before-end",
+                    "first-handler-start",
+                    "first-handler-end",
+                    "second-before",
+                    "second-handler",
+                ),
+                steps.toList(),
+            )
+            assertEquals(4, callbackThreads.size)
+            callbackThreads.forEach { thread -> assertSame(callbackThreads.first(), thread) }
+            assertNotSame(callerThread, callbackThreads.first())
+        } finally {
+            releaseFirstBefore.countDown()
+            releaseFirstHandler.countDown()
             processor.close()
         }
     }
@@ -331,6 +425,93 @@ class MarketCommandProcessorTest {
     }
 
     @Test
+    fun `before 실패는 engine을 실행하지 않고 같은 주문의 다음 접수를 막지 않는다`() {
+        val processor = InMemoryMarketCommandProcessor()
+        val expectedFailure = IllegalStateException("funding failed")
+        val handlerCalls = AtomicInteger(0)
+        val command = submit(orderId = "b1", side = Side.BUY, price = 100, quantity = 1)
+
+        try {
+            val failure = processor.submit(
+                command = command,
+                beforeMatching = { throw expectedFailure },
+                eventHandler = { handlerCalls.incrementAndGet() },
+            ).awaitFailure()
+
+            assertSame(expectedFailure, failure)
+            assertEquals(0, handlerCalls.get())
+            assertEquals(
+                listOf(entered(seq = 1, orderId = "b1", side = Side.BUY, price = 100, quantity = 1)),
+                processor.submit(command).await(),
+            )
+        } finally {
+            processor.close()
+        }
+    }
+
+    @Test
+    fun `before 성공 뒤 engine 실패는 같은 market의 대기와 신규 명령만 중단한다`() {
+        val processor = InMemoryMarketCommandProcessor()
+        val firstBeforeStarted = CountDownLatch(1)
+        val releaseFirstBefore = CountDownLatch(1)
+        val beforeMarkers = AtomicInteger(0)
+        val firstHandlerCalls = AtomicInteger(0)
+        val followingBeforeCalls = AtomicInteger(0)
+        val followingHandlerCalls = AtomicInteger(0)
+        val ethMarket = MarketId("ETH-KRW")
+
+        try {
+            val firstFuture = processor.submit(
+                command = submit(orderId = "m1", side = Side.BUY, price = 100, quantity = 1, orderType = OrderType.MARKET),
+                beforeMatching = {
+                    beforeMarkers.incrementAndGet()
+                    firstBeforeStarted.countDown()
+                    releaseFirstBefore.awaitSignal("first before release")
+                },
+                eventHandler = { firstHandlerCalls.incrementAndGet() },
+            )
+            firstBeforeStarted.awaitSignal("first before start")
+
+            val queuedFuture = processor.submit(
+                command = submit(orderId = "queued", side = Side.BUY, price = 100, quantity = 1),
+                beforeMatching = { followingBeforeCalls.incrementAndGet() },
+                eventHandler = { followingHandlerCalls.incrementAndGet() },
+            )
+            assertFalse(queuedFuture.isDone)
+            releaseFirstBefore.countDown()
+
+            val firstFailure = firstFuture.awaitFailure()
+            assertIs<IllegalArgumentException>(firstFailure)
+            assertEquals("only LIMIT order is supported", firstFailure.message)
+
+            val queuedFailure = assertIs<RejectedExecutionException>(queuedFuture.awaitFailure())
+            val newFailure = assertIs<RejectedExecutionException>(
+                processor.submit(
+                    command = submit(orderId = "new", side = Side.BUY, price = 100, quantity = 1),
+                    beforeMatching = { followingBeforeCalls.incrementAndGet() },
+                    eventHandler = { followingHandlerCalls.incrementAndGet() },
+                ).awaitFailure(),
+            )
+
+            assertSame(firstFailure, queuedFailure.cause)
+            assertSame(firstFailure, newFailure.cause)
+            assertEquals(1, beforeMarkers.get())
+            assertEquals(0, firstHandlerCalls.get())
+            assertEquals(0, followingBeforeCalls.get())
+            assertEquals(0, followingHandlerCalls.get())
+            assertEquals(
+                listOf(entered(market = ethMarket, seq = 1, orderId = "eth-b1", side = Side.BUY, price = 100, quantity = 1)),
+                processor.submit(
+                    submit(market = ethMarket, orderId = "eth-b1", side = Side.BUY, price = 100, quantity = 1),
+                ).await(),
+            )
+        } finally {
+            releaseFirstBefore.countDown()
+            processor.close()
+        }
+    }
+
+    @Test
     fun `중복 orderId 실패 후에도 기존 주문은 유지되고 worker는 계속 처리한다`() {
         val processor = InMemoryMarketCommandProcessor()
 
@@ -404,6 +585,67 @@ class MarketCommandProcessorTest {
 
         assertEquals(commandCount, events.size)
         assertEquals((1L..commandCount.toLong()).toList(), events.map { it.engineSequence }.sorted())
+    }
+
+    @Test
+    fun `close 뒤 latch를 해제하면 기존 handler와 접수된 명령은 완료되고 새 콜백은 실행하지 않는다`() {
+        val processor = InMemoryMarketCommandProcessor()
+        val firstHandlerStarted = CountDownLatch(1)
+        val releaseFirstHandler = CountDownLatch(1)
+        val firstHandlerCompletions = AtomicInteger(0)
+        val queuedBeforeCalls = AtomicInteger(0)
+        val queuedHandlerCalls = AtomicInteger(0)
+        val rejectedBeforeCalls = AtomicInteger(0)
+        val rejectedHandlerCalls = AtomicInteger(0)
+        val firstExpected = listOf(entered(seq = 1, orderId = "a1", side = Side.SELL, price = 100, quantity = 1))
+        val secondExpected = listOf(trade(seq = 2, maker = "a1", taker = "b1", side = Side.BUY, price = 100, quantity = 1))
+
+        try {
+            val firstFuture = processor.submit(
+                command = submit(orderId = "a1", side = Side.SELL, price = 100, quantity = 1),
+                eventHandler = { events ->
+                    assertEquals(firstExpected, events)
+                    firstHandlerStarted.countDown()
+                    releaseFirstHandler.awaitSignal("first handler release")
+                    firstHandlerCompletions.incrementAndGet()
+                },
+            )
+            firstHandlerStarted.awaitSignal("first handler start")
+            val queuedFuture = processor.submit(
+                command = submit(orderId = "b1", side = Side.BUY, price = 100, quantity = 1),
+                beforeMatching = { queuedBeforeCalls.incrementAndGet() },
+                eventHandler = { events ->
+                    assertEquals(secondExpected, events)
+                    queuedHandlerCalls.incrementAndGet()
+                },
+            )
+
+            processor.close()
+            val rejectedFailure = processor.submit(
+                command = submit(orderId = "new", side = Side.BUY, price = 100, quantity = 1),
+                beforeMatching = { rejectedBeforeCalls.incrementAndGet() },
+                eventHandler = { rejectedHandlerCalls.incrementAndGet() },
+            ).awaitFailure()
+
+            assertIs<RejectedExecutionException>(rejectedFailure)
+            assertEquals("market command processor is closed", rejectedFailure.message)
+            assertEquals(0, rejectedBeforeCalls.get())
+            assertEquals(0, rejectedHandlerCalls.get())
+            assertFalse(firstFuture.isDone)
+            assertFalse(queuedFuture.isDone)
+            assertEquals(0, firstHandlerCompletions.get())
+            assertEquals(0, queuedBeforeCalls.get())
+
+            releaseFirstHandler.countDown()
+            assertEquals(firstExpected, firstFuture.await())
+            assertEquals(secondExpected, queuedFuture.await())
+            assertEquals(1, firstHandlerCompletions.get())
+            assertEquals(1, queuedBeforeCalls.get())
+            assertEquals(1, queuedHandlerCalls.get())
+        } finally {
+            releaseFirstHandler.countDown()
+            processor.close()
+        }
     }
 
     @Test
@@ -508,6 +750,7 @@ class MarketCommandProcessorTest {
         val processor = InMemoryMarketCommandProcessor()
         val firstHandlerStarted = CountDownLatch(1)
         val releaseFirstHandler = CountDownLatch(1)
+        val secondBeforeCalls = AtomicInteger(0)
         val secondHandlerCalls = AtomicInteger(0)
 
         try {
@@ -544,6 +787,7 @@ class MarketCommandProcessorTest {
                     price = 100,
                     quantity = 1,
                 ),
+                beforeMatching = { secondBeforeCalls.incrementAndGet() },
             ) {
                 secondHandlerCalls.incrementAndGet()
             }
@@ -564,11 +808,17 @@ class MarketCommandProcessorTest {
                 "event persistence failed",
                 secondFailure.cause?.message,
             )
+            assertSame(firstFailure, secondFailure.cause)
+            assertEquals(0, secondBeforeCalls.get())
             assertEquals(0, secondHandlerCalls.get())
         } finally {
             releaseFirstHandler.countDown()
             processor.close()
         }
+    }
+
+    private fun CountDownLatch.awaitSignal(description: String) {
+        assertTrue(await(5, TimeUnit.SECONDS), "signal not observed: $description")
     }
 
     private fun CompletableFuture<List<MatchingEvent>>.await(): List<MatchingEvent> =

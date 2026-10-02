@@ -12,7 +12,7 @@ import com.exchange.core.common.Price
  * 같은 가격 안에서는 먼저 들어온 주문이 먼저 체결되어야 하므로
  * LinkedHashMap을 사용해 입력 순서를 유지한다.
  */
-class PriceLevel(
+internal class PriceLevel(
     /**
      * 이 가격 레벨의 가격.
      *
@@ -60,6 +60,7 @@ class PriceLevel(
      * 이 가격에서 가장 먼저 들어온 주문을 반환한다.
      *
      * 같은 가격에서는 이 주문이 가장 먼저 체결 대상이 된다.
+     * 내부 엔진이 체결량을 반영할 실제 주문 참조이며 복사본이 아니다.
      * 주문이 없으면 null을 반환한다.
      *
      * @return FIFO 순서의 첫 주문. 레벨이 비어 있으면 `null`
@@ -91,12 +92,4 @@ class PriceLevel(
      */
     fun get(orderId: OrderId): BookOrder? = orders[orderId]
 
-    /**
-     * 현재 가격 레벨의 주문 목록을 복사해서 반환한다.
-     *
-     * 내부 LinkedHashMap을 직접 노출하지 않기 위해 List로 변환한다.
-     *
-     * @return FIFO 입력 순서를 유지한 주문 목록 사본
-     */
-    fun snapshot(): List<BookOrder> = orders.values.toList()
 }

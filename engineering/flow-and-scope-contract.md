@@ -1,5 +1,7 @@
 # 개발·주문 흐름과 검증 범위
 
+> **#23 구현 연결 — 2026-10-02:** #36 병합 커밋 `59dfe6c`에서 내부 타입·잔량 직접 대입을 제한하고 내부 참조를 유지했다. before/engine/publisher/after 실패 분기, 3초 뒤 작업의 계속 실행, interrupt·close는 기존 정책대로 회귀를 보강했다. [상세 명세](state-access-boundaries-spec.md)와 [구현 읽기](state-access-boundaries-review.md)에 실제 흐름·실행 결과·남은 한계를 연결한다.
+
 2026-10-02 #20 이행 반영. 기준 통합 커밋은 `2ccd425`, 로컬 구현은 `refactor/order-usecases/20`이다. 기존 처리 순서·트랜잭션·timeout 보장을 유지하면서 이름·폴더·Bean 연결을 정리했다. 이번 실행 결과와 코드 읽기 안내는 [#20 구현 기록](order-usecases-review.md)에 분리한다.
 
 [공통 컨벤션](conventions-design.md)은 책임·이름·배치 기준, [#19 마무리 명세](architecture-check-spec.md)는 검사 적용 상태·실행 근거·후속 책임을 맡는다. 이 문서는 실제 처리 순서와 실패 후 남을 수 있는 상태를 설명한다.

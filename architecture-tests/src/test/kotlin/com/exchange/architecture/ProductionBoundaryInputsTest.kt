@@ -3,6 +3,7 @@ package com.exchange.architecture
 import com.exchange.architecture.rules.ApplicationImplementationIndependence
 import com.exchange.architecture.rules.HttpEntryBoundary
 import com.exchange.architecture.rules.NamingRules
+import com.exchange.architecture.rules.MatchingStateBoundary
 import com.exchange.architecture.rules.PortContractIndependence
 import com.exchange.architecture.policy.ProjectLayoutPolicy
 import com.exchange.architecture.support.*
@@ -44,6 +45,108 @@ class ProductionBoundaryInputsTest {
     }
 
     private fun source(name: String) = directory.resolve("src/main/kotlin/${name.replace('.', '/')}.java")
+
+    @Test fun `매칭 접근은 업무의 processor 계약과 허용 config의 구현 참조를 통과시킨다`() {
+        val input = scope(
+            "$app.QueuedMatchingWorker" to "public class QueuedMatchingWorker { private com.exchange.core.matching.MarketCommandProcessor processor; }",
+            "com.exchange.core.api.config.ExtraMatchingConfiguration" to """
+                @org.springframework.context.annotation.Configuration
+                public class ExtraMatchingConfiguration { private com.exchange.core.matching.InMemoryMarketCommandProcessor processor; }
+            """.trimIndent(),
+        )
+        val result = MatchingStateBoundary.inspect(input)
+        assertTrue(result.evaluated, result.problems.toString())
+        assertEquals(emptyList(), result.violations)
+        assertEquals(input.classesByModule.getValue("app-api").map { it.name }.toSet(), result.checkedTypes)
+        assertTrue("$app.QueuedMatchingWorker" in result.checkedTypes)
+    }
+
+    @Test fun `매칭 접근은 새 업무의 엔진 내부 주문과 실행기 구현 직접 참조를 거절한다`() {
+        val targets = listOf("MatchingEngine", "BookOrder", "PriceLevel", "OrderBook", "InMemoryMarketCommandProcessor")
+            .map { "com.exchange.core.matching.$it" }
+        val fields = targets.mapIndexed { i, target -> "private $target value$i;" }.joinToString("\n")
+        val origin = "$app.DirectMatchingWorker"
+        val input = scope(origin to "public class DirectMatchingWorker {\n$fields\n}")
+        val result = MatchingStateBoundary.inspect(input)
+        assertTrue(result.evaluated, result.problems.toString())
+        assertEquals(targets.map { origin to it }.toSet(), result.violations.map { it.originType to it.targetType }.toSet())
+        assertTrue(result.violations.all { it.ruleId == "ARCH-07" && it.sourceFile == "DirectMatchingWorker.java" })
+    }
+
+    @Test fun `매칭 접근의 엔진 직접 호출은 확인 가능한 실제 소스 행을 남긴다`() {
+        val origin = "$app.DirectEngineCaller"
+        val input = scope(origin to """
+            public class DirectEngineCaller {
+                public void run(com.exchange.core.matching.MatchingCommand command) {
+                    new com.exchange.core.matching.MatchingEngine().process(command);
+                }
+            }
+        """.trimIndent())
+        val result = MatchingStateBoundary.inspect(input)
+        assertTrue(result.evaluated, result.problems.toString())
+        assertTrue(result.violations.any {
+            it.originType == origin && it.targetType == "com.exchange.core.matching.MatchingEngine" &&
+                it.description.contains("process(") && it.lineNumber != null && it.lineNumber > 0
+        }, result.violations.toString())
+    }
+
+    @Test fun `매칭 접근은 config에서도 엔진과 내부 주문 직접 참조를 허용하지 않는다`() {
+        val origin = "com.exchange.core.api.config.EngineConfiguration"
+        val input = scope(origin to """
+            @org.springframework.context.annotation.Configuration
+            public class EngineConfiguration {
+                private com.exchange.core.matching.MatchingEngine engine;
+                private com.exchange.core.matching.OrderBook book;
+            }
+        """.trimIndent())
+        val result = MatchingStateBoundary.inspect(input)
+        assertTrue(result.evaluated, result.problems.toString())
+        assertEquals(setOf("com.exchange.core.matching.MatchingEngine", "com.exchange.core.matching.OrderBook"), result.violations.map { it.targetType }.toSet())
+    }
+
+    @Test fun `매칭 접근의 구현 예외는 정확한 config 위치와 Configuration 선언을 모두 요구한다`() {
+        val target = "com.exchange.core.matching.InMemoryMarketCommandProcessor"
+        val origins = listOf("$app.FakeConfiguration", "com.exchange.core.api.config.PlainConfiguration", "com.exchange.core.api.config.extra.NestedConfiguration")
+        val input = scope(
+            origins[0] to "@org.springframework.context.annotation.Configuration public class FakeConfiguration { private $target value; }",
+            origins[1] to "public class PlainConfiguration { private $target value; }",
+            origins[2] to "@org.springframework.context.annotation.Configuration public class NestedConfiguration { private $target value; }",
+        )
+        val result = MatchingStateBoundary.inspect(input)
+        assertTrue(result.evaluated, result.problems.toString())
+        assertEquals(origins.map { it to target }.toSet(), result.violations.map { it.originType to it.targetType }.toSet())
+    }
+
+    @Test fun `매칭 접근은 빠진 운영 모듈과 수집 오류를 위반 없는 통과로 바꾸지 않는다`() {
+        val input = scope()
+        val missing = input.copy(classesByModule = input.classesByModule - "app-api")
+        val existingProblem = ScopeProblem(ScopeProblemCode.READ_FAILURE, "damaged.class")
+        for (bad in listOf(missing, input.copy(problems = listOf(existingProblem)))) {
+            val result = MatchingStateBoundary.inspect(bad)
+            assertTrue(!result.evaluated)
+            assertTrue(result.problems.isNotEmpty())
+            assertEquals(emptyList(), result.violations)
+            assertEquals(emptySet(), result.checkedTypes)
+            if (bad.problems.isNotEmpty()) assertTrue(existingProblem in result.problems)
+        }
+    }
+
+    @Test fun `매칭 접근 대상 코드가 실제 출력에서 빠지면 준비 오류로 중단한다`() {
+        val outputs = ProductionScope.outputs().filterNot { it.module == "app-api" }
+        val input = ProductionScopeImporter().load(outputs, ProductionScope.expectations(), ProductionScope.nonProductionTargets())
+        val result = MatchingStateBoundary.inspect(input)
+        assertTrue(!result.evaluated)
+        assertTrue(result.problems.any { it.code == ScopeProblemCode.MISSING_MODULE && it.subject == "app-api" })
+        assertEquals(emptyList(), result.violations)
+    }
+
+    @Test fun `매칭 접근 금지는 이름과 무관하게 HTTP 보조 코드에도 적용한다`() {
+        val origin = "$http.LocalMatchingMapper"
+        val input = scope(origin to "public class LocalMatchingMapper { private com.exchange.core.matching.MatchingEngine engine; }")
+        val result = MatchingStateBoundary.inspect(input)
+        assertTrue(result.evaluated, result.problems.toString())
+        assertEquals(setOf(origin to "com.exchange.core.matching.MatchingEngine"), result.violations.map { it.originType to it.targetType }.toSet())
+    }
 
     @Test fun `전체 운영 HTTP와 application을 기존 검사에 연결한다`() {
         val input = scope()

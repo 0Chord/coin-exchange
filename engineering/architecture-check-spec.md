@@ -1,5 +1,7 @@
 # #19 마무리 상세 명세 — 현재 기준·흐름·완료 근거
 
+> **#23 구현 연결 — 2026-10-02:** #36 병합 통합 커밋 `59dfe6c`에서 내부 타입·잔량 직접 대입을 제한하고 내부 공유 참조를 유지했다. P09 매칭 접근 검사를 추가하고 콜백·실패·3초·interrupt·close를 실제 실행 테스트로 보강했다. [상세 명세](state-access-boundaries-spec.md), [구현 읽기](state-access-boundaries-review.md), [실행 기록](state-access-boundaries-verification.json)에 현재 진행·완료 결과를 연결한다. 아래 이전 병합 기록은 보존한다.
+
 > **#21 구현 업데이트 — 2026-10-02:** 저장 포트·기술 구현 12개 파일을 이동하고 설정별 Bean 연결과 기존 SQL·트랜잭션을 유지했다. P08에 기존 17개 이름 규칙·최종 폴더 정책을 연결하고 네 이행 폴더를 종료했다. 제품·DB 81개와 구조 353개를 재실행해 실패·오류·skip 없이 통과했고 필수 P01~P08을 확인했다. 로컬 구현 결과이며 PR·원격 CI·병합은 별도다. [명세](storage-boundaries-spec.md)와 [구현 기록](storage-boundaries-review.md)을 현재 근거로 읽는다. 아래 #19/#20의 이전 실행 기록은 보존한다.
 
 > **현재 운영 적용 업데이트 — #20, 2026-10-02:** 주문 제출·취소 UseCase, MatchingCoordinator, OrderController와 내부 Service의 이름·폴더·Bean 연결을 이행했다. 아래 #19 마무리 시점의 커밋·다섯 검사·PR/실행 기록은 역사로 보존한다. 현재 #20 명세는 [상세 설계](order-usecases-spec.md), 실제 흐름·파일·실행 결과는 [구현 기록](order-usecases-review.md)에 둔다.
@@ -10,7 +12,8 @@
 | P06 | 전체 실제 HTTP·변환 코드의 ARCH-03 | HTTP 요청·JSON·금액은 별도 API/DB 테스트 |
 | P07 | 전체 실제 application의 ARCH-04. 일반 보조 코드도 포함 | config는 구현 조립 허용. 실제 Spring 조립·프록시는 통합 테스트 |
 | P08 | 저장·발행·Repository·Entity를 포함한 이름 17개 규칙과 전체 main 원본의 정확한 폴더·package | 네 이행 폴더 종료. 일반 이름의 업무 의미와 동적 실행은 리뷰·제품 테스트 |
-| 보고서 확인 | P01~P08 각각 한 번 실행·성공. 누락·중복·skip·실패 거절 | 원격 PR·CI·병합은 이번 로컬 구현과 별도 |
+| P09 | app-api 전체에서 매칭 엔진·내부 주문 직접 참조 금지, 정확한 config의 Configuration에서만 processor 구현 허용 | 직접 참조 범위이며 runtime·Java/reflection 차단이 아님. DB·불변 계약은 #22 |
+| 보고서 확인 | P01~P09 각각 한 번 실행·성공. 누락·중복·skip·실패 거절 | 원격 PR·CI·병합은 이번 로컬 구현과 별도 |
 
 
 상태: **문서 마무리 로컬 구현·대조 완료**. 2026-10-01. 공통 컨벤션·개발/주문 흐름을 저장소 파일로 정리하고 README를 연결했다. 제품·검사 코드와 테스트는 변경하지 않았다. 마무리 PR·CI·병합과 원격 #19 완료 기록은 다음 단계다.

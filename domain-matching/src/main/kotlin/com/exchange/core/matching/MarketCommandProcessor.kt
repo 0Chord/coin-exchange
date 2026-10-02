@@ -161,7 +161,9 @@ private class MarketWorker(
      * [beforeMatching], 엔진 처리, [eventHandler] 순서로 실행하고 모두 성공해야 완료된다.
      * 사전 작업 자체의 실패는 해당 command만 거절한다. 사전 작업 성공 후 엔진이 실패하거나
      * eventHandler가 실패하면 worker를 unavailable 상태로 만든다.
-     * 사전 작업 없이 엔진 검증에서 실패한 경우는 기존처럼 해당 command만 거절한다.
+     * 사전 작업이 없고 엔진이 정상 반환하기 전에 실패하면 해당 command만 거절한다.
+     * 이 분기는 모든 엔진 예외에서 상태가 원복된다는 보장은 아니다.
+     * 사전 작업의 실제 부작용과 무관하게, 함수가 전달되어 정상 반환했는지로 중단을 판단한다.
      * 마켓 중단은 추가 처리를 막을 뿐이며, 이미 반영한 예약·엔진 상태·저장 결과를 복구하지 않는다.
      *
      * @param command 이 worker의 [marketId]와 일치해야 하는 입력
