@@ -106,11 +106,11 @@ class NamingPlacementGradleWiringTest {
         assertEquals(emptyList(), snapshot.problems)
         assertEquals(ProductionScope.requiredTypes.keys, snapshot.roots.map { it.module }.toSet())
         val all = snapshot.roots.flatMap { it.files }
-        assertTrue(all.any { it.fileName.toString() == "OrderSubmissionService.kt" })
+        assertTrue(all.any { it.fileName.toString() == "SubmitOrderUseCase.kt" })
         assertTrue(all.any { it.fileName.toString() == "Balance.kt" })
         assertTrue(all.none { it.toString().contains("/src/test/") || it.toString().contains("benchmark-jmh") })
         assertTrue(snapshot.roots.filter { it.relativeRoot == "src/main/kotlin" }.all { it.files.isNotEmpty() })
-        // 수집 연결을 확인할 뿐 목표 ARCH-05 정책을 운영 코드에 활성화하지 않는다.
+        // 원본 전달은 여기서 확인하고, 운영 코드의 이름·배치 정책은 P08에서 별도로 검사한다.
     }
     @Test fun `NAME-22 전달 모듈 루트 파일 행이 누락되거나 충돌하면 준비 오류다`() {
         fun row(kind: String, vararg values: String) = kind + "\t" + values.joinToString("\t") { Base64.getUrlEncoder().encodeToString(it.toByteArray()) }

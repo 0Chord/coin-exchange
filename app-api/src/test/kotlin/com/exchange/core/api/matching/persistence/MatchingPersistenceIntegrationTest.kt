@@ -1,6 +1,6 @@
 package com.exchange.core.api.matching.persistence
 
-import com.exchange.core.api.matching.MatchingApplicationService
+import com.exchange.core.api.matching.application.MatchingCoordinator
 import com.exchange.core.api.matching.publish.MatchingEventPublisher
 import com.exchange.core.common.MarketId
 import com.exchange.core.common.OrderId
@@ -26,7 +26,7 @@ import kotlin.test.assertTrue
  */
 class MatchingPersistenceIntegrationTest : ExchangeIntegrationTest() {
     @Autowired
-    private lateinit var applicationService: MatchingApplicationService
+    private lateinit var applicationService: MatchingCoordinator
 
     @Autowired
     private lateinit var eventPublisher: MatchingEventPublisher

@@ -1,6 +1,6 @@
-package com.exchange.core.api.order
+package com.exchange.core.api.order.application
 
-import com.exchange.core.api.matching.MatchingApplicationService
+import com.exchange.core.api.matching.application.MatchingCoordinator
 import com.exchange.core.fee.TradingFeePolicySnapshot
 import com.exchange.core.matching.MatchingEvent
 import com.exchange.core.matching.SubmitOrderCommand
@@ -20,14 +20,14 @@ import com.exchange.core.order.TimeInForce
  * 별도 경계이며, 뒤쪽 정산 실패가 이미 커밋된 작업이나 매칭 엔진 상태를 되돌리지는 않는다.
  *
  * @property fundingService 주문 예약과 잔고 hold 변경을 담당하는 서비스
- * @property matchingService 마켓 작업 스레드에 주문을 전달하는 서비스
+ * @property matchingCoordinator 마켓 작업 스레드에 주문과 전후 작업을 전달하는 조율자
  * @property tradeSettlementService 각 체결의 양쪽 예약·잔고와 수수료 원장을 함께 반영하는 서비스
  * @property market 주문을 접수할 마켓의 자산과 수량 단위 정보
  * @property feePolicySnapshot 이번 주문에 적용할 수수료 정책
  */
-class OrderSubmissionService(
+class SubmitOrderUseCase(
     private val fundingService: OrderFundingService,
-    private val matchingService: MatchingApplicationService,
+    private val matchingCoordinator: MatchingCoordinator,
     private val tradeSettlementService: TradeSettlementService,
     private val market: MarketDefinition,
     private val feePolicySnapshot: TradingFeePolicySnapshot,
@@ -56,7 +56,7 @@ class OrderSubmissionService(
             "only GTC order is supported"
         }
 
-        return matchingService.process(
+        return matchingCoordinator.process(
             command = command,
             beforeMatching = {
                 fundingService.reserve(

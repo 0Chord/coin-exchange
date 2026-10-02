@@ -1,7 +1,7 @@
 package com.exchange.core
 
-import com.exchange.core.api.order.OrderCancellationService
-import com.exchange.core.api.order.OrderSubmissionService
+import com.exchange.core.api.order.application.CancelOrderUseCase
+import com.exchange.core.api.order.application.SubmitOrderUseCase
 import com.exchange.core.support.ExchangeIntegrationTest
 import org.junit.jupiter.api.Test
 import org.springframework.beans.factory.annotation.Autowired
@@ -16,18 +16,18 @@ import kotlin.test.assertNotNull
  */
 class ExchangeCoreApplicationTests : ExchangeIntegrationTest() {
     @Autowired
-    private lateinit var orderSubmissionService: OrderSubmissionService
+    private lateinit var submitOrderUseCase: SubmitOrderUseCase
 
     @Autowired
-    private lateinit var orderCancellationService: OrderCancellationService
+    private lateinit var cancelOrderUseCase: CancelOrderUseCase
 
     @Autowired
     private lateinit var dataSource: DataSource
 
     @Test
     fun contextLoads() {
-        assertNotNull(orderSubmissionService)
-        assertNotNull(orderCancellationService)
+        assertNotNull(submitOrderUseCase)
+        assertNotNull(cancelOrderUseCase)
         dataSource.connection.use { connection ->
             assertEquals("PostgreSQL", connection.metaData.databaseProductName)
         }

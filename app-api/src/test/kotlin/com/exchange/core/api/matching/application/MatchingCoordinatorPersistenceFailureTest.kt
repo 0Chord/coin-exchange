@@ -1,4 +1,4 @@
-package com.exchange.core.api.matching
+package com.exchange.core.api.matching.application
 
 import com.exchange.core.api.matching.persistence.MatchingEventRepository
 import com.exchange.core.api.matching.persistence.MatchingEventStore
@@ -27,9 +27,9 @@ import kotlin.test.assertTrue
  * 발행자 대역이나 호출 횟수 대신 전파된 예외, 후속 명령의 결과와 DB 저장 상태를 확인한다.
  * 주문 자금 처리가 아니라 매칭 이벤트 저장 실패 경계를 검증하므로 매칭 서비스를 직접 호출한다.
  */
-class MatchingApplicationServicePersistenceFailureTest : ExchangeIntegrationTest() {
+class MatchingCoordinatorPersistenceFailureTest : ExchangeIntegrationTest() {
     @Autowired
-    private lateinit var service: MatchingApplicationService
+    private lateinit var service: MatchingCoordinator
 
     @Autowired
     private lateinit var eventStore: MatchingEventStore

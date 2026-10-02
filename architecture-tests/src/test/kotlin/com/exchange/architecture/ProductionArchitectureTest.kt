@@ -2,8 +2,14 @@ package com.exchange.architecture
 
 import com.exchange.architecture.rules.ProductionDependencyIsolation
 import com.exchange.architecture.rules.BeanAssemblyRules
+import com.exchange.architecture.rules.HttpEntryBoundary
+import com.exchange.architecture.rules.ApplicationImplementationIndependence
+import com.exchange.architecture.rules.NamingRules
 import com.exchange.architecture.policy.ProjectLayoutPolicy
 import com.exchange.architecture.support.NamingPlacementScope
+import com.exchange.architecture.support.ProductionBoundaryInputs
+import com.exchange.architecture.support.MainSourceSnapshot
+import com.exchange.architecture.support.SourcePlacement
 import com.exchange.architecture.support.IsolationInputs
 import com.exchange.architecture.rules.DomainTechnologyIndependence
 import com.exchange.architecture.rules.ModuleDependencyDirection
@@ -18,6 +24,17 @@ import kotlin.test.assertTrue
 
 /** 실제 운영 출력에 규칙을 적용한다. 각 검사는 준비 조건을 확인하며 실행 순서에 의존하지 않는다. */
 class ProductionArchitectureTest {
+    @Test
+    fun `P07 실제 application 진입점과 협력자에 ARCH-04를 적용한다`() {
+        val scope = ProductionScopeImporter().load(ProductionScope.outputs(), ProductionBoundaryInputs.expectations(), ProductionScope.nonProductionTargets())
+        val result = ApplicationImplementationIndependence.inspect(scope, ProductionBoundaryInputs.application(scope))
+        assertTrue(result.evaluated, "ARCH-04 미평가 · 준비 오류: ${result.problems}")
+        println("P07 평가: ARCH-04 · 실제 application ${result.applicationTypes.size}개: ${result.applicationTypes}")
+        println("config 조립 ${result.configurationTypes.size}개: ${result.configurationTypes} · 직접 참조 ${result.referenceCount}개")
+        assertTrue(result.violations.isEmpty(), "ARCH-04 위반:\n${result.violations.joinToString("\n")}")
+        println("ARCH-04 통과. 업무는 계약을 사용하고 구체 구현 생성은 config에서 허용합니다. 실제 Spring 조립·트랜잭션은 app-api 테스트로 확인합니다.")
+    }
+
     @Test
     fun `P01 전체 운영 출력과 역할을 검증한 뒤 동일 ARCH-01 규칙을 적용한다`() {
         val registration = ModuleRegistration.inspect(ProductionScope.inventory())
@@ -61,7 +78,7 @@ class ProductionArchitectureTest {
         println("운영 모듈별 클래스: ${scope.classesByModule.mapValues { it.value.size }}")
         println("내부 직접 타입 참조: $internalReferences / main 구성: ${snapshot.configurations.size} / 직접 프로젝트 선언: ${declarations.size}")
         println("ARCH-08에 남기는 비운영 목적지: $excluded")
-        println("ARCH-06은 P03, Bean 조립은 P05에서 평가합니다. 미평가 규칙: ARCH-03/04/05 이름·폴더/07. 계산·DB·실행 순서 검증은 포함하지 않습니다.")
+        println("ARCH-06은 P03, Bean 조립은 P05, HTTP·application은 P06~P07, 주문 이름·전체 파일 폴더는 P08에서 평가합니다. ARCH-07·계산·DB·실행 순서 검증은 포함하지 않습니다.")
         assertTrue(result.violations.isEmpty(), "ARCH-02 위반:\n${result.violations.joinToString("\n") { it.report() }}")
         println("ARCH-02 통과 · 준비 오류 0, 위반 0")
     }
@@ -84,7 +101,7 @@ class ProductionArchitectureTest {
         println("공개 계약 ${result.contractCount}개 · 등록 영속 모델: ${ProductionScope.persistenceTypes}")
         assertTrue(result.violations.isEmpty(), "ARCH-06 위반:\n${result.violations.joinToString("\n") { it.report() }}")
         println("ARCH-06 통과 · 준비 오류 0, 위반 0. 포트 메서드·DB는 실행하지 않았습니다.")
-        println("한계: 미등록 포트의 의미, 임의 DTO 내부, 런타임 값·동작. 미평가 규칙: ARCH-03/04/05 이름·폴더/07. Bean 조립은 P05에서 평가합니다.")
+        println("한계: 미등록 포트의 의미, 임의 DTO 내부, 런타임 값·동작. Bean 조립·HTTP·application·이번 이름·파일 폴더는 P05~P08에서 평가합니다. ARCH-07은 후속 범위입니다.")
     }
 
     @Test
@@ -121,6 +138,36 @@ class ProductionArchitectureTest {
             factoryRule.check(classes)
         }
         println("P05 통과 · 운영 ${input.classes.size}개 타입에 업무 자동 등록 금지와 config Bean 선언 검사 적용")
-        println("HTTP Controller·Advice 자동 등록은 허용합니다. 이름·폴더 전체 검사는 #20~21에서 활성화하며 실제 Spring 주입 성공을 검증한 것은 아닙니다.")
+        println("HTTP Controller·Advice 자동 등록은 허용합니다. P08은 주문 이름·전체 파일 폴더를 평가하고 저장 이름·역할 위치는 #21로 남깁니다. 실제 Spring 주입 성공을 검증한 것은 아닙니다.")
+    }
+
+    @Test
+    fun `P06 실제 전체 HTTP 진입점에 ARCH-03을 적용한다`() {
+        val scope = ProductionScopeImporter().load(ProductionScope.outputs(), ProductionBoundaryInputs.expectations(), ProductionScope.nonProductionTargets())
+        val result = HttpEntryBoundary.inspect(scope, ProductionBoundaryInputs.http(scope))
+        assertTrue(result.evaluated, "ARCH-03 미평가 · 준비 오류: ${result.problems}")
+        println("P06 평가: ARCH-03 · 실제 HTTP ${result.apiTypes.size}개: ${result.apiTypes} · 직접 참조 ${result.referenceCount}개")
+        assertTrue(result.violations.isEmpty(), "ARCH-03 위반:\n${result.violations.joinToString("\n")}")
+        println("ARCH-03 통과. UseCase 호출·데이터 변환을 허용하고 저장·엔진·협력자 직접 참조를 금지합니다. 업무 실행·JSON·HTTP 상태 코드는 app-api 테스트로 확인합니다.")
+    }
+
+    @Test
+    fun `P08 주문 이름과 전체 main 원본의 실제 폴더에 ARCH-05를 적용한다`() {
+        val modules = ProductionScope.requiredTypes.keys
+        val scope = ProductionScopeImporter().load(ProductionScope.outputs(), ProductionBoundaryInputs.expectations(), ProductionScope.nonProductionTargets())
+        val policy = ProjectLayoutPolicy.duringOrderMigration
+        val names = NamingRules.inspectOrderTypes(scope, policy, modules)
+        assertTrue(names.evaluated, "ARCH-05 이름 미평가 · 준비 오류: ${names.problems}")
+        val sources = MainSourceSnapshot.read(System.getProperty("architecture.mainSources"), modules)
+        assertTrue(sources.problems.isEmpty(), "ARCH-05 원본 미평가 · 준비 오류: ${sources.problems}")
+        val placement = SourcePlacement.inspect(sources.roots, policy, modules).result
+        assertTrue(placement.evaluated, "ARCH-05 원본 미평가 · 준비 오류: ${placement.problems}")
+        println("P08 평가: ARCH-05 · 이름 ${names.evaluatedTypes.size}개, 전체 main 원본 ${placement.evaluatedFiles.size}개")
+        names.rules.forEach { println("이름 규칙 ${it.id}: ${it.targets.size}개 ${it.targets}") }
+        placement.evaluatedFiles.forEach { println("원본 검사: $it") }
+        assertTrue(names.violations.isEmpty() && placement.violations.isEmpty(),
+            "ARCH-05 위반:\n${(names.violations + placement.violations).joinToString("\n")}")
+        println("ARCH-05 통과. #21 이행 폴더: ${policy.folders.filter { it.id.startsWith("legacy-") }}")
+        println("저장 포트·구현·Repository·Entity의 이름·역할 위치 규칙은 #21 미활성. 네 이행 폴더도 원본 읽기·package 일치와 P06~P07 금지 의존 검사를 받습니다. 일반 클래스 이름의 업무 의미는 리뷰합니다.")
     }
 }

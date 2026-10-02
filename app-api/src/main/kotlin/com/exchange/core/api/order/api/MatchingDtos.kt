@@ -1,4 +1,4 @@
-package com.exchange.core.api.matching
+package com.exchange.core.api.order.api
 
 import com.exchange.core.order.OrderType
 import com.exchange.core.order.Side

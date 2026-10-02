@@ -1,4 +1,4 @@
-package com.exchange.core.api.order
+package com.exchange.core.api.order.application
 
 import com.exchange.core.api.config.LedgerPersistenceConfig
 import com.exchange.core.common.Amount

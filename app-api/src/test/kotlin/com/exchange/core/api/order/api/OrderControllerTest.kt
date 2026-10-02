@@ -1,4 +1,4 @@
-package com.exchange.core.api.matching
+package com.exchange.core.api.order.api
 
 import com.exchange.core.api.matching.persistence.MatchingEventRepository
 import com.exchange.core.api.matching.persistence.MatchingEventType
@@ -34,7 +34,7 @@ import kotlin.test.assertNull
  * 각 테스트는 새 context에서 시작하므로 남은 주문이나 엔진 순번이 다른 테스트에 섞이지 않는다.
  */
 @AutoConfigureMockMvc
-class MatchingControllerTest : ExchangeIntegrationTest() {
+class OrderControllerTest : ExchangeIntegrationTest() {
     @Autowired
     private lateinit var mockMvc: MockMvc
 

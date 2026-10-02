@@ -1,4 +1,4 @@
-package com.exchange.core.api.matching
+package com.exchange.core.api.order.api
 
 import com.exchange.core.matching.MatchingEvent
 import com.exchange.core.matching.OrderCancelRejected
