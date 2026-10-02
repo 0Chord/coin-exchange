@@ -73,7 +73,7 @@ flowchart TD
 - BUY는 거래대금과 최대 maker/taker 수수료를 미리 예약하고, SELL은 base 수량을 예약한 뒤 판매대금에서 수수료를 차감합니다.
 - 조건부 잔고 UPDATE와 예약 행의 `FOR UPDATE` 잠금을 사용합니다. 자금 예약·예약 해제·체결 정산마다 필요한 변경을 같은 트랜잭션에 묶습니다.
 
-관련 코드: [OrderFundingService](app-api/src/main/kotlin/com/exchange/core/api/order/application/OrderFundingService.kt), [OrderReservation](domain-order/src/main/kotlin/com/exchange/core/order/OrderReservation.kt), [PostgresBalanceStore](app-api/src/main/kotlin/com/exchange/core/api/ledger/persistence/PostgresBalanceStore.kt)
+관련 코드: [OrderFundingService](app-api/src/main/kotlin/com/exchange/core/api/order/application/OrderFundingService.kt), [OrderReservation](domain-order/src/main/kotlin/com/exchange/core/order/OrderReservation.kt), [PostgresBalanceStore](app-api/src/main/kotlin/com/exchange/core/api/ledger/infrastructure/persistence/PostgresBalanceStore.kt)
 
 ### 3. 수수료는 체결마다 버리지 않고 주문별로 누적
 
@@ -117,7 +117,7 @@ BUY는 부분 체결 후에도 `올림(남은 지정가 대금 × 최대 요율 
 | [`architecture-tests`](architecture-tests) | 운영 코드를 읽는 구조 검사와 정상·고의 위반·누락 예제. 거래 실행 코드가 아님 |
 
 도메인 모듈의 계산은 Spring이나 DB 없이 실행할 수 있습니다. `app-api`에서 주문 유즈케이스와 매칭 조율자를 명시적인 `@Bean`으로 조립하고, 저장소 인터페이스에 PostgreSQL 구현체를 연결합니다.
-매칭 이벤트는 JPA로, 잔고·예약·원장은 JDBC로 저장합니다. 잔고의 조건부 UPDATE와 예약 행 잠금은 [PostgresBalanceStore](app-api/src/main/kotlin/com/exchange/core/api/ledger/persistence/PostgresBalanceStore.kt), [PostgresOrderReservationStore](app-api/src/main/kotlin/com/exchange/core/api/order/persistence/PostgresOrderReservationStore.kt)에서 직접 확인할 수 있습니다.
+매칭 이벤트는 JPA로, 잔고·예약·원장은 JDBC로 저장합니다. 잔고의 조건부 UPDATE와 예약 행 잠금은 [PostgresBalanceStore](app-api/src/main/kotlin/com/exchange/core/api/ledger/infrastructure/persistence/PostgresBalanceStore.kt), [PostgresOrderReservationStore](app-api/src/main/kotlin/com/exchange/core/api/order/infrastructure/persistence/PostgresOrderReservationStore.kt)에서 직접 확인할 수 있습니다.
 스키마 변경은 [Flyway migration](app-api/src/main/resources/db/migration)으로 관리합니다.
 
 ## 빠르게 검증하기
@@ -228,8 +228,9 @@ HTTP 경계는 MockMvc로 호출하지만 서비스나 저장소를 mock으로 �
 - [#25 초기 상세 명세](engineering/ci-result-reading-spec.md): 독립 구조 CI 작업, 규칙 위반·입력 누락·환경 실패의 결과 읽기 절차와 초기 완료 기준.
 - [#25 구현 흐름과 검증 근거](engineering/ci-result-reading-review.md): 실패 이유부터 읽는 흐름, 실제 변경과 로컬 검증, 원격 CI에서 남은 확인.
 - [#20 상세 명세](engineering/order-usecases-spec.md): 주문 UseCase·MatchingCoordinator·OrderController의 이름/배치/Bean 연결과 ARCH-03·04·05 운영 적용 범위와 제외 사항입니다.
+- [#21 저장 경계 상세 명세](engineering/storage-boundaries-spec.md): 저장 포트·구현의 목표 위치, 설정별 Bean 연결, SQL·트랜잭션 보존과 ARCH-05 전체 활성화의 세 구현 단위. [구현·검증 기록](engineering/storage-boundaries-review.md)에 단위별 결과를 남깁니다.
 
-현재 운영에 적용한 것은 ARCH-01·02·03·04·06·08, 업무 자동 등록 금지·config Bean 선언, 주문·HTTP·조립 이름과 전체 main 파일 폴더 검사입니다. 필수 운영 기록은 P01~P08입니다. 저장·발행의 이름·역할 위치 이행은 #21로 남기며, 네 기존 저장·발행 폴더도 파일 읽기·package 일치·금지 의존 검사에서 제외하지 않습니다. 상태 접근·실행 경계는 #22~23의 후속 범위입니다.
+현재 운영에 적용한 것은 ARCH-01·02·03·04·06·08, 업무 자동 등록 금지·config Bean 선언, 저장·발행을 포함한 이름 17개 규칙과 전체 main 파일 폴더 검사입니다. 필수 운영 기록은 P01~P08입니다. 네 이행 폴더는 종료했으며 새 저장·발행 위치에 기존 의존·포트 계약 검사를 유지합니다. 상태 접근·실행 경계는 #22~23의 후속 범위입니다.
 
 구조 검사 통과는 금액·처리 순서·DB 원자성·실제 Spring 주입 성공을 증명하지 않습니다. 불량 예제를 탐지해서 테스트가 통과하는 것과 운영 코드의 준수 검사는 구분합니다. 전체 클래스의 업무 역할을 추론하거나 새 클래스마다 이름을 등록하는 방식도 아닙니다.
 
