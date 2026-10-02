@@ -1,4 +1,4 @@
-package com.exchange.core.api.order
+package com.exchange.core.api.order.application
 
 import com.exchange.core.common.OrderId
 import com.exchange.core.common.Price

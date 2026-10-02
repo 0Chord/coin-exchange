@@ -14,7 +14,7 @@
 
 ## 주문 한 건 따라가기
 
-[OrderLifecycleE2ETest](app-api/src/test/kotlin/com/exchange/core/api/order/OrderLifecycleE2ETest.kt)의 전량 체결 시나리오입니다.
+[OrderLifecycleE2ETest](app-api/src/test/kotlin/com/exchange/core/api/order/application/OrderLifecycleE2ETest.kt)의 전량 체결 시나리오입니다.
 실제 BTC 시세가 아니라 계산을 확인하기 위한 테스트 값입니다. 이 테스트는 BTC 수량의 소수 자릿수를 0으로 두며, maker 수수료는 0.5%, taker 수수료는 1%입니다.
 
 BTC-KRW에서 BTC는 사고파는 자산(`base`), KRW는 대금을 지불하는 자산(`quote`)입니다.
@@ -38,7 +38,7 @@ BTC-KRW에서 BTC는 사고파는 자산(`base`), KRW는 대금을 지불하는 
 
 ```mermaid
 flowchart TD
-    API["HTTP 주문 접수"] --> Submission["OrderSubmissionService"]
+    API["HTTP 주문 접수"] --> Submission["SubmitOrderUseCase"]
     Submission --> Worker["마켓별 single-writer 작업 스레드"]
     Worker --> Funding["1. 자금 예약<br/>OrderFundingService<br/>DB 트랜잭션"]
     Funding --> Matching["2. 가격·시간 우선순위 매칭<br/>메모리 주문장"]
@@ -73,7 +73,7 @@ flowchart TD
 - BUY는 거래대금과 최대 maker/taker 수수료를 미리 예약하고, SELL은 base 수량을 예약한 뒤 판매대금에서 수수료를 차감합니다.
 - 조건부 잔고 UPDATE와 예약 행의 `FOR UPDATE` 잠금을 사용합니다. 자금 예약·예약 해제·체결 정산마다 필요한 변경을 같은 트랜잭션에 묶습니다.
 
-관련 코드: [OrderFundingService](app-api/src/main/kotlin/com/exchange/core/api/order/OrderFundingService.kt), [OrderReservation](domain-order/src/main/kotlin/com/exchange/core/order/OrderReservation.kt), [PostgresBalanceStore](app-api/src/main/kotlin/com/exchange/core/api/ledger/persistence/PostgresBalanceStore.kt)
+관련 코드: [OrderFundingService](app-api/src/main/kotlin/com/exchange/core/api/order/application/OrderFundingService.kt), [OrderReservation](domain-order/src/main/kotlin/com/exchange/core/order/OrderReservation.kt), [PostgresBalanceStore](app-api/src/main/kotlin/com/exchange/core/api/ledger/persistence/PostgresBalanceStore.kt)
 
 ### 3. 수수료는 체결마다 버리지 않고 주문별로 누적
 
@@ -101,7 +101,7 @@ BUY는 부분 체결 후에도 `올림(남은 지정가 대금 × 최대 요율 
 - 구매자와 판매자에게 청구한 수수료는 `SYSTEM:{asset}:FEE_REVENUE` 계정에 기록합니다.
 - 원장 저장 후 잔고 지급에 실패해도 원장·예약·잔고·소수 나머지가 함께 롤백되는지 실제 DB에서 확인합니다.
 
-관련 코드: [LedgerTransaction](domain-ledger/src/main/kotlin/com/exchange/core/ledger/LedgerTransaction.kt), [TradeSettlementService](app-api/src/main/kotlin/com/exchange/core/api/order/TradeSettlementService.kt)
+관련 코드: [LedgerTransaction](domain-ledger/src/main/kotlin/com/exchange/core/ledger/LedgerTransaction.kt), [TradeSettlementService](app-api/src/main/kotlin/com/exchange/core/api/order/application/TradeSettlementService.kt)
 
 ## 모듈 구성
 
@@ -116,7 +116,7 @@ BUY는 부분 체결 후에도 `올림(남은 지정가 대금 × 최대 요율 
 | [`benchmark-jmh`](benchmark-jmh) | 명령 생성·매칭·마켓 프로세서용 JMH 벤치마크 |
 | [`architecture-tests`](architecture-tests) | 운영 코드를 읽는 구조 검사와 정상·고의 위반·누락 예제. 거래 실행 코드가 아님 |
 
-도메인 모듈의 계산은 Spring이나 DB 없이 실행할 수 있습니다. `app-api`에서 application service를 명시적인 `@Bean`으로 조립하고, 저장소 인터페이스에 PostgreSQL 구현체를 연결합니다.
+도메인 모듈의 계산은 Spring이나 DB 없이 실행할 수 있습니다. `app-api`에서 주문 유즈케이스와 매칭 조율자를 명시적인 `@Bean`으로 조립하고, 저장소 인터페이스에 PostgreSQL 구현체를 연결합니다.
 매칭 이벤트는 JPA로, 잔고·예약·원장은 JDBC로 저장합니다. 잔고의 조건부 UPDATE와 예약 행 잠금은 [PostgresBalanceStore](app-api/src/main/kotlin/com/exchange/core/api/ledger/persistence/PostgresBalanceStore.kt), [PostgresOrderReservationStore](app-api/src/main/kotlin/com/exchange/core/api/order/persistence/PostgresOrderReservationStore.kt)에서 직접 확인할 수 있습니다.
 스키마 변경은 [Flyway migration](app-api/src/main/resources/db/migration)으로 관리합니다.
 
@@ -139,7 +139,7 @@ CI와 같은 재실행·필수 운영 검사 확인:
 ./gradlew :architecture-tests:verifyArchitectureReport --no-daemon --console=plain
 ```
 
-두 번째 명령은 같은 모듈의 Kotlin 확인 코드를 실행해 현재 필수 운영 검사 P01~P05의 XML을 읽습니다. 보고서 누락·검사 누락·중복·skip·실패가 있으면 실패로 끝납니다. 테스트에 의존하는 작업이므로 테스트 실패를 무시하고 진행하지 않습니다. CI에서는 직전 단계가 만든 결과를 재사용합니다.
+두 번째 명령은 같은 모듈의 Kotlin 확인 코드를 실행해 현재 필수 운영 검사 P01~P08의 XML을 읽습니다. 보고서 누락·검사 누락·중복·skip·실패가 있으면 실패로 끝납니다. 테스트에 의존하는 작업이므로 테스트 실패를 무시하고 진행하지 않습니다. CI에서는 직전 단계가 만든 결과를 재사용합니다.
 
 로컬에서 테스트 재실행과 보고서 확인을 한 번에 하려면 다음 명령을 사용합니다. `--rerun-tasks`를 생략하면 변경이 없는 테스트는 `UP-TO-DATE`로 재사용되므로 새로운 실행 증거라고 기록하지 않습니다. 별도 Python이나 추가 라이브러리는 필요 없습니다.
 
@@ -187,8 +187,8 @@ cd coin-exchange
 | --- | --- | --- |
 | 구조 | 기술·직접 의존·포트 계약·테스트 역의존·Bean 조립 선언 | [운영 검사](architecture-tests/src/test/kotlin/com/exchange/architecture/ProductionArchitectureTest.kt) · [적용 상태와 근거](engineering/architecture-check-spec.md) |
 | 순수 도메인 | 가격·시간 우선순위, 금액 경계, 수수료 누적, 예약 유지 | [매칭](domain-matching/src/test/kotlin/com/exchange/core/matching/MatchingEngineTest.kt) · [정산 계산](domain-order/src/test/kotlin/com/exchange/core/order/OrderFillSettlementCalculatorTest.kt) |
-| PostgreSQL 통합 | 동결·정산의 원자성, 소수 나머지 저장, 수수료 원장, 실패 시 롤백 | [정산 통합 테스트](app-api/src/test/kotlin/com/exchange/core/api/order/TradeSettlementServiceTest.kt) |
-| HTTP 경계 E2E | 주문 접수부터 예약·매칭·정산, 미체결 주문 취소와 반환 | [주문 E2E 테스트](app-api/src/test/kotlin/com/exchange/core/api/order/OrderLifecycleE2ETest.kt) |
+| PostgreSQL 통합 | 동결·정산의 원자성, 소수 나머지 저장, 수수료 원장, 실패 시 롤백 | [정산 통합 테스트](app-api/src/test/kotlin/com/exchange/core/api/order/application/TradeSettlementServiceTest.kt) |
+| HTTP 경계 E2E | 주문 접수부터 예약·매칭·정산, 미체결 주문 취소와 반환 | [주문 E2E 테스트](app-api/src/test/kotlin/com/exchange/core/api/order/application/OrderLifecycleE2ETest.kt) |
 
 HTTP 경계는 MockMvc로 호출하지만 서비스나 저장소를 mock으로 대체하지 않습니다. 실제 Spring Bean과 PostgreSQL을 사용합니다. 분할 체결·역할 전환·실패 후 재시도는 정산 서비스 통합 테스트의 검증 범위입니다.
 
@@ -227,18 +227,21 @@ HTTP 경계는 MockMvc로 호출하지만 서비스나 저장소를 mock으로 �
 - [#19 마무리 명세와 완료 근거](engineering/architecture-check-spec.md): 운영 적용·예제 검증·후속 작업, 병합·실행 근거와 로컬/원격 완료 상태.
 - [#25 초기 상세 명세](engineering/ci-result-reading-spec.md): 독립 구조 CI 작업, 규칙 위반·입력 누락·환경 실패의 결과 읽기 절차와 초기 완료 기준.
 - [#25 구현 흐름과 검증 근거](engineering/ci-result-reading-review.md): 실패 이유부터 읽는 흐름, 실제 변경과 로컬 검증, 원격 CI에서 남은 확인.
+- [#20 상세 명세](engineering/order-usecases-spec.md): 주문 UseCase·MatchingCoordinator·OrderController의 이름/배치/Bean 연결과 ARCH-03·04·05 운영 적용 범위와 제외 사항입니다.
 
-현재 운영에 적용한 것은 ARCH-01·02·06·08과 업무 자동 등록 금지·config Bean 선언 검사입니다. HTTP·애플리케이션 경계와 이름·폴더 검사는 예제로 검증했고 #20~21에서 실제 이동과 활성화를 진행합니다. 상태 접근·실행 경계는 #22~23의 후속 범위입니다.
+현재 운영에 적용한 것은 ARCH-01·02·03·04·06·08, 업무 자동 등록 금지·config Bean 선언, 주문·HTTP·조립 이름과 전체 main 파일 폴더 검사입니다. 필수 운영 기록은 P01~P08입니다. 저장·발행의 이름·역할 위치 이행은 #21로 남기며, 네 기존 저장·발행 폴더도 파일 읽기·package 일치·금지 의존 검사에서 제외하지 않습니다. 상태 접근·실행 경계는 #22~23의 후속 범위입니다.
 
 구조 검사 통과는 금액·처리 순서·DB 원자성·실제 Spring 주입 성공을 증명하지 않습니다. 불량 예제를 탐지해서 테스트가 통과하는 것과 운영 코드의 준수 검사는 구분합니다. 전체 클래스의 업무 역할을 추론하거나 새 클래스마다 이름을 등록하는 방식도 아닙니다.
 
+- [#20 구현 흐름과 검증](engineering/order-usecases-review.md): 정상·거절·실패 후 상태, 실제 변경 파일과 테스트 근거.
+
 ## 코드 읽는 순서
 
-1. [OrderLifecycleE2ETest](app-api/src/test/kotlin/com/exchange/core/api/order/OrderLifecycleE2ETest.kt): 요청을 넣었을 때 무엇이 바뀌는지 확인합니다.
-2. [OrderSubmissionService](app-api/src/main/kotlin/com/exchange/core/api/order/OrderSubmissionService.kt): 예약·매칭·정산을 연결하는 흐름을 봅니다.
+1. [OrderLifecycleE2ETest](app-api/src/test/kotlin/com/exchange/core/api/order/application/OrderLifecycleE2ETest.kt): 요청을 넣었을 때 무엇이 바뀌는지 확인합니다.
+2. [SubmitOrderUseCase](app-api/src/main/kotlin/com/exchange/core/api/order/application/SubmitOrderUseCase.kt): 예약·매칭·정산을 연결하는 흐름을 봅니다.
 3. [MatchingEngine](domain-matching/src/main/kotlin/com/exchange/core/matching/MatchingEngine.kt): 체결과 잔량 처리 규칙을 봅니다.
 4. [OrderFillSettlementCalculator](domain-order/src/main/kotlin/com/exchange/core/order/OrderFillSettlementCalculator.kt): 실제 사용액·반환액·다음 예약액을 계산합니다.
-5. [TradeSettlementServiceTest](app-api/src/test/kotlin/com/exchange/core/api/order/TradeSettlementServiceTest.kt): 분할 체결과 실패 상황에서 DB 정합성을 확인합니다.
+5. [TradeSettlementServiceTest](app-api/src/test/kotlin/com/exchange/core/api/order/application/TradeSettlementServiceTest.kt): 분할 체결과 실패 상황에서 DB 정합성을 확인합니다.
 
 테스트 환경의 DB·마켓·수수료 정책과 초기화 방식은 [`support`](app-api/src/test/kotlin/com/exchange/core/support)에서 확인할 수 있습니다.
 
@@ -249,7 +252,7 @@ HTTP 경계는 MockMvc로 호출하지만 서비스나 저장소를 mock으로 �
 | `POST /api/markets/{marketId}/orders` | LIMIT/GTC 주문 접수와 체결 결과 반환 |
 | `DELETE /api/markets/{marketId}/orders/{orderId}?userId=...` | 미체결 잔량 취소와 예약 해제 |
 
-요청·응답 구조는 [MatchingDtos](app-api/src/main/kotlin/com/exchange/core/api/matching/MatchingDtos.kt), 호출 예시는 위 E2E 테스트에 있습니다.
+요청·응답 구조는 [MatchingDtos](app-api/src/main/kotlin/com/exchange/core/api/order/api/MatchingDtos.kt), 호출 예시는 위 E2E 테스트에 있습니다.
 테스트 마켓은 계산을 읽기 쉽게 `baseAssetScale = 0`으로 설정합니다. 가격·수량은 항상 마켓의 최소 단위 규칙과 함께 해석해야 합니다.
 
 ## 성능 측정

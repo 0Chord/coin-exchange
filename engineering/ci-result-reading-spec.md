@@ -1,5 +1,7 @@
 # CI 결과 읽기 — #25 초기 상세 명세
 
+> **#20 이후 현재 기준:** 필수 운영 검사는 P01~P08이다. 아래 P01~P05·330개 실행·옛 소스 발췌는 #25 초기 구현 시점의 기록으로 보존한다. 이번에 추가한 P06~P08과 새 실행 근거는 [#20 구현 기록](order-usecases-review.md), 현재 실행 방법은 [README](../README.md)를 따른다.
+
 2026-10-02 · 이슈 [#25](https://github.com/0Chord/coin-exchange/issues/25) · 상위 [#18](https://github.com/0Chord/coin-exchange/issues/18)
 
 **게시 전 검증 상태:** 구조 CI 분리·보고서 실행 확인·읽기 안내를 로컬에서 구현·검증했다. 새 설정의 GitHub CI 실행·artifact 업로드는 같은 커밋의 PR checks와 Actions에서 별도로 확인한다. [구현 흐름과 근거](ci-result-reading-review.md)를 함께 읽는다.

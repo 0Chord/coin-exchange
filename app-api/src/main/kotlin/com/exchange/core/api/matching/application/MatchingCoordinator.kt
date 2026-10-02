@@ -1,4 +1,4 @@
-package com.exchange.core.api.matching
+package com.exchange.core.api.matching.application
 
 import com.exchange.core.api.matching.publish.MatchingEventPublisher
 import com.exchange.core.matching.MarketCommandProcessor
@@ -9,7 +9,7 @@ import java.util.concurrent.TimeUnit
 import java.util.concurrent.TimeoutException
 
 /**
- * HTTP 계층과 matching core 사이의 application service.
+ * 주문 유즈케이스의 사전·후속 작업과 매칭 코어를 연결한다.
  *
  * command를 processor로 보내고 같은 마켓 작업 스레드에서 사전 작업, 매칭, 이벤트 발행과
  * 후속 작업을 순서대로 실행한다. 주문 접수에서는 사전 작업으로 자금 예약을, 후속 작업으로
@@ -18,7 +18,7 @@ import java.util.concurrent.TimeoutException
  * @property processor market별로 command를 직렬 처리하는 진입점
  * @property publisher 생성된 matching event의 후속 저장 또는 발행 포트
  */
-class MatchingApplicationService(
+class MatchingCoordinator(
     private val processor: MarketCommandProcessor,
     private val publisher: MatchingEventPublisher,
 ) {
@@ -30,7 +30,7 @@ class MatchingApplicationService(
      * 대기 중 interrupt가 발생하면 현재 thread의 interrupt flag를 복구한다.
      * 대기 시간 초과는 worker 작업을 취소하거나 이미 반영한 변경을 롤백하지 않는다.
      *
-     * @param command controller가 요청 DTO에서 변환한 새 주문 또는 취소 command
+     * @param command 유즈케이스가 전달한 새 주문 또는 취소 명령
      * @param beforeMatching 같은 마켓 작업 스레드에서 매칭 직전에 실행할 작업. 없으면 생략한다.
      * @param afterMatching publisher 성공 후 실행할 체결 정산 등의 작업. 기본값은 아무 일도 하지 않는다.
      * @return 매칭, publisher와 후속 작업까지 끝난 event 목록

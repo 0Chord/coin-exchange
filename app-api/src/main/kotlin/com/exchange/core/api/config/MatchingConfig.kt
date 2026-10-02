@@ -1,6 +1,6 @@
 package com.exchange.core.api.config
 
-import com.exchange.core.api.matching.MatchingApplicationService
+import com.exchange.core.api.matching.application.MatchingCoordinator
 import com.exchange.core.api.matching.publish.MatchingEventPublisher
 import com.exchange.core.api.matching.publish.NoOpMatchingEventPublisher
 import com.exchange.core.matching.InMemoryMarketCommandProcessor
@@ -12,7 +12,7 @@ import org.springframework.context.annotation.Configuration
 /**
  * DB 영속화 여부와 무관하게 필요한 matching 기본 구성.
  *
- * 마켓별 single-writer processor와 application service를 명시적 Bean으로 등록한다.
+ * 마켓별 실행기와 매칭 조율자를 명시적 Bean으로 등록한다.
  * persistence가 꺼져 있을 때만 event를 저장하지 않는 publisher를 기본값으로 제공한다.
  */
 @Configuration
@@ -43,18 +43,18 @@ class MatchingConfig {
     fun matchingEventPublisher(): MatchingEventPublisher = NoOpMatchingEventPublisher()
 
     /**
-     * 마켓별 command 처리와 매칭 이벤트 발행을 연결하는 서비스를 등록한다.
+     * 마켓별 명령 처리와 매칭 이벤트 발행을 연결하는 조율자를 등록한다.
      *
      * @param processor 같은 마켓의 사전 작업·매칭·후속 작업을 직렬 실행하는 processor
      * @param publisher 설정에 따라 선택된 NoOp 또는 영속화 publisher
-     * @return HTTP 계층과 matching core 사이의 application service
+     * @return 주문의 사전·후속 작업과 매칭 코어를 연결하는 조율자
      */
     @Bean
-    fun matchingApplicationService(
+    fun matchingCoordinator(
         processor: MarketCommandProcessor,
         publisher: MatchingEventPublisher,
-    ): MatchingApplicationService =
-        MatchingApplicationService(
+    ): MatchingCoordinator =
+        MatchingCoordinator(
             processor = processor,
             publisher = publisher,
         )

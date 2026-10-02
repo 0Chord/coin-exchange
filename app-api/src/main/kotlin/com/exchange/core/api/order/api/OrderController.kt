@@ -1,7 +1,7 @@
-package com.exchange.core.api.matching
+package com.exchange.core.api.order.api
 
-import com.exchange.core.api.order.OrderCancellationService
-import com.exchange.core.api.order.OrderSubmissionService
+import com.exchange.core.api.order.application.CancelOrderUseCase
+import com.exchange.core.api.order.application.SubmitOrderUseCase
 import com.exchange.core.common.MarketId
 import com.exchange.core.common.OrderId
 import com.exchange.core.common.Price
@@ -18,25 +18,25 @@ import org.springframework.web.bind.annotation.RequestParam
 import org.springframework.web.bind.annotation.RestController
 
 /**
- * Matching core를 HTTP로 호출하는 API.
+ * 주문 제출·취소의 요청과 응답을 변환하는 HTTP 진입점.
  *
- * Controller는 요청/응답 변환만 맡는다. 새 주문은 [OrderSubmissionService]를 통해
- * 자금 예약·매칭·체결 정산을 수행하며, 취소는 [OrderCancellationService]를 통해
+ * Controller는 요청/응답 변환만 맡는다. 새 주문은 [SubmitOrderUseCase]를 통해
+ * 자금 예약·매칭·체결 정산을 수행하며, 취소는 [CancelOrderUseCase]를 통해
  * 매칭 엔진의 주문 제거와 남은 거래 대금·수수료 예약금 반환을 수행한다.
  * 모든 endpoint는 `/api/markets/{marketId}/orders` 아래에 있으며 URL의 marketId를
  * command에 명시적으로 넣어 서로 다른 마켓의 book이 섞이지 않게 한다.
  *
- * @property orderSubmissionService 새 주문의 검증, 자금 예약·매칭·정산을 담당하는 서비스
- * @property orderCancellationService 주문 취소와 남은 예약금 반환을 담당하는 서비스
+ * @property submitOrderUseCase 새 주문의 검증, 자금 예약·매칭·정산을 담당하는 유즈케이스
+ * @property cancelOrderUseCase 주문 취소와 남은 예약금 반환을 담당하는 유즈케이스
  */
 @RestController
 @RequestMapping("/api/markets/{marketId}/orders")
-class MatchingController(
-    private val orderSubmissionService: OrderSubmissionService,
-    private val orderCancellationService: OrderCancellationService,
+class OrderController(
+    private val submitOrderUseCase: SubmitOrderUseCase,
+    private val cancelOrderUseCase: CancelOrderUseCase,
 ) {
     /**
-     * 주문을 command로 변환하고 자금 예약부터 체결 정산까지 수행하는 서비스에 전달한다.
+     * 주문을 command로 변환하고 자금 예약부터 체결 정산까지 수행하는 유즈케이스에 전달한다.
      *
      * 문자열과 Long 입력을 value class로 감싸는 시점에 빈 id, 0 이하 가격, 음수 수량이
      * 검증된다. command 처리 결과 event는 입력 순서를 유지한 API DTO 목록으로 변환된다.
@@ -62,7 +62,7 @@ class MatchingController(
                 quantity = Quantity(request.quantity),
             )
 
-        val events = orderSubmissionService.submit(command)
+        val events = submitOrderUseCase.submit(command)
 
         return MatchingResponse(
             events = events.map { it.toResponse() },
@@ -93,7 +93,7 @@ class MatchingController(
                 userId = UserId(userId),
             )
 
-        val events = orderCancellationService.cancel(command)
+        val events = cancelOrderUseCase.cancel(command)
 
         return MatchingResponse(
             events = events.map { it.toResponse() },
