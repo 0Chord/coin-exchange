@@ -104,3 +104,15 @@ tasks.withType<Test> {
 		exceptionFormat = org.gradle.api.tasks.testing.logging.TestExceptionFormat.SHORT
 	}
 }
+
+tasks.register<JavaExec>("verifyArchitectureReport") {
+	group = "verification"
+	description = "필수 운영 검사 P01~P05가 실행되고 성공했는지 XML로 확인한다."
+	// 테스트 실패 시 실행하지 않는다. 재실행하려면 이 작업에도 --rerun-tasks를 붙인다.
+	dependsOn(tasks.named("test"))
+	javaLauncher.set(javaToolchains.launcherFor(java.toolchain))
+	classpath = sourceSets["test"].runtimeClasspath
+	mainClass.set("com.exchange.architecture.support.ArchitectureReportVerifier")
+	args(tasks.named<Test>("test").get().reports.junitXml.outputLocation.get().asFile
+		.resolve("TEST-com.exchange.architecture.ProductionArchitectureTest.xml").absolutePath)
+}
