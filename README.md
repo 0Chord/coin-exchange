@@ -122,6 +122,8 @@ BUY는 부분 체결 후에도 `올림(남은 지정가 대금 × 최대 요율 
 
 ## 빠르게 검증하기
 
+아래 명령은 해당 변경을 포함한 저장소 루트에서 실행합니다. 별도 작업 폴더에서 개발 중이라면 먼저 그 폴더로 이동합니다. `verifyArchitectureReport`를 찾을 수 없다는 오류는 현재 폴더·브랜치에 작업 정의가 없다는 뜻이며, 테스트 실행 결과가 아닙니다. 브랜치 이름 변경만으로 다른 작업 폴더의 코드가 복사되지는 않습니다.
+
 **구조 검사만 실행:** JDK 25와 저장소의 Gradle Wrapper를 사용합니다. 서버·DB·Docker를 시작하지 않습니다.
 
 ```bash
@@ -129,6 +131,21 @@ BUY는 부분 체결 후에도 `올림(남은 지정가 대금 × 최대 요율 
 ```
 
 결과는 `architecture-tests/build/reports/tests/test/index.html`과 `architecture-tests/build/test-results/test/TEST-*.xml`에서 확인합니다. 실제 재실행이 필요한 경우 `--rerun-tasks`를 붙이며, `UP-TO-DATE` 결과를 이번 실행으로 기록하지 않습니다.
+
+CI와 같은 재실행·필수 운영 검사 확인:
+
+```bash
+./gradlew :architecture-tests:test --no-daemon --console=plain --rerun-tasks
+./gradlew :architecture-tests:verifyArchitectureReport --no-daemon --console=plain
+```
+
+두 번째 명령은 같은 모듈의 Kotlin 확인 코드를 실행해 현재 필수 운영 검사 P01~P05의 XML을 읽습니다. 보고서 누락·검사 누락·중복·skip·실패가 있으면 실패로 끝납니다. 테스트에 의존하는 작업이므로 테스트 실패를 무시하고 진행하지 않습니다. CI에서는 직전 단계가 만든 결과를 재사용합니다.
+
+로컬에서 테스트 재실행과 보고서 확인을 한 번에 하려면 다음 명령을 사용합니다. `--rerun-tasks`를 생략하면 변경이 없는 테스트는 `UP-TO-DATE`로 재사용되므로 새로운 실행 증거라고 기록하지 않습니다. 별도 Python이나 추가 라이브러리는 필요 없습니다.
+
+```bash
+./gradlew :architecture-tests:verifyArchitectureReport --no-daemon --console=plain --rerun-tasks
+```
 
 **전체 검증 준비:** JDK 25, 실행 중인 Docker. Gradle은 저장소의 Wrapper를 사용합니다.
 PostgreSQL은 Testcontainers가 생성·종료하므로 테스트용 DB를 따로 설치하거나 연결 정보를 입력할 필요가 없습니다.
@@ -175,11 +192,41 @@ cd coin-exchange
 
 HTTP 경계는 MockMvc로 호출하지만 서비스나 저장소를 mock으로 대체하지 않습니다. 실제 Spring Bean과 PostgreSQL을 사용합니다. 분할 체결·역할 전환·실패 후 재시도는 정산 서비스 통합 테스트의 검증 범위입니다.
 
+### CI 실패 이유와 보고서 읽기
+
+[Actions](https://github.com/0Chord/coin-exchange/actions/workflows/build-and-test.yml)의 **해당 커밋 실행**을 고른 다음, 실행 요약의 **첫 실패 단계**와 그 단계의 실제 오류 메시지부터 읽습니다. 파일명이나 빨간 표시만으로 원인을 추정하지 않습니다.
+
+| 작업 | 실행 범위 | 내려받을 보고서 |
+| --- | --- | --- |
+| Architecture checks | Docker 없이 구조 검사와 필수 운영 검사 실행 확인 | `architecture-test-reports` |
+| Build and test | 기존 전체 빌드·제품 테스트·Testcontainers DB 테스트 | `test-reports` |
+
+두 작업은 서로 기다리지 않습니다. 구조만 성공하고 Docker 준비가 실패했다면 **구조 통과 / 제품 검사 미실행 / 전체 CI 실패**입니다. 전체 build의 구조 테스트도 그대로 실행합니다.
+
+1. 실패한 작업의 **첫 실패 단계 → 실제 로그 메시지**를 읽습니다. 준비·컴파일에서 멈췄다면 뒤의 검사는 미실행입니다.
+2. 구조/제품 테스트가 실행됐다면 해당 artifact를 내려받아 ZIP을 풉니다. 압축 안에서 `reports/tests/test/index.html`로 끝나는 HTML을 CSS·JS와 함께 열고 **실패한 테스트**를 선택합니다. 최상위 폴더는 업로드 경로에 따라 달라질 수 있습니다.
+3. HTML에 원인이 부족하면 같은 모듈의 `test-results/test/TEST-*.xml`에서 실패 메시지·출력을 읽습니다. 아래 표에서 첫 수정 위치를 찾습니다.
+4. 커밋·명령·실제 오류와 수정 위치를 기록하고 해당 검사부터 다시 실행합니다. 보고서는 **7일** 보관이므로 만료 전 필요한 근거를 기록합니다.
+
+| 실제 오류·상황 | 먼저 확인할 곳 |
+| --- | --- |
+| `ARCH-* 위반`, Bean 금지 참조 | 오류의 운영 타입·직접 의존·Bean 선언 |
+| `검사 준비 실패`, `not evaluated`, `MISSING_REQUIRED_TYPE`, `READ_FAILURE` | 모듈·컴파일 출력·누락/손상 입력. 해당 규칙은 미평가 |
+| 정상·위반 예제의 기대값 불일치 | 검사기와 예제 테스트. 운영 코드 위반이라고 단정하지 않음 |
+| Docker/Testcontainers 기동 실패 | Docker·컨테이너 준비 로그. 실제 제품 테스트 실행 여부도 확인 |
+| 컴파일 오류 | 컴파일러가 가리킨 소스·의존 선언 |
+| 필수 검사 실행 확인 실패 | 운영 XML과 빠진/중복/skip 검사. 실행 0개를 통과로 인정하지 않음 |
+| 업로드 실패·보고서 없음·취소 | 원래 실패 단계와 남은 자료. 보고서 없음은 위반 0개나 성공이 아님 |
+
+위반 예제를 제대로 거절해 **예제 테스트가 통과한 경우는 정상**입니다. 실제 운영 준수 테스트 실패와 구분합니다. 자동으로 오류의 업무 의미를 분류하지 않으며, 이유가 불분명하면 미분류로 두고 확인할 위치를 남깁니다. 현재 운영 적용 범위는 아래 개발 기준을 따릅니다.
+
 ## 개발 기준과 검사 상태
 
 - [공통 개발 컨벤션](engineering/conventions-design.md): 역할별 이름, 목표 폴더, config의 명시적 Bean 조립, 도메인·저장 경계와 주석 기준.
 - [개발·주문 흐름과 검증 범위](engineering/flow-and-scope-contract.md): 제출·정산·취소의 순서, 트랜잭션·부분 실패·timeout, 대표 테스트와 검증 한계.
 - [#19 마무리 명세와 완료 근거](engineering/architecture-check-spec.md): 운영 적용·예제 검증·후속 작업, 병합·실행 근거와 로컬/원격 완료 상태.
+- [#25 초기 상세 명세](engineering/ci-result-reading-spec.md): 독립 구조 CI 작업, 규칙 위반·입력 누락·환경 실패의 결과 읽기 절차와 초기 완료 기준.
+- [#25 구현 흐름과 검증 근거](engineering/ci-result-reading-review.md): 실패 이유부터 읽는 흐름, 실제 변경과 로컬 검증, 원격 CI에서 남은 확인.
 
 현재 운영에 적용한 것은 ARCH-01·02·06·08과 업무 자동 등록 금지·config Bean 선언 검사입니다. HTTP·애플리케이션 경계와 이름·폴더 검사는 예제로 검증했고 #20~21에서 실제 이동과 활성화를 진행합니다. 상태 접근·실행 경계는 #22~23의 후속 범위입니다.
 

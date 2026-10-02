@@ -13,6 +13,85 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  architecture-checks:
+    name: Architecture checks
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+
+    steps:
+      - name: Check out source
+        id: source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Java 25
+        id: java
+        uses: actions/setup-java@dd06d9cba3e5552c54d9f8ea23572deb30010f7c # v6.0.0
+        with:
+          distribution: corretto
+          java-version: "25"
+
+      - name: Set up Gradle
+        id: gradle
+        uses: gradle/actions/setup-gradle@9c971963bec38e04b3d30dcc455b5382be2fdbfb # v6.3.0
+        with:
+          cache-provider: basic
+          cache-read-only: ${{ github.event_name == 'pull_request' }}
+
+      - name: Run architecture tests without Docker
+        id: tests
+        run: ./gradlew :architecture-tests:test --no-daemon --console=plain --rerun-tasks
+
+      # Gradle이 실패했으면 이 단계는 실행하지 않아 원래 실패를 유지한다.
+      - name: Verify required operating checks ran
+        id: report-check
+        # 직전 단계에서 테스트를 재실행했다. 여기서는 그 결과를 읽으며 테스트는 UP-TO-DATE로 재사용한다.
+        run: ./gradlew :architecture-tests:verifyArchitectureReport --no-daemon --console=plain
+
+      - name: Upload architecture test reports
+        id: reports
+        if: ${{ always() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: architecture-test-reports
+          path: |
+            architecture-tests/build/reports/tests/test/**
+            architecture-tests/build/test-results/test/*.xml
+          if-no-files-found: warn
+          retention-days: 7
+
+      - name: Explain architecture result
+        if: ${{ always() }}
+        env:
+          CI_SOURCE_OUTCOME: ${{ steps.source.outcome }}
+          CI_JAVA_OUTCOME: ${{ steps.java.outcome }}
+          CI_GRADLE_OUTCOME: ${{ steps.gradle.outcome }}
+          CI_TESTS_OUTCOME: ${{ steps.tests.outcome }}
+          CI_REPORT_CHECK_OUTCOME: ${{ steps.report-check.outcome }}
+          CI_REPORTS_OUTCOME: ${{ steps.reports.outcome }}
+        run: |
+          first_failure="없음. skip·취소가 있으면 실행 여부를 따로 확인하세요."
+          for stage in "소스 준비:$CI_SOURCE_OUTCOME" "Java 준비:$CI_JAVA_OUTCOME" "Gradle 준비:$CI_GRADLE_OUTCOME" "구조 검사:$CI_TESTS_OUTCOME" "필수 운영 검사 실행 확인:$CI_REPORT_CHECK_OUTCOME" "보고서 업로드:$CI_REPORTS_OUTCOME"; do
+            if [[ "$stage" == *:failure ]]; then
+              first_failure="${stage%:*}"
+              break
+            fi
+          done
+          {
+            echo "### 구조 검사: 실패 이유부터 확인"
+            echo "- 첫 실패 단계: **$first_failure**"
+            echo "- 실제 이유: 해당 단계의 오류 메시지를 먼저 읽으세요. 구조 검사 실패라면 HTML의 실패 테스트와 XML 메시지를 대조하세요."
+            echo "- 실행 상태: 구조 검사=$CI_TESTS_OUTCOME / 필수 운영 검사 실행 확인=$CI_REPORT_CHECK_OUTCOME / 보고서 업로드=$CI_REPORTS_OUTCOME"
+            echo "- 기준 커밋: $GITHUB_SHA"
+            echo '- 명령: `./gradlew :architecture-tests:test --no-daemon --console=plain --rerun-tasks`'
+            echo '- 실행 확인: `./gradlew :architecture-tests:verifyArchitectureReport --no-daemon --console=plain`'
+            echo '- 보고서: `architecture-test-reports` · HTML과 XML · 7일 보관. 생성 전 실패하면 보고서가 없을 수 있습니다.'
+            echo '- 준비 오류·미평가라면 입력/출력을, 규칙 위반이라면 오류에 나온 운영 타입/의존을 확인하세요. 예제 기대값 실패는 검사기 테스트를 확인하세요.'
+            echo '- 범위: 구조만 검사합니다. 제품·DB 결과는 **Build and test**에서 별도로 확인하세요.'
+            echo '- 읽는 절차: 저장소 README의 **CI 실패 이유와 보고서 읽기** 항목'
+          } >> "$GITHUB_STEP_SUMMARY"
+
   build-and-test:
     name: Build and test
     runs-on: ubuntu-24.04
@@ -20,17 +99,20 @@ jobs:
 
     steps:
       - name: Check out source
+        id: source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
       - name: Set up Java 25
+        id: java
         uses: actions/setup-java@dd06d9cba3e5552c54d9f8ea23572deb30010f7c # v6.0.0
         with:
           distribution: corretto
           java-version: "25"
 
       - name: Set up Gradle
+        id: gradle
         uses: gradle/actions/setup-gradle@9c971963bec38e04b3d30dcc455b5382be2fdbfb # v6.3.0
         with:
           # GitHub 캐시를 사용하고 PR에서는 기존 캐시만 읽는다.
@@ -39,13 +121,16 @@ jobs:
 
       # PostgreSQL은 테스트 코드의 Testcontainers가 직접 시작·종료한다.
       - name: Verify Docker for Testcontainers
+        id: docker
         run: docker info
 
       - name: Build and run all tests
+        id: tests
         # build에 모든 모듈의 test가 포함된다. 테스트 결과는 캐시로 대체하지 않는다.
         run: ./gradlew build --no-daemon --continue --stacktrace --rerun-tasks
 
       - name: Upload test reports
+        id: reports
         if: ${{ always() }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
@@ -55,3 +140,32 @@ jobs:
             **/build/test-results/test/*.xml
           if-no-files-found: warn
           retention-days: 7
+
+      - name: Explain full build result
+        if: ${{ always() }}
+        env:
+          CI_SOURCE_OUTCOME: ${{ steps.source.outcome }}
+          CI_JAVA_OUTCOME: ${{ steps.java.outcome }}
+          CI_GRADLE_OUTCOME: ${{ steps.gradle.outcome }}
+          CI_DOCKER_OUTCOME: ${{ steps.docker.outcome }}
+          CI_TESTS_OUTCOME: ${{ steps.tests.outcome }}
+          CI_REPORTS_OUTCOME: ${{ steps.reports.outcome }}
+        run: |
+          first_failure="없음. skip·취소가 있으면 실행 여부를 따로 확인하세요."
+          for stage in "소스 준비:$CI_SOURCE_OUTCOME" "Java 준비:$CI_JAVA_OUTCOME" "Gradle 준비:$CI_GRADLE_OUTCOME" "Docker 준비:$CI_DOCKER_OUTCOME" "전체 build:$CI_TESTS_OUTCOME" "보고서 업로드:$CI_REPORTS_OUTCOME"; do
+            if [[ "$stage" == *:failure ]]; then
+              first_failure="${stage%:*}"
+              break
+            fi
+          done
+          {
+            echo "### 전체 빌드: 실패 이유부터 확인"
+            echo "- 첫 실패 단계: **$first_failure**"
+            echo "- 실제 이유: 해당 단계의 오류 메시지를 먼저 읽으세요. Docker 준비 실패라면 제품 테스트는 실행되지 않았습니다."
+            echo "- 실행 상태: Docker 준비=$CI_DOCKER_OUTCOME / 전체 build=$CI_TESTS_OUTCOME / 보고서 업로드=$CI_REPORTS_OUTCOME"
+            echo "- 기준 커밋: $GITHUB_SHA"
+            echo '- 명령: `./gradlew build --no-daemon --continue --stacktrace --rerun-tasks`'
+            echo '- 보고서: `test-reports` · 생성된 모듈별 HTML과 XML · 7일 보관. 준비 단계에서 실패하면 보고서가 없을 수 있습니다.'
+            echo '- 구조 작업의 성공은 제품·DB 성공을 뜻하지 않습니다. **Architecture checks** 결과는 별도로 확인하세요.'
+            echo '- 읽는 절차: 저장소 README의 **CI 실패 이유와 보고서 읽기** 항목'
+          } >> "$GITHUB_STEP_SUMMARY"
