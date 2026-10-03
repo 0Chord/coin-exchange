@@ -16,6 +16,7 @@ class BalanceTest {
             available = Amount(1_000),
             hold = Amount.ZERO,
         )
+        val original = balance.copy()
 
         val reserved = balance.reserve(
             amount = Amount(400),
@@ -24,8 +25,9 @@ class BalanceTest {
         assertEquals(Amount(600), reserved.available)
         assertEquals(Amount(400), reserved.hold)
 
-        assertEquals(Amount(1_000), balance.available)
-        assertEquals(Amount.ZERO, balance.hold)
+        assertEquals(original.userId, reserved.userId)
+        assertEquals(original.assetId, reserved.assetId)
+        assertEquals(original, balance)
     }
 
     @Test
@@ -36,6 +38,7 @@ class BalanceTest {
             available = Amount(300),
             hold = Amount(200),
         )
+        val original = balance.copy()
 
         val error = assertFailsWith<InsufficientBalanceException> {
             balance.reserve(
@@ -48,8 +51,7 @@ class BalanceTest {
         assertEquals(Amount(300), error.available)
         assertEquals(Amount(400), error.requested)
 
-        assertEquals(Amount(300), balance.available)
-        assertEquals(Amount(200), balance.hold)
+        assertEquals(original, balance)
     }
 
     @Test
@@ -60,6 +62,7 @@ class BalanceTest {
             available = Amount(600),
             hold = Amount(400),
         )
+        val original = balance.copy()
 
         val released = balance.release(
             amount = Amount(150),
@@ -68,8 +71,9 @@ class BalanceTest {
         assertEquals(Amount(750), released.available)
         assertEquals(Amount(250), released.hold)
 
-        assertEquals(Amount(600), balance.available)
-        assertEquals(Amount(400), balance.hold)
+        assertEquals(original.userId, released.userId)
+        assertEquals(original.assetId, released.assetId)
+        assertEquals(original, balance)
     }
 
     @Test
@@ -80,6 +84,7 @@ class BalanceTest {
             available = Amount(600),
             hold = Amount(100),
         )
+        val original = balance.copy()
 
         val error = assertFailsWith<InsufficientHoldException> {
             balance.release(
@@ -93,8 +98,7 @@ class BalanceTest {
         assertEquals(Amount(200), error.requested)
 
         // 실패해도 기존 객체는 변경되지 않는다.
-        assertEquals(Amount(600), balance.available)
-        assertEquals(Amount(100), balance.hold)
+        assertEquals(original, balance)
     }
 
     @Test
@@ -106,6 +110,7 @@ class BalanceTest {
                 available = Amount(600),
                 hold = Amount(400),
             )
+        val original = balance.copy()
 
         val consumed =
             balance.consumeHold(
@@ -115,8 +120,9 @@ class BalanceTest {
         assertEquals(Amount(600), consumed.available)
         assertEquals(Amount(250), consumed.hold)
 
-        assertEquals(Amount(600), balance.available)
-        assertEquals(Amount(400), balance.hold)
+        assertEquals(original.userId, consumed.userId)
+        assertEquals(original.assetId, consumed.assetId)
+        assertEquals(original, balance)
     }
 
     @Test
@@ -128,6 +134,7 @@ class BalanceTest {
                 available = Amount(600),
                 hold = Amount(100),
             )
+        val original = balance.copy()
 
         val error =
             assertFailsWith<InsufficientHoldException> {
@@ -141,8 +148,7 @@ class BalanceTest {
         assertEquals(Amount(100), error.hold)
         assertEquals(Amount(200), error.requested)
 
-        assertEquals(Amount(600), balance.available)
-        assertEquals(Amount(100), balance.hold)
+        assertEquals(original, balance)
     }
 
     @Test
@@ -154,6 +160,7 @@ class BalanceTest {
                 available = Amount(10),
                 hold = Amount(5),
             )
+        val original = balance.copy()
 
         val credited =
             balance.credit(
@@ -163,8 +170,9 @@ class BalanceTest {
         assertEquals(Amount(13), credited.available)
         assertEquals(Amount(5), credited.hold)
 
-        assertEquals(Amount(10), balance.available)
-        assertEquals(Amount(5), balance.hold)
+        assertEquals(original.userId, credited.userId)
+        assertEquals(original.assetId, credited.assetId)
+        assertEquals(original, balance)
     }
 
     @Test
@@ -176,6 +184,7 @@ class BalanceTest {
                 available = Amount(Long.MAX_VALUE),
                 hold = Amount.ZERO,
             )
+        val original = balance.copy()
 
         assertFailsWith<ArithmeticException> {
             balance.credit(
@@ -183,7 +192,102 @@ class BalanceTest {
             )
         }
 
-        assertEquals(Amount(Long.MAX_VALUE), balance.available)
-        assertEquals(Amount.ZERO, balance.hold)
+        assertEquals(original, balance)
+    }
+
+    @Test
+    fun `available 전액을 reserve하면 available만 0이 된다`() {
+        val balance =
+            Balance(
+                userId = UserId("user-1"),
+                assetId = AssetId("KRW"),
+                available = Amount(7),
+                hold = Amount(2),
+            )
+        val original = balance.copy()
+
+        val reserved = balance.reserve(Amount(7))
+
+        assertEquals(
+            original.copy(available = Amount.ZERO, hold = Amount(9)),
+            reserved,
+        )
+        assertEquals(original, balance)
+    }
+
+    @Test
+    fun `hold 전액을 release하면 hold만 0이 된다`() {
+        val balance =
+            Balance(
+                userId = UserId("user-1"),
+                assetId = AssetId("KRW"),
+                available = Amount(2),
+                hold = Amount(7),
+            )
+        val original = balance.copy()
+
+        val released = balance.release(Amount(7))
+
+        assertEquals(
+            original.copy(available = Amount(9), hold = Amount.ZERO),
+            released,
+        )
+        assertEquals(original, balance)
+    }
+
+    @Test
+    fun `hold 전액을 consumeHold하면 available은 유지하고 hold가 0이 된다`() {
+        val balance =
+            Balance(
+                userId = UserId("user-1"),
+                assetId = AssetId("KRW"),
+                available = Amount(2),
+                hold = Amount(7),
+            )
+        val original = balance.copy()
+
+        val consumed = balance.consumeHold(Amount(7))
+
+        assertEquals(
+            original.copy(hold = Amount.ZERO),
+            consumed,
+        )
+        assertEquals(original, balance)
+    }
+
+    @Test
+    fun `reserve의 hold 덧셈이 Long 범위를 초과하면 원본을 유지한다`() {
+        val balance =
+            Balance(
+                userId = UserId("user-1"),
+                assetId = AssetId("KRW"),
+                available = Amount(1),
+                hold = Amount(Long.MAX_VALUE),
+            )
+        val original = balance.copy()
+
+        assertFailsWith<ArithmeticException> {
+            balance.reserve(Amount(1))
+        }
+
+        assertEquals(original, balance)
+    }
+
+    @Test
+    fun `release의 available 덧셈이 Long 범위를 초과하면 원본을 유지한다`() {
+        val balance =
+            Balance(
+                userId = UserId("user-1"),
+                assetId = AssetId("KRW"),
+                available = Amount(Long.MAX_VALUE),
+                hold = Amount(1),
+            )
+        val original = balance.copy()
+
+        assertFailsWith<ArithmeticException> {
+            balance.release(Amount(1))
+        }
+
+        assertEquals(original, balance)
     }
 }

@@ -13,9 +13,12 @@ import com.exchange.core.fee.FeeRate
 import com.exchange.core.fee.FeeTier
 import com.exchange.core.fee.MakerTakerFeeRates
 import com.exchange.core.fee.TradingFeePolicySnapshot
+import com.exchange.core.ledger.BalanceNotFoundException
 import com.exchange.core.ledger.InsufficientBalanceException
 import com.exchange.core.order.MarketDefinition
+import com.exchange.core.order.OrderReservation
 import com.exchange.core.order.OrderReservationAlreadyExistsException
+import com.exchange.core.order.OrderReservationStatus
 import com.exchange.core.order.OrderReservationStore
 import com.exchange.core.order.Side
 import com.exchange.core.support.PostgresTestConfiguration
@@ -28,10 +31,15 @@ import org.springframework.jdbc.core.JdbcTemplate
 import org.springframework.test.annotation.DirtiesContext
 import org.springframework.transaction.annotation.Propagation
 import org.springframework.transaction.annotation.Transactional
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
+import kotlin.test.assertIs
 import kotlin.test.assertNull
+import kotlin.test.assertTrue
 
 /**
  * 실제 주문 자금 서비스와 PostgreSQL로 예약 저장·잔고 동결의 원자성을 검증한다.
@@ -108,6 +116,29 @@ class OrderFundingServiceTest {
     }
 
     @Test
+    fun `사용 가능한 잔고 전액을 거래와 수수료 예약으로 이동할 수 있다`() {
+        setBalance(
+            available = 505,
+            hold = 0,
+        )
+
+        val reservation = reserveOrder()
+
+        assertEquals(ORDER_ID, reservation.orderId)
+        assertEquals(USER_ID, reservation.userId)
+        assertEquals(MARKET.quoteAssetId, reservation.assetId)
+        assertEquals(Amount(505), reservation.reservedAmount)
+        assertEquals(Amount(505), reservation.remainingAmount)
+        assertEquals(Amount(5), reservation.initialFeeReserveAmount)
+        assertEquals(Amount(5), reservation.remainingFeeReserveAmount)
+        assertEquals(Quantity(5), reservation.remainingQuantity)
+        assertEquals(OrderReservationStatus.ACTIVE, reservation.status)
+        assertEquals(reservation, reservationStore.find(MARKET.marketId, ORDER_ID))
+        assertEquals(1, reservationCount())
+        assertPersistedBalance(available = 0, hold = 505)
+    }
+
+    @Test
     fun `잔고가 부족하면 주문 예약 저장도 롤백한다`() {
         setBalance(
             available = 400,
@@ -129,6 +160,73 @@ class OrderFundingServiceTest {
             available = 400,
             hold = 0,
         )
+    }
+
+    @Test
+    fun `잔고 행이 없으면 먼저 저장한 주문 예약도 롤백한다`() {
+        assertEquals(
+            1,
+            jdbcTemplate.update(
+                "delete from balance_projection where user_id = ? and asset_id = ?",
+                USER_ID.value,
+                MARKET.quoteAssetId.value,
+            ),
+        )
+
+        val error =
+            assertFailsWith<BalanceNotFoundException> {
+                reserveOrder()
+            }
+
+        assertEquals(USER_ID, error.userId)
+        assertEquals(MARKET.quoteAssetId, error.assetId)
+        assertNull(reservationStore.find(MARKET.marketId, ORDER_ID))
+        assertEquals(0, reservationCount())
+        assertEquals(
+            0L,
+            jdbcTemplate.queryForObject("select count(*) from balance_projection", Long::class.java),
+        )
+    }
+
+    @Test
+    fun `서로 다른 주문이 잔고를 경쟁하면 성공한 주문 예약만 남는다`() {
+        val orderIds = listOf(OrderId("competing-order-1"), OrderId("competing-order-2"))
+
+        // 거래 700원과 수수료 7원을 각각 요구하므로 1,000원에서는 한 주문만 성공한다.
+        val results =
+            runConcurrently { index ->
+                service.reserve(
+                    market = MARKET,
+                    orderId = orderIds[index],
+                    userId = USER_ID,
+                    side = Side.BUY,
+                    limitPrice = Price(100),
+                    quantity = Quantity(7),
+                    feePolicySnapshot = feePolicySnapshot,
+                )
+            }
+
+        assertEquals(1, results.count { it.isSuccess })
+        assertEquals(1, results.count { it.isFailure })
+        val winnerIndex = results.indexOfFirst { it.isSuccess }
+        val loserIndex = results.indexOfFirst { it.isFailure }
+        val winner = results[winnerIndex].getOrThrow()
+        val error = assertIs<InsufficientBalanceException>(results[loserIndex].exceptionOrNull())
+
+        assertEquals(USER_ID, error.userId)
+        assertEquals(MARKET.quoteAssetId, error.assetId)
+        assertEquals(Amount(293), error.available)
+        assertEquals(Amount(707), error.requested)
+        assertEquals(orderIds[winnerIndex], winner.orderId)
+        assertEquals(Amount(707), winner.reservedAmount)
+        assertEquals(Amount(707), winner.remainingAmount)
+        assertEquals(Amount(7), winner.remainingFeeReserveAmount)
+        assertEquals(Quantity(7), winner.remainingQuantity)
+        assertEquals(OrderReservationStatus.ACTIVE, winner.status)
+        assertEquals(winner, reservationStore.find(MARKET.marketId, orderIds[winnerIndex]))
+        assertNull(reservationStore.find(MARKET.marketId, orderIds[loserIndex]))
+        assertEquals(1, reservationCount())
+        assertPersistedBalance(available = 293, hold = 707)
     }
 
     @Test
@@ -224,15 +322,45 @@ class OrderFundingServiceTest {
                 select count(*)
                 from order_reservations
                 where market_id = ?
-                  and order_id = ?
                 """.trimIndent(),
                 Int::class.java,
                 MARKET.marketId.value,
-                ORDER_ID.value,
             ),
         )
 
+    private fun runConcurrently(operation: (Int) -> OrderReservation): List<Result<OrderReservation>> {
+        val ready = CountDownLatch(CONCURRENT_TASK_COUNT)
+        val start = CountDownLatch(1)
+        val executor = Executors.newFixedThreadPool(CONCURRENT_TASK_COUNT)
+
+        return try {
+            val futures =
+                List(CONCURRENT_TASK_COUNT) { index ->
+                    executor.submit<Result<OrderReservation>> {
+                        ready.countDown()
+                        start.await()
+                        runCatching { operation(index) }
+                    }
+                }
+
+            assertTrue(
+                ready.await(5, TimeUnit.SECONDS),
+                "두 작업이 시작 준비를 마치지 못했다",
+            )
+            start.countDown()
+
+            futures.map { future ->
+                future.get(5, TimeUnit.SECONDS)
+            }
+        } finally {
+            start.countDown()
+            executor.shutdownNow()
+        }
+    }
+
     companion object {
+        private const val CONCURRENT_TASK_COUNT = 2
+
         private val USER_ID = UserId("user-1")
         private val ORDER_ID = OrderId("order-1")
 

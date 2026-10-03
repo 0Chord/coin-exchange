@@ -454,6 +454,7 @@ class OrderFillSettlementCalculatorTest {
                             ),
                     ),
             )
+        val original = reservation.copy()
 
         val firstPlan =
             calculator.calculate(
@@ -463,6 +464,7 @@ class OrderFillSettlementCalculatorTest {
                 filledQuantity = Quantity(1),
                 liquidityRole = LiquidityRole.MAKER,
             )
+        val originalFirstReservation = firstPlan.updatedReservation.copy()
 
         // 첫 정산에서 갱신된 주문 예약을 전달해 나머지가 다음 계산으로 이어지게 한다.
         val secondPlan =
@@ -499,6 +501,20 @@ class OrderFillSettlementCalculatorTest {
             FeeRemainder(20_000),
             secondPlan.updatedReservation.feeRemainder,
         )
+        assertEquals(original, reservation)
+        assertEquals(originalFirstReservation, firstPlan.updatedReservation)
+        for (updated in listOf(firstPlan.updatedReservation, secondPlan.updatedReservation)) {
+            assertEquals(original.marketId, updated.marketId)
+            assertEquals(original.orderId, updated.orderId)
+            assertEquals(original.userId, updated.userId)
+            assertEquals(original.side, updated.side)
+            assertEquals(original.assetId, updated.assetId)
+            assertEquals(original.limitPrice, updated.limitPrice)
+            assertEquals(original.initialQuantity, updated.initialQuantity)
+            assertEquals(original.reservedAmount, updated.reservedAmount)
+            assertEquals(original.feePolicySnapshot, updated.feePolicySnapshot)
+            assertEquals(original.initialFeeReserveAmount, updated.initialFeeReserveAmount)
+        }
     }
 
     @Test
@@ -528,11 +544,16 @@ class OrderFillSettlementCalculatorTest {
                     ),
                 feePolicySnapshot = feePolicySnapshot,
             )
+        val initialReservation = reservation.copy()
 
         val plans = mutableListOf<OrderFillSettlementPlan>()
+        val inputReservations = mutableListOf<OrderReservation>()
+        val originalInputs = mutableListOf<OrderReservation>()
 
         // 255의 대금을 네 번 나누어 체결해도 수수료 합계는 버림한 2가 되어야 한다.
         for (filledQuantityValue in listOf(1L, 1L, 1L, 2L)) {
+            inputReservations.add(reservation)
+            originalInputs.add(reservation.copy())
             val plan =
                 calculator.calculate(
                     market = market,
@@ -585,6 +606,20 @@ class OrderFillSettlementCalculatorTest {
             OrderReservationStatus.SETTLED,
             reservation.status,
         )
+        assertEquals(originalInputs, inputReservations)
+        for (plan in plans) {
+            val updated = plan.updatedReservation
+            assertEquals(initialReservation.marketId, updated.marketId)
+            assertEquals(initialReservation.orderId, updated.orderId)
+            assertEquals(initialReservation.userId, updated.userId)
+            assertEquals(initialReservation.side, updated.side)
+            assertEquals(initialReservation.assetId, updated.assetId)
+            assertEquals(initialReservation.limitPrice, updated.limitPrice)
+            assertEquals(initialReservation.initialQuantity, updated.initialQuantity)
+            assertEquals(initialReservation.reservedAmount, updated.reservedAmount)
+            assertEquals(initialReservation.feePolicySnapshot, updated.feePolicySnapshot)
+            assertEquals(initialReservation.initialFeeReserveAmount, updated.initialFeeReserveAmount)
+        }
     }
 
     @Test
@@ -612,6 +647,7 @@ class OrderFillSettlementCalculatorTest {
                             ),
                     ),
             )
+        val original = reservation.copy()
 
         val firstPlan =
             calculator.calculate(
@@ -621,6 +657,7 @@ class OrderFillSettlementCalculatorTest {
                 filledQuantity = Quantity(1),
                 liquidityRole = LiquidityRole.TAKER,
             )
+        val originalFirstReservation = firstPlan.updatedReservation.copy()
 
         // 남은 대금의 수수료 0.8 + 이월된 0.8을 올림한 2를 유지해야 한다.
         assertEquals(
@@ -681,6 +718,20 @@ class OrderFillSettlementCalculatorTest {
             OrderReservationStatus.SETTLED,
             finalPlan.updatedReservation.status,
         )
+        assertEquals(original, reservation)
+        assertEquals(originalFirstReservation, firstPlan.updatedReservation)
+        for (updated in listOf(firstPlan.updatedReservation, finalPlan.updatedReservation)) {
+            assertEquals(original.marketId, updated.marketId)
+            assertEquals(original.orderId, updated.orderId)
+            assertEquals(original.userId, updated.userId)
+            assertEquals(original.side, updated.side)
+            assertEquals(original.assetId, updated.assetId)
+            assertEquals(original.limitPrice, updated.limitPrice)
+            assertEquals(original.initialQuantity, updated.initialQuantity)
+            assertEquals(original.reservedAmount, updated.reservedAmount)
+            assertEquals(original.feePolicySnapshot, updated.feePolicySnapshot)
+            assertEquals(original.initialFeeReserveAmount, updated.initialFeeReserveAmount)
+        }
     }
 
     private fun buyReservation(): OrderReservation =

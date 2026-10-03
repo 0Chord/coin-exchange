@@ -28,8 +28,8 @@ import kotlin.test.assertEquals
 /**
  * LIMIT/GTC 주문의 HTTP 접수부터 자금 예약, 매칭, 이벤트 저장, 정산과 수수료 원장까지 검증한다.
  *
- * 서비스 대역 없이 MockMvc와 실제 PostgreSQL을 사용한다. 한 번의 전량 체결과 미체결
- * BUY·SELL 취소를 검증하며, 장애 복구·재시도는 포함하지 않는다. 초기 잔고는 원장 없이 준비하므로
+ * 서비스 대역 없이 MockMvc와 실제 PostgreSQL을 사용한다. 전량 체결, 미체결 BUY·SELL 취소와
+ * BUY 부분 체결 후 취소를 검증하며, 장애 복구·재시도는 포함하지 않는다. 초기 잔고는 원장 없이 준비하므로
  * 체결 원장의 차변·대변 균형 검증이 전체 잔고 대사를 의미하지는 않는다.
  * [ExchangeIntegrationTest]가 각 테스트 뒤 DB와 메모리 주문장을 함께 초기화한다.
  */
@@ -247,6 +247,124 @@ class OrderLifecycleE2ETest : ExchangeIntegrationTest() {
         )
 
         assertLedgerTransactionsBalanced()
+    }
+
+    /**
+     * 지정가 100,000원 BUY 3개 중 90,000원에 1개 체결하고 남은 2개를 취소한다.
+     * 부분 체결에서 가격 개선분·미사용 수수료 10,100원을 이미 반환하므로,
+     * 취소로 반환할 금액은 남은 거래 200,000원과 수수료 2,000원뿐이다.
+     * 이미 체결한 BTC·판매자 정산·원장은 취소로 되돌리거나 다시 반영하지 않는다.
+     */
+    @Test
+    fun `BUY 3개 중 1개 체결 뒤 남은 2개를 취소하면 체결 결과는 유지하고 잔여 예약금만 반환한다`() {
+        submitOrder(
+            orderId = SELLER_ORDER_ID.value,
+            userId = SELLER_USER_ID,
+            side = Side.SELL,
+            price = 90_000,
+            quantity = 1,
+        )
+            .andExpect(status().isOk)
+            .andExpect(jsonPath("$.events.length()").value(1))
+            .andExpect(jsonPath("$.events[0].type").value("ORDER_ENTERED_BOOK"))
+            .andExpect(jsonPath("$.events[0].orderId").value(SELLER_ORDER_ID.value))
+            .andExpect(jsonPath("$.events[0].remainingQuantity").value(1))
+
+        submitOrder(
+            orderId = BUYER_ORDER_ID.value,
+            userId = BUYER_USER_ID,
+            side = Side.BUY,
+            price = 100_000,
+            quantity = 3,
+        )
+            .andExpect(status().isOk)
+            .andExpect(jsonPath("$.events.length()").value(2))
+            .andExpect(jsonPath("$.events[0].type").value("TRADE_EXECUTED"))
+            .andExpect(jsonPath("$.events[0].makerOrderId").value(SELLER_ORDER_ID.value))
+            .andExpect(jsonPath("$.events[0].takerOrderId").value(BUYER_ORDER_ID.value))
+            .andExpect(jsonPath("$.events[0].price").value(90_000))
+            .andExpect(jsonPath("$.events[0].quantity").value(1))
+            .andExpect(jsonPath("$.events[1].type").value("ORDER_ENTERED_BOOK"))
+            .andExpect(jsonPath("$.events[1].orderId").value(BUYER_ORDER_ID.value))
+            .andExpect(jsonPath("$.events[1].remainingQuantity").value(2))
+
+        val partialBuyerReservation = findReservation(BUYER_ORDER_ID)
+        assertEquals(OrderReservationStatus.ACTIVE, partialBuyerReservation.status)
+        assertEquals(Quantity(3), partialBuyerReservation.initialQuantity)
+        assertEquals(Quantity(2), partialBuyerReservation.remainingQuantity)
+        assertEquals(Amount(303_000), partialBuyerReservation.reservedAmount)
+        assertEquals(Amount(3_000), partialBuyerReservation.initialFeeReserveAmount)
+        assertEquals(Amount(202_000), partialBuyerReservation.remainingAmount)
+        assertEquals(Amount(2_000), partialBuyerReservation.remainingFeeReserveAmount)
+
+        val settledSellerReservation = findReservation(SELLER_ORDER_ID)
+        assertEquals(OrderReservationStatus.SETTLED, settledSellerReservation.status)
+        assertEquals(Quantity.ZERO, settledSellerReservation.remainingQuantity)
+        assertEquals(Amount.ZERO, settledSellerReservation.remainingAmount)
+        assertEquals(Amount.ZERO, settledSellerReservation.remainingFeeReserveAmount)
+
+        assertPersistedBalance(BUYER_USER_ID, krwAssetId, available = 707_100, hold = 202_000)
+        assertPersistedBalance(BUYER_USER_ID, btcAssetId, available = 1, hold = 0)
+        assertPersistedBalance(SELLER_USER_ID, btcAssetId, available = 9, hold = 0)
+        assertPersistedBalance(SELLER_USER_ID, krwAssetId, available = 89_550, hold = 0)
+        assertPersistedFeeRevenue(expectedAmount = 1_350L)
+        assertLedgerTransactionsBalanced()
+
+        val settledTransactions = jdbcTemplate.queryForList(
+            "select * from ledger_transactions order by ledger_transaction_id",
+        )
+        val settledPostings = jdbcTemplate.queryForList(
+            "select * from ledger_postings order by ledger_transaction_id, posting_sequence",
+        )
+        assertEquals(1, settledTransactions.size)
+        assertEquals("SETTLEMENT", settledTransactions.single()["transaction_type"])
+
+        mockMvc.perform(
+            delete(
+                "/api/markets/{marketId}/orders/{orderId}",
+                market.marketId.value,
+                BUYER_ORDER_ID.value,
+            ).param("userId", BUYER_USER_ID.value),
+        )
+            .andExpect(status().isOk)
+            .andExpect(jsonPath("$.events.length()").value(1))
+            .andExpect(jsonPath("$.events[0].type").value("ORDER_CANCELLED"))
+            .andExpect(jsonPath("$.events[0].orderId").value(BUYER_ORDER_ID.value))
+            .andExpect(jsonPath("$.events[0].remainingQuantity").value(2))
+
+        assertEquals(
+            partialBuyerReservation.copy(
+                remainingAmount = Amount.ZERO,
+                remainingFeeReserveAmount = Amount.ZERO,
+                status = OrderReservationStatus.RELEASED,
+            ),
+            findReservation(BUYER_ORDER_ID),
+        )
+        assertEquals(settledSellerReservation, findReservation(SELLER_ORDER_ID))
+        assertPersistedBalance(BUYER_USER_ID, krwAssetId, available = 909_100, hold = 0)
+        assertPersistedBalance(BUYER_USER_ID, btcAssetId, available = 1, hold = 0)
+        assertPersistedBalance(SELLER_USER_ID, btcAssetId, available = 9, hold = 0)
+        assertPersistedBalance(SELLER_USER_ID, krwAssetId, available = 89_550, hold = 0)
+        assertPersistedFeeRevenue(expectedAmount = 1_350L)
+
+        assertEquals(
+            settledTransactions,
+            jdbcTemplate.queryForList("select * from ledger_transactions order by ledger_transaction_id"),
+        )
+        assertEquals(
+            settledPostings,
+            jdbcTemplate.queryForList(
+                "select * from ledger_postings order by ledger_transaction_id, posting_sequence",
+            ),
+        )
+        assertEquals(
+            listOf("ORDER_ENTERED_BOOK", "TRADE_EXECUTED", "ORDER_ENTERED_BOOK", "ORDER_CANCELLED"),
+            jdbcTemplate.queryForList(
+                "select event_type from matching_events where market_id = ? order by engine_sequence",
+                String::class.java,
+                market.marketId.value,
+            ),
+        )
     }
 
     /**

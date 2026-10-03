@@ -230,6 +230,8 @@ HTTP 경계는 MockMvc로 호출하지만 서비스나 저장소를 mock으로 �
 - [#20 상세 명세](engineering/order-usecases-spec.md): 주문 UseCase·MatchingCoordinator·OrderController의 이름/배치/Bean 연결과 ARCH-03·04·05 운영 적용 범위와 제외 사항입니다.
 - [#21 저장 경계 상세 명세](engineering/storage-boundaries-spec.md): 저장 포트·구현의 목표 위치, 설정별 Bean 연결, SQL·트랜잭션 보존과 ARCH-05 전체 활성화의 세 구현 단위. [구현·검증 기록](engineering/storage-boundaries-review.md)에 단위별 결과를 남깁니다.
 - [#23 상태·실행 경계 상세 명세](engineering/state-access-boundaries-spec.md): 내부 참조 유지와 외부 접근 제한, 콜백 실패·시간 초과·종료의 계약. [구현 읽기](engineering/state-access-boundaries-review.md)에 실제 코드·테스트와 실행 결과를 연결합니다.
+- [#22 불변 상태·DB 계약 상세 명세](engineering/immutable-db-contracts-spec.md): 기존 테스트와 원본 보존·정확한 한도·경쟁·트랜잭션 롤백의 보강 사례를 구분합니다. 기존 SQL·처리 정책을 유지하며 HTTP 부분 체결 후 취소의 대표 사례도 포함합니다.
+- [#22 원본 보존·DB 실패의 구현과 검증](engineering/immutable-db-contracts-review.md): 입력·판단·실패 후 상태를 실제 테스트와 실행 결과로 연결합니다.
 
 현재 운영에 적용한 것은 ARCH-01·02·03·04·06·08, 업무 자동 등록 금지·config Bean 선언, 저장·발행을 포함한 이름 17개 규칙과 전체 main 파일 폴더 검사입니다. 필수 운영 기록은 P01~P09입니다. 네 이행 폴더는 종료했으며 새 저장·발행 위치에 기존 의존·포트 계약 검사를 유지합니다. P09는 운영 app-api의 매칭 엔진·내부 주문 직접 참조와 config 밖 실행기 구현 참조를 금지합니다. #23에서 내부 타입·잔량 변경 경로를 제한하고 콜백·실패·시간 초과·종료 계약을 검증합니다. DB·불변 상태 계약은 #22의 별도 범위입니다.
 

@@ -12,14 +12,25 @@ class LedgerTransactionTest {
     @Test
     fun `같은 자산의 차변과 대변 합계가 같으면 생성된다`() {
         val postings =
-            listOf(
-                posting("KRW", LedgerPostingSide.DEBIT, 1_800),
-                posting("KRW", LedgerPostingSide.CREDIT, 1_800),
+            mutableListOf(
+                posting("KRW", LedgerPostingSide.DEBIT, 7),
+                posting("KRW", LedgerPostingSide.CREDIT, 7),
             )
+        val originalPostings = postings.toList()
 
         val transaction = newTransaction(postings)
 
-        assertEquals(postings, transaction.postings)
+        assertEquals(originalPostings, transaction.postings)
+
+        postings.clear()
+
+        assertEquals(originalPostings, transaction.postings)
+
+        assertFailsWith<UnsupportedOperationException> {
+            (transaction.postings as MutableList<LedgerPosting>).clear()
+        }
+
+        assertEquals(originalPostings, transaction.postings)
     }
 
     @Test

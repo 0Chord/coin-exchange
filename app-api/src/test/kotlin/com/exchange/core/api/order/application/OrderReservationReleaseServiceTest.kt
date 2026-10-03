@@ -36,6 +36,7 @@ import java.util.concurrent.TimeUnit
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
+import kotlin.test.assertIs
 import kotlin.test.assertTrue
 
 /**
@@ -161,6 +162,7 @@ class OrderReservationReleaseServiceTest {
 
     @Test
     fun `잔고 반환에 실패하면 주문 예약 상태 변경도 롤백한다`() {
+        val original = reservation()
         setBalance(
             available = 600,
             hold = 400,
@@ -174,6 +176,8 @@ class OrderReservationReleaseServiceTest {
                 )
             }
 
+        assertEquals(USER_ID, error.userId)
+        assertEquals(ASSET_ID, error.assetId)
         assertEquals(Amount(400), error.hold)
         assertEquals(Amount(500), error.requested)
 
@@ -185,13 +189,57 @@ class OrderReservationReleaseServiceTest {
                 ),
             )
 
-        assertEquals(Amount(500), saved.remainingAmount)
-        assertEquals(OrderReservationStatus.ACTIVE, saved.status)
+        assertEquals(original, saved)
 
         assertPersistedBalance(
             available = 600,
             hold = 400,
         )
+    }
+
+    @Test
+    fun `서로 다른 예약의 합이 실제 hold보다 크면 해제 경쟁의 패자는 전체 예약을 유지한다`() {
+        jdbcTemplate.update("delete from order_reservations")
+        setBalance(available = 900, hold = 100)
+        val originals =
+            listOf(OrderId("competing-order-1"), OrderId("competing-order-2")).map { orderId ->
+                reservation(
+                    orderId = orderId,
+                    limitPrice = Price(10),
+                    quantity = Quantity(7),
+                    reserveAmount = Amount(70),
+                )
+            }
+        originals.forEach(reservationStore::create)
+
+        // 롤백 경계를 검증하려고 ACTIVE 예약 합 140원과 실제 hold 100원을 의도적으로 불일치시킨다.
+        val results =
+            runConcurrently { index ->
+                service.release(
+                    marketId = MARKET_ID,
+                    orderId = originals[index].orderId,
+                )
+            }
+
+        assertEquals(1, results.count { it.isSuccess })
+        assertEquals(1, results.count { it.isFailure })
+        val winnerIndex = results.indexOfFirst { it.isSuccess }
+        val loserIndex = results.indexOfFirst { it.isFailure }
+        val error = assertIs<InsufficientHoldException>(results[loserIndex].exceptionOrNull())
+        assertEquals(USER_ID, error.userId)
+        assertEquals(ASSET_ID, error.assetId)
+        assertEquals(Amount(30), error.hold)
+        assertEquals(Amount(70), error.requested)
+
+        val expectedWinner =
+            originals[winnerIndex].copy(
+                remainingAmount = Amount.ZERO,
+                status = OrderReservationStatus.RELEASED,
+            )
+        assertEquals(expectedWinner, results[winnerIndex].getOrThrow())
+        assertEquals(expectedWinner, reservationStore.find(MARKET_ID, originals[winnerIndex].orderId))
+        assertEquals(originals[loserIndex], reservationStore.find(MARKET_ID, originals[loserIndex].orderId))
+        assertPersistedBalance(available = 970, hold = 30)
     }
 
     @Test
@@ -223,18 +271,23 @@ class OrderReservationReleaseServiceTest {
         assertEquals(OrderReservationStatus.RELEASED, saved.status)
     }
 
-    private fun reservation(): OrderReservation =
+    private fun reservation(
+        orderId: OrderId = ORDER_ID,
+        limitPrice: Price = Price(100),
+        quantity: Quantity = Quantity(5),
+        reserveAmount: Amount = Amount(500),
+    ): OrderReservation =
         OrderReservation.create(
             marketId = MARKET_ID,
-            orderId = ORDER_ID,
+            orderId = orderId,
             userId = USER_ID,
             side = Side.BUY,
-            limitPrice = Price(100),
-            quantity = Quantity(5),
+            limitPrice = limitPrice,
+            quantity = quantity,
             requirement =
                 ReservationRequirement(
                     assetId = ASSET_ID,
-                    amount = Amount(500),
+                    amount = reserveAmount,
                 ),
             feePolicySnapshot = feeFreePolicySnapshot,
         )
@@ -299,7 +352,7 @@ class OrderReservationReleaseServiceTest {
     }
 
     private fun runConcurrently(
-        operation: () -> OrderReservation,
+        operation: (Int) -> OrderReservation,
     ): List<Result<OrderReservation>> {
         val ready = CountDownLatch(CONCURRENT_TASK_COUNT)
         val start = CountDownLatch(1)
@@ -307,11 +360,11 @@ class OrderReservationReleaseServiceTest {
 
         return try {
             val futures =
-                List(CONCURRENT_TASK_COUNT) {
+                List(CONCURRENT_TASK_COUNT) { index ->
                     executor.submit<Result<OrderReservation>> {
                         ready.countDown()
                         start.await()
-                        runCatching(operation)
+                        runCatching { operation(index) }
                     }
                 }
 

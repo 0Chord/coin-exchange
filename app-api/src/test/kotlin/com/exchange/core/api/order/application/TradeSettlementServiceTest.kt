@@ -15,6 +15,7 @@ import com.exchange.core.fee.FeeTier
 import com.exchange.core.fee.MakerTakerFeeRates
 import com.exchange.core.fee.TradingFeePolicySnapshot
 import com.exchange.core.ledger.BalanceNotFoundException
+import com.exchange.core.ledger.InsufficientHoldException
 import com.exchange.core.matching.TradeExecuted
 import com.exchange.core.order.MarketDefinition
 import com.exchange.core.order.OrderReservation
@@ -28,13 +29,16 @@ import org.springframework.beans.factory.annotation.Autowired
 import org.springframework.boot.data.jpa.test.autoconfigure.DataJpaTest
 import org.springframework.boot.jdbc.test.autoconfigure.AutoConfigureTestDatabase
 import org.springframework.context.annotation.Import
+import org.springframework.dao.DuplicateKeyException
 import org.springframework.jdbc.core.JdbcTemplate
 import org.springframework.test.annotation.DirtiesContext
 import org.springframework.transaction.annotation.Propagation
 import org.springframework.transaction.annotation.Transactional
+import java.sql.SQLException
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
+import kotlin.test.assertIs
 import kotlin.test.assertTrue
 
 /**
@@ -685,6 +689,134 @@ class TradeSettlementServiceTest {
 
         assertEquals(0L, transactionCount)
         assertEquals(0L, postingCount)
+    }
+
+    @Test
+    fun `taker BUY의 hold 소비가 부족하면 원장과 양쪽 예약 및 전체 잔고를 롤백한다`() {
+        // 소비 부족을 검증하려고 정산 호출 전에 BUY hold를 예약 200원보다 적은 179원으로 바꾼다.
+        assertEquals(
+            1,
+            jdbcTemplate.update(
+                "update balance_projection set hold = ? where user_id = ? and asset_id = ?",
+                179L,
+                BUYER_USER_ID.value,
+                KRW_ASSET_ID.value,
+            ),
+        )
+        val balancesBeforeFailure = readBalances()
+        val transactionsBeforeFailure = readLedgerTransactions()
+        val postingsBeforeFailure = readPostings()
+        val trade =
+            TradeExecuted(
+                marketId = MARKET.marketId,
+                engineSequence = 4,
+                makerOrderId = SELLER_ORDER_ID,
+                takerOrderId = BUYER_ORDER_ID,
+                makerUserId = SELLER_USER_ID,
+                takerUserId = BUYER_USER_ID,
+                side = Side.BUY,
+                price = Price(90),
+                quantity = Quantity(2),
+            )
+
+        val error =
+            assertFailsWith<InsufficientHoldException> {
+                service.settle(MARKET, trade)
+            }
+
+        assertEquals(BUYER_USER_ID, error.userId)
+        assertEquals(KRW_ASSET_ID, error.assetId)
+        assertEquals(Amount(179), error.hold)
+        assertEquals(Amount(180), error.requested)
+        assertEquals(buyerReservation(), readReservation(BUYER_ORDER_ID))
+        assertEquals(sellerReservation(), readReservation(SELLER_ORDER_ID))
+        assertEquals(balancesBeforeFailure, readBalances())
+        assertPersistedBalance(BUYER_USER_ID, KRW_ASSET_ID, available = 800, hold = 179)
+        assertPersistedBalance(BUYER_USER_ID, BTC_ASSET_ID, available = 0, hold = 0)
+        assertPersistedBalance(SELLER_USER_ID, BTC_ASSET_ID, available = 8, hold = 2)
+        assertPersistedBalance(SELLER_USER_ID, KRW_ASSET_ID, available = 0, hold = 0)
+        assertEquals(transactionsBeforeFailure, readLedgerTransactions())
+        assertEquals(postingsBeforeFailure, readPostings())
+        assertSettlementLedger(expectedTransactionCount = 0, expectedFeeRevenue = 0)
+        assertTrue(readPostings().isEmpty(), "실패한 체결의 분개가 남아서는 안 된다")
+    }
+
+    @Test
+    fun `성공한 부분 체결의 같은 이벤트를 다시 정산하면 첫 성공의 전체 DB 상태를 유지한다`() {
+        prepareFractionalFeeOrders()
+        val buyerBeforeSettlement = readReservation(BUYER_ORDER_ID)
+        val sellerBeforeSettlement = readReservation(SELLER_ORDER_ID)
+        val trade = fractionalBuyTrade(sequence = 1, quantity = 1)
+
+        service.settle(MARKET, trade)
+
+        val buyerAfterSuccess = readReservation(BUYER_ORDER_ID)
+        val sellerAfterSuccess = readReservation(SELLER_ORDER_ID)
+        val balancesAfterSuccess = readBalances()
+        val transactionsAfterSuccess = readLedgerTransactions()
+        val postingsAfterSuccess = readPostings()
+
+        // 잔량 4개를 남겨 두 번째 수량 1개도 계산할 수 있어야 source event 중복까지 도달한다.
+        assertEquals(
+            buyerBeforeSettlement.copy(
+                remainingQuantity = Quantity(4),
+                remainingAmount = Amount(207),
+                feeRemainder = FeeRemainder(510_000),
+            ),
+            buyerAfterSuccess,
+        )
+        assertEquals(Amount(258), buyerAfterSuccess.reservedAmount)
+        assertEquals(Amount(3), buyerAfterSuccess.initialFeeReserveAmount)
+        assertEquals(Amount(3), buyerAfterSuccess.remainingFeeReserveAmount)
+        assertEquals(OrderReservationStatus.ACTIVE, buyerAfterSuccess.status)
+        assertEquals(
+            sellerBeforeSettlement.copy(
+                remainingQuantity = Quantity(4),
+                remainingAmount = Amount(4),
+                feeRemainder = FeeRemainder(255_000),
+            ),
+            sellerAfterSuccess,
+        )
+        assertEquals(OrderReservationStatus.ACTIVE, sellerAfterSuccess.status)
+        assertPersistedBalance(BUYER_USER_ID, KRW_ASSET_ID, available = 742, hold = 207)
+        assertPersistedBalance(BUYER_USER_ID, BTC_ASSET_ID, available = 1, hold = 0)
+        assertPersistedBalance(SELLER_USER_ID, BTC_ASSET_ID, available = 5, hold = 4)
+        assertPersistedBalance(SELLER_USER_ID, KRW_ASSET_ID, available = 51, hold = 0)
+        assertSettlementLedger(expectedTransactionCount = 1, expectedFeeRevenue = 0)
+        assertEquals(listOf("MATCHING:BTC-KRW:1"), transactionsAfterSuccess.map { it["source_event_id"] })
+        assertEquals(4, postingsAfterSuccess.size)
+        assertEquals(
+            setOf(
+                listOf("USER:seller:BTC:HOLD", "BTC", "DEBIT", 1L),
+                listOf("USER:seller:KRW:AVAILABLE", "KRW", "CREDIT", 51L),
+                listOf("USER:buyer:KRW:HOLD", "KRW", "DEBIT", 51L),
+                listOf("USER:buyer:BTC:AVAILABLE", "BTC", "CREDIT", 1L),
+            ),
+            postingsAfterSuccess.map { posting ->
+                listOf(
+                    posting["account_id"],
+                    posting["asset_id"],
+                    posting["side"],
+                    (posting["amount"] as Number).toLong(),
+                )
+            }.toSet(),
+        )
+
+        val error =
+            assertFailsWith<DuplicateKeyException> {
+                service.settle(MARKET, trade)
+            }
+        val sqlError = assertIs<SQLException>(error.mostSpecificCause)
+        assertEquals("23505", sqlError.sqlState)
+        assertTrue(
+            sqlError.message.orEmpty().contains("uk_ledger_transactions_source_event"),
+            "예약 잔량 부족이나 다른 키 충돌이 아니라 source event 중복으로 거절해야 한다",
+        )
+        assertEquals(buyerAfterSuccess, readReservation(BUYER_ORDER_ID))
+        assertEquals(sellerAfterSuccess, readReservation(SELLER_ORDER_ID))
+        assertEquals(balancesAfterSuccess, readBalances())
+        assertEquals(transactionsAfterSuccess, readLedgerTransactions())
+        assertEquals(postingsAfterSuccess, readPostings())
     }
 
     /**

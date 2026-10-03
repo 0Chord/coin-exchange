@@ -15,21 +15,24 @@ import org.springframework.beans.factory.annotation.Autowired
 import org.springframework.boot.data.jpa.test.autoconfigure.DataJpaTest
 import org.springframework.boot.jdbc.test.autoconfigure.AutoConfigureTestDatabase
 import org.springframework.context.annotation.Import
+import org.springframework.dao.DataIntegrityViolationException
 import org.springframework.jdbc.core.JdbcTemplate
 import org.springframework.test.annotation.DirtiesContext
 import org.springframework.transaction.annotation.Propagation
 import org.springframework.transaction.annotation.Transactional
+import java.sql.SQLException
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
+import kotlin.test.assertIs
 import kotlin.test.assertTrue
 
 /**
  * 실제 PostgreSQL에서 잔고의 예약·해제·소비·지급과 동시 갱신을 검증한다.
- * 일반 테스트는 롤백하고, 동시성 테스트는 테스트 트랜잭션 없이 실제 DB 갱신 결과를 확인한다.
+ * 일반 테스트는 롤백하고, 동시성·SQL 오류 테스트는 테스트 트랜잭션 없이 저장소 호출이 끝난 뒤 DB를 확인한다.
  *
  * 공통 PostgreSQL 설정을 사용하되, 클래스 종료 시 context와 컨테이너를 닫아 다른 클래스와 격리한다.
  */
@@ -83,6 +86,55 @@ class PostgresBalanceStoreTest {
         assertPersistedBalance(
             available = 600,
             hold = 400,
+        )
+    }
+
+    @Test
+    fun `available 전액을 reserve하면 기존 hold에 더하고 available은 0이 된다`() {
+        setBalance(
+            available = 7,
+            hold = 2,
+        )
+
+        val reserved =
+            store.reserve(
+                userId = USER_ID,
+                assetId = ASSET_ID,
+                amount = Amount(7),
+            )
+
+        assertEquals(USER_ID, reserved.userId)
+        assertEquals(ASSET_ID, reserved.assetId)
+        assertEquals(Amount.ZERO, reserved.available)
+        assertEquals(Amount(9), reserved.hold)
+        assertPersistedBalance(
+            available = 0,
+            hold = 9,
+        )
+    }
+
+    @Test
+    @Transactional(propagation = Propagation.NOT_SUPPORTED)
+    fun `reserve로 hold가 bigint 범위를 넘으면 산술 오류 후 잔고를 유지한다`() {
+        setBalance(
+            available = 1,
+            hold = Long.MAX_VALUE,
+        )
+
+        val error =
+            assertFailsWith<DataIntegrityViolationException> {
+                store.reserve(
+                    userId = USER_ID,
+                    assetId = ASSET_ID,
+                    amount = Amount(1),
+                )
+            }
+
+        val sqlError = assertIs<SQLException>(error.mostSpecificCause)
+        assertEquals("22003", sqlError.sqlState)
+        assertPersistedBalance(
+            available = 1,
+            hold = Long.MAX_VALUE,
         )
     }
 
@@ -143,6 +195,31 @@ class PostgresBalanceStoreTest {
         assertPersistedBalance(
             available = 750,
             hold = 250,
+        )
+    }
+
+    @Test
+    @Transactional(propagation = Propagation.NOT_SUPPORTED)
+    fun `release로 available이 bigint 범위를 넘으면 산술 오류 후 잔고를 유지한다`() {
+        setBalance(
+            available = Long.MAX_VALUE,
+            hold = 1,
+        )
+
+        val error =
+            assertFailsWith<DataIntegrityViolationException> {
+                store.release(
+                    userId = USER_ID,
+                    assetId = ASSET_ID,
+                    amount = Amount(1),
+                )
+            }
+
+        val sqlError = assertIs<SQLException>(error.mostSpecificCause)
+        assertEquals("22003", sqlError.sqlState)
+        assertPersistedBalance(
+            available = Long.MAX_VALUE,
+            hold = 1,
         )
     }
 
@@ -429,7 +506,7 @@ class PostgresBalanceStoreTest {
         val saved =
             jdbcTemplate.queryForMap(
                 """
-                select available, hold
+                select user_id, asset_id, available, hold
                 from balance_projection
                 where user_id = ?
                   and asset_id = ?
@@ -438,6 +515,8 @@ class PostgresBalanceStoreTest {
                 ASSET_ID.value,
             )
 
+        assertEquals(USER_ID.value, saved["user_id"])
+        assertEquals(ASSET_ID.value, saved["asset_id"])
         assertEquals(available, (saved["available"] as Number).toLong())
         assertEquals(hold, (saved["hold"] as Number).toLong())
     }
