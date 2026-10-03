@@ -148,6 +148,7 @@ class OrderReservationTest {
     @Test
     fun `release는 ACTIVE reservation의 남은 동결 금액을 해제한다`() {
         val reservation = activeReservation()
+        val original = reservation.copy()
 
         val released = reservation.release()
 
@@ -155,8 +156,15 @@ class OrderReservationTest {
         assertEquals(Amount.ZERO, released.remainingAmount)
         assertEquals(OrderReservationStatus.RELEASED, released.status)
 
-        assertEquals(Amount(500), reservation.remainingAmount)
-        assertEquals(OrderReservationStatus.ACTIVE, reservation.status)
+        assertEquals(
+            original.copy(
+                remainingAmount = Amount.ZERO,
+                remainingFeeReserveAmount = Amount.ZERO,
+                status = OrderReservationStatus.RELEASED,
+            ),
+            released,
+        )
+        assertEquals(original, reservation)
     }
 
     @Test
@@ -175,6 +183,9 @@ class OrderReservationTest {
                 remainingAmount = Amount.ZERO,
                 status = OrderReservationStatus.RELEASED,
             )
+        val originalActive = active.copy()
+        val originalSettled = settled.copy()
+        val originalReleased = released.copy()
 
         assertFailsWith<IllegalStateException> {
             settled.release()
@@ -183,11 +194,16 @@ class OrderReservationTest {
         assertFailsWith<IllegalStateException> {
             released.release()
         }
+
+        assertEquals(originalActive, active)
+        assertEquals(originalSettled, settled)
+        assertEquals(originalReleased, released)
     }
 
     @Test
     fun `applyFill은 부분 체결 수량과 예약 금액을 차감한다`() {
         val reservation = activeReservation()
+        val original = reservation.copy()
 
         val partiallyFilled =
             reservation.applyFill(
@@ -203,14 +219,20 @@ class OrderReservationTest {
             partiallyFilled.status,
         )
 
-        // 원본 객체는 변경되지 않는다.
-        assertEquals(Quantity(5), reservation.remainingQuantity)
-        assertEquals(Amount(500), reservation.remainingAmount)
+        assertEquals(
+            original.copy(
+                remainingQuantity = Quantity(3),
+                remainingAmount = Amount(300),
+            ),
+            partiallyFilled,
+        )
+        assertEquals(original, reservation)
     }
 
     @Test
     fun `applyFill은 전량 체결되면 reservation을 SETTLED로 만든다`() {
         val reservation = activeReservation()
+        val original = reservation.copy()
 
         val settled =
             reservation.applyFill(
@@ -225,11 +247,21 @@ class OrderReservationTest {
             OrderReservationStatus.SETTLED,
             settled.status,
         )
+        assertEquals(
+            original.copy(
+                remainingQuantity = Quantity.ZERO,
+                remainingAmount = Amount.ZERO,
+                status = OrderReservationStatus.SETTLED,
+            ),
+            settled,
+        )
+        assertEquals(original, reservation)
     }
 
     @Test
     fun `체결 수량은 0보다 커야 한다`() {
         val reservation = activeReservation()
+        val original = reservation.copy()
 
         assertFailsWith<IllegalArgumentException> {
             reservation.applyFill(
@@ -238,11 +270,13 @@ class OrderReservationTest {
                 feeReserveAmountToReduce = Amount.ZERO,
             )
         }
+        assertEquals(original, reservation)
     }
 
     @Test
     fun `남은 수량보다 많이 체결할 수 없다`() {
         val reservation = activeReservation()
+        val original = reservation.copy()
 
         assertFailsWith<IllegalArgumentException> {
             reservation.applyFill(
@@ -251,11 +285,13 @@ class OrderReservationTest {
                 feeReserveAmountToReduce = Amount.ZERO,
             )
         }
+        assertEquals(original, reservation)
     }
 
     @Test
     fun `차감할 예약 금액은 0보다 커야 한다`() {
         val reservation = activeReservation()
+        val original = reservation.copy()
 
         assertFailsWith<IllegalArgumentException> {
             reservation.applyFill(
@@ -264,11 +300,13 @@ class OrderReservationTest {
                 feeReserveAmountToReduce = Amount.ZERO,
             )
         }
+        assertEquals(original, reservation)
     }
 
     @Test
     fun `남은 예약 금액보다 많이 차감할 수 없다`() {
         val reservation = activeReservation()
+        val original = reservation.copy()
 
         assertFailsWith<IllegalArgumentException> {
             reservation.applyFill(
@@ -277,6 +315,7 @@ class OrderReservationTest {
                 feeReserveAmountToReduce = Amount.ZERO,
             )
         }
+        assertEquals(original, reservation)
     }
 
     @Test
@@ -295,6 +334,9 @@ class OrderReservationTest {
                 remainingAmount = Amount.ZERO,
                 status = OrderReservationStatus.RELEASED,
             )
+        val originalActive = active.copy()
+        val originalSettled = settled.copy()
+        val originalReleased = released.copy()
 
         assertFailsWith<IllegalStateException> {
             settled.applyFill(
@@ -311,6 +353,10 @@ class OrderReservationTest {
                 feeReserveAmountToReduce = Amount.ZERO,
             )
         }
+
+        assertEquals(originalActive, active)
+        assertEquals(originalSettled, settled)
+        assertEquals(originalReleased, released)
     }
 
     @Test
@@ -397,6 +443,7 @@ class OrderReservationTest {
                 feePolicySnapshot = feePolicySnapshot,
             )
 
+        val original = reservation.copy()
         val released = reservation.release()
 
         assertEquals(
@@ -411,6 +458,15 @@ class OrderReservationTest {
             OrderReservationStatus.RELEASED,
             released.status,
         )
+        assertEquals(
+            original.copy(
+                remainingAmount = Amount.ZERO,
+                remainingFeeReserveAmount = Amount.ZERO,
+                status = OrderReservationStatus.RELEASED,
+            ),
+            released,
+        )
+        assertEquals(original, reservation)
     }
 
     @Test
@@ -443,6 +499,7 @@ class OrderReservationTest {
                     ),
                 feePolicySnapshot = feePolicySnapshot,
             )
+        val original = reservation.copy()
 
         val updated =
             reservation.applyFill(
@@ -467,6 +524,75 @@ class OrderReservationTest {
             OrderReservationStatus.ACTIVE,
             updated.status,
         )
+        assertEquals(
+            original.copy(
+                remainingQuantity = Quantity(3),
+                remainingAmount = Amount(303),
+                remainingFeeReserveAmount = Amount(3),
+            ),
+            updated,
+        )
+        assertEquals(original, reservation)
+    }
+
+    @Test
+    fun `수수료 예약액이 남아 있어도 거래 예약액보다 많이 차감할 수 없다`() {
+        val reservation =
+            activeReservation().copy(
+                reservedAmount = Amount(505),
+                remainingAmount = Amount(505),
+                initialFeeReserveAmount = Amount(5),
+                remainingFeeReserveAmount = Amount(5),
+                feePolicySnapshot =
+                    feeFreePolicySnapshot.copy(
+                        feeRates =
+                            MakerTakerFeeRates(
+                                makerFeeRate = FeeRate(5_000),
+                                takerFeeRate = FeeRate(10_000),
+                            ),
+                    ),
+            )
+        val original = reservation.copy()
+
+        assertFailsWith<IllegalArgumentException> {
+            reservation.applyFill(
+                filledQuantity = Quantity(1),
+                tradeReserveAmountToReduce = Amount(501),
+                feeReserveAmountToReduce = Amount.ZERO,
+            )
+        }
+
+        assertEquals(original, reservation)
+    }
+
+    @Test
+    fun `거래 예약액이 남아 있어도 수수료 예약액보다 많이 차감할 수 없다`() {
+        val reservation =
+            activeReservation().copy(
+                reservedAmount = Amount(505),
+                remainingAmount = Amount(505),
+                initialFeeReserveAmount = Amount(5),
+                remainingFeeReserveAmount = Amount(5),
+                feePolicySnapshot =
+                    feeFreePolicySnapshot.copy(
+                        feeRates =
+                            MakerTakerFeeRates(
+                                makerFeeRate = FeeRate(5_000),
+                                takerFeeRate = FeeRate(10_000),
+                            ),
+                    ),
+            )
+        val original = reservation.copy()
+
+        assertFailsWith<IllegalArgumentException> {
+            reservation.applyFill(
+                filledQuantity = Quantity(1),
+                tradeReserveAmountToReduce = Amount(100),
+                feeReserveAmountToReduce = Amount(6),
+            )
+        }
+
+        assertEquals(original, reservation)
     }
 
     @Test
@@ -509,6 +635,7 @@ class OrderReservationTest {
                     ),
                 feePolicySnapshot = feePolicySnapshot,
             )
+        val original = reservation.copy()
 
         // 수수료 계산 결과를 직접 전달해 주문 객체의 나머지 갱신만 검증한다.
         val firstFilledReservation =
@@ -518,6 +645,7 @@ class OrderReservationTest {
                 feeReserveAmountToReduce = Amount.ZERO,
                 nextFeeRemainder = FeeRemainder(510_000),
             )
+        val originalFirstFilledReservation = firstFilledReservation.copy()
 
         val secondFilledReservation =
             firstFilledReservation.applyFill(
@@ -536,11 +664,25 @@ class OrderReservationTest {
             secondFilledReservation.feeRemainder,
         )
 
-        // 체결 결과는 새 객체에 반영되므로 최초 주문 예약은 바뀌지 않는다.
         assertEquals(
-            FeeRemainder.ZERO,
-            reservation.feeRemainder,
+            original.copy(
+                remainingQuantity = Quantity(4),
+                remainingAmount = Amount(207),
+                feeRemainder = FeeRemainder(510_000),
+            ),
+            firstFilledReservation,
         )
+        assertEquals(
+            original.copy(
+                remainingQuantity = Quantity(3),
+                remainingAmount = Amount(155),
+                remainingFeeReserveAmount = Amount(2),
+                feeRemainder = FeeRemainder(20_000),
+            ),
+            secondFilledReservation,
+        )
+        assertEquals(original, reservation)
+        assertEquals(originalFirstFilledReservation, firstFilledReservation)
     }
 
     private fun activeReservation(): OrderReservation =
