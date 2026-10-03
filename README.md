@@ -1,6 +1,6 @@
 # Exchange Core
 
-[![Build and Test](https://github.com/0Chord/coin-exchange/actions/workflows/build-and-test.yml/badge.svg?branch=feature%2Fphase-2%2Fintegration)](https://github.com/0Chord/coin-exchange/actions/workflows/build-and-test.yml)
+[![PR Build and Test](https://github.com/0Chord/coin-exchange/actions/workflows/build-and-test.yml/badge.svg?event=pull_request)](https://github.com/0Chord/coin-exchange/actions/workflows/build-and-test.yml?query=event%3Apull_request)
 
 매수·매도 주문을 받아 가격과 접수 순서에 따라 체결하고, 잔고와 수수료를 정산하는 현물 거래 백엔드입니다.
 매칭 엔진은 Kotlin으로 직접 구현했습니다. Spring Boot는 HTTP 요청과 트랜잭션을 담당하고, PostgreSQL에는 잔고·주문 예약·매칭 이벤트·체결 원장을 저장합니다.
@@ -180,7 +180,7 @@ cd coin-exchange
 
 </details>
 
-검증 기준 시점인 **2026-09-12**에 전체 **243개 테스트**가 통과했습니다. 최신 실행 결과는 상단 CI 배지와 [Actions](https://github.com/0Chord/coin-exchange/actions/workflows/build-and-test.yml)에서 확인할 수 있습니다.
+검증 기준 시점인 **2026-09-12**에 전체 **243개 테스트**가 통과했습니다. 상단 CI 배지는 PR 이벤트의 상태를 보여줍니다. 검토 중인 변경의 결과는 해당 PR의 Checks와 [Actions](https://github.com/0Chord/coin-exchange/actions/workflows/build-and-test.yml)에서 커밋을 대조해 확인합니다.
 로컬 HTML 결과는 각 모듈의 `build/reports/tests/test/index.html`에 생성됩니다.
 
 | 검증 계층 | 확인하는 내용 | 대표 테스트 |
@@ -191,6 +191,14 @@ cd coin-exchange
 | HTTP 경계 E2E | 주문 접수부터 예약·매칭·정산, 미체결 주문 취소와 반환 | [주문 E2E 테스트](app-api/src/test/kotlin/com/exchange/core/api/order/application/OrderLifecycleE2ETest.kt) |
 
 HTTP 경계는 MockMvc로 호출하지만 서비스나 저장소를 mock으로 대체하지 않습니다. 실제 Spring Bean과 PostgreSQL을 사용합니다. 분할 체결·역할 전환·실패 후 재시도는 정산 서비스 통합 테스트의 검증 범위입니다.
+
+### CI 실행 시점
+
+CI는 Draft·일반 PR을 열거나, 열린 PR에 새 커밋을 올리거나, 닫힌 PR을 다시 열 때 실행합니다. PR을 열기 전의 push와 병합 후 통합 브랜치의 push에는 실행하지 않습니다. PR 전에는 로컬로 검사하거나 Draft PR을 먼저 열어 CI를 확인합니다.
+
+열린 PR에 커밋을 올리면 `pull_request` 이벤트로 검사하며 별도의 `push` 실행은 만들지 않습니다. 같은 PR의 이전 검사가 진행 중이면 기존 동시 실행 설정에 따라 취소될 수 있으므로 최신 커밋의 결과를 확인합니다. 다른 PR의 검사는 유지합니다.
+
+PR에서는 병합 후보를 검사하며, 실제 병합 커밋을 별도로 다시 검사하지 않습니다. 두 필수 검사와 브랜치 보호 설정은 유지합니다. 이전 workflow가 남아 있는 작업 브랜치는 최신 통합의 변경을 반영하기 전까지 push 검사도 실행될 수 있습니다.
 
 ### CI 실패 이유와 보고서 읽기
 
@@ -203,7 +211,7 @@ HTTP 경계는 MockMvc로 호출하지만 서비스나 저장소를 mock으로 �
 
 두 작업은 서로 기다리지 않습니다. 구조만 성공하고 Docker 준비가 실패했다면 **구조 통과 / 제품 검사 미실행 / 전체 CI 실패**입니다. 전체 build의 구조 테스트도 그대로 실행합니다.
 
-1. 실행의 **커밋·시도 번호·두 작업 상태**를 확인합니다. PR merge ref, PR head와 통합 push는 같은 실행이 아닙니다. 실패한 작업의 **첫 실패 단계 → 실제 로그 메시지**를 읽습니다. 준비·컴파일에서 멈췄다면 뒤의 검사는 미실행입니다.
+1. 실행의 **커밋·시도 번호·두 작업 상태**를 확인합니다. PR head와 검사 대상인 PR merge ref를 구분하고, PR 검사를 병합 후 통합 커밋의 검사로 읽지 않습니다. 과거 push 실행은 당시 기록입니다. 실패한 작업의 **첫 실패 단계 → 실제 로그 메시지**를 읽습니다. 준비·컴파일에서 멈췄다면 뒤의 검사는 미실행입니다.
 2. 구조/제품 테스트가 실행됐다면 해당 artifact를 내려받아 ZIP을 풉니다. 압축 안에서 `reports/tests/test/index.html`로 끝나는 HTML을 CSS·JS와 함께 열고 **실패한 테스트**를 선택합니다. 최상위 폴더는 업로드 경로에 따라 달라질 수 있습니다.
 3. HTML에 원인이 부족하면 같은 모듈의 `test-results/test/TEST-*.xml`에서 실패 메시지·출력을 읽습니다. 구조 보고서의 `ProductionArchitectureTest`에는 **P01~P09가 각각 한 번**, 실패·오류·skip 없이 있어야 합니다. 합계 9개라도 하나가 빠지고 다른 하나가 중복되면 실패입니다. 아래 표에서 첫 수정 위치를 찾습니다.
 4. **구조 결과·제품 결과·보고서 전달**을 각각 기록합니다. 검사 성공과 업로드 성공은 다르며, 취소·skip·보고서 부재를 성공으로 해석하지 않습니다. XML은 커밋을 인증하지 않으므로 같은 실행에서 내려받은 자료인지도 대조합니다.
