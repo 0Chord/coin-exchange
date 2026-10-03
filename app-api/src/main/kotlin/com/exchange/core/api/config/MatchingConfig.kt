@@ -28,11 +28,8 @@ class MatchingConfig {
     fun marketCommandProcessor(): MarketCommandProcessor = InMemoryMarketCommandProcessor()
 
     /**
-     * 매칭 이벤트 영속화가 꺼져 있을 때 사용하는 NoOp publisher를 등록한다.
-     *
-     * 영속화가 켜지면 이 Bean 대신 [MatchingPersistenceConfig]의 PostgreSQL publisher를 쓴다.
-     *
-     * @return persistence가 꺼졌을 때 event를 의도적으로 저장하지 않는 publisher
+     * `exchange.matching.persistence.enabled`가 `false`이거나 없으면 NoOp publisher를 등록한다.
+     * `true`이면 [MatchingPersistenceConfig]가 이벤트를 저장하는 publisher를 등록한다.
      */
     @Bean
     @ConditionalOnProperty(

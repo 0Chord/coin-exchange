@@ -27,17 +27,14 @@ internal fun calculateQuoteAmount(
     quantity: Quantity,
     baseAssetScale: Int,
 ): Amount {
-    // Long 곱셈 overflow를 피하기 위해 가격과 최소 단위 수량을 BigInteger로 곱한다.
     val numerator =
         BigInteger.valueOf(price.value)
             .multiply(BigInteger.valueOf(quantity.value))
 
-    // 최소 단위 수량을 base 자산 단위로 환산하기 위한 10^scale 제수다.
     val baseUnit = BigInteger.TEN.pow(baseAssetScale)
     val quotientAndRemainder =
         numerator.divideAndRemainder(baseUnit)
 
-    // quotient는 최종 quote 금액이고 remainder는 최소 단위로 표현하지 못한 소수 부분이다.
     val quotient = quotientAndRemainder[0]
     val remainder = quotientAndRemainder[1]
 

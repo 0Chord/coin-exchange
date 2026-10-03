@@ -57,11 +57,7 @@ internal class PriceLevel(
     fun remove(orderId: OrderId): BookOrder? = orders.remove(orderId)
 
     /**
-     * 이 가격에서 가장 먼저 들어온 주문을 반환한다.
-     *
-     * 같은 가격에서는 이 주문이 가장 먼저 체결 대상이 된다.
-     * 내부 엔진이 체결량을 반영할 실제 주문 참조이며 복사본이 아니다.
-     * 주문이 없으면 null을 반환한다.
+     * FIFO의 첫 내부 주문을 반환한다. 복사본이 아닌 같은 가변 주문 참조다.
      *
      * @return FIFO 순서의 첫 주문. 레벨이 비어 있으면 `null`
      */
@@ -83,9 +79,7 @@ internal class PriceLevel(
     fun contains(orderId: OrderId): Boolean = orders.containsKey(orderId)
 
     /**
-     * 특정 주문을 조회한다.
-     *
-     * 취소 요청자가 주문 주인인지 확인할 때 사용한다.
+     * 내부 주문의 같은 가변 참조를 반환한다. 취소 요청자의 소유자 확인에도 사용한다.
      *
      * @param orderId 조회할 주문 식별자
      * @return 주문이 있으면 BookOrder, 없으면 `null`

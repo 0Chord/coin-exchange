@@ -11,9 +11,8 @@ import java.util.concurrent.TimeoutException
 /**
  * 주문 유즈케이스의 사전·후속 작업과 매칭 코어를 연결한다.
  *
- * command를 processor로 보내고 같은 마켓 작업 스레드에서 사전 작업, 매칭, 이벤트 발행과
- * 후속 작업을 순서대로 실행한다. 주문 접수에서는 사전 작업으로 자금 예약을, 후속 작업으로
- * 체결 정산을 전달하므로 다음 command 전에 현재 command의 정산까지 끝난다.
+ * 같은 마켓 worker에서 사전 작업 → 매칭 → publisher → 후속 작업을 직렬 실행한다.
+ * publisher가 성공한 뒤에만 후속 작업을 실행하며, 다음 명령은 이 작업까지 끝난 뒤 처리한다.
  *
  * @property processor market별로 command를 직렬 처리하는 진입점
  * @property publisher 생성된 matching event의 후속 저장 또는 발행 포트
@@ -25,10 +24,9 @@ class MatchingCoordinator(
     /**
      * 하나의 matching command를 처리하고 발생한 event를 반환한다.
      *
-     * HTTP 요청 thread는 비동기 processor 결과를 최대 3초 기다린다. worker 내부 예외는
-     * [ExecutionException] wrapper를 벗겨 실제 도메인 또는 저장 오류를 호출자에게 전달한다.
-     * 대기 중 interrupt가 발생하면 현재 thread의 interrupt flag를 복구한다.
-     * 대기 시간 초과는 worker 작업을 취소하거나 이미 반영한 변경을 롤백하지 않는다.
+     * 호출자 스레드는 결과를 최대 3초 기다린다. worker 오류는 [ExecutionException]에서
+     * 원인을 꺼내 전달하고, 대기 interrupt는 호출자 스레드의 interrupt flag를 복구한다.
+     * timeout이나 interrupt로 대기가 끝나도 worker 작업을 취소하거나 변경을 롤백하지 않는다.
      *
      * @param command 유즈케이스가 전달한 새 주문 또는 취소 명령
      * @param beforeMatching 같은 마켓 작업 스레드에서 매칭 직전에 실행할 작업. 없으면 생략한다.
@@ -43,7 +41,6 @@ class MatchingCoordinator(
         afterMatching: (List<MatchingEvent>) -> Unit = {},
     ): List<MatchingEvent> {
         return try {
-            // 같은 worker에서 publisher가 성공한 뒤에만 후속 정산을 실행한다.
             processor
                 .submit(
                     command = command,

@@ -21,8 +21,8 @@ sealed interface MatchingCommand {
 /**
  * 새 주문을 넣는 command.
  *
- * 이 command가 들어오면 엔진은 반대편 book과 먼저 매칭하고,
- * 남은 수량이 있으면 TimeInForce 규칙에 따라 book에 넣거나 취소한다.
+ * 현재 엔진은 LIMIT + GTC 주문을 처리한다. 반대편 book과 먼저 매칭한 뒤
+ * 미체결 잔량을 book에 넣으며, 지원하지 않는 주문 조건은 상태 변경 전에 거절한다.
  *
  * @property marketId 주문을 처리할 독립 마켓
  * @property orderId 새 주문 식별자. 같은 마켓에서 재사용할 수 없다

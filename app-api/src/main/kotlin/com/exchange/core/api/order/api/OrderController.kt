@@ -18,16 +18,8 @@ import org.springframework.web.bind.annotation.RequestParam
 import org.springframework.web.bind.annotation.RestController
 
 /**
- * 주문 제출·취소의 요청과 응답을 변환하는 HTTP 진입점.
- *
- * Controller는 요청/응답 변환만 맡는다. 새 주문은 [SubmitOrderUseCase]를 통해
- * 자금 예약·매칭·체결 정산을 수행하며, 취소는 [CancelOrderUseCase]를 통해
- * 매칭 엔진의 주문 제거와 남은 거래 대금·수수료 예약금 반환을 수행한다.
- * 모든 endpoint는 `/api/markets/{marketId}/orders` 아래에 있으며 URL의 marketId를
- * command에 명시적으로 넣어 서로 다른 마켓의 book이 섞이지 않게 한다.
- *
- * @property submitOrderUseCase 새 주문의 검증, 자금 예약·매칭·정산을 담당하는 유즈케이스
- * @property cancelOrderUseCase 주문 취소와 남은 예약금 반환을 담당하는 유즈케이스
+ * 주문 HTTP 요청을 명령으로 변환해 [SubmitOrderUseCase]와 [CancelOrderUseCase]에 위임한다.
+ * 반환 이벤트는 같은 순서의 응답 DTO로 변환한다.
  */
 @RestController
 @RequestMapping("/api/markets/{marketId}/orders")

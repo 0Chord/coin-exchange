@@ -47,10 +47,8 @@ internal class BookOrder(
     }
 
     /**
-     * 체결 수량만큼 잔량을 줄인다.
-     *
-     * `remainingQuantity' = remainingQuantity - quantity`로 변경되며, 이 객체 자체의
-     * [remainingQuantity]를 수정한다.
+     * 0보다 크고 현재 잔량 이하인 체결량만 같은 주문의 잔량에서 차감한다.
+     * 원수량은 유지한다. 원수량·잔량 10에서 4 체결 시 원수량은 10, 잔량은 6이다.
      *
      * @param quantity 이번 체결에서 이 maker 주문에 배정된 수량
      * @throws IllegalArgumentException [quantity]가 0이거나 현재 잔량보다 큰 경우
