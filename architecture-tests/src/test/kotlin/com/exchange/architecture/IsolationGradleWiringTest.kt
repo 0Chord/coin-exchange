@@ -284,7 +284,6 @@ class IsolationGradleWiringTest {
     private fun append(path: String, text: String) { Files.writeString(root.resolve(path), "\n${text.trimIndent()}\n", APPEND) }
     private fun run(vararg args: String) = GradleRunner.create().withProjectDir(root.toFile())
         .withGradleInstallation(File(System.getProperty("architecture.gradleHome")))
-        .withTestKitDir(root.resolve(".test-kit").toFile())
         .withArguments(listOf("snapshot", "--offline", "--console=plain", "--max-workers=1", "--stacktrace") + args).build()
     private fun read() = IsolationInputs.dependencies(Files.readString(root.resolve("build/observed/isolationDependencies.txt"))).also { assertEquals(emptyList(), it.problems) }
     private fun evaluate() = ProductionDependencyIsolation.inspectGradle(read(), inventory).also { assertTrue(it.evaluated, it.problems.toString()) }

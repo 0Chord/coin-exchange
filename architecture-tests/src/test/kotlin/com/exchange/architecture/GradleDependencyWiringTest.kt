@@ -20,6 +20,24 @@ class GradleDependencyWiringTest {
     private val policy = mapOf("common" to emptySet<String>(), "fee" to setOf("common"), "order" to setOf("common", "fee"), "matching" to setOf("common", "order"))
 
     @Test
+    fun `Gradle 작업 폴더는 임시 프로젝트를 지워도 유지된다`() {
+        Files.writeString(root.resolve("settings.gradle"), "rootProject.name = 'testkit-lifecycle'")
+        Files.writeString(root.resolve("build.gradle"), """
+            tasks.register('snapshot') {
+                doLast { file('gradle-user-home.txt').text = gradle.gradleUserHomeDir.canonicalPath }
+            }
+        """.trimIndent())
+        assertEquals(TaskOutcome.SUCCESS, run().task(":snapshot")?.outcome)
+        val gradleUserHome = Path.of(Files.readString(root.resolve("gradle-user-home.txt"))).toRealPath()
+
+        // build() 반환 뒤에도 데몬이 사용하는 폴더를 JUnit의 프로젝트 정리 대상에 넣지 않는다.
+        assertFalse(gradleUserHome.startsWith(root.toRealPath()), "Gradle 작업 폴더가 임시 프로젝트 안에 있으면 안 된다")
+        assertTrue(root.toFile().deleteRecursively(), "빌드 후 임시 프로젝트를 바로 지울 수 있어야 한다")
+        assertFalse(Files.exists(root))
+        assertTrue(Files.isDirectory(gradleUserHome), "프로젝트 삭제가 Gradle 작업 폴더를 지워서는 안 된다")
+    }
+
+    @Test
     fun `실제 main 구성은 전이와 테스트 의존을 제외하고 상속된 직접 선언을 전달한다`() {
         prepare()
         val first = run()
@@ -199,7 +217,6 @@ class GradleDependencyWiringTest {
 
     private fun run(vararg arguments: String) = GradleRunner.create().withProjectDir(root.toFile())
         .withGradleInstallation(File(System.getProperty("architecture.gradleHome")))
-        .withTestKitDir(root.resolve(".test-kit").toFile())
         .withArguments(listOf("snapshot", "--offline", "--console=plain", "--max-workers=1", "--stacktrace") + arguments).build()
 
     private fun read(path: String = "build/dependencies.txt") = ProjectDependencies.read(Files.readString(root.resolve(path))).also {

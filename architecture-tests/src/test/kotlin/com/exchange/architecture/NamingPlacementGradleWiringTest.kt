@@ -59,7 +59,6 @@ class NamingPlacementGradleWiringTest {
     }
     private fun run() = GradleRunner.create().withProjectDir(root.toFile())
         .withGradleInstallation(File(System.getProperty("architecture.gradleHome")))
-        .withTestKitDir(root.resolve(".test-kit").toFile())
         .withArguments("snapshot", "--offline", "--console=plain", "--max-workers=1", "--stacktrace").build()
     private fun read() = MainSourceSnapshot.read(Files.readString(root.resolve("build/sources.txt")), setOf("app-api"))
         .also { assertEquals(emptyList(), it.problems) }

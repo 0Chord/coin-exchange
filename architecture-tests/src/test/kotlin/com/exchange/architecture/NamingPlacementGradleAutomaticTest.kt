@@ -43,7 +43,6 @@ class NamingPlacementGradleAutomaticTest {
     }
     private fun run(fail: Boolean = false) = GradleRunner.create().withProjectDir(root.toFile())
         .withGradleInstallation(File(System.getProperty("architecture.gradleHome")))
-        .withTestKitDir(root.resolve(".test-kit").toFile())
         .withArguments("test", "--offline", "--console=plain", "--max-workers=1", "--stacktrace")
         .let { if (fail) it.buildAndFail() else it.build() }
     private fun report() = Files.readString(root.resolve("build/naming-result.txt"))
