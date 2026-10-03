@@ -50,40 +50,11 @@ data class OrderFillSettlementPlan(
 )
 
 /**
- * 체결 가격과 체결 수량을 한 주문의 [OrderFillSettlementPlan]으로 변환한다.
+ * 한 체결의 예약 감소·hold 소비와 반환·자산 지급을 [OrderFillSettlementPlan]으로 계산한다.
+ * 입력 예약을 변경하지 않고 새 계획을 반환하며 저장·잔고 반영은 호출부가 담당한다.
  *
- * BUY는 quote 자산 hold에서 실제 체결 대금과 maker/taker 수수료를 소비하고 가격 개선분과
- * 사용하지 않은 수수료 예약액을 반환한 뒤 체결 수량만큼 base 자산을 지급한다. SELL은
- * 체결 수량만큼 base 자산 hold를 소비하고 실제 체결 대금에서 maker/taker 수수료를
- * 차감한 quote 자산을 지급한다.
- *
- * BUY 계산:
- * - 거래 예약 감소액 = 지정가 × 체결 수량
- * - 실제 수수료 = (체결가 대금 × maker/taker 수수료율 + 이전 소수 나머지)의
- *   최소 금액 단위 미만을 버린 금액
- * - 다음 수수료 예약액 = (남은 지정가 대금 × 최대 수수료율 + 새 소수 나머지)를
- *   최소 금액 단위로 올림한 금액. 전량 체결이면 0이다.
- * - 수수료 예약 감소액 = 현재 수수료 예약액 - 다음 수수료 예약액
- * - hold 소비액 = 체결가 대금 + 실제 수수료
- * - hold 반환액 = 전체 예약 감소액 - hold 소비액
- * - 지급 = base 자산 체결 수량
- * - 새 소수 나머지는 주문 예약에 반영해 다음 체결 계산으로 넘긴다
- *
- * SELL 계산:
- * - 예약 감소액 = hold 소비액 = base 자산 체결 수량
- * - hold 반환액 = 0
- * - 총 판매 대금 = quote 자산 기준 체결가 × 체결 수량
- * - 실제 수수료 = (총 판매 대금 × maker/taker 수수료율 + 이전 소수 나머지)의
- *   최소 금액 단위 미만을 버린 금액
- * - 지급 = 총 판매 대금 - 실제 수수료
- * - 새 소수 나머지는 주문 예약에 반영해 다음 체결 계산으로 넘긴다
- *
- * 이 계산기는 순수 도메인 계산만 담당하며 DB 조회, Reservation 저장 또는 Balance 변경을
- * 수행하지 않는다. 실제 저장과 자산 이동은 이후 TradeSettlementService가 담당한다.
- *
- * @property tradingFeeCalculator 체결가 대금과 maker/taker 요율로 실제 수수료를 계산하는 객체
- * @property tradingFeeReserveCalculator 남은 지정가 대금, 최대 요율과 소수 나머지로
- * 유지할 수수료 예약액을 계산하는 객체
+ * BUY/SELL 전체 비교는 저장소 engineering/flow-and-scope-contract.md의
+ * ‘BUY와 SELL 정산 계산’ 절에서 설명한다.
  */
 class OrderFillSettlementCalculator(
     private val tradingFeeCalculator: TradingFeeCalculator,

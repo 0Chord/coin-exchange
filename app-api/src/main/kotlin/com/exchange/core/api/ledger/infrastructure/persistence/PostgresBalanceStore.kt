@@ -15,13 +15,9 @@ import org.springframework.transaction.annotation.Transactional
 /**
  * `balance_projection` 테이블을 직접 갱신하는 [BalanceStore] PostgreSQL 구현체.
  *
- * 잔고를 먼저 읽고 나중에 쓰는 방식은 동시 요청에서 금액을 잃을 수 있다. 그래서
- * reserve, release, consumeHold는 잔액 조건이 포함된 단일 UPDATE를 실행한다.
- * 조건을 만족한 row만 변경하고 PostgreSQL `returning`으로 변경 직후 Balance를 받는다.
- *
- * UPDATE 결과가 없으면 [findRequiredBalance]로 원인을 구분한다.
- * - row 자체가 없음: [BalanceNotFoundException]
- * - row는 있지만 available 또는 hold 부족: 잔고 부족 예외
+ * 잔고를 먼저 읽고 쓰는 경쟁을 피하도록 reserve, release, consumeHold의 잔액 조건과
+ * 변경을 단일 `UPDATE … RETURNING`에 묶는다. 갱신 결과가 없으면 [findRequiredBalance]로
+ * 행 부재와 available·hold 부족을 구분한다. 이 조회는 실패 뒤의 현재 snapshot이다.
  *
  * @property jdbcTemplate 이름 기반 SQL parameter와 row mapping을 제공하는 Spring JDBC 도구
  */

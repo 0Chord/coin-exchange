@@ -6,29 +6,11 @@ import com.exchange.core.order.Side
 import java.util.TreeMap
 
 /**
- * 한 마켓의 오더북.
+ * 한 마켓의 가격별 주문장. 매수는 높은 가격, 매도는 낮은 가격이 우선이며
+ * 같은 가격의 FIFO 순서는 [PriceLevel]이 유지한다.
  *
- * OrderBook은 가격별 주문 줄을 관리한다.
- *
- * 예:
- * bids
- *   Price(101) -> PriceLevel(101)
- *                  order-a
- *                  order-b
- *
- *   Price(100) -> PriceLevel(100)
- *                  order-c
- *
- * asks
- *   Price(102) -> PriceLevel(102)
- *                  order-d
- *
- * PriceLevel은 같은 가격에 걸린 주문 줄이다.
- * OrderBook은 어떤 가격을 먼저 볼지 결정하고,
- * PriceLevel은 같은 가격 안에서 어떤 주문을 먼저 볼지 결정한다.
- *
- * bids는 높은 가격이 먼저 와야 하므로 내림차순으로 정렬하고,
- * asks는 낮은 가격이 먼저 와야 하므로 기본 오름차순 정렬을 사용한다.
+ * 자료구조 예시와 상태 소유는 저장소 `engineering/flow-and-scope-contract.md`의
+ * ‘내부 주문장의 구조와 공유 참조’에서 설명한다.
  */
 internal class OrderBook {
     /**
@@ -47,12 +29,7 @@ internal class OrderBook {
      */
     private val asks = TreeMap<Price, PriceLevel>()
 
-    /**
-     * 주문 취소용 인덱스.
-     *
-     * cancel command에는 orderId만 들어오므로,
-     * orderId로 주문의 side와 price를 바로 찾기 위해 둔다.
-     */
+    /** orderId로 대기 주문의 side와 price를 찾는 취소·조회용 인덱스. */
     private val orderIndex = HashMap<OrderId, OrderRef>()
 
     /**
@@ -137,7 +114,7 @@ internal class OrderBook {
         orderIndex.containsKey(orderId)
 
     /**
-     * book에 남아 있는 주문을 조회한다.
+     * book에 남은 내부 주문의 같은 가변 참조를 반환한다. 복사본이 아니며 없으면 `null`이다.
      *
      * @param orderId 조회할 주문 식별자
      * @return 대기 중인 주문. 없으면 `null`
