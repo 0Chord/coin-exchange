@@ -30,7 +30,7 @@ import org.springframework.transaction.PlatformTransactionManager
  * [OrderReservationStore]와 [LedgerTransactionStore]가 같은 DataSource와 Spring 트랜잭션을
  * 사용한다. 주문 예약 생성과 hold 변경, 예약 해제와 hold 반환을 각각 원자적으로 처리하며,
  * 체결 정산에서는 양쪽 예약·잔고 변경과 수수료를 포함한 원장 기록을 함께 커밋하거나 롤백한다.
- * 주문 예약 생성과 해제의 원장 기록은 아직 연결하지 않았다.
+ * 주문 예약 생성은 RESERVE 원장까지 함께 기록한다. 취소 해제의 RELEASE는 후속 범위다.
  */
 @Configuration
 @ConditionalOnProperty(
@@ -57,7 +57,7 @@ class LedgerPersistenceConfig {
     fun orderReservationStore(jdbcTemplate: NamedParameterJdbcTemplate): OrderReservationStore = PostgresOrderReservationStore(jdbcTemplate)
 
     /**
-     * 주문 접수 전에 필요 자금을 계산하고 Balance hold와 Reservation을 함께 만드는 서비스를
+     * 주문 접수 전에 필요 자금을 계산하고 잔고 hold·예약·RESERVE 원장을 함께 만드는 서비스를
      * 등록한다.
      *
      * @param balanceStore 사용자·자산별 잔고 변경 포트
@@ -68,6 +68,7 @@ class LedgerPersistenceConfig {
     fun orderFundingService(
         balanceStore: BalanceStore,
         orderReservationStore: OrderReservationStore,
+        ledgerTransactionStore: LedgerTransactionStore,
     ): OrderFundingService =
         OrderFundingService(
             calculator =
@@ -79,6 +80,7 @@ class LedgerPersistenceConfig {
                 ),
             balanceStore = balanceStore,
             reservationStore = orderReservationStore,
+            ledgerTransactionStore = ledgerTransactionStore,
         )
 
     /**

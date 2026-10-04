@@ -783,8 +783,12 @@ class TradeSettlementServiceTest {
         assertPersistedBalance(SELLER_USER_ID, BTC_ASSET_ID, available = 5, hold = 4)
         assertPersistedBalance(SELLER_USER_ID, KRW_ASSET_ID, available = 51, hold = 0)
         assertSettlementLedger(expectedTransactionCount = 1, expectedFeeRevenue = 0)
-        assertEquals(listOf("MATCHING:BTC-KRW:1"), transactionsAfterSuccess.map { it["source_event_id"] })
-        assertEquals(4, postingsAfterSuccess.size)
+        val settlementTransactions = transactionsAfterSuccess.filter { it["transaction_type"] == "SETTLEMENT" }
+        val settlementIds = settlementTransactions.map { it["ledger_transaction_id"] }.toSet()
+        val settlementPostings = postingsAfterSuccess.filter { it["ledger_transaction_id"] in settlementIds }
+        assertEquals(listOf("MATCHING:BTC-KRW:1"), settlementTransactions.map { it["source_event_id"] })
+        assertEquals(4, settlementPostings.size)
+        assertEquals(2, transactionsAfterSuccess.count { it["transaction_type"] == "RESERVE" })
         assertEquals(
             setOf(
                 listOf("USER:seller:BTC:HOLD", "BTC", "DEBIT", 1L),
@@ -792,7 +796,7 @@ class TradeSettlementServiceTest {
                 listOf("USER:buyer:KRW:HOLD", "KRW", "DEBIT", 51L),
                 listOf("USER:buyer:BTC:AVAILABLE", "BTC", "CREDIT", 1L),
             ),
-            postingsAfterSuccess
+            settlementPostings
                 .map { posting ->
                     listOf(
                         posting["account_id"],
