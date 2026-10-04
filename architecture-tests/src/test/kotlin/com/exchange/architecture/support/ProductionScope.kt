@@ -24,6 +24,7 @@ object ProductionScope {
         externalPorts = setOf(
             "com.exchange.core.order.OrderReservationStore",
             "com.exchange.core.ledger.BalanceStore",
+            "com.exchange.core.ledger.DevelopmentBalanceStore",
             "com.exchange.core.ledger.LedgerTransactionStore",
             "com.exchange.core.api.matching.application.port.MatchingEventStore",
             "com.exchange.core.api.matching.application.port.MatchingEventPublisher",

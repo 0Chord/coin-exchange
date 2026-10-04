@@ -21,8 +21,10 @@ class NamingPlacementRuleTest {
         r.assertReady(); assertEquals(emptyList(), r.violations)
     }
     @Test fun `코어 모듈의 UseCase는 허용하지 않는다`() {
-        val r = namingInspect(namingPolicy("domain-order" to namingPkg), CancelOrderUseCase::class.java, module = "domain-order")
-        r.assertReady(); assertTrue("module" in r.items(CancelOrderUseCase::class.java))
+        for (module in listOf("domain-order", "domain-ledger")) {
+            val r = namingInspect(namingPolicy(module to namingPkg), CancelOrderUseCase::class.java, module = module)
+            r.assertReady(); assertTrue("module" in r.items(CancelOrderUseCase::class.java))
+        }
     }
     @Test fun `Calculator와 Resolver는 fee order의 일반 클래스나 인터페이스다`() {
         for (module in listOf("domain-fee", "domain-order")) {

@@ -6,6 +6,9 @@ import com.exchange.core.api.order.application.OrderFundingService
 import com.exchange.core.api.order.application.OrderReservationReleaseService
 import com.exchange.core.api.order.application.TradeSettlementService
 import com.exchange.core.api.order.infrastructure.persistence.PostgresOrderReservationStore
+import com.exchange.core.ledger.DevelopmentBalanceStore
+import com.exchange.core.api.ledger.application.PrepareDevelopmentBalanceUseCase
+import org.springframework.transaction.PlatformTransactionManager
 import com.exchange.core.ledger.BalanceStore
 import com.exchange.core.ledger.LedgerTransactionStore
 import com.exchange.core.order.OrderReservationStore
@@ -39,6 +42,8 @@ class LedgerPersistenceConfigurationTest {
             assertEquals(1, context.getBeansOfType(OrderFundingService::class.java).size)
             assertEquals(1, context.getBeansOfType(OrderReservationReleaseService::class.java).size)
             assertEquals(1, context.getBeansOfType(TradeSettlementService::class.java).size)
+            assertEquals(1, context.getBeansOfType(DevelopmentBalanceStore::class.java).size)
+            assertEquals(1, context.getBeansOfType(PrepareDevelopmentBalanceUseCase::class.java).size)
             verifyNoInteractions(jdbcTemplate)
         }
     }
@@ -68,12 +73,15 @@ class LedgerPersistenceConfigurationTest {
             }
             if (jdbcTemplate != null) {
                 beanFactory.registerSingleton("namedParameterJdbcTemplate", jdbcTemplate)
+                beanFactory.registerSingleton("transactionManager", mock(PlatformTransactionManager::class.java))
             }
             register(LedgerPersistenceConfig::class.java)
             refresh()
         }
 
     private fun assertNoPersistenceBeans(context: AnnotationConfigApplicationContext) {
+        assertTrue(context.getBeansOfType(DevelopmentBalanceStore::class.java).isEmpty())
+        assertTrue(context.getBeansOfType(PrepareDevelopmentBalanceUseCase::class.java).isEmpty())
         assertTrue(context.getBeansOfType(BalanceStore::class.java).isEmpty())
         assertTrue(context.getBeansOfType(OrderReservationStore::class.java).isEmpty())
         assertTrue(context.getBeansOfType(LedgerTransactionStore::class.java).isEmpty())

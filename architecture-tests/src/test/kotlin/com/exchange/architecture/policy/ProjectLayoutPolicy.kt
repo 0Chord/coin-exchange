@@ -18,6 +18,7 @@ object ProjectLayoutPolicy {
                 app("order-http", "$base/api/order/api", "주문 HTTP 변환"),
                 app("order-application", "$base/api/order/application", "주문 실행과 내부 작업"),
                 app("order-persistence", "$base/api/order/infrastructure/persistence", "주문 예약 저장"),
+                app("ledger-application", "$base/api/ledger/application", "개발용 초기 자금의 명시적인 실행"),
                 app("ledger-persistence", "$base/api/ledger/infrastructure/persistence", "잔고·원장 저장"),
                 app("matching-application", "$base/api/matching/application", "매칭 전후 작업 연결"),
                 app("matching-ports", "$base/api/matching/application/port", "매칭 저장·발행 계약"),

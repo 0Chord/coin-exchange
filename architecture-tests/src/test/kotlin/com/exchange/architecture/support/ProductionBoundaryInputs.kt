@@ -10,7 +10,9 @@ import com.tngtech.archunit.core.domain.JavaModifier
 object ProductionBoundaryInputs {
     private const val base = "com.exchange.core"
     private const val orderApplication = "$base.api.order.application"
-    private val applicationPackages = setOf(orderApplication, "$base.api.matching.application")
+    private const val ledgerApplication = "$base.api.ledger.application"
+    private val useCasePackages = setOf(orderApplication, ledgerApplication)
+    private val applicationPackages = useCasePackages + "$base.api.matching.application"
     private val apiPackages = setOf("$base.api.order.api", "$base.api.common")
     private const val configurationPackage = "$base.api.config"
     private const val executorContract = "$base.matching.MarketCommandProcessor"
@@ -19,7 +21,7 @@ object ProductionBoundaryInputs {
 
     // 기존 공개 진입점의 삭제를 잡는 최소 기대이며, 전체 검사 대상의 등록표가 아니다.
     val requiredTypes = setOf("$base.api.order.api.OrderController", "$orderApplication.SubmitOrderUseCase",
-        "$orderApplication.CancelOrderUseCase", "$base.api.matching.application.MatchingCoordinator")
+        "$orderApplication.CancelOrderUseCase", "$ledgerApplication.PrepareDevelopmentBalanceUseCase", "$base.api.matching.application.MatchingCoordinator")
 
     fun expectations() = ProductionScope.expectations().let {
         it.copy(requiredTypesByModule = it.requiredTypesByModule +
@@ -61,7 +63,7 @@ object ProductionBoundaryInputs {
             val selected = explicit.toMutableSet()
             if (!type.enclosingClass.isPresent && (selected.isEmpty() || business && !type.isInterface)) {
                 selected += when {
-                    business -> if (type.packageName == orderApplication && concreteUseCase(type)) HttpRole.USE_CASE else HttpRole.COLLABORATOR
+                    business -> if (type.packageName in useCasePackages && concreteUseCase(type)) HttpRole.USE_CASE else HttpRole.COLLABORATOR
                     apiPackages.any { inPackage(type.name, it) } -> HttpRole.CONVERSION
                     inPackage(type.name, configurationPackage) -> HttpRole.CONFIGURATION
                     module in ProductionScope.roles.domainModules -> if (httpData(type, module)) HttpRole.DATA else HttpRole.COLLABORATOR

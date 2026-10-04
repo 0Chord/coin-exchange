@@ -14,7 +14,8 @@ object NamingPlacementGradleScenario {
         val folder = constant("ProjectLayoutPolicy.kt")
         val reason = constant("PortPlacementPolicy.kt")
         val policy = LayoutPolicy(listOf(AllowedSourceRoot("app-api", "src/main/java")), listOf(
-            AllowedFolder("order-application", "app-api", "src/main/java", folder, reason)))
+            AllowedFolder("order-application", "app-api", "src/main/java", folder, reason),
+            AllowedFolder("ledger-application", "app-api", "src/main/java", "com.example.ledger.application", "개시 준비 유즈케이스의 별도 위치")))
         val scope = ProductionScopeImporter().load(listOf(ModuleOutput("app-api", listOf(project.resolve("app-api/build/classes/java/main")))),
             ScopeExpectations(mapOf("app-api" to setOf("com.example.order.SubmitOrderUseCase"))))
         val result = NamingPlacement.inspect(scope, policy, MainSourceSnapshot.read(manifest, setOf("app-api")), setOf("app-api"))

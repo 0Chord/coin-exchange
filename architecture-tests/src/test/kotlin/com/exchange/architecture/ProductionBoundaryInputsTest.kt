@@ -46,6 +46,28 @@ class ProductionBoundaryInputsTest {
 
     private fun source(name: String) = directory.resolve("src/main/kotlin/${name.replace('.', '/')}.java")
 
+
+    @Test fun `ledger UseCase를 실제 application과 명명 검사에 포함하고 기술 구현 직접 참조를 거절한다`() {
+        val pkg = "com.exchange.core.api.ledger.application"
+        val extra = "$pkg.DirectLedgerUseCase"
+        val input = scope(extra to "public class DirectLedgerUseCase { private com.exchange.core.api.ledger.infrastructure.persistence.PostgresBalanceStore store; }")
+        val result = ApplicationImplementationIndependence.inspect(input, ProductionBoundaryInputs.application(input))
+        assertTrue(result.evaluated, result.problems.toString())
+        assertTrue(extra in result.applicationTypes)
+        assertTrue(result.violations.any { it.originType == extra && it.targetType.endsWith("PostgresBalanceStore") })
+        val names = NamingRules.inspectTypes(input, ProjectLayoutPolicy.target, ProductionScope.requiredTypes.keys)
+        assertTrue(names.evaluated, names.problems.toString())
+        assertTrue(names.violations.none { it.subject == "$pkg.PrepareDevelopmentBalanceUseCase" || it.subject == extra })
+    }
+
+    @Test fun `개시 저장 포트 공개 계약은 실제 ARCH06 대상이다`() {
+        val result = PortContractIndependence.inspect(scope(), ProductionScope.roles.externalPorts,
+            ProductionScope.persistenceTypes, ProductionScope.expectations().projectPackagePrefixes)
+        assertTrue(result.evaluated, result.problems.toString())
+        assertTrue("com.exchange.core.ledger.DevelopmentBalanceStore" in ProductionScope.roles.externalPorts)
+        assertEquals(emptyList(), result.violations)
+    }
+
     @Test fun `매칭 접근은 업무의 processor 계약과 허용 config의 구현 참조를 통과시킨다`() {
         val input = scope(
             "$app.QueuedMatchingWorker" to "public class QueuedMatchingWorker { private com.exchange.core.matching.MarketCommandProcessor processor; }",

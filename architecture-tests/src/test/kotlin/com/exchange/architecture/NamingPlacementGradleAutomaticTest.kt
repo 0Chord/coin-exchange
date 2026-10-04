@@ -69,7 +69,7 @@ class NamingPlacementGradleAutomaticTest {
         assertEquals(TaskOutcome.UP_TO_DATE, run().task(":test")?.outcome)
         write("$policyDir/ProjectLayoutPolicy.kt", "const val allowedFolder = \"com/example/other\"")
         assertEquals(TaskOutcome.FAILED, run(true).task(":test")?.outcome)
-        assertTrue(report().contains("violation=com.example.order.SubmitOrderUseCase:package:com.example.other"))
+        assertTrue(report().contains("violation=com.example.order.SubmitOrderUseCase:package:com.example.ledger.application, com.example.other"))
         write("$policyDir/ProjectLayoutPolicy.kt", "const val allowedFolder = \"com/example/order\"")
         assertEquals(TaskOutcome.SUCCESS, run().task(":test")?.outcome)
         write("$policyDir/PortPlacementPolicy.kt", "const val reason = \"변경된 정책 이유\"")

@@ -2,6 +2,9 @@ package com.exchange.core.ledger
 
 /** 원장 거래가 기록하는 회계 사건의 종류. 이 값 자체가 잔고를 변경하지는 않는다. */
 enum class LedgerTransactionType {
+    /** 개발용 최초 자금의 출처와 사용자 available 지급을 함께 기록하는 사건. */
+    OPENING,
+
     /** 주문에 사용할 자산을 available에서 hold로 예약하는 사건. */
     RESERVE,
 

@@ -1,0 +1,93 @@
+{
+  "issue": 71,
+  "date": "2026-10-04",
+  "branch": "feat/development-balances/71",
+  "base": "d30df546b38b84133070fc5c7254dbca8a160340",
+  "independentReviewSnapshot": "abf252f640e19a3b1023b6fae2ef7ac18a65f8b3",
+  "command": "./gradlew build :architecture-tests:verifyArchitectureReport --continue",
+  "result": "BUILD SUCCESSFUL",
+  "tests": {
+    "app-api": {
+      "tests": 117,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    "architecture-tests": {
+      "tests": 371,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    "domain-fee": {
+      "tests": 37,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    "domain-ledger": {
+      "tests": 25,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    "domain-matching": {
+      "tests": 74,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    "domain-order": {
+      "tests": 52,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    }
+  },
+  "totalTests": 676,
+  "productionReport": "P01-P09 executed and passed",
+  "sourceSha256": {
+    "app-api/src/main/kotlin/com/exchange/core/api/config/LedgerPersistenceConfig.kt": "d7e9d9991bb10cbcd69335cf9795541f0a5d40ccbf279177aac15537e1bcc04b",
+    "app-api/src/main/kotlin/com/exchange/core/api/ledger/application/PrepareDevelopmentBalanceUseCase.kt": "dcf15caea364efef49b2dcee9ea206101374f20d51cb550eac6caf03f48c6f07",
+    "app-api/src/main/kotlin/com/exchange/core/api/ledger/infrastructure/persistence/PostgresDevelopmentBalanceStore.kt": "a3cd0177eb11c1c82fde6492fb138247045912c8a0eecb4057f9da6879d340fe",
+    "app-api/src/main/resources/db/migration/V7__allow_opening_ledger_transactions.sql": "a9b29cdd04615ac0b7fbfc4f85c1334186b965d49a596cac395686c421ab61cf",
+    "app-api/src/test/kotlin/com/exchange/core/api/config/LedgerPersistenceConfigurationTest.kt": "244f0934a37c247c055c59c23b3b8125fef44a37ca3ca894a3da51bfa0f67319",
+    "app-api/src/test/kotlin/com/exchange/core/api/ledger/application/PrepareDevelopmentBalanceUseCaseTest.kt": "79414a9904653a8fb8f99db24d488b3dc78477c72df1aeb15b405277fb38339b",
+    "app-api/src/test/kotlin/com/exchange/core/api/ledger/infrastructure/persistence/PostgresDevelopmentBalanceStoreTest.kt": "32e0807c7745d8cea548e12e1508b7bcdd9f8373c01255b54729e50cd3ce4170",
+    "architecture-tests/src/test/kotlin/com/exchange/architecture/NamingPlacementGradleAutomaticTest.kt": "c5fa13c858d57874ebe070509bbf829efdf17ec8a02e7baf82ec3417f610f7cc",
+    "architecture-tests/src/test/kotlin/com/exchange/architecture/NamingPlacementGradleScenario.kt": "be882ee4f1926a129291f94b093009c59be05f9544178f08399deeff73429f1a",
+    "architecture-tests/src/test/kotlin/com/exchange/architecture/NamingPlacementIntegrationTest.kt": "9bd5485844a5858b35b248fccaf238ee57e826552c9e292471fed3d1c5ab1a8e",
+    "architecture-tests/src/test/kotlin/com/exchange/architecture/NamingPlacementRuleTest.kt": "d9eaf1a40bbe86fd45310422b7c581c6ad393e694d31304289ab81b92f58522f",
+    "architecture-tests/src/test/kotlin/com/exchange/architecture/NamingPlacementScopeTest.kt": "0e4e11cab76d3b985277af227fc75a6640e0bb2197e1f676858507e1afa16ee5",
+    "architecture-tests/src/test/kotlin/com/exchange/architecture/ProductionBoundaryInputsTest.kt": "4fae6aa45aa4e8d6557e2d1700aaa0247de867e3a4d668043d5363ab838aa516",
+    "architecture-tests/src/test/kotlin/com/exchange/architecture/policy/ProjectLayoutPolicy.kt": "388da2610d32b631641fbb8464f63cd3024a7f021e0a9f201a16d3938c1a9c3c",
+    "architecture-tests/src/test/kotlin/com/exchange/architecture/rules/NamingRules.kt": "4b724307b3cff536c5a06ebe9e6cccecfe8f016c4d810b0f6844102faeed82d9",
+    "architecture-tests/src/test/kotlin/com/exchange/architecture/support/ProductionBoundaryInputs.kt": "20da119741bababcb8b87c3b9841cac6900de38416506fb395697d3ed0a1e994",
+    "architecture-tests/src/test/kotlin/com/exchange/architecture/support/ProductionScope.kt": "29ac4da457766fd239b7e6be2c1461960bb1bc68386188d6820d29884b87b04b",
+    "domain-ledger/src/main/kotlin/com/exchange/core/ledger/DevelopmentBalanceStore.kt": "e177fc49354c44e14d528fdff6b982ec7dd448c7117c75e2e13cf6f75b21487a",
+    "domain-ledger/src/main/kotlin/com/exchange/core/ledger/LedgerTransactionType.kt": "b56ccd4fa2d9bb0b5fad4dd7b0e292b02e0023a72185632942826babb0b2ab51",
+    "domain-ledger/src/main/kotlin/com/exchange/core/ledger/OpeningBalance.kt": "2e5ccf67e0a39926c0370d24caa5bb35187459a7c04c66e97bc9df745e76fb64",
+    "domain-ledger/src/test/kotlin/com/exchange/core/ledger/OpeningBalanceTest.kt": "f3edc01811ed58818597b00c39b8405e9eef43782dca5a1a8a6c2dc277dea0e9"
+  },
+  "limits": [
+    "No HTTP/CLI or automatic startup funding (#49)",
+    "No full ledger/balance reconciliation (#74)",
+    "No real network disconnect or process kill (#67-70)",
+    "Human understanding/review is not inferred from tests or independent AI review"
+  ],
+  "firstReviewFindings": [
+    "Required ledger fixture location and exact folder expectations",
+    "JPA-translated commit exceptions require outcome-unconfirmed classification"
+  ],
+  "independentReview": {
+    "context": "fork_turns=none, separate frozen checkout",
+    "snapshot": "abf252f640e19a3b1023b6fae2ef7ac18a65f8b3",
+    "architectureTests": 371,
+    "appApiTests": 68,
+    "reusedDomainTests": 25,
+    "previousFindingsResolved": true,
+    "unresolvedConfirmedFindings": [],
+    "acceptance": "A01-A15 verified"
+  },
+  "runFrom": "repository root"
+}

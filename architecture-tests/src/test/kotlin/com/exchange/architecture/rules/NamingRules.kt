@@ -76,11 +76,11 @@ object NamingRules {
             })
             .allowEmptyShould(true)
 
-    private fun application(input: NamingPlacementInput, policy: LayoutPolicy, suffix: String, location: String): ArchRule = classes().that(suffixTargets(suffix)).should(condition("$suffix 선언·이름·애플리케이션 위치를 지킨다") { t ->
+    private fun application(input: NamingPlacementInput, policy: LayoutPolicy, suffix: String, vararg locations: String): ArchRule = classes().that(suffixTargets(suffix)).should(condition("$suffix 선언·이름·애플리케이션 위치를 지킨다") { t ->
         name(t, input, suffix, suffix) + shape(t, input, suffix, !t.isInterface && !t.isEnum && !t.isAnnotation && JavaModifier.ABSTRACT !in t.modifiers, "구체 클래스 또는 object") +
-            position(t, input, suffix, listOf(area(policy, location)))
+            position(t, input, suffix, locations.map { area(policy, it) })
     }).allowEmptyShould(true)
-    fun useCases(input: NamingPlacementInput, policy: LayoutPolicy) = application(input, policy, "UseCase", "order-application")
+    fun useCases(input: NamingPlacementInput, policy: LayoutPolicy) = application(input, policy, "UseCase", "order-application", "ledger-application")
     fun services(input: NamingPlacementInput, policy: LayoutPolicy) = application(input, policy, "Service", "order-application")
     fun coordinators(input: NamingPlacementInput, policy: LayoutPolicy) = application(input, policy, "Coordinator", "matching-application")
     private fun coreRule(input: NamingPlacementInput, policy: LayoutPolicy, suffix: String): ArchRule = classes().that(suffixTargets(suffix)).should(condition("$suffix 이름·선언·코어 위치를 지킨다") { t ->

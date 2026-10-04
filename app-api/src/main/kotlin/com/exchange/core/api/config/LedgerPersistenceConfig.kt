@@ -1,5 +1,9 @@
 package com.exchange.core.api.config
 
+import com.exchange.core.api.ledger.application.PrepareDevelopmentBalanceUseCase
+import com.exchange.core.api.ledger.infrastructure.persistence.PostgresDevelopmentBalanceStore
+import com.exchange.core.ledger.DevelopmentBalanceStore
+import org.springframework.transaction.PlatformTransactionManager
 import com.exchange.core.api.ledger.infrastructure.persistence.PostgresBalanceStore
 import com.exchange.core.api.ledger.infrastructure.persistence.PostgresLedgerTransactionStore
 import com.exchange.core.api.order.application.OrderFundingService
@@ -136,4 +140,19 @@ class LedgerPersistenceConfig {
         jdbcTemplate: NamedParameterJdbcTemplate,
     ): LedgerTransactionStore =
         PostgresLedgerTransactionStore(jdbcTemplate)
+    /** 명시적인 개발용 개시 호출에만 원장·잔고의 원자 저장을 제공한다. */
+    @Bean
+    fun developmentBalanceStore(
+        jdbcTemplate: NamedParameterJdbcTemplate,
+        transactionManager: PlatformTransactionManager,
+        ledgerTransactionStore: LedgerTransactionStore,
+        balanceStore: BalanceStore,
+    ): DevelopmentBalanceStore = PostgresDevelopmentBalanceStore(
+        jdbcTemplate, transactionManager, ledgerTransactionStore, balanceStore,
+    )
+
+    @Bean
+    fun prepareDevelopmentBalanceUseCase(developmentBalanceStore: DevelopmentBalanceStore) =
+        PrepareDevelopmentBalanceUseCase(developmentBalanceStore)
+
 }
