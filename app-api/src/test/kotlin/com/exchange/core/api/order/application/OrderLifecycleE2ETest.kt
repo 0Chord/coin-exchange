@@ -240,6 +240,8 @@ class OrderLifecycleE2ETest : ExchangeIntegrationTest() {
         )
 
         assertLedgerTransactionsBalanced()
+        assertReservePostings(BUYER_USER_ID, krwAssetId, 202_000)
+        assertReservePostings(SELLER_USER_ID, btcAssetId, 2)
     }
 
     /**
@@ -309,8 +311,10 @@ class OrderLifecycleE2ETest : ExchangeIntegrationTest() {
             jdbcTemplate.queryForList(
                 "select * from ledger_postings order by ledger_transaction_id, posting_sequence",
             )
-        assertEquals(1, settledTransactions.size)
-        assertEquals("SETTLEMENT", settledTransactions.single()["transaction_type"])
+        val settlementTransactions = settledTransactions.filter { it["transaction_type"] == "SETTLEMENT" }
+        assertEquals(1, settlementTransactions.size)
+        assertReservePostings(BUYER_USER_ID, krwAssetId, 303_000)
+        assertReservePostings(SELLER_USER_ID, btcAssetId, 1)
 
         mockMvc
             .perform(
@@ -535,6 +539,34 @@ class OrderLifecycleE2ETest : ExchangeIntegrationTest() {
             hold = 0,
         )
         assertPersistedFeeRevenue(expectedAmount = 0L)
+    }
+
+    /** RESERVE를 SETTLEMENT와 분리해 계정·자산·방향·금액을 확인한다. */
+    private fun assertReservePostings(
+        userId: UserId,
+        assetId: AssetId,
+        amount: Long,
+    ) {
+        val postings =
+            jdbcTemplate.queryForList(
+                """
+                select p.account_id, p.asset_id, p.side, p.amount
+                from ledger_postings p
+                join ledger_transactions t on t.ledger_transaction_id = p.ledger_transaction_id
+                where t.transaction_type = 'RESERVE' and p.account_id in (?, ?)
+                order by p.posting_sequence
+                """.trimIndent(),
+                "USER:${userId.value}:${assetId.value}:AVAILABLE",
+                "USER:${userId.value}:${assetId.value}:HOLD",
+            )
+        assertEquals(2, postings.size)
+        assertEquals(listOf("DEBIT", "CREDIT"), postings.map { it["side"] })
+        assertEquals(listOf(assetId.value, assetId.value), postings.map { it["asset_id"] })
+        assertEquals(listOf(amount, amount), postings.map { (it["amount"] as Number).toLong() })
+        assertEquals(
+            listOf("USER:${userId.value}:${assetId.value}:AVAILABLE", "USER:${userId.value}:${assetId.value}:HOLD"),
+            postings.map { it["account_id"] },
+        )
     }
 
     /** KRW 수수료 수익 계정의 CREDIT 합계에서 DEBIT 합계를 뺀 실제 기록 금액을 확인한다. */
