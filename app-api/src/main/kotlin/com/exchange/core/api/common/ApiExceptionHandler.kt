@@ -25,9 +25,7 @@ data class ApiErrorResponse(
 class ApiExceptionHandler {
     /** 중복 주문 예약은 서버 장애가 아니라 이미 접수된 주문을 다시 보낸 잘못된 요청이다. */
     @ExceptionHandler(OrderReservationAlreadyExistsException::class)
-    fun handleOrderReservationAlreadyExists(
-        error: OrderReservationAlreadyExistsException,
-    ): ResponseEntity<ApiErrorResponse> =
+    fun handleOrderReservationAlreadyExists(error: OrderReservationAlreadyExistsException): ResponseEntity<ApiErrorResponse> =
         ResponseEntity
             .status(HttpStatus.BAD_REQUEST)
             .body(

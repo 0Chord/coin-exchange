@@ -48,10 +48,11 @@ class JpaMatchingEventStoreTest {
 
     @BeforeEach
     fun setUp() {
-        store = JpaMatchingEventStore(
-            repository = repository,
-            objectMapper = jacksonObjectMapper(),
-        )
+        store =
+            JpaMatchingEventStore(
+                repository = repository,
+                objectMapper = jacksonObjectMapper(),
+            )
     }
 
     @Test

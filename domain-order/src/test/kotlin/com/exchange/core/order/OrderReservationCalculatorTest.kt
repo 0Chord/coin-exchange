@@ -38,20 +38,22 @@ class OrderReservationCalculatorTest {
 
     @Test
     fun `BUY 주문은 quote asset의 거래 대금과 최대 수수료를 예약한다`() {
-        val market = MarketDefinition(
-            marketId = MarketId("BTC-KRW"),
-            baseAssetId = AssetId("BTC"),
-            quoteAssetId = AssetId("KRW"),
-            baseAssetScale = 0,
-        )
+        val market =
+            MarketDefinition(
+                marketId = MarketId("BTC-KRW"),
+                baseAssetId = AssetId("BTC"),
+                quoteAssetId = AssetId("KRW"),
+                baseAssetScale = 0,
+            )
 
-        val requirement = calculator.calculate(
-            market = market,
-            side = Side.BUY,
-            price = Price(100),
-            quantity = Quantity(5),
-            feePolicySnapshot = feePolicySnapshot,
-        )
+        val requirement =
+            calculator.calculate(
+                market = market,
+                side = Side.BUY,
+                price = Price(100),
+                quantity = Quantity(5),
+                feePolicySnapshot = feePolicySnapshot,
+            )
 
         assertEquals(
             ReservationRequirement(
@@ -65,20 +67,22 @@ class OrderReservationCalculatorTest {
 
     @Test
     fun `SELL 주문은 base asset을 동결한다`() {
-        val market = MarketDefinition(
-            marketId = MarketId("BTC-KRW"),
-            baseAssetId = AssetId("BTC"),
-            quoteAssetId = AssetId("KRW"),
-            baseAssetScale = 0,
-        )
+        val market =
+            MarketDefinition(
+                marketId = MarketId("BTC-KRW"),
+                baseAssetId = AssetId("BTC"),
+                quoteAssetId = AssetId("KRW"),
+                baseAssetScale = 0,
+            )
 
-        val requirement = calculator.calculate(
-            market = market,
-            side = Side.SELL,
-            price = Price(100),
-            quantity = Quantity(5),
-            feePolicySnapshot = feePolicySnapshot,
-        )
+        val requirement =
+            calculator.calculate(
+                market = market,
+                side = Side.SELL,
+                price = Price(100),
+                quantity = Quantity(5),
+                feePolicySnapshot = feePolicySnapshot,
+            )
 
         assertEquals(
             ReservationRequirement(
@@ -92,20 +96,22 @@ class OrderReservationCalculatorTest {
 
     @Test
     fun `BUY 동결 금액은 base asset scale을 적용한다`() {
-        val market = MarketDefinition(
-            marketId = MarketId("BTC-KRW"),
-            baseAssetId = AssetId("BTC"),
-            quoteAssetId = AssetId("KRW"),
-            baseAssetScale = 8,
-        )
+        val market =
+            MarketDefinition(
+                marketId = MarketId("BTC-KRW"),
+                baseAssetId = AssetId("BTC"),
+                quoteAssetId = AssetId("KRW"),
+                baseAssetScale = 8,
+            )
 
-        val requirement = calculator.calculate(
-            market = market,
-            side = Side.BUY,
-            price = Price(100_000_000),
-            quantity = Quantity(50_000_000),
-            feePolicySnapshot = feePolicySnapshot,
-        )
+        val requirement =
+            calculator.calculate(
+                market = market,
+                side = Side.BUY,
+                price = Price(100_000_000),
+                quantity = Quantity(50_000_000),
+                feePolicySnapshot = feePolicySnapshot,
+            )
 
         assertEquals(
             ReservationRequirement(
@@ -119,22 +125,24 @@ class OrderReservationCalculatorTest {
 
     @Test
     fun `BUY 동결 금액이 최소 단위로 정확히 나눠지지 않으면 거부한다`() {
-        val market = MarketDefinition(
-            marketId = MarketId("BTC-KRW"),
-            baseAssetId = AssetId("BTC"),
-            quoteAssetId = AssetId("KRW"),
-            baseAssetScale = 8,
-        )
-
-        val error = assertFailsWith<IllegalArgumentException> {
-            calculator.calculate(
-                market = market,
-                side = Side.BUY,
-                price = Price(1),
-                quantity = Quantity(1),
-                feePolicySnapshot = feePolicySnapshot,
+        val market =
+            MarketDefinition(
+                marketId = MarketId("BTC-KRW"),
+                baseAssetId = AssetId("BTC"),
+                quoteAssetId = AssetId("KRW"),
+                baseAssetScale = 8,
             )
-        }
+
+        val error =
+            assertFailsWith<IllegalArgumentException> {
+                calculator.calculate(
+                    market = market,
+                    side = Side.BUY,
+                    price = Price(1),
+                    quantity = Quantity(1),
+                    feePolicySnapshot = feePolicySnapshot,
+                )
+            }
 
         assertEquals(
             "reservation amount must align with base asset scale",
@@ -144,22 +152,24 @@ class OrderReservationCalculatorTest {
 
     @Test
     fun `BUY 동결 금액이 Long 범위를 넘으면 거부한다`() {
-        val market = MarketDefinition(
-            marketId = MarketId("BTC-KRW"),
-            baseAssetId = AssetId("BTC"),
-            quoteAssetId = AssetId("KRW"),
-            baseAssetScale = 0,
-        )
-
-        val error = assertFailsWith<IllegalArgumentException> {
-            calculator.calculate(
-                market = market,
-                side = Side.BUY,
-                price = Price(Long.MAX_VALUE),
-                quantity = Quantity(2),
-                feePolicySnapshot = feePolicySnapshot,
+        val market =
+            MarketDefinition(
+                marketId = MarketId("BTC-KRW"),
+                baseAssetId = AssetId("BTC"),
+                quoteAssetId = AssetId("KRW"),
+                baseAssetScale = 0,
             )
-        }
+
+        val error =
+            assertFailsWith<IllegalArgumentException> {
+                calculator.calculate(
+                    market = market,
+                    side = Side.BUY,
+                    price = Price(Long.MAX_VALUE),
+                    quantity = Quantity(2),
+                    feePolicySnapshot = feePolicySnapshot,
+                )
+            }
 
         assertEquals(
             "reservation amount overflow",

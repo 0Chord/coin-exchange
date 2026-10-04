@@ -50,6 +50,5 @@ open class CommandGenerationBenchmark {
         )
     }
 
-    private fun nextPrefix(label: String): String =
-        "generation-$label-${batchSequence.incrementAndGet()}"
+    private fun nextPrefix(label: String): String = "generation-$label-${batchSequence.incrementAndGet()}"
 }

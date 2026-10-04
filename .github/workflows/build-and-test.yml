@@ -117,6 +117,10 @@ jobs:
           cache-provider: basic
           cache-read-only: ${{ github.event_name == 'pull_request' }}
 
+      - name: Check Kotlin formatting
+        id: lint
+        run: ./gradlew ktlintCheck --no-daemon --console=plain --continue
+
       # PostgreSQL은 테스트 코드의 Testcontainers가 직접 시작·종료한다.
       - name: Verify Docker for Testcontainers
         id: docker
@@ -124,8 +128,8 @@ jobs:
 
       - name: Build and run all tests
         id: tests
-        # build에 모든 모듈의 test가 포함된다. 테스트 결과는 캐시로 대체하지 않는다.
-        run: ./gradlew build --no-daemon --continue --stacktrace --rerun-tasks
+        # 테스트만 강제로 재실행한다. 앞 단계의 린트 결과는 UP-TO-DATE로 재사용한다.
+        run: ./gradlew build test --rerun --no-daemon --continue --stacktrace
 
       - name: Upload test reports
         id: reports
@@ -136,6 +140,7 @@ jobs:
           path: |
             **/build/reports/tests/test/**
             **/build/test-results/test/*.xml
+            **/build/reports/ktlint/**
           if-no-files-found: warn
           retention-days: 7
 
@@ -145,12 +150,13 @@ jobs:
           CI_SOURCE_OUTCOME: ${{ steps.source.outcome }}
           CI_JAVA_OUTCOME: ${{ steps.java.outcome }}
           CI_GRADLE_OUTCOME: ${{ steps.gradle.outcome }}
+          CI_LINT_OUTCOME: ${{ steps.lint.outcome }}
           CI_DOCKER_OUTCOME: ${{ steps.docker.outcome }}
           CI_TESTS_OUTCOME: ${{ steps.tests.outcome }}
           CI_REPORTS_OUTCOME: ${{ steps.reports.outcome }}
         run: |
           first_failure="없음. skip·취소가 있으면 실행 여부를 따로 확인하세요."
-          for stage in "소스 준비:$CI_SOURCE_OUTCOME" "Java 준비:$CI_JAVA_OUTCOME" "Gradle 준비:$CI_GRADLE_OUTCOME" "Docker 준비:$CI_DOCKER_OUTCOME" "전체 build:$CI_TESTS_OUTCOME" "보고서 업로드:$CI_REPORTS_OUTCOME"; do
+          for stage in "소스 준비:$CI_SOURCE_OUTCOME" "Java 준비:$CI_JAVA_OUTCOME" "Gradle 준비:$CI_GRADLE_OUTCOME" "Kotlin 린트:$CI_LINT_OUTCOME" "Docker 준비:$CI_DOCKER_OUTCOME" "전체 build:$CI_TESTS_OUTCOME" "보고서 업로드:$CI_REPORTS_OUTCOME"; do
             if [[ "$stage" == *:failure ]]; then
               first_failure="${stage%:*}"
               break
@@ -160,10 +166,10 @@ jobs:
             echo "### 전체 빌드: 실패 이유부터 확인"
             echo "- 첫 실패 단계: **$first_failure**"
             echo "- 실제 이유: 해당 단계의 오류 메시지를 먼저 읽으세요. Docker 준비 실패라면 제품 테스트는 실행되지 않았습니다."
-            echo "- 실행 상태: Docker 준비=$CI_DOCKER_OUTCOME / 전체 build=$CI_TESTS_OUTCOME / 보고서 업로드=$CI_REPORTS_OUTCOME"
+            echo "- 실행 상태: Kotlin 린트=$CI_LINT_OUTCOME / Docker 준비=$CI_DOCKER_OUTCOME / 전체 build=$CI_TESTS_OUTCOME / 보고서 업로드=$CI_REPORTS_OUTCOME"
             echo "- 기준 커밋: $GITHUB_SHA"
-            echo '- 명령: `./gradlew build --no-daemon --continue --stacktrace --rerun-tasks`'
-            echo '- 보고서: `test-reports` · 생성된 모듈별 HTML과 XML · 7일 보관. 준비 단계에서 실패하면 보고서가 없을 수 있습니다.'
+            echo '- 명령: `./gradlew ktlintCheck --no-daemon --console=plain --continue` → `./gradlew build test --rerun --no-daemon --continue --stacktrace`'
+            echo '- 보고서: `test-reports` · 생성된 모듈별 HTML과 XML, ktlint 텍스트/XML · 7일 보관. 준비 단계에서 실패하면 보고서가 없을 수 있습니다.'
             echo '- 구조 작업의 성공은 제품·DB 성공을 뜻하지 않습니다. **Architecture checks** 결과는 별도로 확인하세요.'
             echo '- 읽는 절차: 저장소 README의 **CI 실패 이유와 보고서 읽기** 항목'
           } >> "$GITHUB_STEP_SUMMARY"

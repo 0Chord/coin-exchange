@@ -23,7 +23,9 @@ class MatchingStateAccessCompilationTest {
 
     @Test
     fun `외부 소비자는 공개 엔진과 processor 계약을 사용할 수 있다`() {
-        assertSuccessful(compile("""
+        assertSuccessful(
+            compile(
+                """
             class Consumer {
                 fun throughEngine(command: com.exchange.core.matching.MatchingCommand): List<com.exchange.core.matching.MatchingEvent> =
                     com.exchange.core.matching.MatchingEngine().process(command)
@@ -35,7 +37,9 @@ class MatchingStateAccessCompilationTest {
                     processor.close()
                 }
             }
-        """))
+        """,
+            ),
+        )
     }
 
     @Test
@@ -82,7 +86,8 @@ class MatchingStateAccessCompilationTest {
         assertVisibilityRejected(compile(source), diagnostic = "INVISIBLE_REFERENCE", symbol = type)
     }
 
-    private fun orderConsumer(change: String = "order.fill(com.exchange.core.common.Quantity(4))") = """
+    private fun orderConsumer(change: String = "order.fill(com.exchange.core.common.Quantity(4))") =
+        """
         class Consumer {
             fun remaining(): com.exchange.core.common.Quantity {
                 val order = com.exchange.core.matching.BookOrder(
@@ -105,77 +110,135 @@ class MatchingStateAccessCompilationTest {
         assertTrue(Files.isRegularFile(result.output.resolve("com/exchange/accessfixture/Consumer.class")), "정상 소비자 클래스 출력이 없음")
     }
 
-    private fun assertVisibilityRejected(result: Compilation, diagnostic: String, symbol: String) {
-        assertEquals(ExitCode.COMPILATION_ERROR, result.exitCode,
-            "$symbol 접근 거절 계약 불충족. 내부 컴파일러/환경 실패는 접근성 거절이 아님:\n${result.diagnostics}")
+    private fun assertVisibilityRejected(
+        result: Compilation,
+        diagnostic: String,
+        symbol: String,
+    ) {
+        assertEquals(
+            ExitCode.COMPILATION_ERROR,
+            result.exitCode,
+            "$symbol 접근 거절 계약 불충족. 내부 컴파일러/환경 실패는 접근성 거절이 아님:\n${result.diagnostics}",
+        )
         assertTrue(result.errors.isNotEmpty(), "$symbol 접근성 오류 진단이 없음")
         result.errors.forEach { error ->
             assertEquals(CompilerMessageSeverity.ERROR, error.severity, "컴파일러/환경 오류는 접근 거절이 아님: $error")
             assertEquals(result.source.toString(), error.path, "접근 거절이 소비자 소스에서 발생해야 함: $error")
             assertTrue(error.line != null && error.line > 0, "접근 거절의 소스 위치가 없음: $error")
-            assertTrue(error.message.contains("[$diagnostic]") && error.message.contains(symbol),
-                "의도한 $symbol 접근성 진단만 허용. 누락 의존성/미해석 타입 오류는 준비 실패: $error")
+            assertTrue(
+                error.message.contains("[$diagnostic]") && error.message.contains(symbol),
+                "의도한 $symbol 접근성 진단만 허용. 누락 의존성/미해석 타입 오류는 준비 실패: $error",
+            )
         }
     }
 
-    private fun compile(body: String, friend: Boolean = false): Compilation {
+    private fun compile(
+        body: String,
+        friend: Boolean = false,
+    ): Compilation {
         val outputs = ProductionScope.outputs().associateBy { it.module }
-        val required = mapOf(
-            "domain-common" to "com/exchange/core/common/Quantity.class",
-            "domain-fee" to "com/exchange/core/fee/TradingFeeCalculator.class",
-            "domain-order" to "com/exchange/core/order/Side.class",
-            "domain-matching" to "com/exchange/core/matching/MatchingEngine.class",
+        val required =
+            mapOf(
+                "domain-common" to "com/exchange/core/common/Quantity.class",
+                "domain-fee" to "com/exchange/core/fee/TradingFeeCalculator.class",
+                "domain-order" to "com/exchange/core/order/Side.class",
+                "domain-matching" to "com/exchange/core/matching/MatchingEngine.class",
+            )
+        val roots =
+            required.flatMap { (module, representative) ->
+                val output = assertNotNull(outputs[module], "컴파일 준비 실패: $module main 출력 속성이 없음")
+                assertTrue(output.roots.isNotEmpty(), "컴파일 준비 실패: $module main 출력이 비어 있음")
+                assertTrue(output.roots.all { Files.isDirectory(it) }, "컴파일 준비 실패: $module main 출력 폴더가 없음")
+                assertTrue(
+                    output.roots.any { Files.isRegularFile(it.resolve(representative)) },
+                    "컴파일 준비 실패: $module 실제 운영 클래스 $representative 없음",
+                )
+                output.roots
+            }
+        val runtimePaths =
+            assertNotNull(System.getProperty("architecture.testRuntime"), "컴파일 준비 실패: 테스트 runtime classpath가 없음")
+                .split(File.pathSeparator)
+                .filter { it.isNotBlank() }
+                .map(Path::of)
+        assertTrue(
+            runtimePaths.none { it.toString().endsWith(".jar") && !Files.isRegularFile(it) },
+            "컴파일 준비 실패: 테스트 runtime 의존 jar가 없음",
         )
-        val roots = required.flatMap { (module, representative) ->
-            val output = assertNotNull(outputs[module], "컴파일 준비 실패: $module main 출력 속성이 없음")
-            assertTrue(output.roots.isNotEmpty(), "컴파일 준비 실패: $module main 출력이 비어 있음")
-            assertTrue(output.roots.all { Files.isDirectory(it) }, "컴파일 준비 실패: $module main 출력 폴더가 없음")
-            assertTrue(output.roots.any { Files.isRegularFile(it.resolve(representative)) },
-                "컴파일 준비 실패: $module 실제 운영 클래스 $representative 없음")
-            output.roots
-        }
-        val runtimePaths = assertNotNull(System.getProperty("architecture.testRuntime"), "컴파일 준비 실패: 테스트 runtime classpath가 없음")
-            .split(File.pathSeparator).filter { it.isNotBlank() }.map(Path::of)
-        assertTrue(runtimePaths.none { it.toString().endsWith(".jar") && !Files.isRegularFile(it) },
-            "컴파일 준비 실패: 테스트 runtime 의존 jar가 없음")
         // Java 소스/리소스가 없는 source set의 출력 폴더는 Gradle runtime 경로에만 남을 수 있다.
         val runtime = runtimePaths.filter { Files.exists(it) }
-        val stdlib = Path.of(assertNotNull(Unit::class.java.protectionDomain.codeSource,
-            "컴파일 준비 실패: Kotlin stdlib 위치가 없음").location.toURI())
-        assertTrue(runtime.any { it.toAbsolutePath().normalize() == stdlib.toAbsolutePath().normalize() },
-            "컴파일 준비 실패: Kotlin stdlib가 테스트 runtime classpath에 없음")
+        val stdlib =
+            Path.of(
+                assertNotNull(
+                    Unit::class.java.protectionDomain.codeSource,
+                    "컴파일 준비 실패: Kotlin stdlib 위치가 없음",
+                ).location.toURI(),
+            )
+        assertTrue(
+            runtime.any { it.toAbsolutePath().normalize() == stdlib.toAbsolutePath().normalize() },
+            "컴파일 준비 실패: Kotlin stdlib가 테스트 runtime classpath에 없음",
+        )
 
         val fixture = Files.createTempDirectory(directory, "matching-access-")
         val source = fixture.resolve("Consumer.kt")
         val destination = Files.createDirectory(fixture.resolve("classes"))
         Files.writeString(source, "package com.exchange.accessfixture\n\n${body.trimIndent()}\n")
         val messages = mutableListOf<Diagnostic>()
-        val collector = object : MessageCollector {
-            override fun clear() = messages.clear()
-            override fun hasErrors() = messages.any { it.severity.isError }
-            override fun report(severity: CompilerMessageSeverity, message: String, location: CompilerMessageSourceLocation?) {
-                if (severity != CompilerMessageSeverity.LOGGING) messages += Diagnostic(severity, message, location?.path, location?.line)
+        val collector =
+            object : MessageCollector {
+                override fun clear() = messages.clear()
+
+                override fun hasErrors() = messages.any { it.severity.isError }
+
+                override fun report(
+                    severity: CompilerMessageSeverity,
+                    message: String,
+                    location: CompilerMessageSourceLocation?,
+                ) {
+                    if (severity !=
+                        CompilerMessageSeverity.LOGGING
+                    ) {
+                        messages += Diagnostic(severity, message, location?.path, location?.line)
+                    }
+                }
             }
-        }
-        val arguments = K2JVMCompilerArguments().apply {
-            freeArgs = listOf(source.toString())
-            classpath = (roots + runtime).distinct().joinToString(File.pathSeparator)
-            this.destination = destination.toString()
-            moduleName = "matching-state-access-consumer"
-            jvmTarget = "25"
-            jdkHome = System.getProperty("java.home")
-            noStdlib = true
-            noReflect = true
-            renderInternalDiagnosticNames = true
-            if (friend) friendPaths = outputs.getValue("domain-matching").roots.map { it.toString() }.toTypedArray()
-        }
+        val arguments =
+            K2JVMCompilerArguments().apply {
+                freeArgs = listOf(source.toString())
+                classpath = (roots + runtime).distinct().joinToString(File.pathSeparator)
+                this.destination = destination.toString()
+                moduleName = "matching-state-access-consumer"
+                jvmTarget = "25"
+                jdkHome = System.getProperty("java.home")
+                noStdlib = true
+                noReflect = true
+                renderInternalDiagnosticNames = true
+                if (friend) {
+                    friendPaths =
+                        outputs
+                            .getValue("domain-matching")
+                            .roots
+                            .map { it.toString() }
+                            .toTypedArray()
+                }
+            }
         val compiler = K2JVMCompiler().apply { isReadingSettingsFromEnvironmentAllowed = false }
         val exitCode = compiler.exec(collector, Services.EMPTY, arguments)
         return Compilation(exitCode, messages.toList(), source, destination)
     }
 
-    private data class Diagnostic(val severity: CompilerMessageSeverity, val message: String, val path: String?, val line: Int?)
-    private data class Compilation(val exitCode: ExitCode, val diagnostics: List<Diagnostic>, val source: Path, val output: Path) {
+    private data class Diagnostic(
+        val severity: CompilerMessageSeverity,
+        val message: String,
+        val path: String?,
+        val line: Int?,
+    )
+
+    private data class Compilation(
+        val exitCode: ExitCode,
+        val diagnostics: List<Diagnostic>,
+        val source: Path,
+        val output: Path,
+    ) {
         val errors get() = diagnostics.filter { it.severity.isError }
     }
 }

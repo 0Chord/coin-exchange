@@ -17,8 +17,7 @@ value class FeeRate(
         }
     }
 
-    override fun compareTo(other: FeeRate): Int =
-        partsPerMillion.compareTo(other.partsPerMillion)
+    override fun compareTo(other: FeeRate): Int = partsPerMillion.compareTo(other.partsPerMillion)
 
     companion object {
         /** 백만분율 계산에 사용하는 분모. */

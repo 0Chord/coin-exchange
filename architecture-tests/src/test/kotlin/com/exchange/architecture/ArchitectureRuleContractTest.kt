@@ -1,6 +1,25 @@
 package com.exchange.architecture
 
-import com.exchange.architecture.fixtures.*
+import com.exchange.architecture.fixtures.CallbackExecutor
+import com.exchange.architecture.fixtures.DomainAmount
+import com.exchange.architecture.fixtures.DomainBalance
+import com.exchange.architecture.fixtures.DomainBalancePort
+import com.exchange.architecture.fixtures.FrameworkApplication
+import com.exchange.architecture.fixtures.GenericJdbcDomain
+import com.exchange.architecture.fixtures.HttpCallingDomain
+import com.exchange.architecture.fixtures.JdbcAdapter
+import com.exchange.architecture.fixtures.JdbcFieldDomain
+import com.exchange.architecture.fixtures.JdbcParameterDomain
+import com.exchange.architecture.fixtures.JdbcReturnDomain
+import com.exchange.architecture.fixtures.JpaAnnotatedDomain
+import com.exchange.architecture.fixtures.LambdaHttpDomain
+import com.exchange.architecture.fixtures.NestedDomain
+import com.exchange.architecture.fixtures.PortCallingDomain
+import com.exchange.architecture.fixtures.PortTypedDomain
+import com.exchange.architecture.fixtures.PureCalculator
+import com.exchange.architecture.fixtures.SocketDomain
+import com.exchange.architecture.fixtures.SpringAnnotatedDomain
+import com.exchange.architecture.fixtures.UriValueDomain
 import com.exchange.architecture.fixtures.portaccess.BalancePortImplementation
 import com.exchange.architecture.fixtures.portaccess.ImplementationCallingDomain
 import com.exchange.architecture.fixtures.portaccess.ImplementationReferencingDomain
@@ -36,10 +55,11 @@ class ArchitectureRuleContractTest {
     @Test
     fun `A03 도메인 타입으로 선언한 저장 포트는 외부 호출이 아니다`() {
         val classes = importFixtures(DomainAmount::class.java, DomainBalance::class.java, DomainBalancePort::class.java)
-        val roles = ArchitectureRoles(
-            pureDomain = setOf(DomainAmount::class.java.name, DomainBalance::class.java.name),
-            externalPorts = setOf(DomainBalancePort::class.java.name),
-        )
+        val roles =
+            ArchitectureRoles(
+                pureDomain = setOf(DomainAmount::class.java.name, DomainBalance::class.java.name),
+                externalPorts = setOf(DomainBalancePort::class.java.name),
+            )
 
         assertEquals(emptyList(), DomainTechnologyIndependence.evaluate(classes, roles))
     }
@@ -48,10 +68,11 @@ class ArchitectureRuleContractTest {
     fun `A04 실행기의 동시성 제어를 순수 도메인 위반으로 오인하지 않는다`() {
         val classes = importFixtures(DomainAmount::class.java, CallbackExecutor::class.java)
         assertDependency(classes, CallbackExecutor::class.java, "java.util.concurrent.CompletableFuture")
-        val roles = ArchitectureRoles(
-            pureDomain = setOf(DomainAmount::class.java.name),
-            executors = setOf(CallbackExecutor::class.java.name),
-        )
+        val roles =
+            ArchitectureRoles(
+                pureDomain = setOf(DomainAmount::class.java.name),
+                executors = setOf(CallbackExecutor::class.java.name),
+            )
 
         assertEquals(emptyList(), DomainTechnologyIndependence.evaluate(classes, roles))
     }
@@ -91,22 +112,24 @@ class ArchitectureRuleContractTest {
         val origin = HttpCallingDomain::class.java
         val target = "java.net.http.HttpClient"
         val classes = importFixtures(origin)
-        val call = classes.get(origin).methodCallsFromSelf.single {
-            it.origin.name == "createClient" && it.target.owner.name == target && it.target.name == "newHttpClient"
-        }
-        // 예제의 실제 호출은 47행이다. 검사기가 반환한 행에서 기대값을 만들면 잘못된 위치도 통과할 수 있다.
-        assertEquals(47, call.sourceCodeLocation.lineNumber, "Fixture call site changed; review the source and expected line together")
+        val call =
+            classes.get(origin).methodCallsFromSelf.single {
+                it.origin.name == "createClient" && it.target.owner.name == target && it.target.name == "newHttpClient"
+            }
+        // 예제의 실제 호출은 57행이다. 검사기가 반환한 행에서 기대값을 만들면 잘못된 위치도 통과할 수 있다.
+        assertEquals(57, call.sourceCodeLocation.lineNumber, "Fixture call site changed; review the source and expected line together")
         val violations = DomainTechnologyIndependence.evaluate(classes, pure(origin))
-        val violation = assertNotNull(
-            violations.find {
-                it.ruleId == "ARCH-01" && it.originType == origin.name && it.targetType == target &&
-                    it.description.contains("createClient") && it.description.contains("newHttpClient")
-            },
-            "Expected the createClient -> newHttpClient call, not the return-type dependency; actual=$violations",
-        )
+        val violation =
+            assertNotNull(
+                violations.find {
+                    it.ruleId == "ARCH-01" && it.originType == origin.name && it.targetType == target &&
+                        it.description.contains("createClient") && it.description.contains("newHttpClient")
+                },
+                "Expected the createClient -> newHttpClient call, not the return-type dependency; actual=$violations",
+            )
 
         assertEquals("DomainFixtures.kt", violation.sourceFile)
-        assertEquals(47, violation.lineNumber, "Report the actual call location, not an arbitrary positive line")
+        assertEquals(57, violation.lineNumber, "Report the actual call location, not an arbitrary positive line")
         assertTrue(violation.specification.contains("architecture-check-spec.md"), "Link the diagnostic to the convention")
     }
 
@@ -116,10 +139,11 @@ class ArchitectureRuleContractTest {
         val port = DomainBalancePort::class.java
         val classes = importFixtures(caller, port, DomainBalance::class.java, DomainAmount::class.java)
         assertTrue(classes.get(caller).methodCallsFromSelf.any { it.target.owner.name == port.name && it.target.name == "save" })
-        val roles = ArchitectureRoles(
-            pureDomain = setOf(caller.name, DomainBalance::class.java.name, DomainAmount::class.java.name),
-            externalPorts = setOf(port.name),
-        )
+        val roles =
+            ArchitectureRoles(
+                pureDomain = setOf(caller.name, DomainBalance::class.java.name, DomainAmount::class.java.name),
+                externalPorts = setOf(port.name),
+            )
 
         findViolation(DomainTechnologyIndependence.evaluate(classes, roles), caller.name, port.name)
     }
@@ -133,7 +157,8 @@ class ArchitectureRuleContractTest {
 
         findViolation(
             DomainTechnologyIndependence.evaluate(classes, pure(parent)),
-            nested.name, "java.sql.Connection",
+            nested.name,
+            "java.sql.Connection",
         )
     }
 
@@ -174,9 +199,10 @@ class ArchitectureRuleContractTest {
     fun `A16 행 정보가 없는 반환 타입 의존은 멤버를 보고하고 행 번호를 만들지 않는다`() {
         val origin = JdbcReturnDomain::class.java
         val classes = importFixtures(origin)
-        val dependency = classes.get(origin).directDependenciesFromSelf.single {
-            it.targetClass.name == "java.sql.Connection" && it.description.contains("has return type")
-        }
+        val dependency =
+            classes.get(origin).directDependenciesFromSelf.single {
+                it.targetClass.name == "java.sql.Connection" && it.description.contains("has return type")
+            }
         assertEquals(0, dependency.sourceCodeLocation.lineNumber, "This fixture's declaration has no bytecode source line")
         val violations = DomainTechnologyIndependence.evaluate(classes, pure(origin))
         val violation = findViolation(violations, origin.name, "java.sql.Connection")
@@ -197,7 +223,10 @@ class ArchitectureRuleContractTest {
     @Test
     fun `A18 소켓 I O는 거절하지만 URI 값 타입은 허용한다`() {
         assertViolation(SocketDomain::class.java, "java.net.Socket")
-        assertEquals(emptyList(), DomainTechnologyIndependence.evaluate(importFixtures(UriValueDomain::class.java), pure(UriValueDomain::class.java)))
+        assertEquals(
+            emptyList(),
+            DomainTechnologyIndependence.evaluate(importFixtures(UriValueDomain::class.java), pure(UriValueDomain::class.java)),
+        )
     }
 
     @Test
@@ -207,7 +236,12 @@ class ArchitectureRuleContractTest {
         val classes = importFixtures(facade, lambda)
         val violations = DomainTechnologyIndependence.evaluate(classes, pure(facade, lambda))
         listOf(facade, lambda).forEach { origin ->
-            assertTrue(classes.get(origin).methodCallsFromSelf.any { it.target.name == "newHttpClient" }, "Fixture must expose the actual generated call")
+            assertTrue(
+                classes.get(origin).methodCallsFromSelf.any {
+                    it.target.name == "newHttpClient"
+                },
+                "Fixture must expose the actual generated call",
+            )
             assertTrue(violations.any { it.originType == origin.name && it.description.contains("newHttpClient") })
         }
     }
@@ -224,37 +258,52 @@ class ArchitectureRuleContractTest {
     @Test
     fun `A21 포트 구현체를 직접 호출해도 등록된 포트 접근으로 검출한다`() {
         assertPortAccessViolation(
-            ImplementationCallingDomain::class.java, BalancePortImplementation::class.java, 12,
+            ImplementationCallingDomain::class.java,
+            BalancePortImplementation::class.java,
+            15,
         )
     }
 
     @Test
     fun `A22 포트의 메서드 참조를 반환하면 실행 전에도 접근으로 검출한다`() {
-        assertPortAccessViolation(PortReferencingDomain::class.java, DomainBalancePort::class.java, 16)
+        assertPortAccessViolation(PortReferencingDomain::class.java, DomainBalancePort::class.java, 19)
     }
 
     @Test
     fun `A23 포트 구현체의 메서드 참조도 접근으로 검출한다`() {
         assertPortAccessViolation(
-            ImplementationReferencingDomain::class.java, BalancePortImplementation::class.java, 20,
+            ImplementationReferencingDomain::class.java,
+            BalancePortImplementation::class.java,
+            23,
         )
     }
 
-    private fun assertPortAccessViolation(caller: Class<*>, target: Class<*>, expectedLine: Int) {
+    private fun assertPortAccessViolation(
+        caller: Class<*>,
+        target: Class<*>,
+        expectedLine: Int,
+    ) {
         // 메서드 참조용 생성 클래스도 읽되, 예제의 업무 메서드를 실행해 입력을 만들지는 않는다.
         val classes = ClassFileImporter().importPackagesOf(ImplementationCallingDomain::class.java)
         assertTrue(classes.any { it.name == caller.name }, "검사할 호출자가 읽혀야 한다")
         assertTrue(classes.any { it.name == BalancePortImplementation::class.java.name }, "포트 구현 관계를 읽어야 한다")
-        val accesses = classes.flatMap { it.methodCallsFromSelf + it.methodReferencesFromSelf }.filter {
-            (it.origin.owner.name == caller.name || it.origin.owner.name.startsWith(caller.name + "$")) &&
-                it.target.owner.name == target.name && it.target.name == "save"
-        }
+        val accesses =
+            classes.flatMap { it.methodCallsFromSelf + it.methodReferencesFromSelf }.filter {
+                (
+                    it.origin.owner.name == caller.name ||
+                        it.origin.owner.name
+                            .startsWith(caller.name + "$")
+                ) &&
+                    it.target.owner.name == target.name && it.target.name == "save"
+            }
         assertTrue(accesses.isNotEmpty(), "예제 바이트코드에 해당 호출 또는 참조가 실제로 있어야 한다")
 
         // 구현체를 포트 목록에 따로 넣지 않아야 인터페이스의 구현 관계를 따라가는지 확인할 수 있다.
-        val roles = ArchitectureRoles(
-            pureDomain = setOf(caller.name), externalPorts = setOf(DomainBalancePort::class.java.name),
-        )
+        val roles =
+            ArchitectureRoles(
+                pureDomain = setOf(caller.name),
+                externalPorts = setOf(DomainBalancePort::class.java.name),
+            )
         val violations = DomainTechnologyIndependence.evaluate(classes, roles)
         assertEquals(1, violations.size, "선택한 순수 도메인의 save 접근만 보고해야 한다: $violations")
         val violation = violations.single()
@@ -268,20 +317,31 @@ class ArchitectureRuleContractTest {
         assertEquals("engineering/architecture-check-spec.md", violation.specification)
     }
 
-    private fun assertViolation(origin: Class<*>, target: String): ArchitectureViolation {
+    private fun assertViolation(
+        origin: Class<*>,
+        target: String,
+    ): ArchitectureViolation {
         val classes = importFixtures(origin)
         // 예제의 의존이 실제로 읽혔는지 먼저 확인해야 입력 준비 실패와 규칙의 검출 실패를 구별할 수 있다.
         assertDependency(classes, origin, target)
         return findViolation(DomainTechnologyIndependence.evaluate(classes, pure(origin)), origin.name, target)
     }
 
-    private fun findViolation(violations: List<ArchitectureViolation>, origin: String, target: String): ArchitectureViolation =
+    private fun findViolation(
+        violations: List<ArchitectureViolation>,
+        origin: String,
+        target: String,
+    ): ArchitectureViolation =
         assertNotNull(
             violations.find { it.ruleId == "ARCH-01" && it.originType == origin && it.targetType == target },
             "Expected ARCH-01: $origin -> $target; actual=$violations",
         )
 
-    private fun assertDependency(classes: JavaClasses, origin: Class<*>, target: String) {
+    private fun assertDependency(
+        classes: JavaClasses,
+        origin: Class<*>,
+        target: String,
+    ) {
         assertTrue(
             classes.get(origin).directDependenciesFromSelf.any { it.targetClass.name == target },
             "Fixture precondition: ${origin.name} bytecode must actually reference $target",

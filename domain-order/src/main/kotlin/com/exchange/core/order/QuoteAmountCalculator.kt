@@ -28,7 +28,8 @@ internal fun calculateQuoteAmount(
     baseAssetScale: Int,
 ): Amount {
     val numerator =
-        BigInteger.valueOf(price.value)
+        BigInteger
+            .valueOf(price.value)
             .multiply(BigInteger.valueOf(quantity.value))
 
     val baseUnit = BigInteger.TEN.pow(baseAssetScale)

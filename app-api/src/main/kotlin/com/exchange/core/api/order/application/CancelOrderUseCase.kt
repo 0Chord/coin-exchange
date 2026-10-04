@@ -23,8 +23,8 @@ class CancelOrderUseCase(
      * 취소 성공 이벤트에 대해서만 예약금을 반환하고 매칭 결과를 그대로 돌려준다.
      * 주문이 없거나 소유자가 달라 취소가 거절되면 예약과 잔고는 변경하지 않는다.
      */
-    fun cancel(command: CancelOrderCommand): List<MatchingEvent> {
-        return matchingCoordinator.process(
+    fun cancel(command: CancelOrderCommand): List<MatchingEvent> =
+        matchingCoordinator.process(
             command = command,
             afterMatching = { events ->
                 for (event in events) {
@@ -37,5 +37,4 @@ class CancelOrderUseCase(
                 }
             },
         )
-    }
 }

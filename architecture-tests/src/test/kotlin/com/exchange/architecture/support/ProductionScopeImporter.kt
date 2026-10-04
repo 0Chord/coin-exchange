@@ -29,7 +29,15 @@ class ProductionScopeImporter(
         expectations: ScopeExpectations,
         nonProduction: NonProductionIndex = NonProductionIndex(),
     ): ScopeImportResult {
-        val problems = nonProduction.problems.map { ScopeProblem(ScopeProblemCode.INVALID_TARGET_INPUT, "non-production", it) }.toMutableList()
+        val problems =
+            nonProduction.problems
+                .map {
+                    ScopeProblem(
+                        ScopeProblemCode.INVALID_TARGET_INPUT,
+                        "non-production",
+                        it,
+                    )
+                }.toMutableList()
         val modules = outputs.groupBy { it.module }
         val expectedModules = expectations.requiredTypesByModule.keys
         if (outputs.isEmpty()) problems += ScopeProblem(ScopeProblemCode.EMPTY_SCOPE, "production")
@@ -37,40 +45,51 @@ class ProductionScopeImporter(
         (modules.keys - expectedModules).forEach { problems += ScopeProblem(ScopeProblemCode.UNREGISTERED_MODULE, it) }
 
         val forbidden = expectations.forbiddenRoots.map { canonical(it) }
-        val inventory = modules.mapValues { (module, entries) ->
-            val files = linkedSetOf<Path>()
-            entries.flatMap { it.roots }.distinctBy { canonical(it) }.forEach { inputRoot ->
-                val root = canonical(inputRoot)
-                // 테스트·벤치마크 폴더를 품은 상위 폴더도 오염된 입력이므로 양방향 포함 관계를 막는다.
-                if (forbidden.any { root.startsWith(it) || it.startsWith(root) }) {
-                    problems += ScopeProblem(ScopeProblemCode.FORBIDDEN_OUTPUT, inputRoot.toString())
-                } else {
-                    try {
-                        require(Files.isDirectory(root)) { "Compiler output is not a directory" }
-                        Files.walk(root).use { paths ->
-                            paths.filter { Files.isRegularFile(it) && it.toString().endsWith(".class") }
-                                .forEach { path ->
-                                    val file = path.toRealPath()
-                                    if (!file.startsWith(root) || forbidden.any { file.startsWith(it) }) {
-                                        problems += ScopeProblem(ScopeProblemCode.FORBIDDEN_OUTPUT, file.toString())
-                                    } else files.add(file)
-                                }
+        val inventory =
+            modules.mapValues { (module, entries) ->
+                val files = linkedSetOf<Path>()
+                entries.flatMap { it.roots }.distinctBy { canonical(it) }.forEach { inputRoot ->
+                    val root = canonical(inputRoot)
+                    // 테스트·벤치마크 폴더를 품은 상위 폴더도 오염된 입력이므로 양방향 포함 관계를 막는다.
+                    if (forbidden.any { root.startsWith(it) || it.startsWith(root) }) {
+                        problems += ScopeProblem(ScopeProblemCode.FORBIDDEN_OUTPUT, inputRoot.toString())
+                    } else {
+                        try {
+                            require(Files.isDirectory(root)) { "Compiler output is not a directory" }
+                            Files.walk(root).use { paths ->
+                                paths
+                                    .filter { Files.isRegularFile(it) && it.toString().endsWith(".class") }
+                                    .forEach { path ->
+                                        val file = path.toRealPath()
+                                        if (!file.startsWith(root) || forbidden.any { file.startsWith(it) }) {
+                                            problems += ScopeProblem(ScopeProblemCode.FORBIDDEN_OUTPUT, file.toString())
+                                        } else {
+                                            files.add(file)
+                                        }
+                                    }
+                            }
+                        } catch (error: Exception) {
+                            problems += ScopeProblem(ScopeProblemCode.READ_FAILURE, root.toString(), error.toString())
                         }
-                    } catch (error: Exception) {
-                        problems += ScopeProblem(ScopeProblemCode.READ_FAILURE, root.toString(), error.toString())
                     }
                 }
+                if (files.isEmpty()) problems += ScopeProblem(ScopeProblemCode.EMPTY_MODULE, module)
+                files
+                    .mapNotNull { file ->
+                        try {
+                            file to
+                                ClassFile
+                                    .of()
+                                    .parse(file)
+                                    .thisClass()
+                                    .asInternalName()
+                                    .replace('/', '.')
+                        } catch (error: Exception) {
+                            problems += ScopeProblem(ScopeProblemCode.READ_FAILURE, file.toString(), error.toString())
+                            null
+                        }
+                    }.toMap()
             }
-            if (files.isEmpty()) problems += ScopeProblem(ScopeProblemCode.EMPTY_MODULE, module)
-            files.mapNotNull { file ->
-                try {
-                    file to ClassFile.of().parse(file).thisClass().asInternalName().replace('/', '.')
-                } catch (error: Exception) {
-                    problems += ScopeProblem(ScopeProblemCode.READ_FAILURE, file.toString(), error.toString())
-                    null
-                }
-            }.toMap()
-        }
 
         val definitions = inventory.flatMap { (module, files) -> files.map { (path, name) -> Triple(name, path, module) } }
         definitions.groupBy { it.first }.forEach { (name, entries) ->
@@ -85,21 +104,28 @@ class ProductionScopeImporter(
         }
 
         val files = definitions.map { it.second }.distinct().sorted()
-        val classes = if (files.isEmpty()) null else try {
-            reader.read(files)
-        } catch (error: Exception) {
-            problems += ScopeProblem(ScopeProblemCode.READ_FAILURE, "bytecode-reader", error.toString())
-            null
-        }
+        val classes =
+            if (files.isEmpty()) {
+                null
+            } else {
+                try {
+                    reader.read(files)
+                } catch (error: Exception) {
+                    problems += ScopeProblem(ScopeProblemCode.READ_FAILURE, "bytecode-reader", error.toString())
+                    null
+                }
+            }
         val observed = classes?.map { it.name }?.toSet().orEmpty()
         val expected = definitions.map { it.first }.toSet()
         (expected - observed).forEach { problems += ScopeProblem(ScopeProblemCode.INCOMPLETE_IMPORT, it) }
         (observed - expected).forEach { problems += ScopeProblem(ScopeProblemCode.UNEXPECTED_IMPORTED_TYPE, it) }
 
         val byModule = linkedMapOf<String, JavaClasses>()
-        if (classes != null) inventory.forEach { (module, definitionsInModule) ->
-            val names = definitionsInModule.values.toSet()
-            byModule[module] = classes.that(DescribedPredicate.describe("belongs to $module") { it.name in names })
+        if (classes != null) {
+            inventory.forEach { (module, definitionsInModule) ->
+                val names = definitionsInModule.values.toSet()
+                byModule[module] = classes.that(DescribedPredicate.describe("belongs to $module") { it.name in names })
+            }
         }
         expectations.requiredTypesByModule.forEach { (module, required) ->
             val actual = byModule[module]?.map { it.name }?.toSet().orEmpty()
@@ -112,7 +138,9 @@ class ProductionScopeImporter(
         classes?.forEach { origin ->
             origin.directDependenciesFromSelf.forEach { dependency ->
                 val target = dependency.targetClass.baseComponentType.name
-                if (expectations.projectPackagePrefixes.any { target.startsWith(it) } && target !in expected && target !in nonProduction.knownTypes) {
+                if (expectations.projectPackagePrefixes.any { target.startsWith(it) } && target !in expected &&
+                    target !in nonProduction.knownTypes
+                ) {
                     problems += ScopeProblem(ScopeProblemCode.UNRESOLVED_PROJECT_TYPE, target, "Referenced by ${origin.name}")
                 }
             }

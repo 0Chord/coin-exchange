@@ -101,13 +101,11 @@ class OrderLifecycleE2ETest : ExchangeIntegrationTest() {
             side = Side.SELL,
             price = 90_000,
             quantity = 2,
-        )
-            .andExpect(status().isOk)
+        ).andExpect(status().isOk)
             .andExpect(
                 jsonPath("$.events[0].type")
                     .value("ORDER_ENTERED_BOOK"),
-            )
-            .andExpect(
+            ).andExpect(
                 jsonPath("$.events[0].orderId")
                     .value(SELLER_ORDER_ID.value),
             )
@@ -141,25 +139,20 @@ class OrderLifecycleE2ETest : ExchangeIntegrationTest() {
             side = Side.BUY,
             price = 100_000,
             quantity = 2,
-        )
-            .andExpect(status().isOk)
+        ).andExpect(status().isOk)
             .andExpect(
                 jsonPath("$.events[0].type")
                     .value("TRADE_EXECUTED"),
-            )
-            .andExpect(
+            ).andExpect(
                 jsonPath("$.events[0].makerOrderId")
                     .value(SELLER_ORDER_ID.value),
-            )
-            .andExpect(
+            ).andExpect(
                 jsonPath("$.events[0].takerOrderId")
                     .value(BUYER_ORDER_ID.value),
-            )
-            .andExpect(
+            ).andExpect(
                 jsonPath("$.events[0].price")
                     .value(90_000),
-            )
-            .andExpect(
+            ).andExpect(
                 jsonPath("$.events[0].quantity")
                     .value(2),
             )
@@ -263,8 +256,7 @@ class OrderLifecycleE2ETest : ExchangeIntegrationTest() {
             side = Side.SELL,
             price = 90_000,
             quantity = 1,
-        )
-            .andExpect(status().isOk)
+        ).andExpect(status().isOk)
             .andExpect(jsonPath("$.events.length()").value(1))
             .andExpect(jsonPath("$.events[0].type").value("ORDER_ENTERED_BOOK"))
             .andExpect(jsonPath("$.events[0].orderId").value(SELLER_ORDER_ID.value))
@@ -276,8 +268,7 @@ class OrderLifecycleE2ETest : ExchangeIntegrationTest() {
             side = Side.BUY,
             price = 100_000,
             quantity = 3,
-        )
-            .andExpect(status().isOk)
+        ).andExpect(status().isOk)
             .andExpect(jsonPath("$.events.length()").value(2))
             .andExpect(jsonPath("$.events[0].type").value("TRADE_EXECUTED"))
             .andExpect(jsonPath("$.events[0].makerOrderId").value(SELLER_ORDER_ID.value))
@@ -310,23 +301,25 @@ class OrderLifecycleE2ETest : ExchangeIntegrationTest() {
         assertPersistedFeeRevenue(expectedAmount = 1_350L)
         assertLedgerTransactionsBalanced()
 
-        val settledTransactions = jdbcTemplate.queryForList(
-            "select * from ledger_transactions order by ledger_transaction_id",
-        )
-        val settledPostings = jdbcTemplate.queryForList(
-            "select * from ledger_postings order by ledger_transaction_id, posting_sequence",
-        )
+        val settledTransactions =
+            jdbcTemplate.queryForList(
+                "select * from ledger_transactions order by ledger_transaction_id",
+            )
+        val settledPostings =
+            jdbcTemplate.queryForList(
+                "select * from ledger_postings order by ledger_transaction_id, posting_sequence",
+            )
         assertEquals(1, settledTransactions.size)
         assertEquals("SETTLEMENT", settledTransactions.single()["transaction_type"])
 
-        mockMvc.perform(
-            delete(
-                "/api/markets/{marketId}/orders/{orderId}",
-                market.marketId.value,
-                BUYER_ORDER_ID.value,
-            ).param("userId", BUYER_USER_ID.value),
-        )
-            .andExpect(status().isOk)
+        mockMvc
+            .perform(
+                delete(
+                    "/api/markets/{marketId}/orders/{orderId}",
+                    market.marketId.value,
+                    BUYER_ORDER_ID.value,
+                ).param("userId", BUYER_USER_ID.value),
+            ).andExpect(status().isOk)
             .andExpect(jsonPath("$.events.length()").value(1))
             .andExpect(jsonPath("$.events[0].type").value("ORDER_CANCELLED"))
             .andExpect(jsonPath("$.events[0].orderId").value(BUYER_ORDER_ID.value))
@@ -381,8 +374,7 @@ class OrderLifecycleE2ETest : ExchangeIntegrationTest() {
             side = Side.BUY,
             price = 100_000,
             quantity = 2,
-        )
-            .andExpect(status().isOk)
+        ).andExpect(status().isOk)
             .andExpect(
                 jsonPath("$.events[0].type")
                     .value("ORDER_ENTERED_BOOK"),
@@ -410,19 +402,18 @@ class OrderLifecycleE2ETest : ExchangeIntegrationTest() {
             hold = 202_000,
         )
 
-        mockMvc.perform(
-            delete(
-                "/api/markets/{marketId}/orders/{orderId}",
-                market.marketId.value,
-                orderId.value,
-            ).param("userId", BUYER_USER_ID.value),
-        )
-            .andExpect(status().isOk)
+        mockMvc
+            .perform(
+                delete(
+                    "/api/markets/{marketId}/orders/{orderId}",
+                    market.marketId.value,
+                    orderId.value,
+                ).param("userId", BUYER_USER_ID.value),
+            ).andExpect(status().isOk)
             .andExpect(
                 jsonPath("$.events[0].type")
                     .value("ORDER_CANCELLED"),
-            )
-            .andExpect(
+            ).andExpect(
                 jsonPath("$.events[0].orderId")
                     .value(orderId.value),
             )
@@ -473,8 +464,7 @@ class OrderLifecycleE2ETest : ExchangeIntegrationTest() {
             side = Side.SELL,
             price = 90_000,
             quantity = 2,
-        )
-            .andExpect(status().isOk)
+        ).andExpect(status().isOk)
             .andExpect(
                 jsonPath("$.events[0].type")
                     .value("ORDER_ENTERED_BOOK"),
@@ -500,23 +490,21 @@ class OrderLifecycleE2ETest : ExchangeIntegrationTest() {
             hold = 2,
         )
 
-        mockMvc.perform(
-            delete(
-                "/api/markets/{marketId}/orders/{orderId}",
-                market.marketId.value,
-                orderId.value,
-            ).param("userId", SELLER_USER_ID.value),
-        )
-            .andExpect(status().isOk)
+        mockMvc
+            .perform(
+                delete(
+                    "/api/markets/{marketId}/orders/{orderId}",
+                    market.marketId.value,
+                    orderId.value,
+                ).param("userId", SELLER_USER_ID.value),
+            ).andExpect(status().isOk)
             .andExpect(
                 jsonPath("$.events[0].type")
                     .value("ORDER_CANCELLED"),
-            )
-            .andExpect(
+            ).andExpect(
                 jsonPath("$.events[0].orderId")
                     .value(orderId.value),
-            )
-            .andExpect(
+            ).andExpect(
                 jsonPath("$.events[0].remainingQuantity")
                     .value(2),
             )
@@ -625,8 +613,7 @@ class OrderLifecycleE2ETest : ExchangeIntegrationTest() {
         mockMvc.perform(
             post(
                 "/api/markets/${market.marketId.value}/orders",
-            )
-                .contentType(MediaType.APPLICATION_JSON)
+            ).contentType(MediaType.APPLICATION_JSON)
                 .content(
                     """
                     {

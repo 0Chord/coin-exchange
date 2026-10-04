@@ -95,9 +95,7 @@ class LedgerTransactionTest {
         )
 
     /** 테스트마다 동일한 식별자와 시각을 사용하고 항목 목록만 바꾼다. */
-    private fun newTransaction(
-        postings: List<LedgerPosting>,
-    ): LedgerTransaction =
+    private fun newTransaction(postings: List<LedgerPosting>): LedgerTransaction =
         LedgerTransaction(
             ledgerTransactionId = "ledger-transaction-1",
             sourceEventId = "matching-event-1",

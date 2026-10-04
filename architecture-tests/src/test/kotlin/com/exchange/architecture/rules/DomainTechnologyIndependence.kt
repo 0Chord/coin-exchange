@@ -1,7 +1,7 @@
 package com.exchange.architecture.rules
 
-import com.tngtech.archunit.core.domain.JavaClasses
 import com.tngtech.archunit.core.domain.JavaClass
+import com.tngtech.archunit.core.domain.JavaClasses
 
 data class ArchitectureRoles(
     val pureDomain: Set<String>,
@@ -28,7 +28,10 @@ object DomainTechnologyIndependence {
      * 바이트코드에 남은 참조만 보며 리플렉션·모든 간접 콜백의 실행을 추적하지 않는다.
      * @return 중복을 제거하고 정렬한 위반 목록. 역할 밖 객체의 기술 사용은 이 규칙의 대상이 아니다.
      */
-    fun evaluate(classes: JavaClasses, roles: ArchitectureRoles): List<ArchitectureViolation> {
+    fun evaluate(
+        classes: JavaClasses,
+        roles: ArchitectureRoles,
+    ): List<ArchitectureViolation> {
         val violations = mutableListOf<ArchitectureViolation>()
         classes.filter { belongsToRole(it, roles.pureDomain) }.forEach { origin ->
             origin.directDependenciesFromSelf.forEach { dependency ->
@@ -45,18 +48,36 @@ object DomainTechnologyIndependence {
                 }
             }
         }
-        return violations.distinct().sortedWith(compareBy(
-            { it.ruleId }, { it.originType }, { it.targetType }, { it.sourceFile }, { it.lineNumber }, { it.description },
-        ))
+        return violations.distinct().sortedWith(
+            compareBy(
+                { it.ruleId },
+                { it.originType },
+                { it.targetType },
+                { it.sourceFile },
+                { it.lineNumber },
+                { it.description },
+            ),
+        )
     }
 
-    private fun diagnostic(origin: JavaClass, target: String, description: String, line: Int) = ArchitectureViolation(
-        ruleId = "ARCH-01", originType = origin.name, targetType = target, description = description,
+    private fun diagnostic(
+        origin: JavaClass,
+        target: String,
+        description: String,
+        line: Int,
+    ) = ArchitectureViolation(
+        ruleId = "ARCH-01",
+        originType = origin.name,
+        targetType = target,
+        description = description,
         sourceFile = origin.source.flatMap { it.fileName }.orElse(null),
-        lineNumber = line.takeIf { it > 0 }, specification = "engineering/architecture-check-spec.md",
+        lineNumber = line.takeIf { it > 0 },
+        specification = "engineering/architecture-check-spec.md",
     )
 }
 
 /** 생성된 이름의 모양 대신 바이트코드의 포함 관계를 따라 중첩 타입의 역할을 확인한다. */
-fun belongsToRole(type: JavaClass, roots: Set<String>): Boolean =
-    generateSequence(type) { it.enclosingClass.orElse(null) }.any { it.name in roots }
+fun belongsToRole(
+    type: JavaClass,
+    roots: Set<String>,
+): Boolean = generateSequence(type) { it.enclosingClass.orElse(null) }.any { it.name in roots }

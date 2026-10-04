@@ -351,9 +351,7 @@ class OrderReservationReleaseServiceTest {
         assertEquals(hold, (saved["hold"] as Number).toLong())
     }
 
-    private fun runConcurrently(
-        operation: (Int) -> OrderReservation,
-    ): List<Result<OrderReservation>> {
+    private fun runConcurrently(operation: (Int) -> OrderReservation): List<Result<OrderReservation>> {
         val ready = CountDownLatch(CONCURRENT_TASK_COUNT)
         val start = CountDownLatch(1)
         val executor = Executors.newFixedThreadPool(CONCURRENT_TASK_COUNT)

@@ -1,26 +1,52 @@
 package com.exchange.architecture.fixtures.httpboundary.web
 
-import com.exchange.architecture.fixtures.httpboundary.*
+import com.exchange.architecture.fixtures.httpboundary.ExampleBook
+import com.exchange.architecture.fixtures.httpboundary.ExampleConfiguration
+import com.exchange.architecture.fixtures.httpboundary.ExampleEngine
+import com.exchange.architecture.fixtures.httpboundary.ExampleExecutor
+import com.exchange.architecture.fixtures.httpboundary.ExampleRepository
+import com.exchange.architecture.fixtures.httpboundary.ExampleStore
+import com.exchange.architecture.fixtures.httpboundary.ExampleStoreImpl
+import com.exchange.architecture.fixtures.httpboundary.FundingTaskUseCase
+import com.exchange.architecture.fixtures.httpboundary.HttpAmount
+import com.exchange.architecture.fixtures.httpboundary.HttpCommand
+import com.exchange.architecture.fixtures.httpboundary.MatchingCoordinator
+import com.exchange.architecture.fixtures.httpboundary.SettlementTask
+import com.exchange.architecture.fixtures.httpboundary.StoredEntity
+import com.exchange.architecture.fixtures.httpboundary.SubmissionService
+import com.exchange.architecture.fixtures.httpboundary.SubmitEntry
+import com.exchange.architecture.fixtures.httpboundary.WorkflowEntry
 import org.springframework.http.ResponseEntity
 import org.springframework.stereotype.Controller
 import org.springframework.web.bind.annotation.PostMapping
 import org.springframework.web.bind.annotation.RequestBody
 import org.springframework.web.bind.annotation.RestController
 
-data class InputDto(val amount: Long)
-data class OutputDto(val amount: Long)
+data class InputDto(
+    val amount: Long,
+)
+
+data class OutputDto(
+    val amount: Long,
+)
 
 @RestController
-class NormalController(private val entry: SubmitEntry) {
+class NormalController(
+    private val entry: SubmitEntry,
+) {
     @PostMapping
-    fun submit(@RequestBody request: InputDto): ResponseEntity<OutputDto> {
+    fun submit(
+        @RequestBody request: InputDto,
+    ): ResponseEntity<OutputDto> {
         val event = entry.submit(HttpCommand(HttpAmount(request.amount)))
         return ResponseEntity.ok(OutputDto(event.amount.value))
     }
 }
 
 @Controller
-class ServiceNamedController(private val entry: SubmissionService) {
+class ServiceNamedController(
+    private val entry: SubmissionService,
+) {
     fun submit(command: HttpCommand) = entry.submit(command)
 }
 
@@ -35,7 +61,9 @@ class NewController
 class UnclassifiedMapper
 
 @RestController
-class StoreController(private val store: ExampleStore) {
+class StoreController(
+    private val store: ExampleStore,
+) {
     fun save() = store.save()
 }
 
@@ -57,13 +85,16 @@ class InternalWorkController(
 )
 
 @RestController
-class WorkflowController(private val entry: WorkflowEntry) {
+class WorkflowController(
+    private val entry: WorkflowEntry,
+) {
     fun submit() = entry.submit()
 }
 
-
 @RestController
-class OnlyFieldController(val store: ExampleStore)
+class OnlyFieldController(
+    val store: ExampleStore,
+)
 
 @RestController
 class ParameterController {
@@ -91,7 +122,9 @@ class PortImplementingController : ExampleStore {
 }
 
 @Target(AnnotationTarget.CLASS)
-annotation class ApiType(val value: kotlin.reflect.KClass<*>)
+annotation class ApiType(
+    val value: kotlin.reflect.KClass<*>,
+)
 
 @RestController
 @ApiType(StoredEntity::class)
@@ -100,19 +133,30 @@ class AnnotatedEntityController
 @RestController
 class ReferenceController {
     fun portTask(store: ExampleStore): () -> Unit = store::save
+
     fun implementationTask(store: ExampleStoreImpl): () -> Unit = store::save
 }
 
-class StoringMapper(private val store: ExampleStore) {
-    fun map(): String { store.save(); return "stored" }
+class StoringMapper(
+    private val store: ExampleStore,
+) {
+    fun map(): String {
+        store.save()
+        return "stored"
+    }
 }
 
 class StoringDto {
-    fun value(): String { ExampleStoreImpl().save(); return "stored" }
+    fun value(): String {
+        ExampleStoreImpl().save()
+        return "stored"
+    }
 }
 
 @RestController
-class MapperController(private val mapper: StoringMapper) {
+class MapperController(
+    private val mapper: StoringMapper,
+) {
     fun submit() = mapper.map()
 }
 
@@ -128,23 +172,38 @@ open class StoringControllerParent {
 @RestController
 class ChildController : StoringControllerParent()
 
-class CallingEntryMapper(private val entry: SubmitEntry) {
+class CallingEntryMapper(
+    private val entry: SubmitEntry,
+) {
     fun convert(command: HttpCommand) = entry.submit(command)
 }
 
 @RestController
-class OtherControllerCaller(val other: NormalController, val configuration: ExampleConfiguration)
+class OtherControllerCaller(
+    val other: NormalController,
+    val configuration: ExampleConfiguration,
+)
 
 @RestController
 class ExternalWorkController {
     fun jdbc(value: java.sql.Connection) = Unit
+
     fun template(value: org.springframework.jdbc.core.JdbcTemplate) = Unit
+
     fun dataSource(value: javax.sql.DataSource) = Unit
+
     fun jpa(value: jakarta.persistence.EntityManager) = Unit
-    fun http() = java.net.http.HttpClient.newHttpClient()
+
+    fun http() =
+        java.net.http.HttpClient
+            .newHttpClient()
+
     fun client(value: org.springframework.web.client.RestClient) = Unit
+
     fun builder(value: org.springframework.web.client.RestClient.Builder) = Unit
+
     fun restTemplate(value: org.springframework.web.client.RestTemplate) = Unit
+
     fun restOperations(value: org.springframework.web.client.RestOperations) = Unit
 }
 
@@ -153,8 +212,11 @@ class NestedController {
     class Worker {
         fun save() = ExampleStoreImpl().save()
     }
+
     fun deferred(): () -> Unit = { ExampleStoreImpl().save() }
-    fun anonymous(): Runnable = object : Runnable {
-        override fun run() = ExampleStoreImpl().save()
-    }
+
+    fun anonymous(): Runnable =
+        object : Runnable {
+            override fun run() = ExampleStoreImpl().save()
+        }
 }

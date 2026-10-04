@@ -1,22 +1,52 @@
 package com.exchange.architecture
 
-import com.exchange.architecture.fixtures.moduledeps.*
+import com.exchange.architecture.fixtures.moduledeps.ApiMarker
+import com.exchange.architecture.fixtures.moduledeps.CommonMarker
+import com.exchange.architecture.fixtures.moduledeps.ExternalOnly
+import com.exchange.architecture.fixtures.moduledeps.FeeAnnotation
+import com.exchange.architecture.fixtures.moduledeps.FeeBase
+import com.exchange.architecture.fixtures.moduledeps.FeeMarker
+import com.exchange.architecture.fixtures.moduledeps.FeeReadingExecutor
+import com.exchange.architecture.fixtures.moduledeps.FeeReadingPort
+import com.exchange.architecture.fixtures.moduledeps.FeeValue
+import com.exchange.architecture.fixtures.moduledeps.GeneratedAction
+import com.exchange.architecture.fixtures.moduledeps.LedgerMarker
+import com.exchange.architecture.fixtures.moduledeps.MatchingMarker
+import com.exchange.architecture.fixtures.moduledeps.MatchingUsesFee
+import com.exchange.architecture.fixtures.moduledeps.MatchingUsesOrder
+import com.exchange.architecture.fixtures.moduledeps.OrderMarker
+import com.exchange.architecture.fixtures.moduledeps.OrderValue
+import com.exchange.architecture.fixtures.moduledeps.ReferenceShapes
 import com.exchange.architecture.rules.ModuleDependencyDirection
-import com.exchange.architecture.support.*
+import com.exchange.architecture.support.GradleModuleInventory
+import com.exchange.architecture.support.MainProjectDependencies
+import com.exchange.architecture.support.ModuleOutput
+import com.exchange.architecture.support.ProductionScopeImporter
+import com.exchange.architecture.support.ProjectDeclaration
+import com.exchange.architecture.support.ProjectDependencySnapshot
+import com.exchange.architecture.support.ScopeExpectations
+import com.exchange.architecture.support.ScopeImportResult
+import com.exchange.architecture.support.ScopeProblem
+import com.exchange.architecture.support.ScopeProblemCode
+import com.exchange.architecture.support.fixtureOutput
 import com.tngtech.archunit.base.DescribedPredicate
 import com.tngtech.archunit.core.importer.ClassFileImporter
 import org.junit.jupiter.api.io.TempDir
 import java.nio.file.Path
-import kotlin.test.*
+import kotlin.test.Test
+import kotlin.test.assertEquals
+import kotlin.test.assertFalse
+import kotlin.test.assertTrue
 
 class ModuleDependencyContractTest {
     @TempDir lateinit var root: Path
 
-    private val policy = mapOf(
-        "domain-matching" to setOf("domain-order"),
-        "domain-order" to setOf("domain-fee"),
-        "domain-fee" to emptySet<String>(),
-    )
+    private val policy =
+        mapOf(
+            "domain-matching" to setOf("domain-order"),
+            "domain-order" to setOf("domain-fee"),
+            "domain-fee" to emptySet<String>(),
+        )
 
     @Test
     fun `직접 허용 방향만 있으면 주문을 통한 간접 수수료 연결도 통과한다`() {
@@ -31,19 +61,26 @@ class ModuleDependencyContractTest {
         val scope = scope(MatchingUsesFee::class.java)
         val origin = MatchingUsesFee::class.java.name
         val target = FeeValue::class.java.name
-        assertTrue(scope.classesByModule.getValue("domain-matching").get(origin)
-            .directDependenciesFromSelf.any { it.targetClass.name == target })
+        assertTrue(
+            scope.classesByModule
+                .getValue("domain-matching")
+                .get(origin)
+                .directDependenciesFromSelf
+                .any { it.targetClass.name == target },
+        )
         val actual = ModuleDependencyDirection.inspectBytecode(scope, policy)
         assertTrue(actual.evaluated, actual.problems.toString())
         assertTrue(actual.violations.isNotEmpty(), "매칭의 수수료 직접 참조를 놓쳤다")
-        assertTrue(actual.violations.all {
-            it.ruleId == "ARCH-02" && it.evidence == "BYTECODE" &&
-                it.originModule == "domain-matching" && it.targetModule == "domain-fee" &&
-                it.originType == origin && it.targetType == target &&
-                it.allowedTargets == setOf("domain-order") &&
-                it.sourceFile == "ModuleDependencyFixtures.kt" &&
-                it.specification == "engineering/architecture-check-spec.md"
-        })
+        assertTrue(
+            actual.violations.all {
+                it.ruleId == "ARCH-02" && it.evidence == "BYTECODE" &&
+                    it.originModule == "domain-matching" && it.targetModule == "domain-fee" &&
+                    it.originType == origin && it.targetType == target &&
+                    it.allowedTargets == setOf("domain-order") &&
+                    it.sourceFile == "ModuleDependencyFixtures.kt" &&
+                    it.specification == "engineering/architecture-check-spec.md"
+            },
+        )
     }
 
     @Test
@@ -52,39 +89,59 @@ class ModuleDependencyContractTest {
         val scope = scope(MatchingUsesFee::class.java)
         val actual = ModuleDependencyDirection.inspectBytecode(scope, policy)
         assertTrue(actual.evaluated)
-        assertEquals(setOf("domain-matching" to "domain-fee"),
-            actual.violations.map { it.originModule to it.targetModule }.toSet())
+        assertEquals(
+            setOf("domain-matching" to "domain-fee"),
+            actual.violations.map { it.originModule to it.targetModule }.toSet(),
+        )
     }
 
     @Test
     fun `여섯 운영 모듈의 모든 직접 방향을 명세의 허용 쌍과 대조한다`() {
         // 구현의 허용표에서 정답을 만들지 않고 명세의 허용 쌍을 별도로 적는다.
-        val permitted = setOf(
-            "domain-fee" to "domain-common", "domain-order" to "domain-common", "domain-order" to "domain-fee",
-            "domain-ledger" to "domain-common", "domain-matching" to "domain-common", "domain-matching" to "domain-order",
-            "app-api" to "domain-common", "app-api" to "domain-fee", "app-api" to "domain-order",
-            "app-api" to "domain-ledger", "app-api" to "domain-matching",
-        )
-        val markers = mapOf(
-            "domain-common" to CommonMarker::class.java, "domain-fee" to FeeMarker::class.java,
-            "domain-order" to OrderMarker::class.java, "domain-ledger" to LedgerMarker::class.java,
-            "domain-matching" to MatchingMarker::class.java, "app-api" to ApiMarker::class.java,
-        )
-        val all = ClassFileImporter().importClasses(*(markers.values + listOf(MatchingUsesFee::class.java, FeeValue::class.java)).toTypedArray())
+        val permitted =
+            setOf(
+                "domain-fee" to "domain-common",
+                "domain-order" to "domain-common",
+                "domain-order" to "domain-fee",
+                "domain-ledger" to "domain-common",
+                "domain-matching" to "domain-common",
+                "domain-matching" to "domain-order",
+                "app-api" to "domain-common",
+                "app-api" to "domain-fee",
+                "app-api" to "domain-order",
+                "app-api" to "domain-ledger",
+                "app-api" to "domain-matching",
+            )
+        val markers =
+            mapOf(
+                "domain-common" to CommonMarker::class.java,
+                "domain-fee" to FeeMarker::class.java,
+                "domain-order" to OrderMarker::class.java,
+                "domain-ledger" to LedgerMarker::class.java,
+                "domain-matching" to MatchingMarker::class.java,
+                "app-api" to ApiMarker::class.java,
+            )
+        val all =
+            ClassFileImporter().importClasses(
+                *(markers.values + listOf(MatchingUsesFee::class.java, FeeValue::class.java)).toTypedArray(),
+            )
         var checked = 0
-        markers.keys.forEach { origin -> markers.keys.forEach { target ->
-            val groups = markers.mapValues { (module, marker) ->
-                val names = mutableSetOf(marker.name)
-                if (module == origin) names += MatchingUsesFee::class.java.name
-                if (module == target) names += FeeValue::class.java.name
-                all.that(DescribedPredicate.describe("실제 배정 모듈 $module") { it.name in names })
+        markers.keys.forEach { origin ->
+            markers.keys.forEach { target ->
+                val groups =
+                    markers.mapValues { (module, marker) ->
+                        val names = mutableSetOf(marker.name)
+                        if (module == origin) names += MatchingUsesFee::class.java.name
+                        if (module == target) names += FeeValue::class.java.name
+                        all.that(DescribedPredicate.describe("실제 배정 모듈 $module") { it.name in names })
+                    }
+                val actual = ModuleDependencyDirection.inspectBytecode(ScopeImportResult(groups))
+                assertTrue(actual.evaluated, actual.problems.toString())
+                val expected = if (origin == target || origin to target in permitted) emptySet() else setOf(origin to target)
+                assertEquals(expected, actual.violations.map { it.originModule to it.targetModule }.toSet(), "$origin → $target")
+                checked++
             }
-            val actual = ModuleDependencyDirection.inspectBytecode(ScopeImportResult(groups))
-            assertTrue(actual.evaluated, actual.problems.toString())
-            val expected = if (origin == target || origin to target in permitted) emptySet() else setOf(origin to target)
-            assertEquals(expected, actual.violations.map { it.originModule to it.targetModule }.toSet(), "$origin → $target")
-            checked++
-        } }
+        }
         assertEquals(36, checked, "빈 반복으로 허용표 검증을 대신하지 않는다")
     }
 
@@ -95,35 +152,68 @@ class ModuleDependencyContractTest {
         val scope = imported(mapOf("matching" to origins, "fee" to arrayOf(FeeValue::class.java)))
         val result = ModuleDependencyDirection.inspectBytecode(scope, mapOf("matching" to emptySet(), "fee" to emptySet()))
         assertTrue(result.evaluated, result.problems.toString())
-        assertEquals(setOf(FeeReadingPort::class.java.name, FeeReadingExecutor::class.java.name, generated.name),
-            result.violations.map { it.originType }.toSet())
+        assertEquals(
+            setOf(FeeReadingPort::class.java.name, FeeReadingExecutor::class.java.name, generated.name),
+            result.violations.map { it.originType }.toSet(),
+        )
         assertTrue(result.violations.all { it.targetType == FeeValue::class.java.name })
-        // 예제의 생성자 호출은 각각 17행과 20행이다. 진단 결과에서 기대 위치를 역산하지 않는다.
-        assertTrue(result.violations.any { it.originType == FeeReadingExecutor::class.java.name && it.lineNumber == 17 })
-        assertTrue(result.violations.any { it.originType == generated.name && it.lineNumber == 20 })
+        // 예제의 생성자 호출은 각각 35행과 42행이다. 진단 결과에서 기대 위치를 역산하지 않는다.
+        assertTrue(result.violations.any { it.originType == FeeReadingExecutor::class.java.name && it.lineNumber == 35 })
+        assertTrue(result.violations.any { it.originType == generated.name && it.lineNumber == 42 })
     }
 
     @Test
     fun `필드 배열 제네릭 상속 어노테이션과 인자 반환의 직접 참조를 보고한다`() {
-        val scope = imported(mapOf("matching" to arrayOf(ReferenceShapes::class.java),
-            "fee" to arrayOf(FeeValue::class.java, FeeBase::class.java, FeeAnnotation::class.java)))
-        val deps = scope.classesByModule.getValue("matching").get(ReferenceShapes::class.java).directDependenciesFromSelf
+        val scope =
+            imported(
+                mapOf(
+                    "matching" to arrayOf(ReferenceShapes::class.java),
+                    "fee" to arrayOf(FeeValue::class.java, FeeBase::class.java, FeeAnnotation::class.java),
+                ),
+            )
+        val deps =
+            scope.classesByModule
+                .getValue("matching")
+                .get(ReferenceShapes::class.java)
+                .directDependenciesFromSelf
         listOf("field", "parameter", "return", "extends", "annotation", "generic").forEach { shape ->
             assertTrue(deps.any { it.description.contains(shape, ignoreCase = true) }, "예제에 $shape 참조가 있어야 한다")
         }
         assertTrue(deps.any { it.targetClass.isArray && it.targetClass.baseComponentType.name == FeeValue::class.java.name })
         val result = ModuleDependencyDirection.inspectBytecode(scope, mapOf("matching" to emptySet(), "fee" to emptySet()))
         assertTrue(result.evaluated, result.problems.toString())
-        assertEquals(setOf(FeeValue::class.java.name, FeeBase::class.java.name, FeeAnnotation::class.java.name), result.violations.map { it.targetType }.toSet())
+        assertEquals(
+            setOf(FeeValue::class.java.name, FeeBase::class.java.name, FeeAnnotation::class.java.name),
+            result.violations
+                .map {
+                    it.targetType
+                }.toSet(),
+        )
         assertTrue(result.violations.any { it.lineNumber == null }, "메타데이터 참조의 행 번호를 지어내지 않는다")
         assertTrue(result.violations.all { it.sourceFile == "ModuleDependencyFixtures.kt" })
         val ordered = result.violations
-        assertEquals(ordered, ModuleDependencyDirection.inspectBytecode(scope.copy(classesByModule = scope.classesByModule.entries.reversed().associate { it.toPair() }), mapOf("fee" to emptySet(), "matching" to emptySet())).violations)
+        assertEquals(
+            ordered,
+            ModuleDependencyDirection
+                .inspectBytecode(
+                    scope.copy(
+                        classesByModule =
+                            scope.classesByModule.entries
+                                .reversed()
+                                .associate { it.toPair() },
+                    ),
+                    mapOf("fee" to emptySet(), "matching" to emptySet()),
+                ).violations,
+        )
     }
 
     @Test
     fun `일반 외부 타입은 모듈 방향 위반으로 오인하지 않는다`() {
-        val result = ModuleDependencyDirection.inspectBytecode(imported(mapOf("one" to arrayOf(ExternalOnly::class.java))), mapOf("one" to emptySet()))
+        val result =
+            ModuleDependencyDirection.inspectBytecode(
+                imported(mapOf("one" to arrayOf(ExternalOnly::class.java))),
+                mapOf("one" to emptySet()),
+            )
         assertTrue(result.evaluated, result.problems.toString())
         assertEquals(emptyList(), result.violations)
     }
@@ -131,12 +221,18 @@ class ModuleDependencyContractTest {
     @Test
     fun `빈 대상 수집 오류와 중복 소속은 미평가로 보고한다`() {
         val good = scope(MatchingUsesFee::class.java)
-        val invalid = listOf(
-            ScopeImportResult(),
-            good.copy(problems = listOf(ScopeProblem(ScopeProblemCode.READ_FAILURE, "broken.class"))),
-            good.copy(classesByModule = good.classesByModule + ("domain-order" to good.classesByModule.getValue("domain-matching"))),
-            good.copy(classesByModule = good.classesByModule.mapValues { (_, classes) -> classes.that(DescribedPredicate.describe("빈 모듈") { false }) }),
-        )
+        val invalid =
+            listOf(
+                ScopeImportResult(),
+                good.copy(problems = listOf(ScopeProblem(ScopeProblemCode.READ_FAILURE, "broken.class"))),
+                good.copy(classesByModule = good.classesByModule + ("domain-order" to good.classesByModule.getValue("domain-matching"))),
+                good.copy(
+                    classesByModule =
+                        good.classesByModule.mapValues { (_, classes) ->
+                            classes.that(DescribedPredicate.describe("빈 모듈") { false })
+                        },
+                ),
+            )
         invalid.forEach {
             val result = ModuleDependencyDirection.inspectBytecode(it, policy)
             assertFalse(result.evaluated)
@@ -158,7 +254,11 @@ class ModuleDependencyContractTest {
 
     @Test
     fun `내부 참조의 소속을 못 찾으면 외부 라이브러리로 간주하지 않는다`() {
-        val result = ModuleDependencyDirection.inspectBytecode(imported(mapOf("matching" to arrayOf(MatchingUsesFee::class.java))), mapOf("matching" to emptySet()))
+        val result =
+            ModuleDependencyDirection.inspectBytecode(
+                imported(mapOf("matching" to arrayOf(MatchingUsesFee::class.java))),
+                mapOf("matching" to emptySet()),
+            )
         assertFalse(result.evaluated)
         assertTrue(result.problems.any { it.startsWith("UNRESOLVED_PROJECT_TYPE:") && it.contains(FeeValue::class.java.name) })
         assertEquals(emptyList(), result.violations)
@@ -169,19 +269,30 @@ class ModuleDependencyContractTest {
         val scope = scope(MatchingUsesFee::class.java)
         val paths = policy.keys.map { ":$it" }.toSet()
         val inventory = GradleModuleInventory(paths, paths, emptySet())
-        val snapshot = ProjectDependencySnapshot(paths.flatMap { path -> listOf("compile", "runtime").map { usage ->
-            MainProjectDependencies(path, usage, "${usage}Classpath", "$path/build.gradle.kts",
-                if (path == ":domain-matching") listOf(ProjectDeclaration(":domain-fee", "api")) else emptyList())
-        } })
+        val snapshot =
+            ProjectDependencySnapshot(
+                paths.flatMap { path ->
+                    listOf("compile", "runtime").map { usage ->
+                        MainProjectDependencies(
+                            path,
+                            usage,
+                            "${usage}Classpath",
+                            "$path/build.gradle.kts",
+                            if (path == ":domain-matching") listOf(ProjectDeclaration(":domain-fee", "api")) else emptyList(),
+                        )
+                    }
+                },
+            )
         val result = ModuleDependencyDirection.inspect(scope, snapshot, inventory, policy)
         assertTrue(result.evaluated, result.problems.toString())
         assertEquals(setOf("BYTECODE", "GRADLE"), result.violations.map { it.evidence }.toSet())
         assertTrue(result.violations.all { it.originModule == "domain-matching" && it.targetModule == "domain-fee" })
         assertTrue(result.violations.all { it.report().contains("ARCH-02") && it.report().contains(it.specification) })
-        val brokenInputs = listOf(
-            scope to snapshot.copy(problems = listOf("INVALID_DEPENDENCY_INPUT: broken")),
-            scope.copy(problems = listOf(ScopeProblem(ScopeProblemCode.READ_FAILURE, "broken.class"))) to snapshot,
-        )
+        val brokenInputs =
+            listOf(
+                scope to snapshot.copy(problems = listOf("INVALID_DEPENDENCY_INPUT: broken")),
+                scope.copy(problems = listOf(ScopeProblem(ScopeProblemCode.READ_FAILURE, "broken.class"))) to snapshot,
+            )
         brokenInputs.forEach { (code, declarations) ->
             val failed = ModuleDependencyDirection.inspect(code, declarations, inventory, policy)
             assertFalse(failed.evaluated)
@@ -191,22 +302,29 @@ class ModuleDependencyContractTest {
 
     private fun imported(groups: Map<String, Array<Class<*>>>): ScopeImportResult {
         val all = ClassFileImporter().importClasses(*groups.values.flatMap { it.toList() }.toTypedArray())
-        return ScopeImportResult(groups.mapValues { (_, types) ->
-            val names = types.map { it.name }.toSet()
-            all.that(DescribedPredicate.describe("예제의 지정된 출력 소속") { it.name in names })
-        })
+        return ScopeImportResult(
+            groups.mapValues { (_, types) ->
+                val names = types.map { it.name }.toSet()
+                all.that(DescribedPredicate.describe("예제의 지정된 출력 소속") { it.name in names })
+            },
+        )
     }
 
     private fun scope(matching: Class<*>): ScopeImportResult {
-        val types = mapOf(
-            "domain-matching" to arrayOf(matching),
-            "domain-order" to arrayOf(OrderValue::class.java),
-            "domain-fee" to arrayOf(FeeValue::class.java),
-        )
+        val types =
+            mapOf(
+                "domain-matching" to arrayOf(matching),
+                "domain-order" to arrayOf(OrderValue::class.java),
+                "domain-fee" to arrayOf(FeeValue::class.java),
+            )
         val outputs = types.map { (module, classes) -> ModuleOutput(module, listOf(fixtureOutput(root.resolve(module), *classes))) }
-        return ProductionScopeImporter().load(outputs, ScopeExpectations(
-            types.mapValues { (_, classes) -> classes.map { it.name }.toSet() },
-            projectPackagePrefixes = setOf("com.exchange.architecture.fixtures.moduledeps."),
-        )).also { assertEquals(emptyList(), it.problems, "예제 준비 오류를 규칙의 Red로 세지 않는다") }
+        return ProductionScopeImporter()
+            .load(
+                outputs,
+                ScopeExpectations(
+                    types.mapValues { (_, classes) -> classes.map { it.name }.toSet() },
+                    projectPackagePrefixes = setOf("com.exchange.architecture.fixtures.moduledeps."),
+                ),
+            ).also { assertEquals(emptyList(), it.problems, "예제 준비 오류를 규칙의 Red로 세지 않는다") }
     }
 }

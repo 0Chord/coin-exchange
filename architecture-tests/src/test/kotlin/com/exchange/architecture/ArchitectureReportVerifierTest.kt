@@ -1,9 +1,9 @@
 package com.exchange.architecture
 
 import com.exchange.architecture.support.ArchitectureReportVerifier
+import org.junit.jupiter.api.io.TempDir
 import java.nio.file.Files
 import java.nio.file.Path
-import org.junit.jupiter.api.io.TempDir
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
@@ -15,7 +15,8 @@ class ArchitectureReportVerifierTest {
 
     private val suite = "com.exchange.architecture.ProductionArchitectureTest"
     private val portCase = """<testcase name="P03 포트 검사()" classname="$suite"/>"""
-    private val normal = """
+    private val normal =
+        """
         <testsuite name="$suite" tests="9" failures="0" errors="0" skipped="0">
           <testcase name="P04 테스트 도구 검사()" classname="$suite"/>
           <testcase name="P02 모듈 검사()" classname="$suite"/>
@@ -27,16 +28,21 @@ class ArchitectureReportVerifierTest {
           <testcase name="P07 application 검사()" classname="$suite"/>
           <testcase name="P09 매칭 접근 검사()" classname="$suite"/>
         </testsuite>
-    """.trimIndent()
+        """.trimIndent()
 
-    private fun report(xml: String?): Path = directory.resolve("report.xml").also {
-        if (xml != null) Files.writeString(it, xml)
-    }
-
-    private fun reject(xml: String?, reason: String) {
-        val error = assertFailsWith<IllegalStateException> {
-            ArchitectureReportVerifier.main(arrayOf(report(xml).toString()))
+    private fun report(xml: String?): Path =
+        directory.resolve("report.xml").also {
+            if (xml != null) Files.writeString(it, xml)
         }
+
+    private fun reject(
+        xml: String?,
+        reason: String,
+    ) {
+        val error =
+            assertFailsWith<IllegalStateException> {
+                ArchitectureReportVerifier.main(arrayOf(report(xml).toString()))
+            }
         assertTrue(error.message.orEmpty().contains(reason), error.message)
     }
 
@@ -108,8 +114,11 @@ class ArchitectureReportVerifierTest {
         reject(normal.replace("P03 포트", "P030 포트"), "P03")
     }
 
-    private val newCases get() = Regex("<testcase name=\"(P0[6789]) [^\"]+\" classname=\"$suite\"/>")
-        .findAll(normal).map { it.groupValues[1] to it.value }.toList()
+    private val newCases get() =
+        Regex("<testcase name=\"(P0[6789]) [^\"]+\" classname=\"$suite\"/>")
+            .findAll(normal)
+            .map { it.groupValues[1] to it.value }
+            .toList()
 
     @Test fun `P06부터 P09까지 하나라도 누락되면 거절한다`() {
         newCases.forEach { (id, case) -> reject(normal.replace(case, ""), "$id: 정확히 한 번") }
@@ -120,9 +129,11 @@ class ArchitectureReportVerifierTest {
     }
 
     @Test fun `새 운영 검사의 skip 실패 오류를 모두 거절한다`() {
-        newCases.forEach { (_, case) -> listOf("skipped", "failure", "error").forEach { status ->
-            reject(normal.replace(case, case.replace("/>", "><$status/></testcase>")), status)
-        } }
+        newCases.forEach { (_, case) ->
+            listOf("skipped", "failure", "error").forEach { status ->
+                reject(normal.replace(case, case.replace("/>", "><$status/></testcase>")), status)
+            }
+        }
     }
 
     @Test fun `다른 클래스의 P06부터 P09는 운영 실행을 대신하지 못한다`() {

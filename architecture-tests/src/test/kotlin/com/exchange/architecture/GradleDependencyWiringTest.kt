@@ -1,32 +1,49 @@
 package com.exchange.architecture
 
 import com.exchange.architecture.rules.ModuleDependencyDirection
-import com.exchange.architecture.support.*
+import com.exchange.architecture.support.GradleModuleInventory
+import com.exchange.architecture.support.ProjectDeclaration
+import com.exchange.architecture.support.ProjectDependencies
 import org.gradle.testkit.runner.GradleRunner
 import org.gradle.testkit.runner.TaskOutcome
 import org.junit.jupiter.api.io.TempDir
 import java.io.File
 import java.nio.file.Files
 import java.nio.file.Path
-import kotlin.test.*
+import kotlin.test.Test
+import kotlin.test.assertEquals
+import kotlin.test.assertFalse
+import kotlin.test.assertNull
+import kotlin.test.assertTrue
 
 /** 실제 적용하는 Gradle 스크립트를 최소 프로젝트에서도 실행한다. 의존 목록을 모조로 만들지 않는다. */
 class GradleDependencyWiringTest {
     @TempDir lateinit var root: Path
-    private val inventory = GradleModuleInventory(
-        setOf(":common", ":fee", ":order", ":matching", ":test-only"),
-        setOf(":common", ":fee", ":order", ":matching"), setOf(":test-only"),
-    )
-    private val policy = mapOf("common" to emptySet<String>(), "fee" to setOf("common"), "order" to setOf("common", "fee"), "matching" to setOf("common", "order"))
+    private val inventory =
+        GradleModuleInventory(
+            setOf(":common", ":fee", ":order", ":matching", ":test-only"),
+            setOf(":common", ":fee", ":order", ":matching"),
+            setOf(":test-only"),
+        )
+    private val policy =
+        mapOf(
+            "common" to emptySet<String>(),
+            "fee" to setOf("common"),
+            "order" to setOf("common", "fee"),
+            "matching" to setOf("common", "order"),
+        )
 
     @Test
     fun `Gradle 작업 폴더는 임시 프로젝트를 지워도 유지된다`() {
         Files.writeString(root.resolve("settings.gradle"), "rootProject.name = 'testkit-lifecycle'")
-        Files.writeString(root.resolve("build.gradle"), """
+        Files.writeString(
+            root.resolve("build.gradle"),
+            """
             tasks.register('snapshot') {
                 doLast { file('gradle-user-home.txt').text = gradle.gradleUserHomeDir.canonicalPath }
             }
-        """.trimIndent())
+            """.trimIndent(),
+        )
         assertEquals(TaskOutcome.SUCCESS, run().task(":snapshot")?.outcome)
         val gradleUserHome = Path.of(Files.readString(root.resolve("gradle-user-home.txt"))).toRealPath()
 
@@ -53,7 +70,9 @@ class GradleDependencyWiringTest {
         assertTrue(initialResult.violations.isEmpty())
         assertEquals(TaskOutcome.UP_TO_DATE, run().task(":snapshot")?.outcome)
 
-        Files.writeString(root.resolve("matching/build.gradle.kts"), """
+        Files.writeString(
+            root.resolve("matching/build.gradle.kts"),
+            """
             plugins { `java-library` }
             val extraMain by configurations.creating
             configurations.named("compileClasspath") { extendsFrom(extraMain) }
@@ -64,7 +83,8 @@ class GradleDependencyWiringTest {
                 add(extraMain.name, project(":fee"))
                 testImplementation(project(":test-only"))
             }
-        """.trimIndent())
+            """.trimIndent(),
+        )
         val changed = run()
         assertEquals(TaskOutcome.SUCCESS, changed.task(":snapshot")?.outcome, "선언 변경이 입력 변경으로 추적되어야 한다")
         val snapshot = read()
@@ -87,7 +107,10 @@ class GradleDependencyWiringTest {
         Files.writeString(root.resolve("settings.gradle.kts"), "\ninclude(\":nested:fee\")\n", java.nio.file.StandardOpenOption.APPEND)
         Files.createDirectories(root.resolve("nested/fee"))
         Files.writeString(root.resolve("nested/fee/build.gradle.kts"), "plugins { `java-library` }")
-        Files.writeString(root.resolve("matching/build.gradle.kts"), "plugins { `java-library` }; dependencies { implementation(project(\":nested:fee\")) }")
+        Files.writeString(
+            root.resolve("matching/build.gradle.kts"),
+            "plugins { `java-library` }; dependencies { implementation(project(\":nested:fee\")) }",
+        )
         run()
         val snapshot = read()
         assertTrue(snapshot.configurations.any { c -> c.dependencies.any { it.targetPath == ":nested:fee" } })
@@ -102,21 +125,31 @@ class GradleDependencyWiringTest {
         assertEquals(TaskOutcome.SUCCESS, run().task(":snapshot")?.outcome)
         val before = read()
         assertEquals(8, before.configurations.size)
-        assertTrue(before.configurations.filter { it.projectPath == ":matching" }
-            .all { it.dependencies == listOf(ProjectDeclaration(":order", "api")) })
+        assertTrue(
+            before.configurations
+                .filter { it.projectPath == ":matching" }
+                .all { it.dependencies == listOf(ProjectDeclaration(":order", "api")) },
+        )
 
         // 해석 전 목록을 준수 판정의 정답으로 쓰지 않는다. 실제 Gradle 해석을 거쳐 같은 입력을 다시 읽는다.
         val resolved = run("-PresolveMatchingRuntime=true")
         assertEquals(TaskOutcome.SUCCESS, resolved.task(":resolveMatchingRuntime")?.outcome)
-        assertEquals(TaskOutcome.SUCCESS, resolved.task(":snapshot")?.outcome,
-            "지연 선언이 나타나면 이전 snapshot을 재사용해서는 안 된다")
+        assertEquals(
+            TaskOutcome.SUCCESS,
+            resolved.task(":snapshot")?.outcome,
+            "지연 선언이 나타나면 이전 snapshot을 재사용해서는 안 된다",
+        )
         val after = read()
         assertEquals(8, after.configurations.size)
-        assertEquals(before.configurations.filterNot { it.projectPath == ":matching" && it.usage == "runtime" },
-            after.configurations.filterNot { it.projectPath == ":matching" && it.usage == "runtime" })
+        assertEquals(
+            before.configurations.filterNot { it.projectPath == ":matching" && it.usage == "runtime" },
+            after.configurations.filterNot { it.projectPath == ":matching" && it.usage == "runtime" },
+        )
         val runtime = after.configurations.single { it.projectPath == ":matching" && it.usage == "runtime" }
-        assertEquals(setOf(ProjectDeclaration(":order", "api"), ProjectDeclaration(":fee", "runtimeOnly")),
-            runtime.dependencies.toSet())
+        assertEquals(
+            setOf(ProjectDeclaration(":order", "api"), ProjectDeclaration(":fee", "runtimeOnly")),
+            runtime.dependencies.toSet(),
+        )
         assertEquals(2, runtime.dependencies.size)
 
         val result = ModuleDependencyDirection.inspectGradle(after, inventory, policy)
@@ -140,8 +173,10 @@ class GradleDependencyWiringTest {
         assertEquals(TaskOutcome.SUCCESS, run().task(":snapshot")?.outcome)
         val before = read()
         val runtime = before.configurations.single { it.projectPath == ":matching" && it.usage == "runtime" }
-        assertEquals(setOf(ProjectDeclaration(":order", "api"), ProjectDeclaration(":common", "runtimeOnly")),
-            runtime.dependencies.toSet())
+        assertEquals(
+            setOf(ProjectDeclaration(":order", "api"), ProjectDeclaration(":common", "runtimeOnly")),
+            runtime.dependencies.toSet(),
+        )
         assertEquals(2, runtime.dependencies.size)
 
         val resolved = run("-PresolveMatchingRuntime=true")
@@ -157,7 +192,9 @@ class GradleDependencyWiringTest {
 
     private fun prepareDeferredRuntime(explicitRuntime: Boolean = false) {
         prepare()
-        Files.writeString(root.resolve("matching/build.gradle.kts"), """
+        Files.writeString(
+            root.resolve("matching/build.gradle.kts"),
+            """
             plugins { `java-library` }
             dependencies {
                 api(project(":order"))
@@ -167,8 +204,11 @@ class GradleDependencyWiringTest {
             configurations.named("runtimeOnly") {
                 defaultDependencies { add(project.dependencies.project(mapOf("path" to ":fee"))) }
             }
-        """.trimIndent())
-        Files.writeString(root.resolve("build.gradle.kts"), """
+            """.trimIndent(),
+        )
+        Files.writeString(
+            root.resolve("build.gradle.kts"),
+            """
 
             val resolveMatchingRuntime = tasks.register("resolveMatchingRuntime") {
                 doLast {
@@ -183,24 +223,32 @@ class GradleDependencyWiringTest {
             tasks.named("snapshot") {
                 if (providers.gradleProperty("resolveMatchingRuntime").isPresent) dependsOn(resolveMatchingRuntime)
             }
-        """.trimIndent(), java.nio.file.StandardOpenOption.APPEND)
+            """.trimIndent(),
+            java.nio.file.StandardOpenOption.APPEND,
+        )
     }
 
     private fun prepare() {
-        Files.writeString(root.resolve("settings.gradle.kts"), "rootProject.name = \"dependency-contract\"\ninclude(\":common\", \":fee\", \":order\", \":matching\", \":test-only\")")
+        Files.writeString(
+            root.resolve("settings.gradle.kts"),
+            "rootProject.name = \"dependency-contract\"\ninclude(\":common\", \":fee\", \":order\", \":matching\", \":test-only\")",
+        )
         inventory.discoveredModules.forEach { path ->
             val dir = root.resolve(path.removePrefix(":"))
             Files.createDirectories(dir)
-            val deps = when (path) {
-                ":fee" -> "api(project(\":common\"))"
-                ":order" -> "api(project(\":fee\"))"
-                ":matching" -> "api(project(\":order\")); testImplementation(project(\":test-only\"))"
-                else -> ""
-            }
+            val deps =
+                when (path) {
+                    ":fee" -> "api(project(\":common\"))"
+                    ":order" -> "api(project(\":fee\"))"
+                    ":matching" -> "api(project(\":order\")); testImplementation(project(\":test-only\"))"
+                    else -> ""
+                }
             Files.writeString(dir.resolve("build.gradle.kts"), "plugins { `java-library` }; dependencies { $deps }")
         }
         Files.copy(Path.of(System.getProperty("architecture.dependencyScript")), root.resolve("project-dependencies.gradle.kts"))
-        Files.writeString(root.resolve("build.gradle.kts"), """
+        Files.writeString(
+            root.resolve("build.gradle.kts"),
+            """
             plugins { java }
             extra["architecture.productionProjects"] = listOf(":common", ":fee", ":order", ":matching")
             apply(from = "project-dependencies.gradle.kts")
@@ -212,14 +260,20 @@ class GradleDependencyWiringTest {
                 outputs.file(output)
                 doLast { output.get().asFile.apply { parentFile.mkdirs(); writeText(snapshot.get()) } }
             }
-        """.trimIndent())
+            """.trimIndent(),
+        )
     }
 
-    private fun run(vararg arguments: String) = GradleRunner.create().withProjectDir(root.toFile())
-        .withGradleInstallation(File(System.getProperty("architecture.gradleHome")))
-        .withArguments(listOf("snapshot", "--offline", "--console=plain", "--max-workers=1", "--stacktrace") + arguments).build()
+    private fun run(vararg arguments: String) =
+        GradleRunner
+            .create()
+            .withProjectDir(root.toFile())
+            .withGradleInstallation(File(System.getProperty("architecture.gradleHome")))
+            .withArguments(listOf("snapshot", "--offline", "--console=plain", "--max-workers=1", "--stacktrace") + arguments)
+            .build()
 
-    private fun read(path: String = "build/dependencies.txt") = ProjectDependencies.read(Files.readString(root.resolve(path))).also {
-        assertEquals(emptyList(), it.problems, "실제 Gradle 전달 형식을 읽을 수 있어야 한다")
-    }
+    private fun read(path: String = "build/dependencies.txt") =
+        ProjectDependencies.read(Files.readString(root.resolve(path))).also {
+            assertEquals(emptyList(), it.problems, "실제 Gradle 전달 형식을 읽을 수 있어야 한다")
+        }
 }

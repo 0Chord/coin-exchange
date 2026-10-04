@@ -39,8 +39,8 @@ class MatchingCoordinator(
         command: MatchingCommand,
         beforeMatching: (() -> Unit)? = null,
         afterMatching: (List<MatchingEvent>) -> Unit = {},
-    ): List<MatchingEvent> {
-        return try {
+    ): List<MatchingEvent> =
+        try {
             processor
                 .submit(
                     command = command,
@@ -59,5 +59,4 @@ class MatchingCoordinator(
                 error,
             )
         }
-    }
 }

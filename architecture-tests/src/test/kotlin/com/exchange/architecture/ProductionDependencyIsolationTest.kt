@@ -1,40 +1,89 @@
 package com.exchange.architecture
 
-import com.exchange.architecture.rules.*
-import com.exchange.architecture.support.*
-import com.exchange.core.isolationfixture.*
+import com.exchange.architecture.rules.ModuleDependencyDirection
+import com.exchange.architecture.rules.ProductionDependencyIsolation
+import com.exchange.architecture.support.GradleModuleInventory
+import com.exchange.architecture.support.IsolationDeclaration
+import com.exchange.architecture.support.IsolationDependencySnapshot
+import com.exchange.architecture.support.MainIsolationDependencies
+import com.exchange.architecture.support.ModuleOutput
+import com.exchange.architecture.support.NonProductionIndex
+import com.exchange.architecture.support.NonProductionTargets
+import com.exchange.architecture.support.ProductionScopeImporter
+import com.exchange.architecture.support.ScopeExpectations
+import com.exchange.architecture.support.ScopeImportResult
+import com.exchange.architecture.support.ScopeProblemCode
+import com.exchange.architecture.support.SourceSetKey
+import com.exchange.architecture.support.SourceSetOutput
+import com.exchange.architecture.support.fixtureOutput
+import com.exchange.core.isolationfixture.ArchitectureField
+import com.exchange.core.isolationfixture.BenchmarkMethod
+import com.exchange.core.isolationfixture.ContainerField
+import com.exchange.core.isolationfixture.ExtendsHelper
+import com.exchange.core.isolationfixture.Helper
+import com.exchange.core.isolationfixture.JunitAnnotated
+import com.exchange.core.isolationfixture.KotlinAssertion
+import com.exchange.core.isolationfixture.Normal
+import com.exchange.core.isolationfixture.Signatures
+import com.exchange.core.isolationfixture.SpringProduction
+import com.exchange.core.isolationfixture.SpringTestAnnotated
+import com.exchange.core.isolationfixture.TestValue
+import com.exchange.core.isolationfixture.UsesHelper
+import com.exchange.core.isolationfixture.helperReference
 import org.junit.jupiter.api.io.TempDir
 import java.nio.file.Path
-import kotlin.test.*
+import kotlin.test.Test
+import kotlin.test.assertEquals
+import kotlin.test.assertFalse
+import kotlin.test.assertTrue
 
 class ProductionDependencyIsolationTest {
     @TempDir lateinit var root: Path
     private val inventory = GradleModuleInventory(setOf(":app", ":bench"), setOf(":app"), setOf(":bench"))
+
     private fun index(vararg helper: Class<*>): NonProductionIndex {
-        val outputs = listOf(
-            SourceSetOutput(SourceSetKey(":app", "main"), listOf(root.resolve("main"))),
-            SourceSetOutput(SourceSetKey(":app", "test"), listOf(fixtureOutput(root.resolve("test"), *helper))),
-            SourceSetOutput(SourceSetKey(":bench", "main"), listOf(root.resolve("bench"))),
-        )
+        val outputs =
+            listOf(
+                SourceSetOutput(SourceSetKey(":app", "main"), listOf(root.resolve("main"))),
+                SourceSetOutput(SourceSetKey(":app", "test"), listOf(fixtureOutput(root.resolve("test"), *helper))),
+                SourceSetOutput(SourceSetKey(":bench", "main"), listOf(root.resolve("bench"))),
+            )
         return NonProductionTargets.inspect(outputs, outputs.map { it.key }.toSet(), inventory)
     }
-    private fun load(index: NonProductionIndex, vararg types: Class<*>): ScopeImportResult = ProductionScopeImporter().load(
-        listOf(ModuleOutput("app", listOf(fixtureOutput(root.resolve("main"), *types)))),
-        ScopeExpectations(mapOf("app" to setOf(types.first().name)), projectPackagePrefixes = setOf("com.exchange.core.")), index,
-    )
+
+    private fun load(
+        index: NonProductionIndex,
+        vararg types: Class<*>,
+    ): ScopeImportResult =
+        ProductionScopeImporter().load(
+            listOf(ModuleOutput("app", listOf(fixtureOutput(root.resolve("main"), *types)))),
+            ScopeExpectations(mapOf("app" to setOf(types.first().name)), projectPackagePrefixes = setOf("com.exchange.core.")),
+            index,
+        )
 
     @Test fun `확인된 test 도우미는 운영 목록에 합치지 않고 ARCH-08 위반으로 보낸다`() {
         val index = index(Helper::class.java)
         val scope = load(index, UsesHelper::class.java)
         assertEquals(emptyList(), scope.problems)
-        assertEquals(setOf(UsesHelper::class.java.name), scope.classesByModule.getValue("app").map { it.name }.toSet())
+        assertEquals(
+            setOf(UsesHelper::class.java.name),
+            scope.classesByModule
+                .getValue("app")
+                .map { it.name }
+                .toSet(),
+        )
         val direction = ModuleDependencyDirection.inspectBytecode(scope, mapOf("app" to emptySet()), nonProduction = index)
         assertTrue(direction.evaluated, direction.problems.toString())
         assertEquals(emptyList(), direction.violations)
         val result = ProductionDependencyIsolation.inspectBytecode(scope, index)
         assertTrue(result.evaluated, result.problems.toString())
         assertTrue(result.violations.isNotEmpty())
-        assertTrue(result.violations.all { it.target == Helper::class.java.name && it.origin == "app/${UsesHelper::class.java.name}" && it.reason == "비운영 출력 :app/test" })
+        assertTrue(
+            result.violations.all {
+                it.target == Helper::class.java.name && it.origin == "app/${UsesHelper::class.java.name}" &&
+                    it.reason == "비운영 출력 :app/test"
+            },
+        )
         assertTrue(result.violations.any { it.sourceFile == "IsolationFixtures.kt" && it.line != null })
     }
 
@@ -79,57 +128,116 @@ class ProductionDependencyIsolationTest {
         val reference = Class.forName(facade.name + "\$helperReference\$1")
         val scope = load(index, ExtendsHelper::class.java, Signatures::class.java, facade, reference)
         assertEquals(emptyList(), scope.problems)
-        val dependencies = scope.classesByModule.getValue("app").flatMap { it.directDependenciesFromSelf }.filter { it.targetClass.baseComponentType.name == Helper::class.java.name }
+        val dependencies =
+            scope.classesByModule.getValue("app").flatMap { it.directDependenciesFromSelf }.filter {
+                it.targetClass.baseComponentType.name ==
+                    Helper::class.java.name
+            }
         assertTrue(dependencies.any { it.description.contains("extends") })
         assertTrue(dependencies.any { it.description.contains("generic") })
         assertTrue(dependencies.any { it.description.contains("references method") || it.description.contains("calls method") })
         val result = ProductionDependencyIsolation.inspectBytecode(scope, index)
         assertTrue(result.evaluated, result.problems.toString())
         assertEquals(dependencies.size, result.violations.size)
-        assertEquals(setOf(ExtendsHelper::class.java.name, Signatures::class.java.name, facade.name, reference.name), result.violations.map { it.origin.removePrefix("app/") }.toSet())
+        assertEquals(
+            setOf(
+                ExtendsHelper::class.java.name,
+                Signatures::class.java.name,
+                facade.name,
+                reference.name,
+            ),
+            result.violations
+                .map {
+                    it.origin.removePrefix("app/")
+                }.toSet(),
+        )
     }
 
     @Test fun `실제 외부 테스트 도구 타입은 본문 실행 없이 모두 탐지한다`() {
         val index = index()
-        val cases = mapOf(
-            JunitAnnotated::class.java to "org.junit.jupiter.api.Tag",
-            KotlinAssertion::class.java to "kotlin.test.AssertionsKt",
-            ContainerField::class.java to "org.testcontainers.containers.GenericContainer",
-            BenchmarkMethod::class.java to "org.openjdk.jmh.annotations.Benchmark",
-            ArchitectureField::class.java to "com.tngtech.archunit.core.domain.JavaClass",
-            SpringTestAnnotated::class.java to "org.springframework.test.context.ContextConfiguration",
-        )
+        val cases =
+            mapOf(
+                JunitAnnotated::class.java to "org.junit.jupiter.api.Tag",
+                KotlinAssertion::class.java to "kotlin.test.AssertionsKt",
+                ContainerField::class.java to "org.testcontainers.containers.GenericContainer",
+                BenchmarkMethod::class.java to "org.openjdk.jmh.annotations.Benchmark",
+                ArchitectureField::class.java to "com.tngtech.archunit.core.domain.JavaClass",
+                SpringTestAnnotated::class.java to "org.springframework.test.context.ContextConfiguration",
+            )
         val scope = load(index, *cases.keys.toTypedArray())
         val result = ProductionDependencyIsolation.inspectBytecode(scope, index)
         assertTrue(result.evaluated, result.problems.toString())
-        cases.forEach { (origin, target) -> assertTrue(result.violations.any { it.origin == "app/${origin.name}" && it.target == target }, "$origin → $target 누락") }
+        cases.forEach { (origin, target) ->
+            assertTrue(result.violations.any { it.origin == "app/${origin.name}" && it.target == target }, "$origin → $target 누락")
+        }
         assertTrue(result.violations.all { it.evidence == "BYTECODE" && it.reason.startsWith("외부 테스트 도구") })
     }
 
     @Test fun `벤치마크 소속과 출력 역순에도 진단이 같다`() {
         val testIndex = index(Helper::class.java)
-        val benchmark = testIndex.copy(owners = testIndex.owners.mapValues { (_, owner) -> owner.copy(projectPath = ":bench", sourceSet = "main") })
+        val benchmark =
+            testIndex.copy(
+                owners =
+                    testIndex.owners.mapValues { (_, owner) ->
+                        owner.copy(projectPath = ":bench", sourceSet = "main")
+                    },
+            )
         val scope = load(benchmark, UsesHelper::class.java, JunitAnnotated::class.java)
         val first = ProductionDependencyIsolation.inspectBytecode(scope, benchmark)
         assertTrue(first.evaluated)
         assertTrue(first.violations.any { it.reason == "비운영 출력 :bench/main" })
-        assertEquals(first, ProductionDependencyIsolation.inspectBytecode(scope.copy(classesByModule = scope.classesByModule.toList().reversed().toMap()), benchmark))
+        assertEquals(
+            first,
+            ProductionDependencyIsolation.inspectBytecode(
+                scope.copy(
+                    classesByModule =
+                        scope.classesByModule
+                            .toList()
+                            .reversed()
+                            .toMap(),
+                ),
+                benchmark,
+            ),
+        )
     }
+
     @Test fun `코드와 선언 근거를 함께 보고하고 한쪽 누락이면 부분 위반을 내지 않는다`() {
         val index = index(Helper::class.java)
         val scope = load(index, UsesHelper::class.java)
-        val snapshot = IsolationDependencySnapshot(listOf("compile", "runtime").map {
-            MainIsolationDependencies(":app", it, "${it}Classpath", "/app/build.gradle.kts", listOf(IsolationDeclaration("project", ":bench", "implementation")))
-        })
+        val snapshot =
+            IsolationDependencySnapshot(
+                listOf("compile", "runtime").map {
+                    MainIsolationDependencies(
+                        ":app",
+                        it,
+                        "${it}Classpath",
+                        "/app/build.gradle.kts",
+                        listOf(IsolationDeclaration("project", ":bench", "implementation")),
+                    )
+                },
+            )
         val result = ProductionDependencyIsolation.inspect(scope, index, snapshot, inventory)
         assertTrue(result.evaluated, result.problems.toString())
         assertEquals(setOf("BYTECODE", "GRADLE"), result.violations.map { it.evidence }.toSet())
         assertEquals(1, result.violations.count { it.evidence == "GRADLE" })
-        assertEquals(result, ProductionDependencyIsolation.inspect(scope, index, snapshot.copy(configurations = snapshot.configurations.reversed()), inventory))
-        val missing = ProductionDependencyIsolation.inspect(scope, index, snapshot.copy(configurations = snapshot.configurations.drop(1)), inventory)
+        assertEquals(
+            result,
+            ProductionDependencyIsolation.inspect(
+                scope,
+                index,
+                snapshot.copy(configurations = snapshot.configurations.reversed()),
+                inventory,
+            ),
+        )
+        val missing =
+            ProductionDependencyIsolation.inspect(
+                scope,
+                index,
+                snapshot.copy(configurations = snapshot.configurations.drop(1)),
+                inventory,
+            )
         assertFalse(missing.evaluated)
         assertTrue(missing.problems.any { it.contains("MISSING_CONFIGURATION") })
         assertEquals(emptyList(), missing.violations)
     }
-
 }

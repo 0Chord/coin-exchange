@@ -36,9 +36,7 @@ data class Balance(
      * @throws InsufficientBalanceException available이 [amount]보다 적은 경우
      * @throws ArithmeticException Long 범위를 넘는 덧셈이나 뺄셈이 발생한 경우
      */
-    fun reserve(
-        amount: Amount,
-    ): Balance {
+    fun reserve(amount: Amount): Balance {
         if (available < amount) {
             throw InsufficientBalanceException(
                 userId = userId,
@@ -81,9 +79,7 @@ data class Balance(
      * @throws InsufficientHoldException hold가 [amount]보다 적은 경우
      * @throws ArithmeticException Long 범위를 넘는 덧셈이나 뺄셈이 발생한 경우
      */
-    fun release(
-        amount: Amount,
-    ): Balance {
+    fun release(amount: Amount): Balance {
         if (hold < amount) {
             throw InsufficientHoldException(
                 userId = userId,
@@ -126,9 +122,7 @@ data class Balance(
      * @throws InsufficientHoldException hold가 [amount]보다 적은 경우
      * @throws ArithmeticException Long 범위를 넘는 뺄셈이 발생한 경우
      */
-    fun consumeHold(
-        amount: Amount,
-    ): Balance {
+    fun consumeHold(amount: Amount): Balance {
         if (hold < amount) {
             throw InsufficientHoldException(
                 userId = userId,
@@ -158,9 +152,7 @@ data class Balance(
      * @return available이 [amount]만큼 증가한 새 Balance
      * @throws ArithmeticException 합계가 Long 범위를 넘는 경우
      */
-    fun credit(
-        amount: Amount,
-    ): Balance {
+    fun credit(amount: Amount): Balance {
         val nextAvailable =
             Amount(
                 Math.addExact(
@@ -189,12 +181,12 @@ class InsufficientBalanceException(
     val available: Amount,
     val requested: Amount,
 ) : IllegalStateException(
-    "insufficient balance: " +
-        "userId=${userId.value}, " +
-        "assetId=${assetId.value}, " +
-        "available=${available.value}, " +
-        "requested=${requested.value}",
-)
+        "insufficient balance: " +
+            "userId=${userId.value}, " +
+            "assetId=${assetId.value}, " +
+            "available=${available.value}, " +
+            "requested=${requested.value}",
+    )
 
 /**
  * 반환하거나 소비할 금액보다 현재 동결 잔고가 적을 때 발생하는 예외.
@@ -210,12 +202,12 @@ class InsufficientHoldException(
     val hold: Amount,
     val requested: Amount,
 ) : IllegalStateException(
-    "insufficient hold: " +
-        "userId=${userId.value}, " +
-        "assetId=${assetId.value}, " +
-        "hold=${hold.value}, " +
-        "requested=${requested.value}",
-)
+        "insufficient hold: " +
+            "userId=${userId.value}, " +
+            "assetId=${assetId.value}, " +
+            "hold=${hold.value}, " +
+            "requested=${requested.value}",
+    )
 
 /**
  * 사용자와 자산 조합에 해당하는 잔고 row가 없을 때 발생하는 예외.
@@ -227,7 +219,7 @@ class BalanceNotFoundException(
     val userId: UserId,
     val assetId: AssetId,
 ) : IllegalStateException(
-    "balance not found: " +
-        "userId=${userId.value}, " +
-        "assetId=${assetId.value}",
-)
+        "balance not found: " +
+            "userId=${userId.value}, " +
+            "assetId=${assetId.value}",
+    )

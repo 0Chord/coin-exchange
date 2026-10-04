@@ -13,7 +13,9 @@ package com.exchange.core.common
  * @throws IllegalArgumentException [value]가 0 이하인 경우
  */
 @JvmInline
-value class Price(val value: Long) : Comparable<Price> {
+value class Price(
+    val value: Long,
+) : Comparable<Price> {
     init {
         require(value > 0) { "price must be positive" }
     }
@@ -36,7 +38,9 @@ value class Price(val value: Long) : Comparable<Price> {
  * @throws IllegalArgumentException [value]가 음수인 경우
  */
 @JvmInline
-value class Quantity(val value: Long) : Comparable<Quantity> {
+value class Quantity(
+    val value: Long,
+) : Comparable<Quantity> {
     init {
         require(value >= 0) {
             "quantity must be positive"
@@ -109,8 +113,7 @@ value class Amount(
      */
     fun isZero(): Boolean = value == 0L
 
-    override fun compareTo(other: Amount): Int =
-        value.compareTo(other.value)
+    override fun compareTo(other: Amount): Int = value.compareTo(other.value)
 
     override fun toString(): String = value.toString()
 

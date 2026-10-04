@@ -11,59 +11,78 @@ object ProductionScope {
     // 어노테이션을 없애거나 저장 기술을 바꿔도 영속 모델의 포트 노출을 계속 검사한다.
     val persistenceTypes = setOf("com.exchange.core.api.matching.infrastructure.persistence.MatchingEventEntity")
 
-    val requiredTypes = mapOf(
-        "domain-common" to setOf("com.exchange.core.common.Amount"),
-        "domain-fee" to setOf("com.exchange.core.fee.TradingFeeCalculator"),
-        "domain-order" to setOf("com.exchange.core.order.OrderReservation"),
-        "domain-ledger" to setOf("com.exchange.core.ledger.Balance"),
-        "domain-matching" to setOf("com.exchange.core.matching.MatchingEngine"),
-        "app-api" to setOf("com.exchange.core.ExchangeCoreApplication"),
-    )
-    val roles = RoleRegistration(
-        domainModules = requiredTypes.keys - "app-api",
-        externalPorts = setOf(
-            "com.exchange.core.order.OrderReservationStore",
-            "com.exchange.core.ledger.BalanceStore",
-            "com.exchange.core.ledger.LedgerTransactionStore",
-            "com.exchange.core.api.matching.application.port.MatchingEventStore",
-            "com.exchange.core.api.matching.application.port.MatchingEventPublisher",
-        ),
-        executors = setOf(
-            "com.exchange.core.matching.MarketCommandProcessor",
-            "com.exchange.core.matching.InMemoryMarketCommandProcessor",
-            "com.exchange.core.matching.MarketWorker",
-            // 이 파일의 최상위 함수는 실행기의 failedFuture 보조 함수뿐이므로 실행기 역할로 둔다.
-            "com.exchange.core.matching.MarketCommandProcessorKt",
-        ),
-        reviewedPureInterfaces = setOf(
-            "com.exchange.core.matching.MatchingCommand", "com.exchange.core.matching.MatchingEvent",
-        ),
-    )
+    val requiredTypes =
+        mapOf(
+            "domain-common" to setOf("com.exchange.core.common.Amount"),
+            "domain-fee" to setOf("com.exchange.core.fee.TradingFeeCalculator"),
+            "domain-order" to setOf("com.exchange.core.order.OrderReservation"),
+            "domain-ledger" to setOf("com.exchange.core.ledger.Balance"),
+            "domain-matching" to setOf("com.exchange.core.matching.MatchingEngine"),
+            "app-api" to setOf("com.exchange.core.ExchangeCoreApplication"),
+        )
+    val roles =
+        RoleRegistration(
+            domainModules = requiredTypes.keys - "app-api",
+            externalPorts =
+                setOf(
+                    "com.exchange.core.order.OrderReservationStore",
+                    "com.exchange.core.ledger.BalanceStore",
+                    "com.exchange.core.ledger.DevelopmentBalanceStore",
+                    "com.exchange.core.ledger.LedgerTransactionStore",
+                    "com.exchange.core.api.matching.application.port.MatchingEventStore",
+                    "com.exchange.core.api.matching.application.port.MatchingEventPublisher",
+                ),
+            executors =
+                setOf(
+                    "com.exchange.core.matching.MarketCommandProcessor",
+                    "com.exchange.core.matching.InMemoryMarketCommandProcessor",
+                    "com.exchange.core.matching.MarketWorker",
+                    // 이 파일의 최상위 함수는 실행기의 failedFuture 보조 함수뿐이므로 실행기 역할로 둔다.
+                    "com.exchange.core.matching.MarketCommandProcessorKt",
+                ),
+            reviewedPureInterfaces =
+                setOf(
+                    "com.exchange.core.matching.MatchingCommand",
+                    "com.exchange.core.matching.MatchingEvent",
+                ),
+        )
 
-    fun inventory() = GradleModuleInventory(
-        discoveredModules = csv("architecture.discoveredJvmProjects"),
-        productionModules = csv("architecture.registration.production"),
-        nonProductionModules = csv("architecture.registration.nonProduction"),
-    )
+    fun inventory() =
+        GradleModuleInventory(
+            discoveredModules = csv("architecture.discoveredJvmProjects"),
+            productionModules = csv("architecture.registration.production"),
+            nonProductionModules = csv("architecture.registration.nonProduction"),
+        )
 
-    fun nonProductionTargets() = IsolationInputs.targets(
-        System.getProperty("architecture.sourceInventory"), System.getProperty("architecture.sourceOutputs"), inventory(),
-    )
+    fun nonProductionTargets() =
+        IsolationInputs.targets(
+            System.getProperty("architecture.sourceInventory"),
+            System.getProperty("architecture.sourceOutputs"),
+            inventory(),
+        )
 
-    fun outputs(): List<ModuleOutput> = System.getProperties().stringPropertyNames()
-        .filter { it.startsWith("architecture.outputs.") }.sorted().map {
-            ModuleOutput(it.removePrefix("architecture.outputs."), paths(it))
-        }
+    fun outputs(): List<ModuleOutput> =
+        System
+            .getProperties()
+            .stringPropertyNames()
+            .filter { it.startsWith("architecture.outputs.") }
+            .sorted()
+            .map {
+                ModuleOutput(it.removePrefix("architecture.outputs."), paths(it))
+            }
 
-    fun expectations() = ScopeExpectations(
-        requiredTypesByModule = requiredTypes,
-        requiredRoles = mapOf("ports" to roles.externalPorts, "executors" to roles.executors),
-        forbiddenRoots = paths("architecture.forbiddenOutputs").toSet(),
-        projectPackagePrefixes = setOf("com.exchange.core.", "com.exchange.architecture."),
-        forbiddenTypePrefixes = setOf("com.exchange.architecture."),
-    )
+    fun expectations() =
+        ScopeExpectations(
+            requiredTypesByModule = requiredTypes,
+            requiredRoles = mapOf("ports" to roles.externalPorts, "executors" to roles.executors),
+            forbiddenRoots = paths("architecture.forbiddenOutputs").toSet(),
+            projectPackagePrefixes = setOf("com.exchange.core.", "com.exchange.architecture."),
+            forbiddenTypePrefixes = setOf("com.exchange.architecture."),
+        )
 
     private fun csv(property: String) = required(property).split(',').filter { it.isNotBlank() }.toSet()
+
     private fun paths(property: String) = required(property).split(File.pathSeparator).filter { it.isNotBlank() }.map(Path::of)
+
     private fun required(property: String) = requireNotNull(System.getProperty(property)) { "Gradle must provide $property" }
 }

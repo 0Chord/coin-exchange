@@ -91,8 +91,7 @@ class OrderControllerTest : ExchangeIntegrationTest() {
             userId = "seller-1",
             side = Side.SELL,
             quantity = 3,
-        )
-            .andExpect(status().isOk)
+        ).andExpect(status().isOk)
             .andExpect(jsonPath("$.events[0].type").value("ORDER_ENTERED_BOOK"))
 
         submitOrder(orderId = "bid-1", price = 110, quantity = 3)
@@ -278,8 +277,7 @@ class OrderControllerTest : ExchangeIntegrationTest() {
                 .param("userId", userId),
         )
 
-    private fun findReservation(orderId: String): OrderReservation =
-        assertNotNull(reservationStore.find(market.marketId, OrderId(orderId)))
+    private fun findReservation(orderId: String): OrderReservation = assertNotNull(reservationStore.find(market.marketId, OrderId(orderId)))
 
     /** 실제 DB에 초기 잔고를 준비하며, 이 시드 금액의 원장 기록은 테스트 범위 밖이다. */
     private fun insertBalance(

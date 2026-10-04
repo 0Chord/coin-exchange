@@ -1,6 +1,8 @@
 package com.exchange.core.api.config
 
+import com.exchange.core.api.ledger.application.PrepareDevelopmentBalanceUseCase
 import com.exchange.core.api.ledger.infrastructure.persistence.PostgresBalanceStore
+import com.exchange.core.api.ledger.infrastructure.persistence.PostgresDevelopmentBalanceStore
 import com.exchange.core.api.ledger.infrastructure.persistence.PostgresLedgerTransactionStore
 import com.exchange.core.api.order.application.OrderFundingService
 import com.exchange.core.api.order.application.OrderReservationReleaseService
@@ -9,6 +11,7 @@ import com.exchange.core.api.order.infrastructure.persistence.PostgresOrderReser
 import com.exchange.core.fee.TradingFeeCalculator
 import com.exchange.core.fee.TradingFeeReserveCalculator
 import com.exchange.core.ledger.BalanceStore
+import com.exchange.core.ledger.DevelopmentBalanceStore
 import com.exchange.core.ledger.LedgerTransactionStore
 import com.exchange.core.order.BuyOrderFundingQuoteCalculator
 import com.exchange.core.order.OrderFillSettlementCalculator
@@ -18,6 +21,7 @@ import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty
 import org.springframework.context.annotation.Bean
 import org.springframework.context.annotation.Configuration
 import org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate
+import org.springframework.transaction.PlatformTransactionManager
 
 /**
  * PostgreSQL 기반 잔고, 주문 예약과 원장 저장 기능을 조립하는 Spring 구성.
@@ -41,10 +45,7 @@ class LedgerPersistenceConfig {
      * @return [BalanceStore] 포트의 PostgreSQL 구현체
      */
     @Bean
-    fun balanceStore(
-        jdbcTemplate: NamedParameterJdbcTemplate,
-    ): BalanceStore =
-        PostgresBalanceStore(jdbcTemplate)
+    fun balanceStore(jdbcTemplate: NamedParameterJdbcTemplate): BalanceStore = PostgresBalanceStore(jdbcTemplate)
 
     /**
      * `order_reservations` 테이블을 사용하는 주문별 예약 저장소를 등록한다.
@@ -53,10 +54,7 @@ class LedgerPersistenceConfig {
      * @return [OrderReservationStore] 포트의 PostgreSQL 구현체
      */
     @Bean
-    fun orderReservationStore(
-        jdbcTemplate: NamedParameterJdbcTemplate,
-    ): OrderReservationStore =
-        PostgresOrderReservationStore(jdbcTemplate)
+    fun orderReservationStore(jdbcTemplate: NamedParameterJdbcTemplate): OrderReservationStore = PostgresOrderReservationStore(jdbcTemplate)
 
     /**
      * 주문 접수 전에 필요 자금을 계산하고 Balance hold와 Reservation을 함께 만드는 서비스를
@@ -132,8 +130,25 @@ class LedgerPersistenceConfig {
      * @return [LedgerTransactionStore] 포트의 PostgreSQL 구현체
      */
     @Bean
-    fun ledgerTransactionStore(
-        jdbcTemplate: NamedParameterJdbcTemplate,
-    ): LedgerTransactionStore =
+    fun ledgerTransactionStore(jdbcTemplate: NamedParameterJdbcTemplate): LedgerTransactionStore =
         PostgresLedgerTransactionStore(jdbcTemplate)
+
+    /** 명시적인 개발용 개시 호출에만 원장·잔고의 원자 저장을 제공한다. */
+    @Bean
+    fun developmentBalanceStore(
+        jdbcTemplate: NamedParameterJdbcTemplate,
+        transactionManager: PlatformTransactionManager,
+        ledgerTransactionStore: LedgerTransactionStore,
+        balanceStore: BalanceStore,
+    ): DevelopmentBalanceStore =
+        PostgresDevelopmentBalanceStore(
+            jdbcTemplate,
+            transactionManager,
+            ledgerTransactionStore,
+            balanceStore,
+        )
+
+    @Bean
+    fun prepareDevelopmentBalanceUseCase(developmentBalanceStore: DevelopmentBalanceStore) =
+        PrepareDevelopmentBalanceUseCase(developmentBalanceStore)
 }

@@ -10,17 +10,19 @@ import kotlin.test.assertFailsWith
 class BalanceTest {
     @Test
     fun `reserve는 available을 줄이고 hold를 늘린다`() {
-        val balance = Balance(
-            userId = UserId("user-1"),
-            assetId = AssetId("KRW"),
-            available = Amount(1_000),
-            hold = Amount.ZERO,
-        )
+        val balance =
+            Balance(
+                userId = UserId("user-1"),
+                assetId = AssetId("KRW"),
+                available = Amount(1_000),
+                hold = Amount.ZERO,
+            )
         val original = balance.copy()
 
-        val reserved = balance.reserve(
-            amount = Amount(400),
-        )
+        val reserved =
+            balance.reserve(
+                amount = Amount(400),
+            )
 
         assertEquals(Amount(600), reserved.available)
         assertEquals(Amount(400), reserved.hold)
@@ -32,19 +34,21 @@ class BalanceTest {
 
     @Test
     fun `available보다 큰 금액은 reserve할 수 없다`() {
-        val balance = Balance(
-            userId = UserId("user-1"),
-            assetId = AssetId("KRW"),
-            available = Amount(300),
-            hold = Amount(200),
-        )
+        val balance =
+            Balance(
+                userId = UserId("user-1"),
+                assetId = AssetId("KRW"),
+                available = Amount(300),
+                hold = Amount(200),
+            )
         val original = balance.copy()
 
-        val error = assertFailsWith<InsufficientBalanceException> {
-            balance.reserve(
-                amount = Amount(400),
-            )
-        }
+        val error =
+            assertFailsWith<InsufficientBalanceException> {
+                balance.reserve(
+                    amount = Amount(400),
+                )
+            }
 
         assertEquals(UserId("user-1"), error.userId)
         assertEquals(AssetId("KRW"), error.assetId)
@@ -56,17 +60,19 @@ class BalanceTest {
 
     @Test
     fun `release는 hold를 줄이고 available을 늘린다`() {
-        val balance = Balance(
-            userId = UserId("user-1"),
-            assetId = AssetId("KRW"),
-            available = Amount(600),
-            hold = Amount(400),
-        )
+        val balance =
+            Balance(
+                userId = UserId("user-1"),
+                assetId = AssetId("KRW"),
+                available = Amount(600),
+                hold = Amount(400),
+            )
         val original = balance.copy()
 
-        val released = balance.release(
-            amount = Amount(150),
-        )
+        val released =
+            balance.release(
+                amount = Amount(150),
+            )
 
         assertEquals(Amount(750), released.available)
         assertEquals(Amount(250), released.hold)
@@ -78,19 +84,21 @@ class BalanceTest {
 
     @Test
     fun `hold보다 큰 금액은 release할 수 없다`() {
-        val balance = Balance(
-            userId = UserId("user-1"),
-            assetId = AssetId("KRW"),
-            available = Amount(600),
-            hold = Amount(100),
-        )
+        val balance =
+            Balance(
+                userId = UserId("user-1"),
+                assetId = AssetId("KRW"),
+                available = Amount(600),
+                hold = Amount(100),
+            )
         val original = balance.copy()
 
-        val error = assertFailsWith<InsufficientHoldException> {
-            balance.release(
-                amount = Amount(200),
-            )
-        }
+        val error =
+            assertFailsWith<InsufficientHoldException> {
+                balance.release(
+                    amount = Amount(200),
+                )
+            }
 
         assertEquals(UserId("user-1"), error.userId)
         assertEquals(AssetId("KRW"), error.assetId)

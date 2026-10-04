@@ -1,6 +1,10 @@
 package com.exchange.core.api.matching.infrastructure.persistence
 
-import com.exchange.core.matching.*
+import com.exchange.core.matching.MatchingEvent
+import com.exchange.core.matching.OrderCancelRejected
+import com.exchange.core.matching.OrderCancelled
+import com.exchange.core.matching.OrderEnteredBook
+import com.exchange.core.matching.TradeExecuted
 
 /**
  * payload_json에 저장할 납작한 event payload.
@@ -53,6 +57,7 @@ fun MatchingEvent.toEventType(): MatchingEventType =
         is OrderCancelled -> MatchingEventType.ORDER_CANCELLED
         is OrderCancelRejected -> MatchingEventType.ORDER_CANCEL_REJECTED
     }
+
 /**
  * domain event의 value class와 enum을 JSON 직렬화용 원시값 payload로 변환한다.
  *
@@ -61,7 +66,7 @@ fun MatchingEvent.toEventType(): MatchingEventType =
  */
 fun MatchingEvent.toPayload(): MatchingEventPayload =
     when (this) {
-        is TradeExecuted ->
+        is TradeExecuted -> {
             MatchingEventPayload(
                 type = MatchingEventType.TRADE_EXECUTED,
                 marketId = marketId.value,
@@ -74,8 +79,9 @@ fun MatchingEvent.toPayload(): MatchingEventPayload =
                 price = price.value,
                 quantity = quantity.value,
             )
+        }
 
-        is OrderEnteredBook ->
+        is OrderEnteredBook -> {
             MatchingEventPayload(
                 type = MatchingEventType.ORDER_ENTERED_BOOK,
                 marketId = marketId.value,
@@ -86,8 +92,9 @@ fun MatchingEvent.toPayload(): MatchingEventPayload =
                 price = price.value,
                 remainingQuantity = remainingQuantity.value,
             )
+        }
 
-        is OrderCancelled ->
+        is OrderCancelled -> {
             MatchingEventPayload(
                 type = MatchingEventType.ORDER_CANCELLED,
                 marketId = marketId.value,
@@ -96,8 +103,9 @@ fun MatchingEvent.toPayload(): MatchingEventPayload =
                 userId = userId.value,
                 remainingQuantity = remainingQuantity.value,
             )
+        }
 
-        is OrderCancelRejected ->
+        is OrderCancelRejected -> {
             MatchingEventPayload(
                 type = MatchingEventType.ORDER_CANCEL_REJECTED,
                 marketId = marketId.value,
@@ -106,4 +114,5 @@ fun MatchingEvent.toPayload(): MatchingEventPayload =
                 userId = userId.value,
                 reason = reason,
             )
+        }
     }

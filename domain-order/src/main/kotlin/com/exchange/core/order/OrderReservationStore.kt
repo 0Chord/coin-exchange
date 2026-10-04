@@ -68,10 +68,10 @@ class OrderReservationAlreadyExistsException(
     val marketId: MarketId,
     val orderId: OrderId,
 ) : IllegalStateException(
-    "order reservation already exists: " +
-        "marketId=${marketId.value}, " +
-        "orderId=${orderId.value}",
-)
+        "order reservation already exists: " +
+            "marketId=${marketId.value}, " +
+            "orderId=${orderId.value}",
+    )
 
 /**
  * 조회하거나 갱신할 주문 예약이 저장소에 없을 때 발생하는 예외.
@@ -83,7 +83,7 @@ class OrderReservationNotFoundException(
     val marketId: MarketId,
     val orderId: OrderId,
 ) : IllegalStateException(
-    "order reservation not found: " +
-        "marketId=${marketId.value}, " +
-        "orderId=${orderId.value}",
-)
+        "order reservation not found: " +
+            "marketId=${marketId.value}, " +
+            "orderId=${orderId.value}",
+    )

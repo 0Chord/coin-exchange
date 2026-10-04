@@ -1,7 +1,7 @@
 package com.exchange.core.api.matching.application
 
-import com.exchange.core.api.matching.infrastructure.persistence.MatchingEventRepository
 import com.exchange.core.api.matching.application.port.MatchingEventStore
+import com.exchange.core.api.matching.infrastructure.persistence.MatchingEventRepository
 import com.exchange.core.common.MarketId
 import com.exchange.core.common.OrderId
 import com.exchange.core.common.Price
@@ -49,7 +49,9 @@ class MatchingCoordinatorPersistenceFailureTest : ExchangeIntegrationTest() {
             }
 
         assertTrue(
-            error.mostSpecificCause.message.orEmpty().contains("uk_matching_events_market_sequence"),
+            error.mostSpecificCause.message
+                .orEmpty()
+                .contains("uk_matching_events_market_sequence"),
         )
         assertEquals("previous-event", repository.findAll().single().orderId)
     }
