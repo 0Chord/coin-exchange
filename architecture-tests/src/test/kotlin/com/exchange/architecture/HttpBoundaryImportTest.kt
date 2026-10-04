@@ -1,8 +1,15 @@
 package com.exchange.architecture
 
-import com.exchange.architecture.fixtures.httpboundary.web.*
+import com.exchange.architecture.fixtures.httpboundary.web.NormalController
+import com.exchange.architecture.fixtures.httpboundary.web.UnclassifiedMapper
 import com.exchange.architecture.rules.HttpEntryBoundary
-import com.exchange.architecture.support.*
+import com.exchange.architecture.support.BytecodeReader
+import com.exchange.architecture.support.ModuleOutput
+import com.exchange.architecture.support.ProductionScopeImporter
+import com.exchange.architecture.support.ScopeExpectations
+import com.exchange.architecture.support.ScopeImportResult
+import com.exchange.architecture.support.ScopeProblemCode
+import com.exchange.architecture.support.fixtureOutput
 import com.tngtech.archunit.base.DescribedPredicate
 import com.tngtech.archunit.core.importer.ClassFileImporter
 import org.junit.jupiter.api.io.TempDir
@@ -26,18 +33,28 @@ class HttpBoundaryImportTest {
         assertTrue(scope.classesByModule.getValue("http-example").any { it.name == UnclassifiedMapper::class.java.name })
         val result = HttpEntryBoundary.inspect(scope, normalRegistration())
         assertFalse(result.evaluated)
-        assertTrue(result.problems.any { it.code == ScopeProblemCode.UNCLASSIFIED_HTTP_TYPE && it.subject == UnclassifiedMapper::class.java.name })
+        assertTrue(
+            result.problems.any {
+                it.code == ScopeProblemCode.UNCLASSIFIED_HTTP_TYPE &&
+                    it.subject == UnclassifiedMapper::class.java.name
+            },
+        )
         assertEquals(emptyList(), result.violations)
     }
 
     @Test
     fun `HTTP-14 출력과 가져온 목록이 다르면 누락 타입을 보고한다`() {
         val root = fixtureOutput(directory.resolve("examples"), *normalTypes)
-        val importer = ProductionScopeImporter(BytecodeReader { paths ->
-            ClassFileImporter().importPaths(paths).that(DescribedPredicate.describe("고의로 컨트롤러 누락") {
-                it.name != NormalController::class.java.name
-            })
-        })
+        val importer =
+            ProductionScopeImporter(
+                BytecodeReader { paths ->
+                    ClassFileImporter().importPaths(paths).that(
+                        DescribedPredicate.describe("고의로 컨트롤러 누락") {
+                            it.name != NormalController::class.java.name
+                        },
+                    )
+                },
+            )
         val result = HttpEntryBoundary.inspect(load(listOf(root), importer), normalRegistration())
         assertFalse(result.evaluated)
         assertTrue(result.problems.any { it.code == ScopeProblemCode.INCOMPLETE_IMPORT && it.subject == NormalController::class.java.name })
@@ -76,7 +93,11 @@ class HttpBoundaryImportTest {
 
     @Test
     fun `HTTP-01 실제 출력 수집부터 정상 예제 판정까지 연결된다`() {
-        val result = HttpEntryBoundary.inspect(load(listOf(fixtureOutput(directory.resolve("examples"), *normalTypes))), normalRegistration())
+        val result =
+            HttpEntryBoundary.inspect(
+                load(listOf(fixtureOutput(directory.resolve("examples"), *normalTypes))),
+                normalRegistration(),
+            )
         assertTrue(result.evaluated, result.problems.toString())
         assertEquals(emptyList(), result.violations)
         assertTrue(result.apiTypes.contains(NormalController::class.java.name))
@@ -84,13 +105,22 @@ class HttpBoundaryImportTest {
         println("ARCH-03: 예제 검증 / 운영 미적용 · API 타입 ${result.apiTypes.size}개 · 직접 참조 ${result.referenceCount}개 · 준비 오류 0 · 위반 0")
     }
 
-    private fun load(roots: List<Path>, importer: ProductionScopeImporter = ProductionScopeImporter()) = importer.load(
+    private fun load(
+        roots: List<Path>,
+        importer: ProductionScopeImporter = ProductionScopeImporter(),
+    ) = importer.load(
         listOf(ModuleOutput("http-example", roots)),
-        ScopeExpectations(requiredTypesByModule = mapOf("http-example" to normalTypes.map { it.name }.toSet()),
-            projectPackagePrefixes = setOf("$HTTP_FIXTURE_PACKAGE.")),
+        ScopeExpectations(
+            requiredTypesByModule = mapOf("http-example" to normalTypes.map { it.name }.toSet()),
+            projectPackagePrefixes = setOf("$HTTP_FIXTURE_PACKAGE."),
+        ),
     )
 
-    private fun assertPreparationFailure(scope: ScopeImportResult, code: ScopeProblemCode, subject: String) {
+    private fun assertPreparationFailure(
+        scope: ScopeImportResult,
+        code: ScopeProblemCode,
+        subject: String,
+    ) {
         val result = HttpEntryBoundary.inspect(scope, normalRegistration())
         assertFalse(result.evaluated)
         assertTrue(result.problems.any { it.code == code && it.subject == subject }, result.problems.toString())

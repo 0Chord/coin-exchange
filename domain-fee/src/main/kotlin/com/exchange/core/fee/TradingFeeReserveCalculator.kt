@@ -49,8 +49,7 @@ class TradingFeeReserveCalculator {
                 .valueOf(feeReserveBaseAmount.value)
                 .multiply(
                     BigInteger.valueOf(maximumFeeRate.partsPerMillion),
-                )
-                .add(
+                ).add(
                     BigInteger.valueOf(feeRemainder.numerator),
                 )
 

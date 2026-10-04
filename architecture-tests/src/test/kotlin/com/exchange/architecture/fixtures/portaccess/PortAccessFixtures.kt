@@ -9,7 +9,10 @@ class BalancePortImplementation : DomainBalancePort {
 }
 
 class ImplementationCallingDomain {
-    fun persist(port: BalancePortImplementation, balance: DomainBalance) = port.save(balance)
+    fun persist(
+        port: BalancePortImplementation,
+        balance: DomainBalance,
+    ) = port.save(balance)
 }
 
 class PortReferencingDomain {

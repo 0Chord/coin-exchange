@@ -21,8 +21,7 @@ data class TradingFeePolicySnapshot(
     }
 
     /** 실제 체결 역할에 적용할 수수료율을 반환한다. */
-    fun rateFor(liquidityRole: LiquidityRole): FeeRate =
-        feeRates.rateFor(liquidityRole)
+    fun rateFor(liquidityRole: LiquidityRole): FeeRate = feeRates.rateFor(liquidityRole)
 
     /** 주문 생성 시 수수료 예약에 사용할 최대 수수료율을 반환한다. */
     fun maximumRate(): FeeRate = feeRates.maximumRate()

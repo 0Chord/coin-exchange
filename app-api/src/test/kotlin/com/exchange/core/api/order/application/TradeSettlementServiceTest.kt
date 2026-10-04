@@ -792,14 +792,15 @@ class TradeSettlementServiceTest {
                 listOf("USER:buyer:KRW:HOLD", "KRW", "DEBIT", 51L),
                 listOf("USER:buyer:BTC:AVAILABLE", "BTC", "CREDIT", 1L),
             ),
-            postingsAfterSuccess.map { posting ->
-                listOf(
-                    posting["account_id"],
-                    posting["asset_id"],
-                    posting["side"],
-                    (posting["amount"] as Number).toLong(),
-                )
-            }.toSet(),
+            postingsAfterSuccess
+                .map { posting ->
+                    listOf(
+                        posting["account_id"],
+                        posting["asset_id"],
+                        posting["side"],
+                        (posting["amount"] as Number).toLong(),
+                    )
+                }.toSet(),
         )
 
         val error =
@@ -1058,7 +1059,10 @@ class TradeSettlementServiceTest {
         )
 
     /** 기존 SELL이 maker이고 BUY가 taker인 51원 체결을 만든다. 매칭 엔진 자체는 실행하지 않는다. */
-    private fun fractionalBuyTrade(sequence: Long, quantity: Long): TradeExecuted =
+    private fun fractionalBuyTrade(
+        sequence: Long,
+        quantity: Long,
+    ): TradeExecuted =
         TradeExecuted(
             marketId = MARKET.marketId,
             engineSequence = sequence,
@@ -1072,23 +1076,24 @@ class TradeSettlementServiceTest {
         )
 
     /** 직전 서비스 트랜잭션이 커밋한 예약을 DB에서 다시 읽는다. */
-    private fun readReservation(orderId: OrderId): OrderReservation =
-        requireNotNull(reservationStore.find(MARKET.marketId, orderId))
+    private fun readReservation(orderId: OrderId): OrderReservation = requireNotNull(reservationStore.find(MARKET.marketId, orderId))
 
     /** 실패 전후의 실제 DB 행 전체를 비교한다. */
     private fun readBalances(): List<Map<String, Any?>> =
         jdbcTemplate.queryForList("select * from balance_projection order by user_id, asset_id")
 
     /** 분개 순서를 고정해 실패·예약 해제 전후에 기존 수수료 기록이 바뀌지 않는지 확인한다. */
-    private fun readPostings(): List<Map<String, Any?>> =
-        jdbcTemplate.queryForList("select * from ledger_postings order by posting_id")
+    private fun readPostings(): List<Map<String, Any?>> = jdbcTemplate.queryForList("select * from ledger_postings order by posting_id")
 
     /** 실패한 정산의 원장 거래가 남지 않고 기존 거래도 유지되는지 확인한다. */
     private fun readLedgerTransactions(): List<Map<String, Any?>> =
         jdbcTemplate.queryForList("select * from ledger_transactions order by source_event_id")
 
     /** 정산별·자산별 차대 일치와 실제 수수료 수익 계정의 순 CREDIT을 DB에서 검증한다. */
-    private fun assertSettlementLedger(expectedTransactionCount: Long, expectedFeeRevenue: Long) {
+    private fun assertSettlementLedger(
+        expectedTransactionCount: Long,
+        expectedFeeRevenue: Long,
+    ) {
         assertEquals(
             expectedTransactionCount,
             jdbcTemplate.queryForObject(

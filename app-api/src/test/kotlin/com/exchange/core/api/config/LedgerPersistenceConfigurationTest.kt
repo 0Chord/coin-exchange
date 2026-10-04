@@ -1,15 +1,14 @@
 package com.exchange.core.api.config
 
+import com.exchange.core.api.ledger.application.PrepareDevelopmentBalanceUseCase
 import com.exchange.core.api.ledger.infrastructure.persistence.PostgresBalanceStore
 import com.exchange.core.api.ledger.infrastructure.persistence.PostgresLedgerTransactionStore
 import com.exchange.core.api.order.application.OrderFundingService
 import com.exchange.core.api.order.application.OrderReservationReleaseService
 import com.exchange.core.api.order.application.TradeSettlementService
 import com.exchange.core.api.order.infrastructure.persistence.PostgresOrderReservationStore
-import com.exchange.core.ledger.DevelopmentBalanceStore
-import com.exchange.core.api.ledger.application.PrepareDevelopmentBalanceUseCase
-import org.springframework.transaction.PlatformTransactionManager
 import com.exchange.core.ledger.BalanceStore
+import com.exchange.core.ledger.DevelopmentBalanceStore
 import com.exchange.core.ledger.LedgerTransactionStore
 import com.exchange.core.order.OrderReservationStore
 import org.junit.jupiter.api.Test
@@ -18,6 +17,7 @@ import org.mockito.Mockito.verifyNoInteractions
 import org.springframework.context.annotation.AnnotationConfigApplicationContext
 import org.springframework.core.env.MapPropertySource
 import org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate
+import org.springframework.transaction.PlatformTransactionManager
 import kotlin.test.assertEquals
 import kotlin.test.assertIs
 import kotlin.test.assertTrue

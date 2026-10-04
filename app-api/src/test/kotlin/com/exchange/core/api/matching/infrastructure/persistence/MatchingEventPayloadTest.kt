@@ -16,17 +16,18 @@ import kotlin.test.assertEquals
 class MatchingEventPayloadTest {
     @Test
     fun `trade executed event를 payload로 변환한다`() {
-        val event = TradeExecuted(
-            marketId = MarketId("BTC-KRW"),
-            engineSequence = 10,
-            makerOrderId = OrderId("ask-1"),
-            takerOrderId = OrderId("bid-1"),
-            makerUserId = UserId("seller-1"),
-            takerUserId = UserId("buyer-1"),
-            side = Side.BUY,
-            price = Price(100),
-            quantity = Quantity(3),
-        )
+        val event =
+            TradeExecuted(
+                marketId = MarketId("BTC-KRW"),
+                engineSequence = 10,
+                makerOrderId = OrderId("ask-1"),
+                takerOrderId = OrderId("bid-1"),
+                makerUserId = UserId("seller-1"),
+                takerUserId = UserId("buyer-1"),
+                side = Side.BUY,
+                price = Price(100),
+                quantity = Quantity(3),
+            )
 
         val payload = event.toPayload()
 
@@ -45,15 +46,16 @@ class MatchingEventPayloadTest {
 
     @Test
     fun `order entered event를 payload로 변환한다`() {
-        val event = OrderEnteredBook(
-            marketId = MarketId("BTC-KRW"),
-            engineSequence = 1,
-            orderId = OrderId("bid-1"),
-            userId = UserId("user-1"),
-            side = Side.BUY,
-            price = Price(100),
-            remainingQuantity = Quantity(5),
-        )
+        val event =
+            OrderEnteredBook(
+                marketId = MarketId("BTC-KRW"),
+                engineSequence = 1,
+                orderId = OrderId("bid-1"),
+                userId = UserId("user-1"),
+                side = Side.BUY,
+                price = Price(100),
+                remainingQuantity = Quantity(5),
+            )
 
         val payload = event.toPayload()
 
@@ -70,13 +72,14 @@ class MatchingEventPayloadTest {
 
     @Test
     fun `order cancelled event를 payload로 변환한다`() {
-        val event = OrderCancelled(
-            marketId = MarketId("BTC-KRW"),
-            engineSequence = 2,
-            orderId = OrderId("bid-1"),
-            userId = UserId("user-1"),
-            remainingQuantity = Quantity(5),
-        )
+        val event =
+            OrderCancelled(
+                marketId = MarketId("BTC-KRW"),
+                engineSequence = 2,
+                orderId = OrderId("bid-1"),
+                userId = UserId("user-1"),
+                remainingQuantity = Quantity(5),
+            )
 
         val payload = event.toPayload()
 
@@ -91,13 +94,14 @@ class MatchingEventPayloadTest {
 
     @Test
     fun `cancel rejected event를 payload로 변환한다`() {
-        val event = OrderCancelRejected(
-            marketId = MarketId("BTC-KRW"),
-            engineSequence = 3,
-            orderId = OrderId("missing"),
-            userId = UserId("user-1"),
-            reason = "order not found",
-        )
+        val event =
+            OrderCancelRejected(
+                marketId = MarketId("BTC-KRW"),
+                engineSequence = 3,
+                orderId = OrderId("missing"),
+                userId = UserId("user-1"),
+                reason = "order not found",
+            )
 
         val payload = event.toPayload()
 

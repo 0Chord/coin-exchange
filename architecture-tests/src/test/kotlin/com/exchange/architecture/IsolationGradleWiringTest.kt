@@ -1,7 +1,10 @@
 package com.exchange.architecture
 
 import com.exchange.architecture.rules.ProductionDependencyIsolation
-import com.exchange.architecture.support.*
+import com.exchange.architecture.support.GradleModuleInventory
+import com.exchange.architecture.support.IsolationInputs
+import com.exchange.architecture.support.SourceSetKey
+import com.exchange.architecture.support.fixtureOutput
 import org.gradle.testkit.runner.GradleRunner
 import org.gradle.testkit.runner.TaskOutcome
 import org.junit.jupiter.api.io.TempDir
@@ -10,7 +13,11 @@ import java.nio.file.Files
 import java.nio.file.Path
 import java.nio.file.StandardOpenOption.APPEND
 import java.util.jar.JarFile
-import kotlin.test.*
+import kotlin.test.Test
+import kotlin.test.assertEquals
+import kotlin.test.assertFalse
+import kotlin.test.assertNotNull
+import kotlin.test.assertTrue
 
 /** 실제 운영 Test에 적용하는 수집 스크립트와 입력 파일 집합을 최소 Gradle 프로젝트에서 확인한다. */
 class IsolationGradleWiringTest {
@@ -22,7 +29,9 @@ class IsolationGradleWiringTest {
         assertEquals(TaskOutcome.SUCCESS, run().task(":snapshot")?.outcome)
         assertEquals(emptyList(), evaluate().violations)
         assertEquals(TaskOutcome.UP_TO_DATE, run().task(":snapshot")?.outcome)
-        append("app/build.gradle", """
+        append(
+            "app/build.gradle",
+            """
             configurations { inheritedTests }
             configurations.compileClasspath.extendsFrom(configurations.inheritedTests)
             dependencies {
@@ -32,13 +41,35 @@ class IsolationGradleWiringTest {
                 implementation platform('org.junit.jupiter:example-bom:1')
                 constraints { implementation 'org.openjdk.jmh:jmh-core:1' }
             }
-        """)
+        """,
+        )
         assertEquals(TaskOutcome.SUCCESS, run().task(":snapshot")?.outcome)
         val result = evaluate()
-        assertEquals(setOf("org.junit.jupiter:junit-jupiter-api", "org.testcontainers:postgresql", ":bench"), result.violations.map { it.target }.toSet())
-        assertTrue(result.violations.single { it.target == "org.junit.jupiter:junit-jupiter-api" }.description.contains("compileOnly"))
-        assertTrue(result.violations.single { it.target == "org.testcontainers:postgresql" }.description.contains("runtimeOnly"))
-        assertTrue(result.violations.single { it.target == ":bench" }.description.contains("inheritedTests"))
+        assertEquals(
+            setOf("org.junit.jupiter:junit-jupiter-api", "org.testcontainers:postgresql", ":bench"),
+            result.violations
+                .map {
+                    it.target
+                }.toSet(),
+        )
+        assertTrue(
+            result.violations
+                .single { it.target == "org.junit.jupiter:junit-jupiter-api" }
+                .description
+                .contains("compileOnly"),
+        )
+        assertTrue(
+            result.violations
+                .single { it.target == "org.testcontainers:postgresql" }
+                .description
+                .contains("runtimeOnly"),
+        )
+        assertTrue(
+            result.violations
+                .single { it.target == ":bench" }
+                .description
+                .contains("inheritedTests"),
+        )
         // 테스트 전용 구성도 main이 상속하는 순간 운영 의존이 된다.
         append("app/build.gradle", "configurations.runtimeClasspath.extendsFrom(configurations.testImplementation)")
         run()
@@ -49,7 +80,9 @@ class IsolationGradleWiringTest {
 
     @Test fun `실제 project 외부 fixture 선택과 미지원 variant를 구분한다`() {
         prepare()
-        append("app/build.gradle", """
+        append(
+            "app/build.gradle",
+            """
             dependencies {
                 implementation testFixtures(project(':lib'))
                 runtimeOnly testFixtures('example:helper:1')
@@ -57,12 +90,18 @@ class IsolationGradleWiringTest {
                     attributes { attribute(org.gradle.api.attributes.Usage.USAGE_ATTRIBUTE, project.objects.named(org.gradle.api.attributes.Usage, 'java-api')) }
                 }
             }
-        """)
+        """,
+        )
         run()
         val result = evaluate()
         assertEquals(setOf(":lib", "example:helper"), result.violations.map { it.target }.toSet())
         assertTrue(result.violations.all { it.reason == "테스트 fixture 선택" })
-        assertTrue(result.violations.single { it.target == ":lib" }.description.contains("lib-test-fixtures"))
+        assertTrue(
+            result.violations
+                .single { it.target == ":lib" }
+                .description
+                .contains("lib-test-fixtures"),
+        )
         append("app/build.gradle", "dependencies { compileOnly project(path: ':lib', configuration: 'special') }")
         run()
         val unsupported = ProductionDependencyIsolation.inspectGradle(read(), inventory)
@@ -70,14 +109,20 @@ class IsolationGradleWiringTest {
         assertEquals(emptyList(), unsupported.violations)
         assertTrue(unsupported.problems.any { it.contains("UNSUPPORTED_SELECTION") && it.contains("special") })
         val build = root.resolve("app/build.gradle")
-        Files.writeString(build, Files.readString(build).replace("dependencies { compileOnly project(path: ':lib', configuration: 'special') }", ""))
-        append("app/build.gradle", """
+        Files.writeString(
+            build,
+            Files.readString(build).replace("dependencies { compileOnly project(path: ':lib', configuration: 'special') }", ""),
+        )
+        append(
+            "app/build.gradle",
+            """
             dependencies {
                 compileOnly(project(':lib')) {
                     attributes { attribute(org.gradle.api.attributes.Attribute.of('example.flavor', String), 'testing') }
                 }
             }
-        """)
+        """,
+        )
         run()
         val customAttribute = ProductionDependencyIsolation.inspectGradle(read(), inventory)
         assertFalse(customAttribute.evaluated)
@@ -87,14 +132,19 @@ class IsolationGradleWiringTest {
 
     @Test fun `소비자 runtime 속성으로 실제 테스트 jar를 선택하면 준비 실패다`() {
         prepare()
-        Files.writeString(root.resolve("app/build.gradle"), """
+        Files.writeString(
+            root.resolve("app/build.gradle"),
+            """
             plugins { id 'java-library' }
             configurations.runtimeClasspath.attributes {
                 attribute(Attribute.of('example.kind', String), 'testing')
             }
             dependencies { runtimeOnly project(':lib') }
-        """.trimIndent())
-        append("lib/build.gradle", """
+            """.trimIndent(),
+        )
+        append(
+            "lib/build.gradle",
+            """
             def kind = Attribute.of('example.kind', String)
             configurations.runtimeElements.attributes.attribute(kind, 'production')
             configurations { testElements { canBeConsumed = true; canBeResolved = false } }
@@ -104,11 +154,14 @@ class IsolationGradleWiringTest {
             configurations.testElements.attributes.attribute(kind, 'testing')
             def testJar = tasks.register('testJar', Jar) { archiveClassifier = 'tests'; from sourceSets.test.output }
             artifacts { testElements(testJar) }
-        """)
+        """,
+        )
         val source = root.resolve("lib/src/test/java/example/Helper.java")
         Files.createDirectories(source.parent)
         Files.writeString(source, "package example; public class Helper {}")
-        append("build.gradle", """
+        append(
+            "build.gradle",
+            """
             tasks.register('selectedRuntime') {
                 dependsOn(':lib:testJar')
                 doLast {
@@ -119,7 +172,8 @@ class IsolationGradleWiringTest {
                     println('SELECTED_JAR=' + artifact.file.name)
                 }
             }
-        """)
+        """,
+        )
         val execution = run("selectedRuntime")
         assertTrue(execution.output.contains("SELECTED_VARIANT=configuration ':lib:testElements'"))
         assertTrue(execution.output.contains("SELECTED_JAR=lib-1-tests.jar"))
@@ -137,11 +191,14 @@ class IsolationGradleWiringTest {
 
     @Test fun `소비자 compile 속성만 바뀌어도 재수집하고 runtime 정상 선택은 유지한다`() {
         prepare()
-        append("app/build.gradle", """
+        append(
+            "app/build.gradle",
+            """
             if (providers.gradleProperty('customCompile').isPresent()) {
                 configurations.compileClasspath.attributes { attribute(Attribute.of('example.kind', String), 'testing') }
             }
-        """)
+        """,
+        )
         run()
         assertEquals(emptyList(), evaluate().violations)
         assertEquals(TaskOutcome.UP_TO_DATE, run().task(":snapshot")?.outcome)
@@ -162,7 +219,9 @@ class IsolationGradleWiringTest {
 
     @Test fun `의존 속성이 소비자 속성을 덮어쓰면 실제 정상 variant 선택을 허용한다`() {
         prepare()
-        Files.writeString(root.resolve("app/build.gradle"), """
+        Files.writeString(
+            root.resolve("app/build.gradle"),
+            """
             plugins { id 'java-library' }
             configurations.runtimeClasspath.attributes {
                 attribute(Usage.USAGE_ATTRIBUTE, objects.named(Usage, 'test-runtime'))
@@ -172,8 +231,11 @@ class IsolationGradleWiringTest {
                     attributes { attribute(Usage.USAGE_ATTRIBUTE, project.objects.named(Usage, 'java-api')) }
                 }
             }
-        """.trimIndent())
-        append("build.gradle", """
+            """.trimIndent(),
+        )
+        append(
+            "build.gradle",
+            """
             tasks.register('selectedRuntime') {
                 dependsOn(':lib:jar')
                 doLast {
@@ -183,11 +245,20 @@ class IsolationGradleWiringTest {
                     println('SELECTED_VARIANT=' + artifact.variant.displayName)
                 }
             }
-        """)
+        """,
+        )
         assertTrue(run("selectedRuntime").output.contains("SELECTED_VARIANT=configuration ':lib:apiElements'"))
         val result = evaluate()
         assertEquals(emptyList(), result.violations)
-        assertEquals("main", read().configurations.single { it.projectPath == ":app" && it.usage == "runtime" }.dependencies.single().selection)
+        assertEquals(
+            "main",
+            read()
+                .configurations
+                .single { it.projectPath == ":app" && it.usage == "runtime" }
+                .dependencies
+                .single()
+                .selection,
+        )
     }
 
     @Test fun `소스셋과 출력 내용 생성 삭제를 작업 입력으로 추적하며 비운영 컴파일은 요구하지 않는다`() {
@@ -227,10 +298,13 @@ class IsolationGradleWiringTest {
 
     @Test fun `지연 기본 의존은 해석 후 나타나며 명시 의존이 있으면 추가하지 않는다`() {
         prepare()
-        append("app/build.gradle", """
+        append(
+            "app/build.gradle",
+            """
             configurations.runtimeOnly.defaultDependencies { add(project.dependencies.project(path: ':bench')) }
             if (providers.gradleProperty('explicitRuntime').isPresent()) { dependencies { runtimeOnly project(':lib') } }
-        """)
+        """,
+        )
         run()
         assertEquals(emptyList(), evaluate().violations)
         assertEquals(TaskOutcome.SUCCESS, run("-PresolveRuntime=true").task(":snapshot")?.outcome)
@@ -244,18 +318,26 @@ class IsolationGradleWiringTest {
         Files.writeString(root.resolve("settings.gradle"), "rootProject.name = 'isolation-contract'\ninclude ':app', ':lib', ':bench'")
         listOf("app", "lib", "bench").forEach { name ->
             Files.createDirectories(root.resolve(name))
-            Files.writeString(root.resolve("$name/build.gradle"), "plugins { id 'java-library'; id 'java-test-fixtures' }\ngroup = 'example'\nversion = '1'\n")
+            Files.writeString(
+                root.resolve("$name/build.gradle"),
+                "plugins { id 'java-library'; id 'java-test-fixtures' }\ngroup = 'example'\nversion = '1'\n",
+            )
         }
-        append("app/build.gradle", """
+        append(
+            "app/build.gradle",
+            """
             dependencies {
                 implementation project(':lib')
                 testImplementation 'com.tngtech.archunit:archunit:1'
                 testImplementation project(':bench')
                 testImplementation testFixtures(project(':lib'))
             }
-        """)
+        """,
+        )
         Files.copy(Path.of(System.getProperty("architecture.isolationScript")), root.resolve("isolation-inputs.gradle.kts"))
-        Files.writeString(root.resolve("build.gradle"), """
+        Files.writeString(
+            root.resolve("build.gradle"),
+            """
             plugins { id 'java' }
             ext['architecture.productionProjects'] = [':app', ':lib']
             apply from: 'isolation-inputs.gradle.kts'
@@ -279,15 +361,39 @@ class IsolationGradleWiringTest {
                     observed.get().each { name, value -> new File(out, name + '.txt').text = value }
                 }
             }
-        """.trimIndent())
+            """.trimIndent(),
+        )
     }
-    private fun append(path: String, text: String) { Files.writeString(root.resolve(path), "\n${text.trimIndent()}\n", APPEND) }
-    private fun run(vararg args: String) = GradleRunner.create().withProjectDir(root.toFile())
-        .withGradleInstallation(File(System.getProperty("architecture.gradleHome")))
-        .withArguments(listOf("snapshot", "--offline", "--console=plain", "--max-workers=1", "--stacktrace") + args).build()
-    private fun read() = IsolationInputs.dependencies(Files.readString(root.resolve("build/observed/isolationDependencies.txt"))).also { assertEquals(emptyList(), it.problems) }
-    private fun evaluate() = ProductionDependencyIsolation.inspectGradle(read(), inventory).also { assertTrue(it.evaluated, it.problems.toString()) }
-    private fun targets() = IsolationInputs.targets(
-        Files.readString(root.resolve("build/observed/sourceInventory.txt")), Files.readString(root.resolve("build/observed/sourceOutputs.txt")), inventory,
-    )
+
+    private fun append(
+        path: String,
+        text: String,
+    ) {
+        Files.writeString(root.resolve(path), "\n${text.trimIndent()}\n", APPEND)
+    }
+
+    private fun run(vararg args: String) =
+        GradleRunner
+            .create()
+            .withProjectDir(root.toFile())
+            .withGradleInstallation(File(System.getProperty("architecture.gradleHome")))
+            .withArguments(listOf("snapshot", "--offline", "--console=plain", "--max-workers=1", "--stacktrace") + args)
+            .build()
+
+    private fun read() =
+        IsolationInputs.dependencies(Files.readString(root.resolve("build/observed/isolationDependencies.txt"))).also {
+            assertEquals(emptyList(), it.problems)
+        }
+
+    private fun evaluate() =
+        ProductionDependencyIsolation.inspectGradle(read(), inventory).also {
+            assertTrue(it.evaluated, it.problems.toString())
+        }
+
+    private fun targets() =
+        IsolationInputs.targets(
+            Files.readString(root.resolve("build/observed/sourceInventory.txt")),
+            Files.readString(root.resolve("build/observed/sourceOutputs.txt")),
+            inventory,
+        )
 }

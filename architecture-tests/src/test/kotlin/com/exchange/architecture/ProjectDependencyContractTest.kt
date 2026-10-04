@@ -1,21 +1,43 @@
 package com.exchange.architecture
 
 import com.exchange.architecture.rules.ModuleDependencyDirection
-import com.exchange.architecture.support.*
+import com.exchange.architecture.support.GradleModuleInventory
+import com.exchange.architecture.support.MainProjectDependencies
+import com.exchange.architecture.support.ProjectDeclaration
+import com.exchange.architecture.support.ProjectDependencies
+import com.exchange.architecture.support.ProjectDependencySnapshot
 import java.util.Base64
-import kotlin.test.*
+import kotlin.test.Test
+import kotlin.test.assertContains
+import kotlin.test.assertEquals
+import kotlin.test.assertFalse
+import kotlin.test.assertNull
+import kotlin.test.assertTrue
 
 class ProjectDependencyContractTest {
-    private val inventory = GradleModuleInventory(setOf(":matching", ":order", ":fee", ":tests"), setOf(":matching", ":order", ":fee"), setOf(":tests"))
+    private val inventory =
+        GradleModuleInventory(setOf(":matching", ":order", ":fee", ":tests"), setOf(":matching", ":order", ":fee"), setOf(":tests"))
     private val policy = mapOf("matching" to setOf("order"), "order" to setOf("fee"), "fee" to emptySet<String>())
-    private fun records() = inventory.productionModules.sorted().flatMap { path -> listOf("compile", "runtime").map { usage ->
-        MainProjectDependencies(path, usage, "${usage}Classpath", "$path/build.gradle.kts", when (path) {
-            ":matching" -> listOf(ProjectDeclaration(":order", "api"))
-            ":order" -> listOf(ProjectDeclaration(":fee", "api"))
-            else -> emptyList()
-        })
-    } }
-    private fun inspect(records: List<MainProjectDependencies>) = ModuleDependencyDirection.inspectGradle(ProjectDependencySnapshot(records), inventory, policy)
+
+    private fun records() =
+        inventory.productionModules.sorted().flatMap { path ->
+            listOf("compile", "runtime").map { usage ->
+                MainProjectDependencies(
+                    path,
+                    usage,
+                    "${usage}Classpath",
+                    "$path/build.gradle.kts",
+                    when (path) {
+                        ":matching" -> listOf(ProjectDeclaration(":order", "api"))
+                        ":order" -> listOf(ProjectDeclaration(":fee", "api"))
+                        else -> emptyList()
+                    },
+                )
+            }
+        }
+
+    private fun inspect(records: List<MainProjectDependencies>) =
+        ModuleDependencyDirection.inspectGradle(ProjectDependencySnapshot(records), inventory, policy)
 
     @Test
     fun `선언된 두 허용 방향은 전이 수수료를 직접 의존으로 만들지 않는다`() {
@@ -26,7 +48,16 @@ class ProjectDependencyContractTest {
 
     @Test
     fun `코드 사용 없이 추가한 금지 선언도 근거와 함께 보고한다`() {
-        val records = records().map { if (it.projectPath == ":matching") it.copy(dependencies = it.dependencies + ProjectDeclaration(":fee", "implementation")) else it }
+        val records =
+            records().map {
+                if (it.projectPath ==
+                    ":matching"
+                ) {
+                    it.copy(dependencies = it.dependencies + ProjectDeclaration(":fee", "implementation"))
+                } else {
+                    it
+                }
+            }
         val result = inspect(records)
         assertTrue(result.evaluated, result.problems.toString())
         assertEquals(1, result.violations.size, "금지 선언을 한 위반으로 묶고 두 구성 근거를 보존해야 한다")
@@ -38,7 +69,13 @@ class ProjectDependencyContractTest {
         assertEquals(setOf("order"), violation.allowedTargets)
         assertEquals(":matching/build.gradle.kts", violation.sourceFile)
         assertNull(violation.lineNumber)
-        listOf(":matching", ":fee", "compileClasspath", "runtimeClasspath", "implementation").forEach { assertContains(violation.description, it) }
+        listOf(
+            ":matching",
+            ":fee",
+            "compileClasspath",
+            "runtimeClasspath",
+            "implementation",
+        ).forEach { assertContains(violation.description, it) }
         assertEquals("engineering/architecture-check-spec.md", violation.specification)
         assertEquals(result, inspect(records.reversed()))
     }
@@ -57,14 +94,23 @@ class ProjectDependencyContractTest {
     @Test
     fun `중복 미등록 잘못된 구성 입력은 통과하지 않는다`() {
         val complete = records()
-        val invalid = listOf(
-            complete + complete.first(),
-            complete.map { if (it.usage == "runtime") it.copy(buildFile = "/different/build.gradle.kts") else it },
-            complete.map { if (it.projectPath == ":matching") it.copy(dependencies = listOf(ProjectDeclaration(":unknown", "api"))) else it },
-            complete.map { if (it.projectPath == ":matching") it.copy(usage = "test") else it },
-            complete.map { if (it.projectPath == ":matching") it.copy(configuration = "") else it },
-            complete.map { if (it.projectPath == ":matching") it.copy(dependencies = it.dependencies + it.dependencies) else it },
-        )
+        val invalid =
+            listOf(
+                complete + complete.first(),
+                complete.map { if (it.usage == "runtime") it.copy(buildFile = "/different/build.gradle.kts") else it },
+                complete.map {
+                    if (it.projectPath ==
+                        ":matching"
+                    ) {
+                        it.copy(dependencies = listOf(ProjectDeclaration(":unknown", "api")))
+                    } else {
+                        it
+                    }
+                },
+                complete.map { if (it.projectPath == ":matching") it.copy(usage = "test") else it },
+                complete.map { if (it.projectPath == ":matching") it.copy(configuration = "") else it },
+                complete.map { if (it.projectPath == ":matching") it.copy(dependencies = it.dependencies + it.dependencies) else it },
+            )
         invalid.forEach {
             val result = inspect(it)
             assertFalse(result.evaluated, "손상 입력이 통과함: $it")
@@ -75,7 +121,18 @@ class ProjectDependencyContractTest {
 
     @Test
     fun `등록된 비운영 목적지는 ARCH-08 대상으로 보존하되 방향 위반은 아니다`() {
-        val result = inspect(records().map { if (it.projectPath == ":matching") it.copy(dependencies = it.dependencies + ProjectDeclaration(":tests", "runtimeOnly")) else it })
+        val result =
+            inspect(
+                records().map {
+                    if (it.projectPath ==
+                        ":matching"
+                    ) {
+                        it.copy(dependencies = it.dependencies + ProjectDeclaration(":tests", "runtimeOnly"))
+                    } else {
+                        it
+                    }
+                },
+            )
         assertTrue(result.evaluated)
         assertEquals(emptyList(), result.violations)
     }
@@ -110,12 +167,16 @@ class ProjectDependencyContractTest {
         }
     }
 
-    private fun encode(records: List<MainProjectDependencies>): String = buildList {
-        fun row(kind: String, vararg values: String) = kind + "\t" + values.joinToString("\t") { Base64.getUrlEncoder().encodeToString(it.toByteArray(Charsets.UTF_8)) }
-        add("ARCH02/1")
-        records.forEach { c ->
-            add(row("C", c.projectPath, c.usage, c.configuration, c.buildFile))
-            c.dependencies.forEach { add(row("D", it.targetPath, it.declaredIn)) }
-        }
-    }.joinToString("\n")
+    private fun encode(records: List<MainProjectDependencies>): String =
+        buildList {
+            fun row(
+                kind: String,
+                vararg values: String,
+            ) = kind + "\t" + values.joinToString("\t") { Base64.getUrlEncoder().encodeToString(it.toByteArray(Charsets.UTF_8)) }
+            add("ARCH02/1")
+            records.forEach { c ->
+                add(row("C", c.projectPath, c.usage, c.configuration, c.buildFile))
+                c.dependencies.forEach { add(row("D", it.targetPath, it.declaredIn)) }
+            }
+        }.joinToString("\n")
 }

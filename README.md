@@ -120,6 +120,20 @@ BUY는 부분 체결 후에도 `올림(남은 지정가 대금 × 최대 요율 
 매칭 이벤트는 JPA로, 잔고·예약·원장은 JDBC로 저장합니다. 잔고의 조건부 UPDATE와 예약 행 잠금은 [PostgresBalanceStore](app-api/src/main/kotlin/com/exchange/core/api/ledger/infrastructure/persistence/PostgresBalanceStore.kt), [PostgresOrderReservationStore](app-api/src/main/kotlin/com/exchange/core/api/order/infrastructure/persistence/PostgresOrderReservationStore.kt)에서 직접 확인할 수 있습니다.
 스키마 변경은 [Flyway migration](app-api/src/main/resources/db/migration)으로 관리합니다.
 
+## 공통 Kotlin 린트
+
+ktlint Gradle 플러그인 14.2.0과 ktlint 1.8.0을 고정해 사용합니다. [공식 플러그인](https://github.com/JLLeitschuh/ktlint-gradle)의 `ktlintCheck`·`ktlintFormat`을 그대로 사용하며, 별도 검사기를 만들지 않습니다.
+
+[.editorconfig](.editorconfig)에 공통 기준을 둡니다. 공백 4칸, 줄바꿈·마지막 개행, import 순서와 명시 import, trailing comma 등 `ktlint_official` 규칙을 사용합니다. 운영 코드·테스트·JMH 코드와 루트·모듈·보조 Gradle Kotlin 스크립트가 대상이며, 생성된 `build` 폴더는 제외합니다. 일부러 부적절한 이름을 만든 ArchUnit 예제 한 선언은 클래스 이름 규칙만 억제하고 나머지 형식 검사는 유지합니다.
+
+저장소 루트에서 `./gradlew ktlintCheck --continue`로 검사하고 `./gradlew ktlintFormat`으로 자동 정리합니다. 자동으로 고치지 못하는 위반은 파일·줄·규칙을 보고 직접 수정한 뒤 다시 검사합니다. 형식 통과가 업무 규칙이나 설계의 정확성을 뜻하지는 않습니다.
+
+현재 플러그인은 위반 파일을 삭제했을 때 이전 오류가 남는 증분 검사 문제가 있습니다. 검사·포맷 작업의 입력에 파일 목록을 추가해 추가·삭제 때 전체를 재검사합니다. 내용 수정은 증분 검사하고, 동일 입력은 재사용합니다. 오류를 무시하거나 검사 대상을 줄이지 않습니다.
+
+일반 `build`·`check`에도 린트가 포함됩니다. PR CI는 **Kotlin formatting → Docker 준비 → 전체 빌드·테스트** 순서로 실행합니다. 린트가 실패하면 뒤 단계는 실행하지 않습니다. CI의 전체 빌드는 `build test --rerun`으로 테스트만 강제 실행하고, 앞 단계의 린트 결과는 `UP-TO-DATE`로 재사용합니다. 테스트를 과거 실행으로 대체하지 않으며 별도의 CI 작업은 추가하지 않습니다. 로컬에서도 `build`는 린트를 포함하고, 테스트 재실행은 `test --rerun`으로 선택할 수 있습니다.
+
+보고서는 모듈별 `build/reports/ktlint/`의 텍스트와 Checkstyle XML입니다. CI에서는 **Check Kotlin formatting** 로그와 `test-reports` artifact에서 확인합니다. CI는 자동 수정이나 commit을 하지 않습니다. 소스가 없는 작업은 `NO-SOURCE`·`SKIPPED`가 될 수 있고 이전 로컬 보고서가 남을 수 있으므로, 보고서만 보지 말고 이번 실행 로그와 생성 시각을 함께 확인합니다.
+
 ## 빠르게 검증하기
 
 아래 명령은 해당 변경을 포함한 저장소 루트에서 실행합니다. 별도 작업 폴더에서 개발 중이라면 먼저 그 폴더로 이동합니다. `verifyArchitectureReport`를 찾을 수 없다는 오류는 현재 폴더·브랜치에 작업 정의가 없다는 뜻이며, 테스트 실행 결과가 아닙니다. 브랜치 이름 변경만으로 다른 작업 폴더의 코드가 복사되지는 않습니다.
@@ -154,7 +168,7 @@ PostgreSQL은 Testcontainers가 생성·종료하므로 테스트용 DB를 따�
 git clone --branch feature/phase-2/integration https://github.com/0Chord/coin-exchange.git
 cd coin-exchange
 
-# 전체 모듈 빌드와 테스트 — GitHub Actions와 동일한 검증 명령
+# 전체 모듈 린트·빌드·테스트 — CI와 같은 검증 범위
 ./gradlew build --no-daemon --continue --stacktrace --rerun-tasks
 ```
 

@@ -92,11 +92,12 @@ class MatchingEngine {
             maker.fill(tradeQuantity)
             takerRemaining -= tradeQuantity
 
-            events += tradeExecutedEvent(
-                command = command,
-                maker = maker,
-                quantity = tradeQuantity,
-            )
+            events +=
+                tradeExecutedEvent(
+                    command = command,
+                    maker = maker,
+                    quantity = tradeQuantity,
+                )
 
             if (maker.isFilled()) {
                 orderBook(command.marketId).removeFilledOrder(maker)
@@ -105,17 +106,19 @@ class MatchingEngine {
 
         if (!takerRemaining.isZero()) {
             // 현재 Phase의 GTC 주문은 즉시 체결되지 않은 잔량을 자기 side book에 남긴다.
-            val restingOrder = createRestingOrder(
-                command = command,
-                remainingQuantity = takerRemaining,
-            )
+            val restingOrder =
+                createRestingOrder(
+                    command = command,
+                    remainingQuantity = takerRemaining,
+                )
 
             orderBook(command.marketId).addRestingOrder(restingOrder)
 
-            events += orderEnteredBookEvent(
-                order = restingOrder,
-                marketId = command.marketId,
-            )
+            events +=
+                orderEnteredBookEvent(
+                    order = restingOrder,
+                    marketId = command.marketId,
+                )
         }
 
         return events
@@ -134,35 +137,42 @@ class MatchingEngine {
         val orderBook = orderBook(command.marketId)
         val existingOrder = orderBook.find(command.orderId)
 
-        val event = when {
-            existingOrder == null -> OrderCancelRejected(
-                marketId = command.marketId,
-                engineSequence = nextSequence(command.marketId),
-                orderId = command.orderId,
-                userId = command.userId,
-                reason = "order not found",
-            )
-            existingOrder.userId != command.userId -> OrderCancelRejected(
-                marketId = command.marketId,
-                engineSequence = nextSequence(command.marketId),
-                orderId = command.orderId,
-                userId = command.userId,
-                reason = "order owner mismatch",
-            )
-            else -> {
-                val cancelledOrder =
-                    orderBook.cancel(command.orderId)
-                        ?: error("order disappeared while cancelling")
+        val event =
+            when {
+                existingOrder == null -> {
+                    OrderCancelRejected(
+                        marketId = command.marketId,
+                        engineSequence = nextSequence(command.marketId),
+                        orderId = command.orderId,
+                        userId = command.userId,
+                        reason = "order not found",
+                    )
+                }
 
-                OrderCancelled(
-                    marketId = command.marketId,
-                    engineSequence = nextSequence(command.marketId),
-                    orderId = cancelledOrder.orderId,
-                    userId = cancelledOrder.userId,
-                    remainingQuantity = cancelledOrder.remainingQuantity,
-                )
+                existingOrder.userId != command.userId -> {
+                    OrderCancelRejected(
+                        marketId = command.marketId,
+                        engineSequence = nextSequence(command.marketId),
+                        orderId = command.orderId,
+                        userId = command.userId,
+                        reason = "order owner mismatch",
+                    )
+                }
+
+                else -> {
+                    val cancelledOrder =
+                        orderBook.cancel(command.orderId)
+                            ?: error("order disappeared while cancelling")
+
+                    OrderCancelled(
+                        marketId = command.marketId,
+                        engineSequence = nextSequence(command.marketId),
+                        orderId = cancelledOrder.orderId,
+                        userId = cancelledOrder.userId,
+                        remainingQuantity = cancelledOrder.remainingQuantity,
+                    )
+                }
             }
-        }
 
         return listOf(event)
     }
@@ -206,9 +216,10 @@ class MatchingEngine {
      * @param command 다시 사용할 수 없도록 기억할 새 주문
      */
     private fun rememberOrderId(command: SubmitOrderCommand) {
-        seenOrderIds.getOrPut(command.marketId) {
-            HashSet()
-        }.add(command.orderId)
+        seenOrderIds
+            .getOrPut(command.marketId) {
+                HashSet()
+            }.add(command.orderId)
     }
 
     /**
@@ -224,10 +235,11 @@ class MatchingEngine {
      */
     private fun nextMatchableMaker(command: SubmitOrderCommand): BookOrder? {
         val orderBook = orderBook(command.marketId)
-        val bestLevel = when (command.side) {
-            Side.BUY -> orderBook.bestAskLevel()
-            Side.SELL -> orderBook.bestBidLevel()
-        } ?: return null
+        val bestLevel =
+            when (command.side) {
+                Side.BUY -> orderBook.bestAskLevel()
+                Side.SELL -> orderBook.bestBidLevel()
+            } ?: return null
 
         val maker = bestLevel.firstOrder() ?: return null
 

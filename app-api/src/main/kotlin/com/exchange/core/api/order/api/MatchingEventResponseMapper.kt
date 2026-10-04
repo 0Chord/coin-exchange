@@ -17,7 +17,7 @@ import com.exchange.core.matching.TradeExecuted
  */
 fun MatchingEvent.toResponse(): MatchingEventResponse =
     when (this) {
-        is TradeExecuted ->
+        is TradeExecuted -> {
             MatchingEventResponse(
                 type = "TRADE_EXECUTED",
                 marketId = marketId.value,
@@ -28,8 +28,9 @@ fun MatchingEvent.toResponse(): MatchingEventResponse =
                 price = price.value,
                 quantity = quantity.value,
             )
+        }
 
-        is OrderEnteredBook ->
+        is OrderEnteredBook -> {
             MatchingEventResponse(
                 type = "ORDER_ENTERED_BOOK",
                 marketId = marketId.value,
@@ -40,8 +41,9 @@ fun MatchingEvent.toResponse(): MatchingEventResponse =
                 price = price.value,
                 remainingQuantity = remainingQuantity.value,
             )
+        }
 
-        is OrderCancelled ->
+        is OrderCancelled -> {
             MatchingEventResponse(
                 type = "ORDER_CANCELLED",
                 marketId = marketId.value,
@@ -50,8 +52,9 @@ fun MatchingEvent.toResponse(): MatchingEventResponse =
                 userId = userId.value,
                 remainingQuantity = remainingQuantity.value,
             )
+        }
 
-        is OrderCancelRejected ->
+        is OrderCancelRejected -> {
             MatchingEventResponse(
                 type = "ORDER_CANCEL_REJECTED",
                 marketId = marketId.value,
@@ -60,4 +63,5 @@ fun MatchingEvent.toResponse(): MatchingEventResponse =
                 userId = userId.value,
                 reason = reason,
             )
+        }
     }

@@ -32,7 +32,10 @@ internal class PortContractReader(
     private val resolvingEnclosingTypes = mutableSetOf<String>()
     val contractCount: Int get() = contracts.size
 
-    fun read(type: JavaClass, inherited: Boolean = false) {
+    fun read(
+        type: JavaClass,
+        inherited: Boolean = false,
+    ) {
         // 상위로 읽었던 타입도 공개 중첩 계약으로 다시 노출되면 자신의 static을 검사한다.
         if (!visited.add(type.name to inherited)) return
         // ArchUnit이 클래스패스에서 해석했어도 프로젝트 내부 정의는 운영 출력에 실제 있어야 한다.
@@ -75,47 +78,75 @@ internal class PortContractReader(
         }
         // 운영 출력에 없어도 원본의 public 포함 관계를 읽는다. 내부 누락은 자동 수집으로 대체하지 않는다.
         bytecode.publicNestedNames().forEach { name ->
-            val nested = types[name] ?: if (projectPrefixes.any { name.startsWith(it) }) null else loadClass(name, bytecode.relatedClassUrl(name))
+            val nested =
+                types[name] ?: if (projectPrefixes.any { name.startsWith(it) }) null else loadClass(name, bytecode.relatedClassUrl(name))
             if (nested == null) problems += PortContractProblem("UNRESOLVED_PORT_CONTRACT", name) else read(nested)
         }
     }
 
-    private fun bytecode(type: JavaClass): PortContractBytecode = bytecodes.getOrPut(type.name) {
-        require(resolvingEnclosingTypes.add(type.name)) { "바깥 선언의 포함 관계가 순환함: ${type.name}" }
-        try {
-            PortContractBytecode(type) { name, url ->
-                val enclosing = types[name] ?: if (projectPrefixes.any { name.startsWith(it) }) null else loadClass(name, url)
-                if (enclosing == null || !enclosing.isFullyImported) {
-                    problems += PortContractProblem("UNRESOLVED_PORT_CONTRACT", name)
-                    emptyMap()
-                } else bytecode(enclosing).visibleTypeReferences
+    private fun bytecode(type: JavaClass): PortContractBytecode =
+        bytecodes.getOrPut(type.name) {
+            require(resolvingEnclosingTypes.add(type.name)) { "바깥 선언의 포함 관계가 순환함: ${type.name}" }
+            try {
+                PortContractBytecode(type) { name, url ->
+                    val enclosing = types[name] ?: if (projectPrefixes.any { name.startsWith(it) }) null else loadClass(name, url)
+                    if (enclosing == null || !enclosing.isFullyImported) {
+                        problems += PortContractProblem("UNRESOLVED_PORT_CONTRACT", name)
+                        emptyMap()
+                    } else {
+                        bytecode(enclosing).visibleTypeReferences
+                    }
+                }
+            } finally {
+                resolvingEnclosingTypes.remove(type.name)
             }
-        } finally {
-            resolvingEnclosingTypes.remove(type.name)
+        }
+
+    private fun loadClass(
+        name: String,
+        url: URL,
+    ): JavaClass? =
+        try {
+            // importer가 파일 누락을 빈 목록으로 처리하기 전에 실제 원본의 존재를 확인한다.
+            url.openStream().use { }
+            ClassFileImporter().importUrl(url).firstOrNull { it.name == name }
+        } catch (_: IOException) {
+            null
+        }
+
+    private fun supplement(
+        owner: JavaClass,
+        declaration: String,
+        exposedTypes: Map<String, Set<String>>,
+        line: Int? = null,
+    ) {
+        exposedTypes.forEach { (exposure, targets) ->
+            targets.forEach { target ->
+                references += ContractReference(owner, declaration, exposure, target, line)
+            }
         }
     }
 
-    private fun loadClass(name: String, url: URL): JavaClass? = try {
-        // importer가 파일 누락을 빈 목록으로 처리하기 전에 실제 원본의 존재를 확인한다.
-        url.openStream().use { }
-        ClassFileImporter().importUrl(url).firstOrNull { it.name == name }
-    } catch (_: IOException) { null }
-
-    private fun supplement(owner: JavaClass, declaration: String, exposedTypes: Map<String, Set<String>>, line: Int? = null) {
-        exposedTypes.forEach { (exposure, targets) -> targets.forEach { target ->
-            references += ContractReference(owner, declaration, exposure, target, line)
-        } }
-    }
-
-    private fun reference(owner: JavaClass, declaration: String, exposure: String, type: JavaType, line: Int? = null) {
+    private fun reference(
+        owner: JavaClass,
+        declaration: String,
+        exposure: String,
+        type: JavaType,
+        line: Int? = null,
+    ) {
         // 타입 인자·배열 원소·상하한은 읽지만, 임의 DTO의 필드는 펼치지 않는다.
         type.allInvolvedRawTypes.forEach { raw ->
             references += ContractReference(owner, declaration, exposure, raw.baseComponentType.name, line)
         }
     }
 
-    private fun annotations(owner: JavaClass, declaration: String, exposure: String,
-        annotations: Collection<JavaAnnotation<*>>, line: Int? = null) {
+    private fun annotations(
+        owner: JavaClass,
+        declaration: String,
+        exposure: String,
+        annotations: Collection<JavaAnnotation<*>>,
+        line: Int? = null,
+    ) {
         annotations.forEach { reference(owner, declaration, exposure, it.rawType, line) }
     }
 }

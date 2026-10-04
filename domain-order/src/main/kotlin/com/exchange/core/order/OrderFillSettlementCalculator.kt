@@ -87,7 +87,7 @@ class OrderFillSettlementCalculator(
         }
 
         return when (reservation.side) {
-            Side.BUY ->
+            Side.BUY -> {
                 calculateBuy(
                     market = market,
                     reservation = reservation,
@@ -95,8 +95,9 @@ class OrderFillSettlementCalculator(
                     filledQuantity = filledQuantity,
                     liquidityRole = liquidityRole,
                 )
+            }
 
-            Side.SELL ->
+            Side.SELL -> {
                 calculateSell(
                     market = market,
                     reservation = reservation,
@@ -104,6 +105,7 @@ class OrderFillSettlementCalculator(
                     filledQuantity = filledQuantity,
                     liquidityRole = liquidityRole,
                 )
+            }
         }
     }
 

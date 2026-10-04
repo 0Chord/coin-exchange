@@ -2,7 +2,10 @@ package com.exchange.architecture.rules
 
 import com.exchange.architecture.support.ScopeImportResult
 
-data class PortContractProblem(val code: String, val subject: String)
+data class PortContractProblem(
+    val code: String,
+    val subject: String,
+)
 
 data class PortContractViolation(
     val originModule: String,
@@ -16,8 +19,10 @@ data class PortContractViolation(
 ) {
     val ruleId: String = "ARCH-06"
     val specification: String = "engineering/architecture-check-spec.md"
-    fun report() = "$ruleId | $originModule | $originType | $declaration | $exposure | $targetType | $reason | " +
-        "${sourceFile ?: "파일 정보 없음"}:${lineNumber ?: "행 정보 없음"} | $specification"
+
+    fun report() =
+        "$ruleId | $originModule | $originType | $declaration | $exposure | $targetType | $reason | " +
+            "${sourceFile ?: "파일 정보 없음"}:${lineNumber ?: "행 정보 없음"} | $specification"
 }
 
 data class PortInspection(
@@ -30,9 +35,11 @@ data class PortInspection(
 }
 
 object PortContractIndependence {
-    private val persistenceAnnotations = setOf("jakarta.persistence", "javax.persistence").flatMap { namespace ->
-        listOf("Entity", "Embeddable", "MappedSuperclass").map { "$namespace.$it" }
-    }.toSet()
+    private val persistenceAnnotations =
+        setOf("jakarta.persistence", "javax.persistence")
+            .flatMap { namespace ->
+                listOf("Entity", "Embeddable", "MappedSuperclass").map { "$namespace.$it" }
+            }.toSet()
 
     /**
      * 등록한 포트의 공개 계약만 읽는다. 준비 문제가 있으면 부분 결과를 정상으로 판정하지 않는다.
@@ -43,8 +50,12 @@ object PortContractIndependence {
      * @param projectPackagePrefixes 상위 계약을 클래스패스의 대체 정의로 읽으면 안 되는 내부 이름 범위.
      * @return 준비 실패면 미평가이며 위반 목록은 비운다. DB·포트 메서드를 실행하지 않는다.
      */
-    fun inspect(scope: ScopeImportResult, ports: Set<String>, persistenceTypes: Set<String> = emptySet(),
-        projectPackagePrefixes: Set<String> = emptySet()): PortInspection {
+    fun inspect(
+        scope: ScopeImportResult,
+        ports: Set<String>,
+        persistenceTypes: Set<String> = emptySet(),
+        projectPackagePrefixes: Set<String> = emptySet(),
+    ): PortInspection {
         val problems = scope.problems.map { PortContractProblem(it.code.name, "${it.subject}: ${it.detail.orEmpty()}") }.toMutableList()
         val definitions = scope.classesByModule.flatMap { (module, types) -> types.map { it.name to (module to it) } }
         val types = definitions.toMap()
@@ -60,47 +71,82 @@ object PortContractIndependence {
             }
         }
         (persistenceTypes - types.keys).forEach { problems += PortContractProblem("MISSING_PERSISTENCE_TYPE", it) }
-        fun result(count: Int, violations: List<PortContractViolation>) = PortInspection(
-            ports.toSortedSet(), count, problems.distinct().sortedWith(compareBy({ it.code }, { it.subject })),
+
+        fun result(
+            count: Int,
+            violations: List<PortContractViolation>,
+        ) = PortInspection(
+            ports.toSortedSet(),
+            count,
+            problems.distinct().sortedWith(compareBy({ it.code }, { it.subject })),
             // 브리지는 같은 계약에도 다른 소스 행을 가질 수 있다. 행이 아닌 노출 계약으로 합친다.
-            if (problems.isEmpty()) violations.sortedWith(compareBy(
-                { it.originType }, { it.declaration }, { it.exposure }, { it.targetType },
-                { it.lineNumber ?: Int.MAX_VALUE }, { it.sourceFile },
-            )).distinctBy { listOf(it.originType, it.declaration, it.exposure, it.targetType) } else emptyList(),
+            if (problems.isEmpty()) {
+                violations
+                    .sortedWith(
+                        compareBy(
+                            { it.originType },
+                            { it.declaration },
+                            { it.exposure },
+                            { it.targetType },
+                            { it.lineNumber ?: Int.MAX_VALUE },
+                            { it.sourceFile },
+                        ),
+                    ).distinctBy { listOf(it.originType, it.declaration, it.exposure, it.targetType) }
+            } else {
+                emptyList()
+            },
         )
         if (problems.isNotEmpty()) return result(0, emptyList())
-        val persistent = persistenceTypes + types.values.map { it.second }.filter { type ->
-            type.annotations.any { it.rawType.name in persistenceAnnotations }
-        }.map { it.name }
+        val persistent =
+            persistenceTypes +
+                types.values
+                    .map { it.second }
+                    .filter { type ->
+                        type.annotations.any { it.rawType.name in persistenceAnnotations }
+                    }.map { it.name }
         val violations = mutableListOf<PortContractViolation>()
         var count = 0
         ports.sorted().forEach { root ->
             val (module, port) = types.getValue(root)
-            val reader = PortContractReader(types.mapValues { it.value.second }, projectPackagePrefixes) {
-                it in persistent || isTechnology(it)
-            }
-            try { reader.read(port) } catch (error: RuntimeException) {
+            val reader =
+                PortContractReader(types.mapValues { it.value.second }, projectPackagePrefixes) {
+                    it in persistent || isTechnology(it)
+                }
+            try {
+                reader.read(port)
+            } catch (error: RuntimeException) {
                 problems += PortContractProblem("CONTRACT_READ_FAILURE", "$root: ${error.javaClass.name}: ${error.message}")
             }
             problems += reader.problems
             if (reader.contractCount == 0 && reader.problems.isEmpty()) problems += PortContractProblem("EMPTY_PORT_CONTRACT", root)
             count += reader.contractCount
-            reader.references.forEach referenceLoop@ { reference ->
-                val reason = when {
-                    reference.target in persistent -> "PERSISTENCE"
-                    isTechnology(reference.target) -> "TECHNOLOGY"
-                    else -> return@referenceLoop
-                }
-                violations += with(reference) {
-                    PortContractViolation(module, root, declaration, exposure, target, reason,
-                        owner.source.flatMap { it.fileName }.orElse(null), line)
-                }
+            reader.references.forEach referenceLoop@{ reference ->
+                val reason =
+                    when {
+                        reference.target in persistent -> "PERSISTENCE"
+                        isTechnology(reference.target) -> "TECHNOLOGY"
+                        else -> return@referenceLoop
+                    }
+                violations +=
+                    with(reference) {
+                        PortContractViolation(
+                            module,
+                            root,
+                            declaration,
+                            exposure,
+                            target,
+                            reason,
+                            owner.source.flatMap { it.fileName }.orElse(null),
+                            line,
+                        )
+                    }
             }
         }
         return result(count, violations)
     }
 
-    private fun isTechnology(name: String) = ExternalTechnologyTypes.contains(name) ||
-        name.startsWith("jakarta.transaction.") || name.startsWith("javax.transaction.") ||
-        name == "tools.jackson.databind.ObjectMapper"
+    private fun isTechnology(name: String) =
+        ExternalTechnologyTypes.contains(name) ||
+            name.startsWith("jakarta.transaction.") || name.startsWith("javax.transaction.") ||
+            name == "tools.jackson.databind.ObjectMapper"
 }

@@ -4,10 +4,27 @@ import java.lang.classfile.ClassFile
 import java.nio.file.Files
 import java.nio.file.Path
 
-data class SourceSetKey(val projectPath: String, val sourceSet: String)
-data class SourceSetOutput(val key: SourceSetKey, val roots: List<Path>)
-data class NonProductionOwner(val projectPath: String, val sourceSet: String, val file: Path)
-data class OutputStatus(val key: SourceSetKey, val path: Path, val state: String)
+data class SourceSetKey(
+    val projectPath: String,
+    val sourceSet: String,
+)
+
+data class SourceSetOutput(
+    val key: SourceSetKey,
+    val roots: List<Path>,
+)
+
+data class NonProductionOwner(
+    val projectPath: String,
+    val sourceSet: String,
+    val file: Path,
+)
+
+data class OutputStatus(
+    val key: SourceSetKey,
+    val path: Path,
+    val state: String,
+)
 
 /** 준비 오류가 있는 목록은 내부 참조의 소속 확인에 사용하지 않는다. */
 data class NonProductionIndex(
@@ -57,11 +74,12 @@ object NonProductionTargets {
                                 problems += "AMBIGUOUS_OWNERSHIP: $name ($previous / $owner)"
                             }
                         }
-                        val state = when {
-                            !Files.exists(root) -> "ABSENT"
-                            files.isEmpty() -> "EMPTY"
-                            else -> "PRESENT"
-                        }
+                        val state =
+                            when {
+                                !Files.exists(root) -> "ABSENT"
+                                files.isEmpty() -> "EMPTY"
+                                else -> "PRESENT"
+                            }
                         statuses += OutputStatus(output.key, root, state)
                     }
                 } catch (error: Exception) {
@@ -80,17 +98,26 @@ object NonProductionTargets {
         if (!Files.exists(root)) return emptyList()
         require(Files.isDirectory(root)) { "출력 경로가 폴더가 아닙니다" }
         return Files.walk(root).use { paths ->
-            paths.filter { Files.isRegularFile(it) && it.toString().endsWith(".class") }.sorted().map { path ->
-                path.toRealPath().also { require(it.startsWith(root)) { "출력 밖으로 연결된 클래스: $path" } }
-            }.toList()
+            paths
+                .filter { Files.isRegularFile(it) && it.toString().endsWith(".class") }
+                .sorted()
+                .map { path ->
+                    path.toRealPath().also { require(it.startsWith(root)) { "출력 밖으로 연결된 클래스: $path" } }
+                }.toList()
         }
     }
 
-    private fun className(file: Path): String = try {
-        ClassFile.of().parse(file).thisClass().asInternalName().replace('/', '.')
-    } catch (error: Exception) {
-        throw IllegalArgumentException("$file: ${error.message}", error)
-    }
+    private fun className(file: Path): String =
+        try {
+            ClassFile
+                .of()
+                .parse(file)
+                .thisClass()
+                .asInternalName()
+                .replace('/', '.')
+        } catch (error: Exception) {
+            throw IllegalArgumentException("$file: ${error.message}", error)
+        }
 
     private fun canonical(path: Path): Path = if (Files.exists(path)) path.toRealPath() else path.toAbsolutePath().normalize()
 }

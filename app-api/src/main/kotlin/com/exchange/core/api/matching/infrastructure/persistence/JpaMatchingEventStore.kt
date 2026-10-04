@@ -18,7 +18,6 @@ open class JpaMatchingEventStore(
     private val repository: MatchingEventRepository,
     private val objectMapper: ObjectMapper,
 ) : MatchingEventStore {
-
     /**
      * engine이 만든 순서대로 event를 entity로 변환해 한 번에 저장한다.
      *
@@ -34,14 +33,15 @@ open class JpaMatchingEventStore(
         }
 
         // entities 순서는 input event 순서와 같아 saveAll에도 engine 순서를 그대로 전달한다.
-        val entities = events.map { event ->
-            val payloadJson = objectMapper.writeValueAsString(event.toPayload())
+        val entities =
+            events.map { event ->
+                val payloadJson = objectMapper.writeValueAsString(event.toPayload())
 
-            MatchingEventEntity.of(
-                event = event,
-                payloadJson = payloadJson,
-            )
-        }
+                MatchingEventEntity.of(
+                    event = event,
+                    payloadJson = payloadJson,
+                )
+            }
 
         repository.saveAll(entities)
     }

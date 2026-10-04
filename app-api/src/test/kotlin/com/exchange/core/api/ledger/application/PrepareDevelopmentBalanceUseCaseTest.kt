@@ -1,21 +1,37 @@
 package com.exchange.core.api.ledger.application
 
-import com.exchange.core.common.*
-import com.exchange.core.ledger.*
+import com.exchange.core.common.Amount
+import com.exchange.core.common.AssetId
+import com.exchange.core.common.UserId
+import com.exchange.core.ledger.DevelopmentBalanceStore
+import com.exchange.core.ledger.OpeningBalance
+import com.exchange.core.ledger.OpeningBalanceResult
 import java.time.Instant
-import kotlin.test.*
+import kotlin.test.Test
+import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
+import kotlin.test.assertSame
 
 class PrepareDevelopmentBalanceUseCaseTest {
     @Test fun `입력은 도메인에서 검사한 뒤 저장 계약으로 전달하며 결과를 바꾸지 않는다`() {
         val expected = OpeningBalance("seed", UserId("buyer"), AssetId("KRW"), Amount(1000))
         val result = OpeningBalanceResult(expected, "ledger", Instant.EPOCH, false)
         var writes = 0
-        val store = object : DevelopmentBalanceStore {
-            override fun prepare(opening: OpeningBalance): OpeningBalanceResult {
-                assertEquals(expected, opening); writes++; return result
+        val store =
+            object : DevelopmentBalanceStore {
+                override fun prepare(opening: OpeningBalance): OpeningBalanceResult {
+                    assertEquals(expected, opening)
+                    writes++
+                    return result
+                }
+
+                override fun ensureReceivingBalance(
+                    userId: UserId,
+                    assetId: AssetId,
+                ) {
+                    writes++
+                }
             }
-            override fun ensureReceivingBalance(userId: UserId, assetId: AssetId) { writes++ }
-        }
         val useCase = PrepareDevelopmentBalanceUseCase(store)
         assertSame(result, useCase.prepare("seed", expected.userId, expected.assetId, expected.amount))
         assertEquals(1, writes)

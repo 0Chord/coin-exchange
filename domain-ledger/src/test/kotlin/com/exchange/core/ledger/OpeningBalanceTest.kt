@@ -4,7 +4,9 @@ import com.exchange.core.common.Amount
 import com.exchange.core.common.AssetId
 import com.exchange.core.common.UserId
 import java.time.Instant
-import kotlin.test.*
+import kotlin.test.Test
+import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 
 class OpeningBalanceTest {
     private val opening = OpeningBalance("seed-1", UserId("buyer"), AssetId("KRW"), Amount(1000))
@@ -14,10 +16,13 @@ class OpeningBalanceTest {
         val plan = opening.transaction("ledger-1", time)
         assertEquals("OPENING:seed-1", plan.sourceEventId)
         assertEquals(LedgerTransactionType.OPENING, plan.transactionType)
-        assertEquals(listOf(
-            LedgerPosting("SYSTEM:KRW:DEVELOPMENT_FUNDING", AssetId("KRW"), LedgerPostingSide.DEBIT, Amount(1000)),
-            LedgerPosting("USER:buyer:KRW:AVAILABLE", AssetId("KRW"), LedgerPostingSide.CREDIT, Amount(1000)),
-        ), plan.postings)
+        assertEquals(
+            listOf(
+                LedgerPosting("SYSTEM:KRW:DEVELOPMENT_FUNDING", AssetId("KRW"), LedgerPostingSide.DEBIT, Amount(1000)),
+                LedgerPosting("USER:buyer:KRW:AVAILABLE", AssetId("KRW"), LedgerPostingSide.CREDIT, Amount(1000)),
+            ),
+            plan.postings,
+        )
         assertEquals(opening, OpeningBalance.fromTransaction(plan))
     }
 
@@ -35,13 +40,37 @@ class OpeningBalanceTest {
         assertFailsWith<IllegalArgumentException> { opening.copy(assetId = AssetId("x".repeat(65))) }
         assertFailsWith<IllegalArgumentException> { opening.copy(preparationId = " ") }
         assertFailsWith<IllegalArgumentException> { opening.copy(preparationId = "x".repeat(121)) }
-        assertEquals(Long.MAX_VALUE, opening.copy(amount = Amount(Long.MAX_VALUE)).transaction("max", time).postings[0].amount.value)
+        assertEquals(
+            Long.MAX_VALUE,
+            opening
+                .copy(amount = Amount(Long.MAX_VALUE))
+                .transaction("max", time)
+                .postings[0]
+                .amount.value,
+        )
     }
 
     @Test fun `균형이 맞아도 개시 방향과 계정이 다르면 완전한 준비 기록이 아니다`() {
         val plan = opening.transaction("ledger-1", time)
-        val reversed = LedgerTransaction("ledger-1", plan.sourceEventId, plan.transactionType, time,
-            plan.postings.map { it.copy(side = if (it.side == LedgerPostingSide.DEBIT) LedgerPostingSide.CREDIT else LedgerPostingSide.DEBIT) })
+        val reversed =
+            LedgerTransaction(
+                "ledger-1",
+                plan.sourceEventId,
+                plan.transactionType,
+                time,
+                plan.postings.map {
+                    it.copy(
+                        side =
+                            if (it.side ==
+                                LedgerPostingSide.DEBIT
+                            ) {
+                                LedgerPostingSide.CREDIT
+                            } else {
+                                LedgerPostingSide.DEBIT
+                            },
+                    )
+                },
+            )
         assertFailsWith<OpeningBalanceStateException> { OpeningBalance.fromTransaction(reversed) }
         val wrongKind = LedgerTransaction("ledger-1", plan.sourceEventId, LedgerTransactionType.RESERVE, time, plan.postings)
         assertFailsWith<OpeningBalanceStateException> { OpeningBalance.fromTransaction(wrongKind) }

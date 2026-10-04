@@ -22,29 +22,46 @@ data class OpeningBalance(
     val availableAccount: String get() = "USER:${userId.value}:${assetId.value}:AVAILABLE"
     val holdAccount: String get() = "USER:${userId.value}:${assetId.value}:HOLD"
 
-    fun transaction(id: String, time: Instant): LedgerTransaction = LedgerTransaction(
-        id, sourceEventId, LedgerTransactionType.OPENING, time,
-        listOf(
-            LedgerPosting("SYSTEM:${assetId.value}:DEVELOPMENT_FUNDING", assetId, LedgerPostingSide.DEBIT, amount),
-            LedgerPosting(availableAccount, assetId, LedgerPostingSide.CREDIT, amount),
-        ),
-    )
+    fun transaction(
+        id: String,
+        time: Instant,
+    ): LedgerTransaction =
+        LedgerTransaction(
+            id,
+            sourceEventId,
+            LedgerTransactionType.OPENING,
+            time,
+            listOf(
+                LedgerPosting("SYSTEM:${assetId.value}:DEVELOPMENT_FUNDING", assetId, LedgerPostingSide.DEBIT, amount),
+                LedgerPosting(availableAccount, assetId, LedgerPostingSide.CREDIT, amount),
+            ),
+        )
 
     /** 잔고가 다시 0이 됐더라도 과거 사용 이력이 있으면 재개시하지 않는다. */
-    fun requireUnused(balance: Balance, hasHistory: Boolean) {
+    fun requireUnused(
+        balance: Balance,
+        hasHistory: Boolean,
+    ) {
         if (balance.userId != userId || balance.assetId != assetId ||
-            balance.available.value != 0L || balance.hold.value != 0L || hasHistory) {
+            balance.available.value != 0L || balance.hold.value != 0L || hasHistory
+        ) {
             throw OpeningBalanceConflictException("이미 사용했거나 설명되지 않는 잔고입니다")
         }
     }
 
     companion object {
-        fun validateAccount(userId: UserId, assetId: AssetId) {
+        fun validateAccount(
+            userId: UserId,
+            assetId: AssetId,
+        ) {
             require(validText(userId.value, 64) && ':' !in userId.value) { "잘못된 개시 사용자" }
             require(validText(assetId.value, 64) && ':' !in assetId.value) { "잘못된 개시 자산" }
         }
 
-        private fun validText(value: String, max: Int) = value.isNotBlank() &&
+        private fun validText(
+            value: String,
+            max: Int,
+        ) = value.isNotBlank() &&
             value.codePointCount(0, value.length) <= max && '\u0000' !in value
 
         /** 균형 검증에 더해 개시의 정확한 두 계정·방향·금액을 대조한다. */
@@ -56,8 +73,13 @@ data class OpeningBalance(
                 val credit = transaction.postings[1]
                 val parts = credit.accountId.split(':')
                 require(parts.size == 4 && parts[0] == "USER" && parts[3] == "AVAILABLE")
-                val opening = OpeningBalance(transaction.sourceEventId.removePrefix("OPENING:"),
-                    UserId(parts[1]), AssetId(parts[2]), credit.amount)
+                val opening =
+                    OpeningBalance(
+                        transaction.sourceEventId.removePrefix("OPENING:"),
+                        UserId(parts[1]),
+                        AssetId(parts[2]),
+                        credit.amount,
+                    )
                 require(credit.assetId == opening.assetId)
                 require(transaction.postings == opening.transaction(transaction.ledgerTransactionId, transaction.occurredAt).postings)
                 return opening
@@ -76,9 +98,20 @@ data class OpeningBalanceResult(
     val alreadyPrepared: Boolean,
 )
 
-class OpeningBalanceRequestConflictException(message: String) : IllegalStateException(message)
-class OpeningBalanceConflictException(message: String) : IllegalStateException(message)
-class OpeningBalanceStateException(message: String, cause: Throwable? = null) : IllegalStateException(message, cause)
+class OpeningBalanceRequestConflictException(
+    message: String,
+) : IllegalStateException(message)
+
+class OpeningBalanceConflictException(
+    message: String,
+) : IllegalStateException(message)
+
+class OpeningBalanceStateException(
+    message: String,
+    cause: Throwable? = null,
+) : IllegalStateException(message, cause)
 
 /** DB 오류만으로 지급 성공 여부를 판단하지 않는다. 같은 준비 ID로 다시 확인해야 한다. */
-class OpeningBalanceUnconfirmedException(cause: Throwable) : IllegalStateException("준비 결과를 확인하지 못했습니다. 같은 준비 ID로 다시 확인하세요", cause)
+class OpeningBalanceUnconfirmedException(
+    cause: Throwable,
+) : IllegalStateException("준비 결과를 확인하지 못했습니다. 같은 준비 ID로 다시 확인하세요", cause)

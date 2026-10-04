@@ -54,15 +54,17 @@ internal class OrderBook {
      */
     fun addRestingOrder(order: BookOrder) {
         val bookSide = bookSide(order.side)
-        val priceLevel = bookSide.getOrPut(order.price) {
-            PriceLevel(order.price)
-        }
+        val priceLevel =
+            bookSide.getOrPut(order.price) {
+                PriceLevel(order.price)
+            }
 
         priceLevel.add(order)
-        orderIndex[order.orderId] = OrderRef(
-            side = order.side,
-            price = order.price,
-        )
+        orderIndex[order.orderId] =
+            OrderRef(
+                side = order.side,
+                price = order.price,
+            )
     }
 
     /**
@@ -110,8 +112,7 @@ internal class OrderBook {
      * @param orderId 확인할 주문 식별자
      * @return 취소 또는 추가 체결이 가능한 대기 주문이면 `true`
      */
-    fun contains(orderId: OrderId): Boolean =
-        orderIndex.containsKey(orderId)
+    fun contains(orderId: OrderId): Boolean = orderIndex.containsKey(orderId)
 
     /**
      * book에 남은 내부 주문의 같은 가변 참조를 반환한다. 복사본이 아니며 없으면 `null`이다.

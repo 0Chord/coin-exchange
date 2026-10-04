@@ -88,7 +88,6 @@ data class ReservationRequirement(
                 error,
             )
         }
-
 }
 
 /**
@@ -444,12 +443,13 @@ class OrderReservationCalculator(
                 )
             }
 
-            Side.SELL ->
+            Side.SELL -> {
                 ReservationRequirement(
                     assetId = market.baseAssetId,
                     tradeReserveAmount = Amount(quantity.value),
                     feeReserveAmount = Amount.ZERO,
                 )
+            }
         }
     }
 }

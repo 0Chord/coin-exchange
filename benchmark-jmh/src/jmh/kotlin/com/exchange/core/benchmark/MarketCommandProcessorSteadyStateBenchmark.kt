@@ -56,13 +56,13 @@ open class MarketCommandProcessorSteadyStateBenchmark {
         blackhole.consume(submitAll(commands))
     }
 
-    private fun nextPrefix(label: String): String =
-        "steady-$label-${batchSequence.incrementAndGet()}"
+    private fun nextPrefix(label: String): String = "steady-$label-${batchSequence.incrementAndGet()}"
 
     private fun submitAll(commands: List<MatchingCommand>): Int {
-        val futures = commands.map { command ->
-            processor.submit(command)
-        }
+        val futures =
+            commands.map { command ->
+                processor.submit(command)
+            }
 
         return futures.sumOf { future ->
             future.get(10, TimeUnit.SECONDS).size

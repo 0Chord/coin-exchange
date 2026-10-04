@@ -1,6 +1,11 @@
 package com.exchange.architecture
 
-import com.exchange.architecture.support.*
+import com.exchange.architecture.support.AllowedFolder
+import com.exchange.architecture.support.AllowedSourceRoot
+import com.exchange.architecture.support.LayoutPolicy
+import com.exchange.architecture.support.MainSourceSnapshot
+import com.exchange.architecture.support.ProductionScope
+import com.exchange.architecture.support.SourcePlacement
 import org.gradle.testkit.runner.GradleRunner
 import org.gradle.testkit.runner.TaskOutcome
 import org.junit.jupiter.api.io.TempDir
@@ -9,39 +14,63 @@ import java.nio.file.Files
 import java.nio.file.Path
 import java.nio.file.StandardOpenOption.APPEND
 import java.util.Base64
-import kotlin.test.*
+import kotlin.test.Ignore
+import kotlin.test.Test
+import kotlin.test.assertEquals
+import kotlin.test.assertFalse
+import kotlin.test.assertTrue
 
 class NamingPlacementGradleWiringTest {
     @TempDir lateinit var root: Path
     private val folder = AllowedFolder("order", "app-api", "src/main/java", "com/example/order", "예제 업무")
     private val policy = LayoutPolicy(listOf(AllowedSourceRoot("app-api", "src/main/java")), listOf(folder))
-    private fun write(path: String, content: String): Path = root.resolve(path).also { Files.createDirectories(it.parent); Files.writeString(it, content) }
+
+    private fun write(
+        path: String,
+        content: String,
+    ): Path =
+        root.resolve(path).also {
+            Files.createDirectories(it.parent)
+            Files.writeString(it, content)
+        }
+
     private fun prepare(generated: Boolean = false) {
         write("settings.gradle.kts", "rootProject.name = \"source-contract\"\ninclude(\":app-api\")")
-        write("app-api/build.gradle.kts", """
+        write(
+            "app-api/build.gradle.kts",
+            """
             plugins { java }
             sourceSets.create("jmh")
-        """.trimIndent() + if (!generated) "" else """
+            """.trimIndent() +
+                if (!generated) {
+                    ""
+                } else {
+                    """
 
-            val generateSources = tasks.register("generateSources") {
-                val destination = layout.buildDirectory.dir("generated/main")
-                outputs.dir(destination)
-                doLast {
-                    destination.get().file("com/example/generated/Generated.java").asFile.apply {
-                        parentFile.mkdirs(); writeText("package com.example.generated; public class Generated {}")
+                    val generateSources = tasks.register("generateSources") {
+                        val destination = layout.buildDirectory.dir("generated/main")
+                        outputs.dir(destination)
+                        doLast {
+                            destination.get().file("com/example/generated/Generated.java").asFile.apply {
+                                parentFile.mkdirs(); writeText("package com.example.generated; public class Generated {}")
+                            }
+                        }
                     }
-                }
-            }
-            sourceSets.named("main") { java.srcDir(generateSources) }
-        """.trimIndent())
+                    sourceSets.named("main") { java.srcDir(generateSources) }
+                    """.trimIndent()
+                },
+        )
         write("app-api/src/main/java/com/example/order/Submit.java", "package com.example.order; public class Submit {}")
         write("app-api/src/test/java/com/example/OnlyTest.java", "package com.example; class OnlyTest {}")
         write("app-api/src/jmh/java/com/example/OnlyBenchmark.java", "package com.example; class OnlyBenchmark {}")
         write("app-api/src/main/resources/Ignore.kt", "not Kotlin source")
-        val script = root.resolve("gradle/main-sources.gradle.kts"); Files.createDirectories(script.parent)
+        val script = root.resolve("gradle/main-sources.gradle.kts")
+        Files.createDirectories(script.parent)
         Files.copy(Path.of(System.getProperty("architecture.mainSourcesScript")), script)
         write("src/test/kotlin/com/exchange/architecture/policy/ProjectLayoutPolicy.kt", "// 정책 입력 예제\n")
-        write("build.gradle.kts", """
+        write(
+            "build.gradle.kts",
+            """
             plugins { java }
             extra["architecture.productionProjects"] = listOf(":app-api")
             apply(from = "gradle/main-sources.gradle.kts")
@@ -55,23 +84,39 @@ class NamingPlacementGradleWiringTest {
                 outputs.file(output)
                 doLast { output.get().asFile.apply { parentFile.mkdirs(); writeText(snapshot.get()) } }
             }
-        """.trimIndent())
+            """.trimIndent(),
+        )
     }
-    private fun run() = GradleRunner.create().withProjectDir(root.toFile())
-        .withGradleInstallation(File(System.getProperty("architecture.gradleHome")))
-        .withArguments("snapshot", "--offline", "--console=plain", "--max-workers=1", "--stacktrace").build()
-    private fun read() = MainSourceSnapshot.read(Files.readString(root.resolve("build/sources.txt")), setOf("app-api"))
-        .also { assertEquals(emptyList(), it.problems) }
+
+    private fun run() =
+        GradleRunner
+            .create()
+            .withProjectDir(root.toFile())
+            .withGradleInstallation(File(System.getProperty("architecture.gradleHome")))
+            .withArguments("snapshot", "--offline", "--console=plain", "--max-workers=1", "--stacktrace")
+            .build()
+
+    private fun read() =
+        MainSourceSnapshot
+            .read(Files.readString(root.resolve("build/sources.txt")), setOf("app-api"))
+            .also { assertEquals(emptyList(), it.problems) }
 
     @Test fun `NAME-23 main만 전달하며 파일 이동 추가 삭제와 정책 변경이 재실행을 일으킨다`() {
         prepare()
         assertEquals(TaskOutcome.SUCCESS, run().task(":snapshot")?.outcome)
         val before = read()
-        assertEquals(setOf(root.resolve("app-api/src/main/java/com/example/order/Submit.java").toRealPath()), before.roots.flatMap { it.files }.toSet())
+        assertEquals(
+            setOf(root.resolve("app-api/src/main/java/com/example/order/Submit.java").toRealPath()),
+            before.roots
+                .flatMap {
+                    it.files
+                }.toSet(),
+        )
         assertEquals(emptyList(), SourcePlacement.inspect(before.roots, policy, setOf("app-api")).result.violations)
         assertEquals(TaskOutcome.UP_TO_DATE, run().task(":snapshot")?.outcome)
         val original = before.roots.flatMap { it.files }.single()
-        val moved = original.parent.parent.resolve(original.fileName); Files.move(original, moved)
+        val moved = original.parent.parent.resolve(original.fileName)
+        Files.move(original, moved)
         assertEquals(TaskOutcome.SUCCESS, run().task(":snapshot")?.outcome)
         val movedResult = SourcePlacement.inspect(read().roots, policy, setOf("app-api")).result
         assertTrue(movedResult.evaluated, movedResult.problems.toString())
@@ -86,6 +131,7 @@ class NamingPlacementGradleWiringTest {
         assertEquals(TaskOutcome.SUCCESS, run().task(":snapshot")?.outcome)
         assertEquals(setOf(added.toRealPath()), read().roots.flatMap { it.files }.toSet())
     }
+
     @Test fun `NAME-23 생성 main의 생산 작업을 전달하고 허용된 루트만 통과시킨다`() {
         prepare(generated = true)
         val build = run()
@@ -94,12 +140,23 @@ class NamingPlacementGradleWiringTest {
         val generated = snapshot.roots.single { it.relativeRoot == "build/generated/main" }
         assertEquals(":app-api:generateSources", generated.producer)
         assertEquals(1, generated.files.size)
-        assertTrue(SourcePlacement.inspect(snapshot.roots, policy, setOf("app-api")).result.violations.any { it.item == "sourceRoot" })
-        val p = policy.copy(roots = policy.roots + AllowedSourceRoot("app-api", "build/generated/main", ":app-api:generateSources"),
-            folders = policy.folders + folder.copy(id = "generated", sourceRoot = "build/generated/main", folder = "com/example/generated"))
+        assertTrue(
+            SourcePlacement
+                .inspect(snapshot.roots, policy, setOf("app-api"))
+                .result.violations
+                .any { it.item == "sourceRoot" },
+        )
+        val p =
+            policy.copy(
+                roots = policy.roots + AllowedSourceRoot("app-api", "build/generated/main", ":app-api:generateSources"),
+                folders =
+                    policy.folders + folder.copy(id = "generated", sourceRoot = "build/generated/main", folder = "com/example/generated"),
+            )
         val r = SourcePlacement.inspect(snapshot.roots, p, setOf("app-api")).result
-        assertTrue(r.evaluated, r.problems.toString()); assertEquals(emptyList(), r.violations)
+        assertTrue(r.evaluated, r.problems.toString())
+        assertEquals(emptyList(), r.violations)
     }
+
     @Test fun `NAME-23 이 프로젝트의 실제 Kotlin main 입력도 누락 없이 전달된다`() {
         val snapshot = MainSourceSnapshot.read(System.getProperty("architecture.mainSources"), ProductionScope.requiredTypes.keys)
         assertEquals(emptyList(), snapshot.problems)
@@ -111,14 +168,19 @@ class NamingPlacementGradleWiringTest {
         assertTrue(snapshot.roots.filter { it.relativeRoot == "src/main/kotlin" }.all { it.files.isNotEmpty() })
         // 원본 전달은 여기서 확인하고, 운영 코드의 이름·배치 정책은 P08에서 별도로 검사한다.
     }
+
     @Test fun `NAME-22 전달 모듈 루트 파일 행이 누락되거나 충돌하면 준비 오류다`() {
-        fun row(kind: String, vararg values: String) = kind + "\t" + values.joinToString("\t") { Base64.getUrlEncoder().encodeToString(it.toByteArray()) }
+        fun row(
+            kind: String,
+            vararg values: String,
+        ) = kind + "\t" + values.joinToString("\t") { Base64.getUrlEncoder().encodeToString(it.toByteArray()) }
         val m = row("M", "app-api", root.toString())
         val r = row("R", "app-api", "src/main/java", "")
         val f = row("F", "app-api", "src/main/java", root.resolve("A.java").toString())
         for (text in listOf(null, "", "ARCH05/1", "ARCH05/1\n$m", "ARCH05/1\n$m\n$m\n$r", "ARCH05/1\n$m\n$r\n$f\n$f", "ARCH05/1\n$m\n$f")) {
             val snapshot = MainSourceSnapshot.read(text, setOf("app-api"))
-            assertTrue(snapshot.problems.isNotEmpty()); assertEquals(emptyList(), snapshot.roots)
+            assertTrue(snapshot.problems.isNotEmpty())
+            assertEquals(emptyList(), snapshot.roots)
         }
     }
 }

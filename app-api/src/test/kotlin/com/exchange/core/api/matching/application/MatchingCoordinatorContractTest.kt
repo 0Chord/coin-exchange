@@ -343,7 +343,8 @@ class MatchingCoordinatorContractTest {
         }
 
         fun awaitSubmission(command: MatchingCommand): CompletableFuture<List<MatchingEvent>> {
-            submissions.computeIfAbsent(command) { CountDownLatch(1) }
+            submissions
+                .computeIfAbsent(command) { CountDownLatch(1) }
                 .awaitSignal("command was not submitted: $command")
             return requireNotNull(futures[command])
         }

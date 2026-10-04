@@ -11,8 +11,15 @@ data class MainProjectDependencies(
     val dependencies: List<ProjectDeclaration> = emptyList(),
 )
 
-data class ProjectDeclaration(val targetPath: String, val declaredIn: String)
-data class ProjectDependencySnapshot(val configurations: List<MainProjectDependencies> = emptyList(), val problems: List<String> = emptyList())
+data class ProjectDeclaration(
+    val targetPath: String,
+    val declaredIn: String,
+)
+
+data class ProjectDependencySnapshot(
+    val configurations: List<MainProjectDependencies> = emptyList(),
+    val problems: List<String> = emptyList(),
+)
 
 object ProjectDependencies {
     /**
@@ -34,12 +41,17 @@ object ProjectDependencies {
                         require(values.size == 4) { "${index + 2}행의 구성 형식 오류" }
                         records += MainProjectDependencies(values[0], values[1], values[2], values[3])
                     }
+
                     "D" -> {
                         require(values.size == 2 && records.isNotEmpty()) { "${index + 2}행의 의존 형식 오류" }
                         val previous = records.last()
-                        records[records.lastIndex] = previous.copy(dependencies = previous.dependencies + ProjectDeclaration(values[0], values[1]))
+                        records[records.lastIndex] =
+                            previous.copy(dependencies = previous.dependencies + ProjectDeclaration(values[0], values[1]))
                     }
-                    else -> throw IllegalArgumentException("${index + 2}행의 알 수 없는 기록 종류")
+
+                    else -> {
+                        throw IllegalArgumentException("${index + 2}행의 알 수 없는 기록 종류")
+                    }
                 }
             }
             require(records.isNotEmpty()) { "구성 기록이 없습니다" }

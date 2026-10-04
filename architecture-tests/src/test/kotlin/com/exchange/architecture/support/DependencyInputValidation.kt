@@ -2,7 +2,10 @@ package com.exchange.architecture.support
 
 /** ARCH-02와 ARCH-08이 같은 main 구성/프로젝트 누락 기준을 사용한다. */
 object DependencyInputValidation {
-    fun problems(snapshot: ProjectDependencySnapshot, inventory: GradleModuleInventory): List<String> {
+    fun problems(
+        snapshot: ProjectDependencySnapshot,
+        inventory: GradleModuleInventory,
+    ): List<String> {
         val problems = (snapshot.problems + ModuleRegistration.inspect(inventory).map { "${it.code}: ${it.subject}" }).toMutableList()
         if (inventory.productionModules.isEmpty()) problems += "EMPTY_SCOPE: 운영 모듈 등록이 없습니다"
         val expected = inventory.productionModules.flatMap { p -> listOf(p to "compile", p to "runtime") }.toSet()

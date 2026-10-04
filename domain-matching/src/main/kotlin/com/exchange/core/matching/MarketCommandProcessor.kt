@@ -229,9 +229,7 @@ private class MarketWorker(
      * @param cause 마켓 중단을 유발한 최초 실패 원인
      * @return 후속 command future에 전달할 거절 예외
      */
-    private fun marketUnavailable(
-        cause: Throwable,
-    ): RejectedExecutionException =
+    private fun marketUnavailable(cause: Throwable): RejectedExecutionException =
         RejectedExecutionException(
             "market ${marketId.value} is unavailable after command processing failure",
             cause,

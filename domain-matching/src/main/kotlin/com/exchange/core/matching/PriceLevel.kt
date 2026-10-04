@@ -31,12 +31,12 @@ internal class PriceLevel(
     private val orders = LinkedHashMap<OrderId, BookOrder>()
 
     /**
- * 이 가격 레벨에 주문을 추가한다.
- *
- * 다른 가격의 주문이 들어오면 잘못된 상태이므로 바로 예외를 낸다.
- *
- * @param order 이 가격에서 대기시킬 주문
- * @throws IllegalArgumentException [order]의 가격이 이 레벨의 [price]와 다른 경우
+     * 이 가격 레벨에 주문을 추가한다.
+     *
+     * 다른 가격의 주문이 들어오면 잘못된 상태이므로 바로 예외를 낸다.
+     *
+     * @param order 이 가격에서 대기시킬 주문
+     * @throws IllegalArgumentException [order]의 가격이 이 레벨의 [price]와 다른 경우
      */
     fun add(order: BookOrder) {
         require(order.price == price) {
@@ -85,5 +85,4 @@ internal class PriceLevel(
      * @return 주문이 있으면 BookOrder, 없으면 `null`
      */
     fun get(orderId: OrderId): BookOrder? = orders[orderId]
-
 }

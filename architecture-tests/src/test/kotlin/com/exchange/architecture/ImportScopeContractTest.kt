@@ -34,13 +34,14 @@ class ImportScopeContractTest {
     fun `S01 정상 출력은 모듈별 클래스와 포트 역할을 빠짐없이 수집한다`() {
         val valueRoot = fixtureOutput(temporary.resolve("common"), ScopeValue::class.java)
         val ruleRoot = fixtureOutput(temporary.resolve("rules"), ScopeRule::class.java, ScopePort::class.java)
-        val result = importer.load(
-            listOf(ModuleOutput("common", listOf(valueRoot)), ModuleOutput("rules", listOf(ruleRoot))),
-            ScopeExpectations(
-                mapOf("common" to setOf(valueName), "rules" to setOf(ruleName)),
-                requiredRoles = mapOf("ports" to setOf(ScopePort::class.java.name)),
-            ),
-        )
+        val result =
+            importer.load(
+                listOf(ModuleOutput("common", listOf(valueRoot)), ModuleOutput("rules", listOf(ruleRoot))),
+                ScopeExpectations(
+                    mapOf("common" to setOf(valueName), "rules" to setOf(ruleName)),
+                    requiredRoles = mapOf("ports" to setOf(ScopePort::class.java.name)),
+                ),
+            )
 
         assertEquals(emptyList(), result.problems)
         assertEquals(setOf("common", "rules"), result.classesByModule.keys, "S01: module outputs were not collected")
@@ -50,26 +51,32 @@ class ImportScopeContractTest {
 
     @Test
     fun `S02 대표 타입 외의 새 클래스와 중첩 타입도 자동 수집한다`() {
-        val root = fixtureOutput(
-            temporary.resolve("main"), ScopeValue::class.java, AnotherScopeValue::class.java,
-            ScopeContainer::class.java, ScopeContainer.Member::class.java,
-        )
+        val root =
+            fixtureOutput(
+                temporary.resolve("main"),
+                ScopeValue::class.java,
+                AnotherScopeValue::class.java,
+                ScopeContainer::class.java,
+                ScopeContainer.Member::class.java,
+            )
         val result = importer.load(listOf(ModuleOutput("common", listOf(root))), commonContract())
 
         assertEquals(emptyList(), result.problems)
         assertEquals(
             setOf(valueName, AnotherScopeValue::class.java.name, ScopeContainer::class.java.name, ScopeContainer.Member::class.java.name),
-            result.names("common"), "S02: representative types must not limit the imported inventory",
+            result.names("common"),
+            "S02: representative types must not limit the imported inventory",
         )
     }
 
     @Test
     fun `S03 필수 모듈 하나가 빠지면 나머지가 있어도 실패한다`() {
         val root = fixtureOutput(temporary.resolve("main"), ScopeValue::class.java)
-        val result = importer.load(
-            listOf(ModuleOutput("common", listOf(root))),
-            ScopeExpectations(mapOf("common" to setOf(valueName), "rules" to setOf(ruleName))),
-        )
+        val result =
+            importer.load(
+                listOf(ModuleOutput("common", listOf(root))),
+                ScopeExpectations(mapOf("common" to setOf(valueName), "rules" to setOf(ruleName))),
+            )
 
         assertProblem(result, ScopeProblemCode.MISSING_MODULE, "rules")
     }
@@ -98,10 +105,11 @@ class ImportScopeContractTest {
     @Test
     fun `S07 역할 목록에 등록한 포트를 실제 출력에서 못 찾으면 실패한다`() {
         val root = fixtureOutput(temporary.resolve("main"), ScopeValue::class.java)
-        val result = importer.load(
-            listOf(ModuleOutput("common", listOf(root))),
-            commonContract().copy(requiredRoles = mapOf("ports" to setOf(ScopePort::class.java.name))),
-        )
+        val result =
+            importer.load(
+                listOf(ModuleOutput("common", listOf(root))),
+                commonContract().copy(requiredRoles = mapOf("ports" to setOf(ScopePort::class.java.name))),
+            )
 
         assertProblem(result, ScopeProblemCode.MISSING_ROLE_TYPE, ScopePort::class.java.name)
     }
@@ -109,10 +117,11 @@ class ImportScopeContractTest {
     @Test
     fun `S08 검사에 필요한 역할 자체가 빈 집합이면 실패한다`() {
         val root = fixtureOutput(temporary.resolve("main"), ScopeValue::class.java)
-        val result = importer.load(
-            listOf(ModuleOutput("common", listOf(root))),
-            commonContract().copy(requiredRoles = mapOf("pure-domain" to emptySet())),
-        )
+        val result =
+            importer.load(
+                listOf(ModuleOutput("common", listOf(root))),
+                commonContract().copy(requiredRoles = mapOf("pure-domain" to emptySet())),
+            )
 
         assertProblem(result, ScopeProblemCode.EMPTY_ROLE, "pure-domain")
     }
@@ -125,9 +134,11 @@ class ImportScopeContractTest {
         val observed = partialReader.read(listOf(root)).map { it.name }.toSet()
         assertEquals(setOf(valueName), observed, "The fault fixture must omit exactly the non-representative type")
 
-        val result = ProductionScopeImporter(partialReader).load(
-            listOf(ModuleOutput("common", listOf(root))), commonContract(),
-        )
+        val result =
+            ProductionScopeImporter(partialReader).load(
+                listOf(ModuleOutput("common", listOf(root))),
+                commonContract(),
+            )
 
         assertProblem(result, ScopeProblemCode.INCOMPLETE_IMPORT, AnotherScopeValue::class.java.name)
     }
@@ -154,10 +165,11 @@ class ImportScopeContractTest {
     fun `S12 같은 패키지의 서로 다른 타입은 서로 다른 모듈 출력에서도 구분한다`() {
         val first = fixtureOutput(temporary.resolve("common"), ScopeValue::class.java)
         val second = fixtureOutput(temporary.resolve("rules"), ScopeRule::class.java)
-        val result = importer.load(
-            listOf(ModuleOutput("common", listOf(first)), ModuleOutput("rules", listOf(second))),
-            ScopeExpectations(mapOf("common" to setOf(valueName), "rules" to setOf(ruleName))),
-        )
+        val result =
+            importer.load(
+                listOf(ModuleOutput("common", listOf(first)), ModuleOutput("rules", listOf(second))),
+                ScopeExpectations(mapOf("common" to setOf(valueName), "rules" to setOf(ruleName))),
+            )
 
         assertEquals(emptyList(), result.problems, "Sharing a package does not mean sharing a class definition")
         assertEquals(setOf(valueName), result.names("common"))
@@ -168,10 +180,11 @@ class ImportScopeContractTest {
     fun `S13 테스트 출력이 운영 수집 입력에 섞이면 실패한다`() {
         val main = fixtureOutput(temporary.resolve("main"), ScopeValue::class.java)
         val tests = fixtureOutput(temporary.resolve("test"), ForeignTestHelper::class.java)
-        val result = importer.load(
-            listOf(ModuleOutput("common", listOf(main, tests))),
-            commonContract().copy(forbiddenRoots = setOf(tests)),
-        )
+        val result =
+            importer.load(
+                listOf(ModuleOutput("common", listOf(main, tests))),
+                commonContract().copy(forbiddenRoots = setOf(tests)),
+            )
 
         assertProblem(result, ScopeProblemCode.FORBIDDEN_OUTPUT, tests.toString())
     }
@@ -180,10 +193,11 @@ class ImportScopeContractTest {
     fun `S14 등록하지 않은 새 운영 모듈을 조용히 건너뛰지 않는다`() {
         val main = fixtureOutput(temporary.resolve("main"), ScopeValue::class.java)
         val unexpected = fixtureOutput(temporary.resolve("new-domain"), ScopeRule::class.java)
-        val result = importer.load(
-            listOf(ModuleOutput("common", listOf(main)), ModuleOutput("new-domain", listOf(unexpected))),
-            commonContract(),
-        )
+        val result =
+            importer.load(
+                listOf(ModuleOutput("common", listOf(main)), ModuleOutput("new-domain", listOf(unexpected))),
+                commonContract(),
+            )
 
         assertProblem(result, ScopeProblemCode.UNREGISTERED_MODULE, "new-domain")
     }
@@ -194,10 +208,11 @@ class ImportScopeContractTest {
         val second = fixtureOutput(temporary.resolve("rules"), ScopeValue::class.java)
         assertTrue(first.toRealPath() != second.toRealPath(), "Use distinct outputs, not aliases of the same directory")
 
-        val result = importer.load(
-            listOf(ModuleOutput("common", listOf(first)), ModuleOutput("rules", listOf(second))),
-            ScopeExpectations(mapOf("common" to setOf(valueName), "rules" to setOf(valueName))),
-        )
+        val result =
+            importer.load(
+                listOf(ModuleOutput("common", listOf(first)), ModuleOutput("rules", listOf(second))),
+                ScopeExpectations(mapOf("common" to setOf(valueName), "rules" to setOf(valueName))),
+            )
 
         assertProblem(result, ScopeProblemCode.DUPLICATE_TYPE, valueName)
     }
@@ -209,9 +224,11 @@ class ImportScopeContractTest {
         val parent = temporary.resolve("classes")
         fixtureOutput(parent.resolve("main"), ScopeValue::class.java)
         val tests = fixtureOutput(parent.resolve("test"), ForeignTestHelper::class.java)
-        val result = importer.load(
-            listOf(ModuleOutput("common", listOf(parent))), commonContract().copy(forbiddenRoots = setOf(tests)),
-        )
+        val result =
+            importer.load(
+                listOf(ModuleOutput("common", listOf(parent))),
+                commonContract().copy(forbiddenRoots = setOf(tests)),
+            )
         assertProblem(result, ScopeProblemCode.FORBIDDEN_OUTPUT, parent.toString())
     }
 
@@ -235,17 +252,22 @@ class ImportScopeContractTest {
     fun `S19 프로젝트 내부 참조는 클래스패스에서 해석돼도 운영 출력에서 빠지면 실패한다`() {
         val caller = com.exchange.architecture.fixtures.ScopeCaller::class.java
         val root = fixtureOutput(temporary.resolve("main"), caller)
-        val result = importer.load(
-            listOf(ModuleOutput("common", listOf(root))),
-            ScopeExpectations(mapOf("common" to setOf(caller.name)), projectPackagePrefixes = setOf("com.exchange.architecture.fixtures.")),
-        )
+        val result =
+            importer.load(
+                listOf(ModuleOutput("common", listOf(root))),
+                ScopeExpectations(
+                    mapOf("common" to setOf(caller.name)),
+                    projectPackagePrefixes = setOf("com.exchange.architecture.fixtures."),
+                ),
+            )
         assertTrue(result.problems.any { it.code == ScopeProblemCode.UNRESOLVED_PROJECT_TYPE && it.subject == valueName })
     }
 
     @Test
     fun `S20 reader가 외부 원본을 추가해도 정상 수집이 아니다`() {
         val root = fixtureOutput(temporary.resolve("main"), ScopeValue::class.java)
-        val contaminated = ProductionScopeImporter { ClassFileImporter().importClasses(ScopeValue::class.java, ForeignTestHelper::class.java) }
+        val contaminated =
+            ProductionScopeImporter { ClassFileImporter().importClasses(ScopeValue::class.java, ForeignTestHelper::class.java) }
         val result = contaminated.load(listOf(ModuleOutput("common", listOf(root))), commonContract())
         assertProblem(result, ScopeProblemCode.UNEXPECTED_IMPORTED_TYPE, ForeignTestHelper::class.java.name)
     }
@@ -253,27 +275,32 @@ class ImportScopeContractTest {
     @Test
     fun `S21 같은 파일을 두 모듈에 소속시키면 모듈 경계를 판정할 수 없다`() {
         val root = fixtureOutput(temporary.resolve("main"), ScopeValue::class.java)
-        val result = importer.load(
-            listOf(ModuleOutput("common", listOf(root)), ModuleOutput("rules", listOf(root))),
-            ScopeExpectations(mapOf("common" to setOf(valueName), "rules" to setOf(valueName))),
-        )
+        val result =
+            importer.load(
+                listOf(ModuleOutput("common", listOf(root)), ModuleOutput("rules", listOf(root))),
+                ScopeExpectations(mapOf("common" to setOf(valueName), "rules" to setOf(valueName))),
+            )
         assertProblem(result, ScopeProblemCode.AMBIGUOUS_OWNERSHIP, valueName)
     }
 
     @Test
     fun `S22 금지 타입을 운영 출력에 복사해도 오염을 검출한다`() {
         val root = fixtureOutput(temporary.resolve("main"), ScopeValue::class.java, ForeignTestHelper::class.java)
-        val result = importer.load(
-            listOf(ModuleOutput("common", listOf(root))),
-            commonContract().copy(forbiddenTypePrefixes = setOf(ForeignTestHelper::class.java.name)),
-        )
+        val result =
+            importer.load(
+                listOf(ModuleOutput("common", listOf(root))),
+                commonContract().copy(forbiddenTypePrefixes = setOf(ForeignTestHelper::class.java.name)),
+            )
         assertProblem(result, ScopeProblemCode.FORBIDDEN_OUTPUT, ForeignTestHelper::class.java.name)
     }
 
-    private fun ScopeImportResult.names(module: String): Set<String> =
-        classesByModule[module]?.map { it.name }?.toSet().orEmpty()
+    private fun ScopeImportResult.names(module: String): Set<String> = classesByModule[module]?.map { it.name }?.toSet().orEmpty()
 
-    private fun assertProblem(result: ScopeImportResult, code: ScopeProblemCode, subject: String) {
+    private fun assertProblem(
+        result: ScopeImportResult,
+        code: ScopeProblemCode,
+        subject: String,
+    ) {
         assertTrue(
             ScopeProblem(code, subject) in result.problems,
             "Expected collection problem $code for $subject; actual=${result.problems}",

@@ -1,6 +1,10 @@
 package com.exchange.core.matching
 
-import com.exchange.core.common.*
+import com.exchange.core.common.MarketId
+import com.exchange.core.common.OrderId
+import com.exchange.core.common.Price
+import com.exchange.core.common.Quantity
+import com.exchange.core.common.UserId
 import com.exchange.core.order.OrderType
 import com.exchange.core.order.Side
 import com.exchange.core.order.TimeInForce

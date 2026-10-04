@@ -1,10 +1,10 @@
 package com.exchange.core.api.config
 
+import com.exchange.core.api.matching.application.port.MatchingEventPublisher
+import com.exchange.core.api.matching.application.port.MatchingEventStore
 import com.exchange.core.api.matching.infrastructure.persistence.JpaMatchingEventStore
 import com.exchange.core.api.matching.infrastructure.persistence.MatchingEventRepository
-import com.exchange.core.api.matching.application.port.MatchingEventStore
 import com.exchange.core.api.matching.infrastructure.persistence.PersistentMatchingEventPublisher
-import com.exchange.core.api.matching.application.port.MatchingEventPublisher
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty
 import org.springframework.context.annotation.Bean
 import org.springframework.context.annotation.Configuration
@@ -48,7 +48,5 @@ class MatchingPersistenceConfig {
      * @return processor의 eventHandler에서 호출할 publisher
      */
     @Bean
-    fun persistentMatchingEventPublisher(
-        store: MatchingEventStore,
-    ): MatchingEventPublisher = PersistentMatchingEventPublisher(store)
+    fun persistentMatchingEventPublisher(store: MatchingEventStore): MatchingEventPublisher = PersistentMatchingEventPublisher(store)
 }

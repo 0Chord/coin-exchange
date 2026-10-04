@@ -15,6 +15,5 @@ class TestcontainersConfiguration {
     /** 개발용 애플리케이션을 실행하는 Spring context가 Kafka의 생명주기도 관리한다. */
     @Bean
     @ServiceConnection
-    fun kafkaContainer(): KafkaContainer =
-        KafkaContainer(DockerImageName.parse("apache/kafka-native:latest"))
+    fun kafkaContainer(): KafkaContainer = KafkaContainer(DockerImageName.parse("apache/kafka-native:latest"))
 }
