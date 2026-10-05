@@ -138,6 +138,7 @@ enum class OrderReservationStatus {
  * @property status 예약의 현재 생명주기 상태
  * @property feeRemainder 이 주문의 수수료 계산에서 다음 체결로 넘길 소수 나머지.
  * 수수료 자산의 최소 금액 단위 미만을 나타내며, 실제로 동결한 수수료 예약액과는 다르다.
+ * @property releasedAmount 취소 직전의 실제 반환액. 과거 RELEASED 기록의 null은 금액을 알 수 없다는 뜻이다.
  * @throws IllegalArgumentException 최초/남은 수량, 거래·수수료 예약 금액 또는 [status]의 조합이
  * 유효하지 않은 경우
  */
@@ -157,6 +158,7 @@ data class OrderReservation(
     val remainingFeeReserveAmount: Amount,
     val status: OrderReservationStatus,
     val feeRemainder: FeeRemainder = FeeRemainder.ZERO,
+    val releasedAmount: Amount? = null,
 ) {
     init {
         require(initialQuantity.value > 0) {
@@ -184,6 +186,13 @@ data class OrderReservation(
 
         require(remainingFeeReserveAmount <= remainingAmount) {
             "remaining fee reserve must not exceed remaining reserved amount"
+        }
+
+        require(
+            releasedAmount == null ||
+                (status == OrderReservationStatus.RELEASED && releasedAmount.value > 0 && releasedAmount <= reservedAmount),
+        ) {
+            "released amount must be positive, within reserved amount and only belong to RELEASED"
         }
 
         when (status) {
@@ -220,7 +229,7 @@ data class OrderReservation(
      *
      * 취소된 미체결 수량을 기록하기 위해 [remainingQuantity]는 그대로 유지하고,
      * [remainingAmount]와 그 안에 포함된 [remainingFeeReserveAmount]를 모두 0으로 만든 뒤
-     * 상태를 [OrderReservationStatus.RELEASED]로 바꾼다. 실제 Balance의 hold 반환과 DB 저장은
+     * 반환 직전 금액은 [releasedAmount]에 보존하고 상태를 [OrderReservationStatus.RELEASED]로 바꾼다. 실제 Balance의 hold 반환과 DB 저장은
      * 애플리케이션 서비스가 같은 트랜잭션에서 처리한다.
      *
      * @return 남은 예약 금액이 0이고 상태가 RELEASED인 새 주문 예약
@@ -235,6 +244,7 @@ data class OrderReservation(
             remainingAmount = Amount.ZERO,
             remainingFeeReserveAmount = Amount.ZERO,
             status = OrderReservationStatus.RELEASED,
+            releasedAmount = remainingAmount,
         )
     }
 

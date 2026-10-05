@@ -84,20 +84,23 @@ class LedgerPersistenceConfig {
         )
 
     /**
-     * 취소된 주문의 남은 Reservation과 Balance hold를 함께 해제하는 서비스를 등록한다.
+     * 취소된 주문의 남은 예약·잔고와 반환 원장을 함께 저장하는 서비스를 등록한다.
      *
      * @param balanceStore 사용자·자산별 잔고 변경 포트
      * @param orderReservationStore 주문별 예약 저장 포트
+     * @param ledgerTransactionStore 반환 원장의 조회·추가 포트
      * @return 주문 예약 해제 application service
      */
     @Bean
     fun orderReservationReleaseService(
         balanceStore: BalanceStore,
         orderReservationStore: OrderReservationStore,
+        ledgerTransactionStore: LedgerTransactionStore,
     ): OrderReservationReleaseService =
         OrderReservationReleaseService(
             balanceStore = balanceStore,
             reservationStore = orderReservationStore,
+            ledgerTransactionStore = ledgerTransactionStore,
         )
 
     /**

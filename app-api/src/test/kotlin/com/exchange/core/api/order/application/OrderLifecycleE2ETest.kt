@@ -11,9 +11,11 @@ import com.exchange.core.order.OrderReservationStatus
 import com.exchange.core.order.OrderReservationStore
 import com.exchange.core.order.Side
 import com.exchange.core.support.ExchangeIntegrationTest
+import jakarta.servlet.ServletException
 import org.junit.jupiter.api.BeforeEach
 import org.springframework.beans.factory.annotation.Autowired
 import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc
+import org.springframework.dao.DataIntegrityViolationException
 import org.springframework.http.MediaType
 import org.springframework.jdbc.core.JdbcTemplate
 import org.springframework.test.web.servlet.MockMvc
@@ -24,6 +26,8 @@ import org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPat
 import org.springframework.test.web.servlet.result.MockMvcResultMatchers.status
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
+import kotlin.test.assertTrue
 
 /**
  * LIMIT/GTC 주문의 HTTP 접수부터 자금 예약, 매칭, 이벤트 저장, 정산과 수수료 원장까지 검증한다.
@@ -334,6 +338,7 @@ class OrderLifecycleE2ETest : ExchangeIntegrationTest() {
                 remainingAmount = Amount.ZERO,
                 remainingFeeReserveAmount = Amount.ZERO,
                 status = OrderReservationStatus.RELEASED,
+                releasedAmount = Amount(202_000),
             ),
             findReservation(BUYER_ORDER_ID),
         )
@@ -346,12 +351,20 @@ class OrderLifecycleE2ETest : ExchangeIntegrationTest() {
 
         assertEquals(
             settledTransactions,
-            jdbcTemplate.queryForList("select * from ledger_transactions order by ledger_transaction_id"),
+            jdbcTemplate.queryForList(
+                "select * from ledger_transactions where transaction_type <> 'RELEASE' order by ledger_transaction_id",
+            ),
         )
+        assertReleasePostings(BUYER_USER_ID, krwAssetId, 202_000)
         assertEquals(
             settledPostings,
             jdbcTemplate.queryForList(
-                "select * from ledger_postings order by ledger_transaction_id, posting_sequence",
+                """
+                select p.* from ledger_postings p
+                join ledger_transactions t on t.ledger_transaction_id = p.ledger_transaction_id
+                where t.transaction_type <> 'RELEASE'
+                order by p.ledger_transaction_id, p.posting_sequence
+                """.trimIndent(),
             ),
         )
         assertEquals(
@@ -423,6 +436,9 @@ class OrderLifecycleE2ETest : ExchangeIntegrationTest() {
             )
 
         val releasedReservation = findReservation(orderId)
+        assertEquals(Amount(202_000), releasedReservation.releasedAmount)
+        assertEquals(activeReservation.feeRemainder, releasedReservation.feeRemainder)
+        assertReleasePostings(BUYER_USER_ID, krwAssetId, 202_000)
 
         assertEquals(
             OrderReservationStatus.RELEASED,
@@ -514,6 +530,8 @@ class OrderLifecycleE2ETest : ExchangeIntegrationTest() {
             )
 
         val releasedReservation = findReservation(orderId)
+        assertEquals(Amount(2), releasedReservation.releasedAmount)
+        assertReleasePostings(SELLER_USER_ID, btcAssetId, 2)
 
         assertEquals(
             OrderReservationStatus.RELEASED,
@@ -539,6 +557,108 @@ class OrderLifecycleE2ETest : ExchangeIntegrationTest() {
             hold = 0,
         )
         assertPersistedFeeRevenue(expectedAmount = 0L)
+    }
+
+    @Test
+    fun `취소 이벤트 저장 뒤 반환 SQL 실패는 자금만 롤백하고 마켓 다음 명령을 차단한다`() {
+        val orderId = OrderId("cancel-write-failure")
+        submitOrder(orderId.value, BUYER_USER_ID, Side.BUY, 100_000, 2).andExpect(status().isOk)
+        val before = cancellationDatabaseState()
+        jdbcTemplate.execute(
+            "alter table ledger_transactions add constraint issue73_http_failure check (transaction_type <> 'RELEASE') not valid",
+        )
+        try {
+            val error =
+                assertFailsWith<ServletException> {
+                    mockMvc.perform(
+                        delete(
+                            "/api/markets/{marketId}/orders/{orderId}",
+                            market.marketId.value,
+                            orderId.value,
+                        ).param("userId", BUYER_USER_ID.value),
+                    )
+                }
+            assertTrue(generateSequence<Throwable>(error) { it.cause }.any { it is DataIntegrityViolationException })
+            assertEquals(before, cancellationDatabaseState())
+            assertEquals(
+                listOf("ORDER_ENTERED_BOOK", "ORDER_CANCELLED"),
+                jdbcTemplate.queryForList(
+                    "select event_type from matching_events order by engine_sequence",
+                    String::class.java,
+                ),
+            )
+            val events = jdbcTemplate.queryForList("select * from matching_events order by engine_sequence")
+            val subsequent =
+                assertFailsWith<ServletException> {
+                    submitOrder("after-cancel-failure", BUYER_USER_ID, Side.BUY, 100_000, 1)
+                }
+            assertTrue(generateSequence<Throwable>(subsequent) { it.cause }.any { it.message.orEmpty().contains("unavailable") })
+            assertEquals(events, jdbcTemplate.queryForList("select * from matching_events order by engine_sequence"))
+            assertEquals(before, cancellationDatabaseState())
+        } finally {
+            jdbcTemplate.execute("alter table ledger_transactions drop constraint issue73_http_failure")
+        }
+    }
+
+    @Test
+    fun `다른 사람과 없는 주문의 취소 거절은 반환 원장과 자금을 변경하지 않는다`() {
+        val orderId = OrderId("cancel-owner-boundary")
+        submitOrder(orderId.value, BUYER_USER_ID, Side.BUY, 100_000, 2).andExpect(status().isOk)
+        val before = cancellationDatabaseState()
+        for ((id, user) in listOf(orderId.value to SELLER_USER_ID, "missing-order" to BUYER_USER_ID)) {
+            mockMvc
+                .perform(delete("/api/markets/{marketId}/orders/{orderId}", market.marketId.value, id).param("userId", user.value))
+                .andExpect(status().isOk)
+                .andExpect(jsonPath("$.events[0].type").value("ORDER_CANCEL_REJECTED"))
+            assertEquals(before, cancellationDatabaseState())
+        }
+        assertEquals(
+            0L,
+            jdbcTemplate.queryForObject("select count(*) from ledger_transactions where transaction_type = 'RELEASE'", Long::class.java),
+        )
+    }
+
+    private fun cancellationDatabaseState(): List<List<Map<String, Any?>>> =
+        listOf(
+            jdbcTemplate.queryForList("select * from order_reservations order by market_id, order_id"),
+            jdbcTemplate.queryForList("select * from balance_projection order by user_id, asset_id"),
+            jdbcTemplate.queryForList("select * from ledger_transactions order by source_event_id"),
+            jdbcTemplate.queryForList("select * from ledger_postings order by posting_id"),
+        )
+
+    private fun assertReleasePostings(
+        userId: UserId,
+        assetId: AssetId,
+        amount: Long,
+    ) {
+        val rows =
+            jdbcTemplate.queryForList(
+                """
+                select p.account_id, p.asset_id, p.side, p.amount from ledger_postings p
+                join ledger_transactions t on t.ledger_transaction_id = p.ledger_transaction_id
+                where t.transaction_type = 'RELEASE' and p.account_id in (?, ?) order by p.posting_sequence
+                """.trimIndent(),
+                "USER:${userId.value}:${assetId.value}:HOLD",
+                "USER:${userId.value}:${assetId.value}:AVAILABLE",
+            )
+        assertEquals(
+            listOf(
+                mapOf(
+                    "account_id" to "USER:${userId.value}:${assetId.value}:HOLD",
+                    "asset_id" to assetId.value,
+                    "side" to "DEBIT",
+                    "amount" to amount,
+                ),
+                mapOf(
+                    "account_id" to "USER:${userId.value}:${assetId.value}:AVAILABLE",
+                    "asset_id" to assetId.value,
+                    "side" to "CREDIT",
+                    "amount" to amount,
+                ),
+            ),
+            rows,
+        )
+        assertLedgerTransactionsBalanced()
     }
 
     /** RESERVE를 SETTLEMENT와 분리해 계정·자산·방향·금액을 확인한다. */

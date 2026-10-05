@@ -21,13 +21,18 @@ import com.exchange.core.order.OrderReservationStore
 import com.exchange.core.order.ReservationRequirement
 import com.exchange.core.order.Side
 import com.exchange.core.support.PostgresTestConfiguration
+import org.flywaydb.core.Flyway
 import org.junit.jupiter.api.BeforeEach
 import org.springframework.beans.factory.annotation.Autowired
 import org.springframework.boot.data.jpa.test.autoconfigure.DataJpaTest
 import org.springframework.boot.jdbc.test.autoconfigure.AutoConfigureTestDatabase
 import org.springframework.context.annotation.Import
+import org.springframework.dao.DataIntegrityViolationException
 import org.springframework.jdbc.core.JdbcTemplate
 import org.springframework.test.annotation.DirtiesContext
+import org.springframework.transaction.annotation.Propagation
+import org.springframework.transaction.annotation.Transactional
+import javax.sql.DataSource
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
@@ -69,9 +74,79 @@ class PostgresOrderReservationStoreTest {
     @Autowired
     private lateinit var store: OrderReservationStore
 
+    @Autowired private lateinit var dataSource: DataSource
+
     @BeforeEach
     fun setUp() {
         jdbcTemplate.update("delete from order_reservations")
+    }
+
+    @Test
+    @Transactional(propagation = Propagation.NOT_SUPPORTED)
+    fun `V8 migration은 기존 예약을 보존하고 반환액을 추측하지 않는다`() {
+        val schema = "issue73_migration"
+        try {
+            Flyway
+                .configure()
+                .dataSource(dataSource)
+                .schemas(schema)
+                .defaultSchema(schema)
+                .target("7")
+                .load()
+                .migrate()
+            for (status in listOf("ACTIVE", "SETTLED", "RELEASED")) {
+                jdbcTemplate.update(
+                    """
+                    insert into $schema.order_reservations (
+                        market_id, order_id, user_id, side, asset_id, limit_price,
+                        initial_quantity, remaining_quantity, reserved_amount, remaining_amount,
+                        fee_product_type, fee_tier, fee_schedule_version, maker_fee_rate_ppm, taker_fee_rate_ppm,
+                        initial_fee_reserve_amount, remaining_fee_reserve_amount, fee_remainder_numerator, status
+                    ) values ('BTC-KRW', ?, 'user-1', 'BUY', 'KRW', 100, 3, ?, 300, ?,
+                        'SPOT', 'NORMAL', 1, 0, 0, 0, 0, 0, ?)
+                    """.trimIndent(),
+                    status,
+                    if (status == "SETTLED") 0 else 2,
+                    if (status == "ACTIVE") 200 else 0,
+                    status,
+                )
+            }
+            val before = jdbcTemplate.queryForList("select * from $schema.order_reservations order by order_id")
+            Flyway
+                .configure()
+                .dataSource(dataSource)
+                .schemas(schema)
+                .defaultSchema(schema)
+                .load()
+                .migrate()
+            val after = jdbcTemplate.queryForList("select * from $schema.order_reservations order by order_id")
+            assertEquals(before, after.map { it.filterKeys { key -> key != "released_amount" } })
+            assertEquals(listOf(null, null, null), after.map { it["released_amount"] })
+            jdbcTemplate.update("update $schema.order_reservations set released_amount = 200 where status = 'RELEASED'")
+            for ((status, amount) in listOf("ACTIVE" to 1, "SETTLED" to 1, "RELEASED" to 0, "RELEASED" to 301)) {
+                assertFailsWith<DataIntegrityViolationException> {
+                    jdbcTemplate.update("update $schema.order_reservations set released_amount = ? where status = ?", amount, status)
+                }
+            }
+            assertEquals(
+                200L,
+                jdbcTemplate.queryForObject(
+                    "select released_amount from $schema.order_reservations where status = 'RELEASED'",
+                    Long::class.java,
+                ),
+            )
+        } finally {
+            jdbcTemplate.execute("drop schema if exists $schema cascade")
+        }
+    }
+
+    @Test
+    fun `이미 반환한 예약을 저장하면 반환액을 조회에서도 보존한다`() {
+        val released = reservation().release()
+        store.create(released)
+        assertEquals(released, store.find(released.marketId, released.orderId))
+        assertEquals(released.remainingQuantity, store.findForUpdate(released.marketId, released.orderId)!!.remainingQuantity)
+        assertEquals(released.releasedAmount, store.findForUpdate(released.marketId, released.orderId)!!.releasedAmount)
     }
 
     @Test
