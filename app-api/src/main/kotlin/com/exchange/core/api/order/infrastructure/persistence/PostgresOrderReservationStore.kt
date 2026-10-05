@@ -28,7 +28,7 @@ import org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate
  *
  * `(market_id, order_id)`를 주문 예약의 business key로 사용한다. 생성 시에는 최초 값 전체를
  * 저장하고, 이후 체결 또는 취소에서는 변경 가능한 `remaining_quantity`, `remaining_amount`,
- * `remaining_fee_reserve_amount`, `fee_remainder_numerator`, `status`와 갱신 시각을 변경한다.
+ * `remaining_fee_reserve_amount`, `fee_remainder_numerator`, `status`, `released_amount`와 갱신 시각을 변경한다.
  * 수수료 소수 나머지는 [FeeRemainder.numerator]를 정수로 저장해 다음 조회에서도 복원한다.
  *
  * @property jdbcTemplate 이름 기반 SQL parameter와 row mapping을 제공하는 Spring JDBC 도구
@@ -37,7 +37,7 @@ open class PostgresOrderReservationStore(
     private val jdbcTemplate: NamedParameterJdbcTemplate,
 ) : OrderReservationStore {
     /**
-     * 새 주문 예약의 최초 상태를 insert한다.
+     * 전달받은 주문 예약 상태와 알려진 취소 반환액을 insert한다.
      *
      * 수수료 소수 나머지의 분자도 명시적으로 저장하며 DB 기본값에 의존하지 않는다.
      *
@@ -67,7 +67,8 @@ open class PostgresOrderReservationStore(
                     initial_fee_reserve_amount,
                     remaining_fee_reserve_amount,
                     fee_remainder_numerator,
-                    status
+                    status,
+                    released_amount
                 ) values (
                     :marketId,
                     :orderId,
@@ -87,7 +88,8 @@ open class PostgresOrderReservationStore(
                     :initialFeeReserveAmount,
                     :remainingFeeReserveAmount,
                     :feeRemainderNumerator,
-                    :status
+                    :status,
+                    :releasedAmount
                 )
                 """.trimIndent(),
                 mapOf(
@@ -112,6 +114,7 @@ open class PostgresOrderReservationStore(
                     "remainingFeeReserveAmount" to reservation.remainingFeeReserveAmount.value,
                     "feeRemainderNumerator" to reservation.feeRemainder.numerator,
                     "status" to reservation.status.name,
+                    "releasedAmount" to reservation.releasedAmount?.value,
                 ),
             )
         } catch (error: DuplicateKeyException) {
@@ -180,6 +183,7 @@ open class PostgresOrderReservationStore(
                     remaining_fee_reserve_amount = :remainingFeeReserveAmount,
                     fee_remainder_numerator = :feeRemainderNumerator,
                     status = :status,
+                    released_amount = :releasedAmount,
                     updated_at = current_timestamp
                 where market_id = :marketId
                   and order_id = :orderId
@@ -192,6 +196,7 @@ open class PostgresOrderReservationStore(
                     "remainingFeeReserveAmount" to reservation.remainingFeeReserveAmount.value,
                     "feeRemainderNumerator" to reservation.feeRemainder.numerator,
                     "status" to reservation.status.name,
+                    "releasedAmount" to reservation.releasedAmount?.value,
                 ),
             )
 
@@ -247,7 +252,8 @@ open class PostgresOrderReservationStore(
                    initial_fee_reserve_amount,
                    remaining_fee_reserve_amount,
                    fee_remainder_numerator,
-                   status
+                   status,
+                   released_amount
             from order_reservations
             where market_id = :marketId
               and order_id = :orderId
@@ -310,6 +316,7 @@ open class PostgresOrderReservationStore(
                 remainingFeeReserveAmount =
                     Amount(resultSet.getLong("remaining_fee_reserve_amount")),
                 status = OrderReservationStatus.valueOf(resultSet.getString("status")),
+                releasedAmount = (resultSet.getObject("released_amount") as? Number)?.let { Amount(it.toLong()) },
                 feeRemainder =
                     FeeRemainder(
                         resultSet.getLong("fee_remainder_numerator"),

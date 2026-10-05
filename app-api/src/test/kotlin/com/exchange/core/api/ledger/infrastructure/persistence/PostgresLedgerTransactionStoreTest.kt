@@ -14,6 +14,7 @@ import org.springframework.beans.factory.annotation.Autowired
 import org.springframework.boot.data.jpa.test.autoconfigure.DataJpaTest
 import org.springframework.boot.jdbc.test.autoconfigure.AutoConfigureTestDatabase
 import org.springframework.context.annotation.Import
+import org.springframework.dao.DataAccessException
 import org.springframework.dao.DataIntegrityViolationException
 import org.springframework.dao.DuplicateKeyException
 import org.springframework.jdbc.core.JdbcTemplate
@@ -55,6 +56,28 @@ class PostgresLedgerTransactionStoreTest {
     fun setUp() {
         jdbcTemplate.update("delete from ledger_postings")
         jdbcTemplate.update("delete from ledger_transactions")
+    }
+
+    @Test
+    fun `항목 없는 헤더는 미존재가 아니라 불완전한 원장 오류다`() {
+        jdbcTemplate.update(
+            "insert into ledger_transactions (ledger_transaction_id, source_event_id, transaction_type, occurred_at) values (?, ?, 'RELEASE', current_timestamp)",
+            "header-only",
+            "incomplete-source",
+        )
+        val before = jdbcTemplate.queryForList("select * from ledger_transactions")
+        assertFailsWith<IllegalStateException> { store.findBySourceEventId("incomplete-source") }
+        assertEquals(before, jdbcTemplate.queryForList("select * from ledger_transactions"))
+    }
+
+    @Test
+    fun `조회 SQL 실패는 원장 없음으로 반환하지 않는다`() {
+        jdbcTemplate.execute("alter table ledger_postings rename to issue73_hidden_postings")
+        try {
+            assertFailsWith<DataAccessException> { store.findBySourceEventId("any-source") }
+        } finally {
+            jdbcTemplate.execute("alter table issue73_hidden_postings rename to ledger_postings")
+        }
     }
 
     @Test
@@ -126,6 +149,13 @@ class PostgresLedgerTransactionStoreTest {
             )
 
         assertEquals(transaction.postings, savedPostings)
+        val found = checkNotNull(store.findBySourceEventId(transaction.sourceEventId))
+        assertEquals(transaction.ledgerTransactionId, found.ledgerTransactionId)
+        assertEquals(transaction.sourceEventId, found.sourceEventId)
+        assertEquals(transaction.transactionType, found.transactionType)
+        assertEquals(transaction.occurredAt, found.occurredAt)
+        assertEquals(transaction.postings, found.postings)
+        assertEquals(null, store.findBySourceEventId("missing-event"))
     }
 
     @Test

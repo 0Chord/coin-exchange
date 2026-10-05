@@ -161,10 +161,27 @@ class OrderReservationTest {
                 remainingAmount = Amount.ZERO,
                 remainingFeeReserveAmount = Amount.ZERO,
                 status = OrderReservationStatus.RELEASED,
+                releasedAmount = original.remainingAmount,
             ),
             released,
         )
         assertEquals(original, reservation)
+    }
+
+    @Test
+    fun `반환액은 RELEASED에서만 양수이고 최초 예약액 이내여야 한다`() {
+        val active = activeReservation()
+        assertFailsWith<IllegalArgumentException> { active.copy(releasedAmount = Amount(1)) }
+        val released = active.release()
+        assertEquals(active.remainingAmount, released.releasedAmount)
+        assertEquals(null, active.releasedAmount)
+        assertFailsWith<IllegalArgumentException> { released.copy(releasedAmount = Amount.ZERO) }
+        assertFailsWith<IllegalArgumentException> { released.copy(releasedAmount = Amount(active.reservedAmount.value + 1)) }
+        assertFailsWith<IllegalArgumentException> {
+            released.copy(status = OrderReservationStatus.SETTLED, remainingQuantity = Quantity.ZERO)
+        }
+        // 과거 RELEASED의 null은 읽을 수 있지만 성공한 해제의 근거는 아니다.
+        assertEquals(null, released.copy(releasedAmount = null).releasedAmount)
     }
 
     @Test
@@ -463,6 +480,7 @@ class OrderReservationTest {
                 remainingAmount = Amount.ZERO,
                 remainingFeeReserveAmount = Amount.ZERO,
                 status = OrderReservationStatus.RELEASED,
+                releasedAmount = original.remainingAmount,
             ),
             released,
         )

@@ -1,9 +1,15 @@
 package com.exchange.core.api.ledger.infrastructure.persistence
 
+import com.exchange.core.common.Amount
+import com.exchange.core.common.AssetId
+import com.exchange.core.ledger.LedgerPosting
+import com.exchange.core.ledger.LedgerPostingSide
 import com.exchange.core.ledger.LedgerTransaction
 import com.exchange.core.ledger.LedgerTransactionStore
+import com.exchange.core.ledger.LedgerTransactionType
 import org.springframework.dao.DataIntegrityViolationException
 import org.springframework.dao.DuplicateKeyException
+import org.springframework.jdbc.core.ResultSetExtractor
 import org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate
 import org.springframework.transaction.annotation.Transactional
 import java.sql.Timestamp
@@ -85,4 +91,51 @@ open class PostgresLedgerTransactionStore(
             )
         }
     }
+
+    /** 한 SQL snapshot으로 헤더와 항목을 읽으며, 항목 없는 헤더를 미존재로 숨기지 않는다. */
+    override fun findBySourceEventId(sourceEventId: String): LedgerTransaction? =
+        jdbcTemplate.query(
+            """
+            select t.ledger_transaction_id, t.source_event_id, t.transaction_type, t.occurred_at,
+                   p.posting_id, p.account_id, p.asset_id, p.side, p.amount
+            from ledger_transactions t
+            left join ledger_postings p on p.ledger_transaction_id = t.ledger_transaction_id
+            where t.source_event_id = :sourceEventId
+            order by p.posting_sequence
+            """.trimIndent(),
+            mapOf("sourceEventId" to sourceEventId),
+            ResultSetExtractor { rows ->
+                if (!rows.next()) {
+                    null
+                } else {
+                    val id = rows.getString("ledger_transaction_id")
+                    val source = rows.getString("source_event_id")
+                    val type = rows.getString("transaction_type")
+                    val occurredAt = rows.getTimestamp("occurred_at").toInstant()
+                    try {
+                        val postings = mutableListOf<LedgerPosting>()
+                        do {
+                            check(rows.getObject("posting_id") != null) { "ledger header has no postings: $source" }
+                            postings +=
+                                LedgerPosting(
+                                    accountId = rows.getString("account_id"),
+                                    assetId = AssetId(rows.getString("asset_id")),
+                                    side = LedgerPostingSide.valueOf(rows.getString("side")),
+                                    amount = Amount(rows.getLong("amount")),
+                                )
+                        } while (rows.next())
+                        LedgerTransaction(
+                            id,
+                            source,
+                            com.exchange.core.ledger.LedgerTransactionType
+                                .valueOf(type),
+                            occurredAt,
+                            postings,
+                        )
+                    } catch (error: IllegalArgumentException) {
+                        throw IllegalStateException("ledger record is invalid: $source", error)
+                    }
+                }
+            },
+        )
 }

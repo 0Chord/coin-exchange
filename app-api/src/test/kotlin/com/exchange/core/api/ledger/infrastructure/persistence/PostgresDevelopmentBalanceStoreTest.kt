@@ -231,7 +231,7 @@ class PostgresDevelopmentBalanceStoreTest {
         // 두 트랜잭션이 모두 원본 부재를 읽고 INSERT 직전에 만나게 해 고유 제약 경로를 강제한다.
         val arrived = CountDownLatch(2)
         val writer =
-            object : LedgerTransactionStore {
+            object : LedgerTransactionStore by ledgerStore {
                 override fun append(transaction: LedgerTransaction) {
                     arrived.countDown()
                     check(arrived.await(10, TimeUnit.SECONDS))
@@ -258,7 +258,7 @@ class PostgresDevelopmentBalanceStoreTest {
 
     @Test fun `첫 원장 항목 저장 뒤 실제 SQL 실패는 새 영 잔고와 원장 모두 롤백한다`() {
         val failing =
-            object : LedgerTransactionStore {
+            object : LedgerTransactionStore by ledgerStore {
                 override fun append(transaction: LedgerTransaction) {
                     // 원래 writer가 첫 항목을 실제로 쓴 뒤 두 번째 varchar 제약에서 실패하도록 입력만 바꾼다.
                     ledgerStore.append(
@@ -318,7 +318,7 @@ class PostgresDevelopmentBalanceStoreTest {
         useCase.prepare("seller-seed", UserId("seller"), krw, Amount(700))
         val existing = jdbc.queryForObject("select ledger_transaction_id from ledger_transactions", String::class.java)!!
         val writer =
-            object : LedgerTransactionStore {
+            object : LedgerTransactionStore by ledgerStore {
                 override fun append(transaction: LedgerTransaction) =
                     ledgerStore.append(
                         LedgerTransaction(

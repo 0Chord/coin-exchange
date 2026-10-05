@@ -25,6 +25,8 @@ import com.exchange.core.order.ReservationRequirement
 import com.exchange.core.order.Side
 import com.exchange.core.support.PostgresTestConfiguration
 import org.junit.jupiter.api.BeforeEach
+import org.junit.jupiter.params.ParameterizedTest
+import org.junit.jupiter.params.provider.ValueSource
 import org.springframework.beans.factory.annotation.Autowired
 import org.springframework.boot.data.jpa.test.autoconfigure.DataJpaTest
 import org.springframework.boot.jdbc.test.autoconfigure.AutoConfigureTestDatabase
@@ -967,7 +969,13 @@ class TradeSettlementServiceTest {
         assertPersistedBalance(BUYER_USER_ID, BTC_ASSET_ID, 2, 0)
         assertPersistedBalance(SELLER_USER_ID, KRW_ASSET_ID, 102, 0)
         assertPersistedBalance(SELLER_USER_ID, BTC_ASSET_ID, 8, 0)
-        assertEquals(postingsBeforeRelease, readPostings())
+        val releaseIds = readLedgerTransactions().filter { it["transaction_type"] == "RELEASE" }.map { it["ledger_transaction_id"] }.toSet()
+        assertEquals(2, releaseIds.size)
+        assertEquals(postingsBeforeRelease, readPostings().filter { it["ledger_transaction_id"] !in releaseIds })
+        assertEquals(Amount(155), buyer.releasedAmount)
+        assertEquals(Amount(3), seller.releasedAmount)
+        assertCancellationPostings(BUYER_USER_ID, KRW_ASSET_ID, 155)
+        assertCancellationPostings(SELLER_USER_ID, BTC_ASSET_ID, 3)
         assertSettlementLedger(expectedTransactionCount = 2, expectedFeeRevenue = 1)
     }
 
@@ -1080,6 +1088,97 @@ class TradeSettlementServiceTest {
         )
 
     /** 직전 서비스 트랜잭션이 커밋한 예약을 DB에서 다시 읽는다. */
+    @ParameterizedTest
+    @ValueSource(longs = [100, 80])
+    fun `300 예약 중 한 개 체결 뒤 취소는 체결 반환과 잔여 취소를 중복 기록하지 않는다`(tradePrice: Long) {
+        jdbcTemplate.update("delete from order_reservations")
+        jdbcTemplate.update(
+            "update balance_projection set available = 1000, hold = 0 where user_id = ? and asset_id = ?",
+            BUYER_USER_ID.value,
+            KRW_ASSET_ID.value,
+        )
+        jdbcTemplate.update(
+            "update balance_projection set available = 10, hold = 0 where user_id = ? and asset_id = ?",
+            SELLER_USER_ID.value,
+            BTC_ASSET_ID.value,
+        )
+        fundingService.reserve(MARKET, BUYER_ORDER_ID, BUYER_USER_ID, Side.BUY, Price(100), Quantity(3), feeFreePolicySnapshot)
+        fundingService.reserve(MARKET, SELLER_ORDER_ID, SELLER_USER_ID, Side.SELL, Price(tradePrice), Quantity(3), feeFreePolicySnapshot)
+        service.settle(
+            MARKET,
+            TradeExecuted(
+                marketId = MARKET.marketId,
+                engineSequence = 1,
+                makerOrderId = SELLER_ORDER_ID,
+                takerOrderId = BUYER_ORDER_ID,
+                makerUserId = SELLER_USER_ID,
+                takerUserId = BUYER_USER_ID,
+                side = Side.BUY,
+                price = Price(tradePrice),
+                quantity = Quantity(1),
+            ),
+        )
+        val before = readLedgerTransactions()
+        val beforePostings = readPostings()
+        assertEquals(0, before.count { it["transaction_type"] == "RELEASE" })
+        assertPersistedBalance(BUYER_USER_ID, KRW_ASSET_ID, 800 - tradePrice, 200)
+        val settlementIds = before.filter { it["transaction_type"] == "SETTLEMENT" }.map { it["ledger_transaction_id"] }.toSet()
+        val priceReturn =
+            beforePostings.filter {
+                it["ledger_transaction_id"] in settlementIds &&
+                    it["account_id"] == "USER:buyer:KRW:AVAILABLE"
+            }
+        assertEquals(if (tradePrice == 80L) listOf(20L) else emptyList(), priceReturn.map { (it["amount"] as Number).toLong() })
+        val buyer = releaseService.release(MARKET.marketId, BUYER_ORDER_ID)
+        val seller = releaseService.release(MARKET.marketId, SELLER_ORDER_ID)
+        assertEquals(Amount(200), buyer.releasedAmount)
+        assertEquals(Amount(2), seller.releasedAmount)
+        assertPersistedBalance(BUYER_USER_ID, KRW_ASSET_ID, 1000 - tradePrice, 0)
+        assertPersistedBalance(SELLER_USER_ID, BTC_ASSET_ID, 9, 0)
+        assertPersistedBalance(SELLER_USER_ID, KRW_ASSET_ID, tradePrice, 0)
+        assertPersistedBalance(BUYER_USER_ID, BTC_ASSET_ID, 1, 0)
+        val releaseIds = readLedgerTransactions().filter { it["transaction_type"] == "RELEASE" }.map { it["ledger_transaction_id"] }.toSet()
+        assertEquals(2, releaseIds.size)
+        assertEquals(before, readLedgerTransactions().filter { it["ledger_transaction_id"] !in releaseIds })
+        assertEquals(beforePostings, readPostings().filter { it["ledger_transaction_id"] !in releaseIds })
+        assertCancellationPostings(BUYER_USER_ID, KRW_ASSET_ID, 200)
+        assertCancellationPostings(SELLER_USER_ID, BTC_ASSET_ID, 2)
+    }
+
+    private fun assertCancellationPostings(
+        userId: UserId,
+        assetId: AssetId,
+        amount: Long,
+    ) {
+        val rows =
+            jdbcTemplate.queryForList(
+                """
+                select p.account_id, p.asset_id, p.side, p.amount from ledger_postings p
+                join ledger_transactions t on t.ledger_transaction_id = p.ledger_transaction_id
+                where t.transaction_type = 'RELEASE' and p.account_id in (?, ?) order by p.posting_sequence
+                """.trimIndent(),
+                "USER:${userId.value}:${assetId.value}:HOLD",
+                "USER:${userId.value}:${assetId.value}:AVAILABLE",
+            )
+        assertEquals(
+            listOf(
+                mapOf(
+                    "account_id" to "USER:${userId.value}:${assetId.value}:HOLD",
+                    "asset_id" to assetId.value,
+                    "side" to "DEBIT",
+                    "amount" to amount,
+                ),
+                mapOf(
+                    "account_id" to "USER:${userId.value}:${assetId.value}:AVAILABLE",
+                    "asset_id" to assetId.value,
+                    "side" to "CREDIT",
+                    "amount" to amount,
+                ),
+            ),
+            rows,
+        )
+    }
+
     private fun readReservation(orderId: OrderId): OrderReservation = requireNotNull(reservationStore.find(MARKET.marketId, orderId))
 
     /** 실패 전후의 실제 DB 행 전체를 비교한다. */

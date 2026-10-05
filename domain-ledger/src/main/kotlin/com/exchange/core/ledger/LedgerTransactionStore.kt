@@ -14,4 +14,10 @@ interface LedgerTransactionStore {
      * @param transaction 자산별 차변·대변 균형 검증을 마친 원장 거래
      */
     fun append(transaction: LedgerTransaction)
+
+    /**
+     * 원본 식별자로 거래와 전체 항목을 읽는다. 헤더가 없을 때만 null이다.
+     * 헤더만 남았거나 항목이 손상된 기록, 조회 실패는 오류로 전달해야 한다.
+     */
+    fun findBySourceEventId(sourceEventId: String): LedgerTransaction?
 }

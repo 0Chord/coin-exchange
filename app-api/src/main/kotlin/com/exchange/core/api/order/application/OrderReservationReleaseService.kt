@@ -1,75 +1,120 @@
 package com.exchange.core.api.order.application
 
+import com.exchange.core.common.Amount
 import com.exchange.core.common.MarketId
 import com.exchange.core.common.OrderId
 import com.exchange.core.ledger.BalanceStore
+import com.exchange.core.ledger.LedgerPosting
+import com.exchange.core.ledger.LedgerPostingSide
+import com.exchange.core.ledger.LedgerTransaction
+import com.exchange.core.ledger.LedgerTransactionStore
+import com.exchange.core.ledger.LedgerTransactionType
 import com.exchange.core.order.OrderReservation
 import com.exchange.core.order.OrderReservationNotFoundException
 import com.exchange.core.order.OrderReservationStatus
 import com.exchange.core.order.OrderReservationStore
 import org.springframework.transaction.annotation.Transactional
+import java.nio.ByteBuffer
+import java.security.MessageDigest
+import java.time.Instant
+import java.util.UUID
 
 /**
- * 주문 취소 후 남은 주문별 예약과 사용자 Balance hold를 함께 해제하는 application service.
+ * 취소 반환액·예약 상태·잔고 이동·RELEASE 기록을 같은 트랜잭션에서 저장한다.
+ * 예약 잠금으로 체결·반복 해제를 직렬화하며, 완료 기록이 모순되면 임의로 보정하지 않는다.
+ * 주문장 취소와 이벤트 저장은 앞선 별도 경계이므로 이 트랜잭션의 롤백 대상이 아니다.
  *
- * 같은 주문에 대한 체결 또는 중복 취소와 경쟁하지 않도록 reservation row를 `FOR UPDATE`로
- * 잠근다. 주문 예약의 남은 금액을 0으로 저장하고 같은 금액을 `hold -> available`로 옮기는
- * 작업은 하나의 Spring 트랜잭션에서 처리된다.
- *
- * @property balanceStore 실제 사용자 잔고의 hold를 반환하는 포트
- * @property reservationStore 주문별 남은 예약 금액을 잠금·갱신하는 포트
+ * @property balanceStore 실제 hold를 available로 이동하는 포트
+ * @property reservationStore 주문별 예약을 잠금·갱신하는 포트
+ * @property ledgerTransactionStore 완료 근거를 읽고 반환 원장을 추가하는 포트
  */
 open class OrderReservationReleaseService(
     private val balanceStore: BalanceStore,
     private val reservationStore: OrderReservationStore,
+    private val ledgerTransactionStore: LedgerTransactionStore,
 ) {
     /**
-     * ACTIVE 주문의 남은 예약 금액 전부를 해제한다.
+     * ACTIVE 예약의 잔액을 한 번 반환한다. RELEASED는 금액·계정·자산·방향까지 대조한다.
+     * 외부 트랜잭션이 있으면 참여하므로 메서드 반환이 커밋을 의미하지 않는다.
      *
-     * 이미 RELEASED라면 Balance를 다시 증가시키지 않고 저장된 값을 그대로 반환하여
-     * 멱등성을 보장한다. SETTLED 주문은 반환할 예약이 없으므로 domain
-     * [OrderReservation.release] 검증에 따라 실패한다.
-     *
-     * @param marketId 취소된 주문이 속한 마켓
-     * @param orderId 예약을 해제할 주문
-     * @return remainingAmount가 0이고 RELEASED인 주문 예약
-     * @throws OrderReservationNotFoundException 주문 예약이 없는 경우
-     * @throws IllegalStateException SETTLED 예약을 해제하려는 경우
-     * @throws com.exchange.core.ledger.InsufficientHoldException 실제 hold가 예약 잔액보다 적은 경우
+     * @return 최초 해제 또는 정확한 완료 근거가 있는 원본 예약
+     * @throws OrderReservationNotFoundException 예약이 없는 경우
+     * @throws IllegalStateException 전량 체결된 예약이거나 완료 근거가 없거나 모순인 경우
      */
     @Transactional
     open fun release(
         marketId: MarketId,
         orderId: OrderId,
     ): OrderReservation {
-        // 잠금 조회부터 update와 Balance 반환까지 같은 트랜잭션 안에 유지한다.
         val reservation =
-            reservationStore.findForUpdate(
-                marketId = marketId,
-                orderId = orderId,
-            ) ?: throw OrderReservationNotFoundException(
-                marketId = marketId,
-                orderId = orderId,
-            )
+            reservationStore.findForUpdate(marketId, orderId)
+                ?: throw OrderReservationNotFoundException(marketId, orderId)
+        val sourceId = releaseSourceId(reservation)
+        val existing = ledgerTransactionStore.findBySourceEventId(sourceId)
 
         if (reservation.status == OrderReservationStatus.RELEASED) {
-            // 재시도 요청에서 동일 금액을 두 번 available로 돌려놓지 않는다.
+            val amount = checkNotNull(reservation.releasedAmount) { "released amount is unknown: $sourceId" }
+            checkNotNull(existing) { "release ledger is missing: $sourceId" }
+            check(existing.sourceEventId == sourceId && existing.transactionType == LedgerTransactionType.RELEASE) {
+                "release ledger source or type differs: $sourceId"
+            }
+            // 합계 균형만으로는 다른 계정·금액의 기록을 완료로 볼 수 없다. 행 순서는 의미가 없다.
+            check(existing.postings.size == 2 && existing.postings.toSet() == releasePostings(reservation, amount).toSet()) {
+                "release ledger account, asset, side or amount differs: $sourceId"
+            }
             return reservation
         }
 
-        // domain 객체를 0으로 바꾸기 전에 실제 Balance에 돌려줄 기존 잔액을 보관한다.
-        val amountToRelease = reservation.remainingAmount
+        check(existing == null) { "release ledger exists for ${reservation.status} reservation: $sourceId" }
         val released = reservation.release()
-
+        val amount = checkNotNull(released.releasedAmount)
         reservationStore.update(released)
+        balanceStore.release(reservation.userId, reservation.assetId, amount)
+        // UNIQUE 충돌도 오류로 전달한다. 앞선 예약 갱신·잔고 이동과 부분 원장을 함께 롤백한다.
+        ledgerTransactionStore.append(
+            LedgerTransaction(
+                ledgerTransactionId = UUID.randomUUID().toString(),
+                sourceEventId = sourceId,
+                transactionType = LedgerTransactionType.RELEASE,
+                occurredAt = Instant.now(),
+                postings = releasePostings(reservation, amount),
+            ),
+        )
+        return released
+    }
 
-        // 실패하면 위 reservation update도 같은 트랜잭션에서 rollback된다.
-        balanceStore.release(
-            userId = reservation.userId,
-            assetId = reservation.assetId,
-            amount = amountToRelease,
+    private fun releasePostings(
+        reservation: OrderReservation,
+        amount: Amount,
+    ): List<LedgerPosting> =
+        listOf(
+            LedgerPosting(
+                accountId = "USER:${reservation.userId.value}:${reservation.assetId.value}:HOLD",
+                assetId = reservation.assetId,
+                side = LedgerPostingSide.DEBIT,
+                amount = amount,
+            ),
+            LedgerPosting(
+                accountId = "USER:${reservation.userId.value}:${reservation.assetId.value}:AVAILABLE",
+                assetId = reservation.assetId,
+                side = LedgerPostingSide.CREDIT,
+                amount = amount,
+            ),
         )
 
-        return released
+    /** 원본 UTF-8 길이를 붙여 콜론 포함 식별자를 구분하고, 기존 컬럼의 길이 제한 안에 저장한다. */
+    private fun releaseSourceId(reservation: OrderReservation): String {
+        val market = reservation.marketId.value.toByteArray(Charsets.UTF_8)
+        val order = reservation.orderId.value.toByteArray(Charsets.UTF_8)
+        val input =
+            ByteBuffer
+                .allocate(Int.SIZE_BYTES * 2 + market.size + order.size)
+                .putInt(market.size)
+                .put(market)
+                .putInt(order.size)
+                .put(order)
+                .array()
+        val digest = MessageDigest.getInstance("SHA-256").digest(input)
+        return "RELEASE:v1:${digest.joinToString("") { "%02x".format(it) }}"
     }
 }
