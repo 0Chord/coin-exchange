@@ -6,6 +6,7 @@ import com.exchange.core.common.UserId
 import com.exchange.core.ledger.Balance
 import com.exchange.core.ledger.LedgerPosting
 import com.exchange.core.ledger.LedgerPostingSide
+import com.exchange.core.ledger.LedgerReconciliation
 import com.exchange.core.ledger.LedgerReconciliationScope
 import com.exchange.core.ledger.LedgerReconciliationSnapshot
 import com.exchange.core.ledger.LedgerReconciliationStore
@@ -56,9 +57,17 @@ class PostgresLedgerReconciliationStore(
                     val rows = jdbc.query(LEDGER_SQL, emptyMap<String, Any>()) { row, _ -> rawLedger(row) }
                     val transactions =
                         rows.groupBy { it.id }.mapNotNull { (id, entries) ->
-                            record(problems, "원장/$id") {
+                            val owners =
+                                entries
+                                    .mapNotNull { entry ->
+                                        val asset = entry.asset?.takeIf { it.isNotBlank() }?.let(::AssetId) ?: return@mapNotNull null
+                                        val user =
+                                            entry.account?.let { LedgerReconciliation.parseUserAccount(it, asset)?.first }
+                                                ?: return@mapNotNull null
+                                        user to asset
+                                    }.distinct()
+                            record(problems, "원장/$id", owners) {
                                 val header = entries.first()
-                                require(header.id.isNotBlank() && header.source.isNotBlank()) { "원장 식별자가 비어 있습니다" }
                                 require(entries.map { it.sequence } == (1..entries.size).toList()) { "분개가 누락됐거나 순서가 유효하지 않습니다" }
                                 LedgerTransaction(
                                     header.id,
@@ -84,7 +93,7 @@ class PostgresLedgerReconciliationStore(
                                 "select user_id, asset_id, available, hold from balance_projection where asset_id in (:assets) order by user_id, asset_id",
                                 parameters,
                             ) { row, _ ->
-                                record(problems, "잔고/${row.getString("user_id")}/${row.getString("asset_id")}") {
+                                record(problems, "잔고/${row.getString("user_id")}/${row.getString("asset_id")}", owners(row)) {
                                     Balance(
                                         UserId(row.getString("user_id")),
                                         AssetId(row.getString("asset_id")),
@@ -100,7 +109,7 @@ class PostgresLedgerReconciliationStore(
                                 "select market_id, order_id, user_id, asset_id, status, remaining_amount from order_reservations where asset_id in (:assets) order by market_id, order_id",
                                 parameters,
                             ) { row, _ ->
-                                record(problems, "예약/${row.getString("market_id")}/${row.getString("order_id")}") {
+                                record(problems, "예약/${row.getString("market_id")}/${row.getString("order_id")}", owners(row)) {
                                     ReservationHold(
                                         row.getString("market_id"),
                                         row.getString("order_id"),
@@ -132,14 +141,28 @@ class PostgresLedgerReconciliationStore(
     private fun <T> record(
         problems: MutableList<ReconciliationDifference>,
         source: String,
+        owners: List<Pair<UserId, AssetId>> = emptyList(),
         convert: () -> T,
     ): T? =
         try {
             convert()
         } catch (failure: IllegalArgumentException) {
-            problems += ReconciliationDifference(ReconciliationItem.INVALID_RECORD, source = source, reason = failure.message)
+            if (owners.isEmpty()) {
+                problems += ReconciliationDifference(ReconciliationItem.INVALID_RECORD, source = source, reason = failure.message)
+            } else {
+                for ((user, asset) in owners) {
+                    problems +=
+                        ReconciliationDifference(ReconciliationItem.INVALID_RECORD, user, asset, source = source, reason = failure.message)
+                }
+            }
             null
         }
+
+    private fun owners(row: ResultSet): List<Pair<UserId, AssetId>> {
+        val user = row.getString("user_id").takeIf { it.isNotBlank() } ?: return emptyList()
+        val asset = row.getString("asset_id").takeIf { it.isNotBlank() } ?: return emptyList()
+        return listOf(UserId(user) to AssetId(asset))
+    }
 
     private fun rawLedger(row: ResultSet) =
         RawLedger(

@@ -18,8 +18,13 @@ import com.exchange.core.fee.FeeRate
 import com.exchange.core.fee.FeeTier
 import com.exchange.core.fee.MakerTakerFeeRates
 import com.exchange.core.fee.TradingFeePolicySnapshot
+import com.exchange.core.ledger.LedgerPosting
+import com.exchange.core.ledger.LedgerPostingSide
 import com.exchange.core.ledger.LedgerReconciliationReport
 import com.exchange.core.ledger.LedgerReconciliationScope
+import com.exchange.core.ledger.LedgerTransaction
+import com.exchange.core.ledger.LedgerTransactionStore
+import com.exchange.core.ledger.LedgerTransactionType
 import com.exchange.core.ledger.ReconciliationFailure
 import com.exchange.core.ledger.ReconciliationItem
 import com.exchange.core.ledger.ReconciliationStatus
@@ -41,12 +46,14 @@ import org.springframework.transaction.annotation.Propagation
 import org.springframework.transaction.annotation.Transactional
 import org.springframework.transaction.support.TransactionTemplate
 import java.math.BigInteger
+import java.time.Instant
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 import javax.sql.DataSource
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
@@ -73,6 +80,9 @@ class PostgresLedgerReconciliationStoreTest {
     @Autowired private lateinit var transactionManager: PlatformTransactionManager
 
     @Autowired private lateinit var dataSource: DataSource
+
+    @Autowired private lateinit var ledgerStore: LedgerTransactionStore
+
     private val buyer = UserId("buyer")
     private val seller = UserId("seller")
     private val btc = AssetId("BTC")
@@ -187,6 +197,14 @@ class PostgresLedgerReconciliationStoreTest {
             report.accounts.associate { "${it.userId.value}/${it.assetId.value}" to it.available!!.longValueExact() },
         )
         assertEquals(before, databaseContents())
+        jdbc.update("update balance_projection set available=901 where user_id='buyer' and asset_id='KRW'")
+        val damaged = databaseContents()
+        val difference = result().differences.single()
+        assertEquals(ReconciliationItem.AVAILABLE, difference.item)
+        assertEquals(number(900), difference.expected)
+        assertEquals(number(901), difference.actual)
+        assertEquals(number(1), difference.delta)
+        assertEquals(damaged, databaseContents())
     }
 
     @Test fun `수수료와 가격 개선 반환이 있는 실제 정산도 자산별로 일치한다`() {
@@ -373,5 +391,40 @@ class PostgresLedgerReconciliationStoreTest {
             assertEquals(setOf(ReconciliationItem.HOLD, ReconciliationItem.RESERVATION_HOLD), report.differences.map { it.item }.toSet())
             assertTrue(report.differences.all { it.delta == number(hold - 300) })
         }
+    }
+
+    @Test fun `기존 원장이 허용한 빈 식별자에 새 제약을 덧붙이지 않는다`() {
+        opening.ensureReceivingBalance(buyer, krw)
+        ledgerStore.append(
+            LedgerTransaction(
+                "",
+                "",
+                LedgerTransactionType.OPENING,
+                Instant.EPOCH,
+                listOf(
+                    LedgerPosting("SYSTEM:KRW:DEVELOPMENT_FUNDING", krw, LedgerPostingSide.DEBIT, Amount(100)),
+                    LedgerPosting("USER:buyer:KRW:AVAILABLE", krw, LedgerPostingSide.CREDIT, Amount(100)),
+                ),
+            ),
+        )
+        assertNotNull(ledgerStore.findBySourceEventId(""))
+        jdbc.update("update balance_projection set available=100")
+        val report = result()
+        assertEquals(ReconciliationStatus.MATCHED, report.status)
+        assertEquals(number(100), buyerKrw(report).ledgerAvailable)
+    }
+
+    @Test fun `손상된 원장에만 남은 사용자도 대상과 누락 잔고를 보고한다`() {
+        seed()
+        jdbc.update("delete from ledger_postings where posting_sequence=1")
+        jdbc.update("delete from balance_projection")
+        val report = result()
+        assertEquals(ReconciliationStatus.MISMATCHED, report.status)
+        assertEquals(1, report.accounts.size)
+        val account = buyerKrw(report)
+        assertNull(account.available)
+        assertNull(account.ledgerAvailable)
+        assertTrue(report.differences.any { it.item == ReconciliationItem.MISSING_BALANCE && it.userId == buyer && it.assetId == krw })
+        assertTrue(report.differences.any { it.item == ReconciliationItem.INVALID_RECORD && it.source != null })
     }
 }

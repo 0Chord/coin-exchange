@@ -23,7 +23,11 @@ class LedgerReconciliation {
         val totals = mutableMapOf<AccountKey, MutableMap<ReconciliationItem, BigInteger>>()
         for (transaction in snapshot.transactions) {
             for (posting in transaction.postings) {
-                val key = userAccount(posting)
+                val key =
+                    parseUserAccount(posting.accountId, posting.assetId)?.let { (user, item) ->
+                        AccountKey(user, posting.assetId) to
+                            item
+                    }
                 if (key == null) {
                     if (posting.accountId !in
                         setOf(
@@ -69,8 +73,14 @@ class LedgerReconciliation {
             }
         }
         val keys =
-            (totals.keys + balancesByKey.keys + reservations.map { AccountKey(it.userId, it.assetId) })
-                .distinct()
+            (
+                totals.keys + balancesByKey.keys + reservations.map { AccountKey(it.userId, it.assetId) } +
+                    problems.mapNotNull { problem ->
+                        val user = problem.userId
+                        val asset = problem.assetId
+                        if (user != null && asset != null && asset in scope.assets) AccountKey(user, asset) else null
+                    }
+            ).distinct()
                 .sortedWith(compareBy({ it.userId.value }, { it.assetId.value }))
         val differences = problems.toMutableList()
         val accounts =
@@ -136,17 +146,22 @@ class LedgerReconciliation {
             null
         }
 
-    /** 구분자 개수를 고정하지 않고, 분개 자산과 마지막 역할을 맞춰 사용자 ID를 추출한다. */
-    private fun userAccount(posting: LedgerPosting): Pair<AccountKey, ReconciliationItem>? {
-        if (!posting.accountId.startsWith("USER:")) return null
-        for (item in listOf(ReconciliationItem.AVAILABLE, ReconciliationItem.HOLD)) {
-            val suffix = ":${posting.assetId.value}:${item.name}"
-            if (posting.accountId.endsWith(suffix)) {
-                val user = posting.accountId.removePrefix("USER:").removeSuffix(suffix)
-                if (user.isNotBlank()) return AccountKey(UserId(user), posting.assetId) to item
+    companion object {
+        /** 손상 거래에서도 식별 가능한 사용자는 같은 해석 규칙으로 검사 대상에 보존한다. */
+        fun parseUserAccount(
+            accountId: String,
+            assetId: AssetId,
+        ): Pair<UserId, ReconciliationItem>? {
+            if (!accountId.startsWith("USER:")) return null
+            for (item in listOf(ReconciliationItem.AVAILABLE, ReconciliationItem.HOLD)) {
+                val suffix = ":${assetId.value}:${item.name}"
+                if (accountId.endsWith(suffix)) {
+                    val user = accountId.removePrefix("USER:").removeSuffix(suffix)
+                    if (user.isNotBlank()) return UserId(user) to item
+                }
             }
+            return null
         }
-        return null
     }
 
     private data class AccountKey(
