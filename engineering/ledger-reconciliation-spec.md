@@ -1,6 +1,6 @@
 # #74 원장으로 계산한 돈과 실제 잔고가 같은지 확인하기
 
-**로컬 구현·실행 검증 완료 · 독립 재리뷰 진행 중.** #74는 내부 유즈케이스와 실제 DB 테스트로 검증한다. HTTP 조회 API는 제외하고, 복구 후 거래 재개 판단 연결은 #58에서 진행한다. 기준은 PR #80이 병합된 통합 브랜치 `eecbf481c75fbdcdb64b73234fa7ab3ceec2bafe`다. 선행 #43·71·72·73의 저장 계약을 유지한다.
+**로컬 구현·실행 검증·독립 리뷰 완료. 사람의 검토는 미완료.** #74는 내부 유즈케이스와 실제 DB 테스트로 검증한다. HTTP 조회 API는 제외하고, 복구 후 거래 재개 판단 연결은 #58에서 진행한다. 기준은 PR #80이 병합된 통합 브랜치 `eecbf481c75fbdcdb64b73234fa7ab3ceec2bafe`다. 선행 #43·71·72·73의 저장 계약을 유지한다.
 
 ## 1. 이번에 만들 결과
 
@@ -146,7 +146,7 @@ cd /Users/0chord/.codex/worktrees/issue74-ledger-reconciliation/exchange-core
 - [x] 누락·손상·큰 합계·동시 쓰기·DB 오류 사례가 거짓 일치를 막는다. 외부 트랜잭션 합류와 읽기 전용 경계를 실제 DB로 확인한다.
 - [x] 검사 전후 원장·잔고·예약은 바뀌지 않는다. 새 writes, 행 잠금, NoOp 일치 결과가 없다.
 - [x] 기존 모듈 방향·폴더·Bean 조립과 기존 금전 이동 SQL·트랜잭션을 유지한다. 필요한 주석은 이유/경계를 한국어로 남긴다.
-- [x] 실제 코드·테스트를 연결한 입력 → 계산 → 결과 설명과 실행 근거·미검증 범위를 같은 PR에 담는다.
+- [x] 실제 코드·테스트를 연결한 입력 → 계산 → 결과 설명과 실행 근거·미검증 범위를 준비했다. PR 게시 시 함께 전달한다.
 - [x] 실제 내부 유즈케이스를 통해 결과를 확인한다. HTTP 조회 API나 #58의 재개 판단 연결 없이 이번 대조 범위를 검증한다.
 
 **제외:** HTTP 조회 API, 돈 자동 보정/재생성, 주문장 복원, 기존 DB 자동 이행/삭제, 주기적 감시, 다중 서버/다중 마켓의 hold 소유 체계, #58의 마켓 차단·재개 연결, #67~70의 프로세스 강제 종료 테스트, #50의 주문 입력 저장.
@@ -161,4 +161,4 @@ cd /Users/0chord/.codex/worktrees/issue74-ledger-reconciliation/exchange-core
 
 확인한 코드: [원장 거래와 BigInteger 검증](https://github.com/0Chord/coin-exchange/blob/eecbf481c75fbdcdb64b73234fa7ab3ceec2bafe/domain-ledger/src/main/kotlin/com/exchange/core/ledger/LedgerTransaction.kt), [개시 저장의 외부 트랜잭션 거절](https://github.com/0Chord/coin-exchange/blob/eecbf481c75fbdcdb64b73234fa7ab3ceec2bafe/app-api/src/main/kotlin/com/exchange/core/api/ledger/infrastructure/persistence/PostgresDevelopmentBalanceStore.kt), [기존 정산의 수수료·반환 사례](https://github.com/0Chord/coin-exchange/blob/eecbf481c75fbdcdb64b73234fa7ab3ceec2bafe/app-api/src/test/kotlin/com/exchange/core/api/order/application/TradeSettlementServiceTest.kt), [Bean 연결](https://github.com/0Chord/coin-exchange/blob/eecbf481c75fbdcdb64b73234fa7ab3ceec2bafe/app-api/src/main/kotlin/com/exchange/core/api/config/LedgerPersistenceConfig.kt).
 
-이슈의 기존 합의는 **“원장 기록의 빈틈과 잔고 대조까지 이번에 보강”**이다. 이번 문답에서 내부 유즈케이스·실제 DB 테스트 범위를 확정했다. 로컬에서 순수 합계·실제 DB 읽기·Bean 결과 전달을 구현했다. 새 테스트는 순수 13개와 실제 DB 15개다. domain-ledger 38개, 최종 새 DB 15개, 구조 371개가 실패·오류·skip 없이 실행됐고 공통 ktlintCheck와 필수 운영 검사 P01~P09 확인이 성공했다. 관련 기존 자금 저장 회귀도 별도 실행했다. 독립 리뷰의 초기 세 지적은 호환 ID 제약 제거·손상 기록의 식별 가능한 대상 유지·읽기 포트 검사 등록으로 수정했고, 최종 재리뷰는 진행 중이다. [구현 흐름과 모든 새 테스트 설명](ledger-reconciliation-review.md)에서 실행 근거와 남은 한계를 확인할 수 있다. 원격 PR 생성·push·이슈 상태 변경은 아직 하지 않았다.
+이슈의 기존 합의는 **“원장 기록의 빈틈과 잔고 대조까지 이번에 보강”**이다. 이번 문답에서 내부 유즈케이스·실제 DB 테스트 범위를 확정했다. 로컬에서 순수 합계·실제 DB 읽기·Bean 결과 전달을 구현했다. 새 테스트는 순수 13개와 실제 DB 15개다. domain-ledger 38개, 최종 새 DB 15개, 구조 371개가 실패·오류·skip 없이 실행됐고 공통 ktlintCheck와 필수 운영 검사 P01~P09 확인이 성공했다. 관련 기존 자금 저장 회귀도 별도 실행했다. 독립 리뷰의 초기 세 지적은 호환 ID 제약 제거·손상 기록의 식별 가능한 대상 유지·읽기 포트 검사 등록으로 수정했다. 후속 종료 실패의 진단 단계도 수정·재검증했다. 최종 구현 커밋 `b1360da7674fa12fe0edd31c3cae51532ec13afc`의 독립 재리뷰에서 확인된 미해결 결함은 없었다. [구현 흐름과 모든 새 테스트 설명](ledger-reconciliation-review.md)에서 실행 근거와 남은 한계를 확인할 수 있다. 원격 PR 생성·push·이슈 상태 변경은 아직 하지 않았다.

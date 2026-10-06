@@ -1,6 +1,6 @@
 # #74 원장·잔고·예약 대조 — 구현 읽기
 
-**로컬 구현·실행 검증 완료. 독립 재리뷰 진행 중. 사람의 검토는 미완료.**
+**로컬 구현·실행 검증·독립 리뷰 완료. 사람의 검토는 미완료. PR은 아직 게시하지 않았다.**
 
 작업 폴더: `/Users/0chord/.codex/worktrees/issue74-ledger-reconciliation/exchange-core` · 브랜치 `feat/ledger-reconciliation/74`.
 기준은 PR #80이 병합된 통합 브랜치 `eecbf481`이다. 기존에는 돈을 저장하는 기능만 있었고, 이번에는 기록을 더해 실제 잔고와 대조하는 내부 호출을 추가했다.
@@ -304,11 +304,18 @@ cd /Users/0chord/.codex/worktrees/issue74-ledger-reconciliation/exchange-core
 ./gradlew :domain-ledger:test :app-api:test --tests '*PostgresLedgerReconciliationStoreTest' ktlintCheck :architecture-tests:verifyArchitectureReport
 ```
 
-[최종 DB 테스트 HTML](../app-api/build/reports/tests/test/index.html) · [ledger 테스트 HTML](../domain-ledger/build/reports/tests/test/index.html) · [구조 테스트 HTML](../architecture-tests/build/reports/tests/test/index.html). 이 빌드 보고서는 로컬 생성물이며 나중 실행하면 갱신된다.
+[최종 DB 테스트 HTML](/Users/0chord/.codex/worktrees/issue74-ledger-reconciliation/exchange-core/app-api/build/reports/tests/test/index.html) · [ledger 테스트 HTML](/Users/0chord/.codex/worktrees/issue74-ledger-reconciliation/exchange-core/domain-ledger/build/reports/tests/test/index.html) · [구조 테스트 HTML](/Users/0chord/.codex/worktrees/issue74-ledger-reconciliation/exchange-core/architecture-tests/build/reports/tests/test/index.html). 이 빌드 보고서는 로컬 생성물이며 나중 실행하면 갱신된다.
 
-**독립 검토 기록:** 작성 대화를 상속하지 않은 별도 에이전트가 고정 checkout `3160989`에서 직접 반례를 실행해 세 결함을 확인했다. 새 ID 제약 때문에 정상 기존 원장을 불일치로 판단한 점, 손상된 원장만 가진 사용자가 대상에서 빠진 점, 새 포트 검사 등록 누락이다. 범위를 축소하지 않고 실제 회귀 테스트와 공통 대상 보존 로직·기존 포트 목록을 수정했다. 수정본 재리뷰에서 종료 실패의 진단 단계가 마지막 예약 조회로 남는 P3도 확인했다. 실제 DB 읽기 후 관리자 종료 예외를 제어 주입하는 사례를 추가해 의도한 진단 assertion 실패를 확인하고 완료 단계 표시를 수정했다. 마지막 수정본 재리뷰는 진행 중이다.
+**독립 검토 기록:** 작성 대화를 상속하지 않은 별도 에이전트가 고정 checkout `3160989`에서 직접 반례를 실행해 세 결함을 확인했다. 새 ID 제약 때문에 정상 기존 원장을 불일치로 판단한 점, 손상된 원장만 가진 사용자가 대상에서 빠진 점, 새 포트 검사 등록 누락이다. 범위를 축소하지 않고 실제 회귀 테스트와 공통 대상 보존 로직·기존 포트 목록을 수정했다. 수정본 재리뷰에서 종료 실패의 진단 단계가 마지막 예약 조회로 남는 P3도 확인했다. 실제 DB 읽기 후 관리자 종료 예외를 제어 주입하는 사례를 추가해 의도한 진단 assertion 실패를 확인하고 완료 단계 표시를 수정했다. 최종 구현 커밋 `b1360da7674fa12fe0edd31c3cae51532ec13afc`을 별도 checkout에서 재리뷰했고, 확인된 미해결 결함은 없었다. 리뷰어가 최종 실제 DB 테스트 15개와 공통 린트를 직접 실행했다. 직전 커밋에서 직접 실행한 ledger 전체 38개와 운영·역할 검사 13개, P01~P09 근거는 마지막 변경이 종료 단계 표시 한 줄인 점을 확인하고 재사용했다. 최종 테스트 링크 28개와 실제 코드 발췌·해시 8개도 소스와 대조했다. 이는 모든 잠재 결함이 없다는 보장은 아니다.
 
 SQL 조회 실패·외부 트랜잭션·타 마켓 hold는 실제 실행했다. 트랜잭션 종료 예외는 실제 DB 읽기 뒤 관리자 예외를 제어해 처리 경계를 실행했다. 실제 네트워크 연결 단절이나 DB 자체의 종료 장애는 주입하지 않았다. 전체 app-api 테스트·JMH·부하 측정·원격 CI는 이번에 실행하지 않았다.
+
+최종 DB 사례 추가 후에는 아래 범위만 재실행했다. 위 구조 371개와 기존 회귀는 앞선 성공 근거를 재사용하며, 최종 커밋에서 전체 검사를 반복 실행한 것으로 표시하지 않는다.
+
+```bash
+cd /Users/0chord/.codex/worktrees/issue74-ledger-reconciliation/exchange-core
+./gradlew :app-api:test --tests '*PostgresLedgerReconciliationStoreTest' ktlintCheck
+```
 
 ## 변경 파일과 근거 코드
 
