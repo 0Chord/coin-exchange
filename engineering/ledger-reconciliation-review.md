@@ -1,6 +1,6 @@
 # #74 원장·잔고·예약 대조 — 구현 읽기
 
-**PR #82의 ACTIVE/0 결함을 수정했다. 보완 테스트는 통과했고 독립 재리뷰는 진행 중이다. 사람의 검토는 미완료. 게시·CI 상태는 PR에서 확인한다.**
+**PR #82의 ACTIVE/0 결함을 수정했다. 보완 테스트와 독립 재리뷰를 완료했다. 사람의 검토는 미완료. 게시·CI 상태는 PR에서 확인한다.**
 
 작업 폴더: `/Users/0chord/.codex/worktrees/issue74-ledger-reconciliation/exchange-core` · 브랜치 `feat/ledger-reconciliation/74`.
 기준은 PR #80이 병합된 통합 브랜치 `eecbf481`이다. 기존에는 돈을 저장하는 기능만 있었고, 이번에는 기록을 더해 실제 잔고와 대조하는 내부 호출을 추가했다.
@@ -327,9 +327,15 @@ DB 공통 준비는 테스트별 기존 자료를 지우고, 실제 개시·예�
 
 [실제 테스트와 assertion 보기](https://github.com/0Chord/coin-exchange/blob/6450fc08720e33537d9375b15a6158a684393f7b/app-api/src/test/kotlin/com/exchange/core/api/ledger/infrastructure/persistence/PostgresLedgerReconciliationStoreTest.kt#L462)
 
-**보완 실행:** 두 신규 정의는 수정 전 각각 기대 MISMATCHED/실제 MATCHED 어설션에서 실패했다. 구현에는 ACTIVE의 잔여금 0을 거절하는 조건 한 줄을 추가했다. 수정 후 새 순수 14개를 포함한 ledger 전체 39개와 실제 DB 16개가 통과했다. 구조·린트 및 독립 재리뷰의 최종 결과는 마무리 기록에 갱신한다.
+**보완 실행:** 두 신규 정의는 수정 전 각각 기대 MISMATCHED/실제 MATCHED 어설션에서 실패했다. 구현에는 ACTIVE의 잔여금 0을 거절하는 조건 한 줄을 추가했다. 수정 후 새 순수 14개를 포함한 ledger 전체 39개와 실제 DB 16개가 통과했다. 구조 371개, 필수 P01~P09 확인, 공통 ktlintCheck·diff 공백 검사도 성공했다. 모두 실패·오류·skip 0이다.
+
+**독립 재리뷰:** 작성 대화를 공유하지 않은 리뷰어가 고정 수정본 `2d72d586a2747a666323e492c9b0608deb2929e2`에서 ledger 39개·실제 DB 16개·이전 독립 반례 1개와 린트를 직접 실행했다. 기존 ACTIVE/0 반례는 이제 MISMATCHED·INVALID_RECORD를 반환한다. 확인된 미해결 결함은 없다. 변경 없는 구조 371개·기존 자금 저장 및 Bean 회귀 92개는 리뷰어가 이전에 직접 실행한 근거를 재사용했다. 이 결론은 검토 범위 안의 결과이며 모든 결함 부재를 보장하지 않는다. 전체 app-api/build·재시작·부하·실제 네트워크 단절은 이번 보완에서 재실행하지 않았다.
+
+원격 CI는 보완 커밋을 게시한 뒤 별도로 확인한다. 이전 head의 CI 성공을 수정본 성공으로 표시하지 않는다.
 
 ## 실행 기록과 남은 확인
+
+아래는 **PR #82 보완 전** 실행 이력이다. 현재 보완 결과는 바로 위 보완 실행·독립 재리뷰 문단의 39/16/371개를 기준으로 읽는다.
 
 첫 순수/DB 테스트는 새 클래스가 없어 컴파일에서 실패했다. 이는 금액 비교에서 발생한 Red와 구분한다. 첫 DB 실행에서는 신규 SQL의 컬럼명을 잘못 사용해 검증 불가가 반환됐다. 스키마에 맞게 수정한 뒤 최초 순수 계산 13개와 PostgreSQL 12개가 통과했다. 독립 리뷰 반례 2개도 추가했다. DB 데이터는 실제 서비스로 준비하고 기대 숫자는 명세의 고정 계산에서 가져왔다.
 
@@ -352,7 +358,7 @@ cd /Users/0chord/.codex/worktrees/issue74-ledger-reconciliation/exchange-core
 
 SQL 조회 실패·외부 트랜잭션·타 마켓 hold는 실제 실행했다. 트랜잭션 종료 예외는 실제 DB 읽기 뒤 관리자 예외를 제어해 처리 경계를 실행했다. 실제 네트워크 연결 단절이나 DB 자체의 종료 장애는 주입하지 않았다. 전체 app-api 테스트·JMH·부하 측정·원격 CI는 이번에 실행하지 않았다.
 
-최종 DB 사례 추가 후에는 아래 범위만 재실행했다. 위 구조 371개와 기존 회귀는 앞선 성공 근거를 재사용하며, 최종 커밋에서 전체 검사를 반복 실행한 것으로 표시하지 않는다.
+보완 전 마지막 DB 사례 추가 후에는 아래 범위만 재실행했다. 위 구조 371개와 기존 회귀는 앞선 성공 근거를 재사용하며, 최종 커밋에서 전체 검사를 반복 실행한 것으로 표시하지 않는다.
 
 ```bash
 cd /Users/0chord/.codex/worktrees/issue74-ledger-reconciliation/exchange-core

@@ -1,6 +1,6 @@
 # #74 원장으로 계산한 돈과 실제 잔고가 같은지 확인하기
 
-**PR #82의 ACTIVE/0 결함 보완 중. 이전 완료 기록과 보완 검증은 구분한다. 사람의 검토는 미완료.** #74는 내부 유즈케이스와 실제 DB 테스트로 검증한다. HTTP 조회 API는 제외하고, 복구 후 거래 재개 판단 연결은 #58에서 진행한다. 기준은 PR #80이 병합된 통합 브랜치 `eecbf481c75fbdcdb64b73234fa7ab3ceec2bafe`다. 선행 #43·71·72·73의 저장 계약을 유지한다.
+**PR #82의 ACTIVE/0 결함 수정·로컬 검증·독립 재리뷰 완료. 이전 완료 기록과 보완 검증은 구분한다. 사람의 검토는 미완료.** #74는 내부 유즈케이스와 실제 DB 테스트로 검증한다. HTTP 조회 API는 제외하고, 복구 후 거래 재개 판단 연결은 #58에서 진행한다. 기준은 PR #80이 병합된 통합 브랜치 `eecbf481c75fbdcdb64b73234fa7ab3ceec2bafe`다. 선행 #43·71·72·73의 저장 계약을 유지한다.
 
 ## 1. 이번에 만들 결과
 
@@ -162,6 +162,8 @@ cd /Users/0chord/.codex/worktrees/issue74-ledger-reconciliation/exchange-core
 
 확인한 코드: [원장 거래와 BigInteger 검증](https://github.com/0Chord/coin-exchange/blob/eecbf481c75fbdcdb64b73234fa7ab3ceec2bafe/domain-ledger/src/main/kotlin/com/exchange/core/ledger/LedgerTransaction.kt), [개시 저장의 외부 트랜잭션 거절](https://github.com/0Chord/coin-exchange/blob/eecbf481c75fbdcdb64b73234fa7ab3ceec2bafe/app-api/src/main/kotlin/com/exchange/core/api/ledger/infrastructure/persistence/PostgresDevelopmentBalanceStore.kt), [기존 정산의 수수료·반환 사례](https://github.com/0Chord/coin-exchange/blob/eecbf481c75fbdcdb64b73234fa7ab3ceec2bafe/app-api/src/test/kotlin/com/exchange/core/api/order/application/TradeSettlementServiceTest.kt), [Bean 연결](https://github.com/0Chord/coin-exchange/blob/eecbf481c75fbdcdb64b73234fa7ab3ceec2bafe/app-api/src/main/kotlin/com/exchange/core/api/config/LedgerPersistenceConfig.kt).
 
+아래는 PR 보완 전 구현의 기록이다. 현재 보완 결과는 다음 문단과 구현 읽기 문서에 구분한다.
+
 이슈의 기존 합의는 **“원장 기록의 빈틈과 잔고 대조까지 이번에 보강”**이다. 이번 문답에서 내부 유즈케이스·실제 DB 테스트 범위를 확정했다. 로컬에서 순수 합계·실제 DB 읽기·Bean 결과 전달을 구현했다. 새 테스트는 순수 13개와 실제 DB 15개다. domain-ledger 38개, 최종 새 DB 15개, 구조 371개가 실패·오류·skip 없이 실행됐고 공통 ktlintCheck와 필수 운영 검사 P01~P09 확인이 성공했다. 관련 기존 자금 저장 회귀도 별도 실행했다. 독립 리뷰의 초기 세 지적은 호환 ID 제약 제거·손상 기록의 식별 가능한 대상 유지·읽기 포트 검사 등록으로 수정했다. 후속 종료 실패의 진단 단계도 수정·재검증했다. 최종 구현 커밋 `b1360da7674fa12fe0edd31c3cae51532ec13afc`의 독립 재리뷰에서 확인된 미해결 결함은 없었다. [구현 흐름과 모든 새 테스트 설명](ledger-reconciliation-review.md)에서 실행 근거와 남은 한계를 확인할 수 있다. 이 문서는 #74 PR의 명세다. 게시·CI 상태는 PR에서 확인하며, 이슈 상태 변경은 별도 작업이다.
 
-**PR #82 보완:** ACTIVE/0은 기존 도메인에서 금지되지만 DB가 허용하는 조합이다. 순수 상태·금액 조합 테스트와 실제 취소 뒤 상태 손상 테스트를 추가하고 신규 조건으로 기록 이상을 보고한다. 정상 종료/0의 일치는 유지한다. 입력에 없는 수량·최초 예약액·정책 등 예약 객체 전체의 검증으로 범위를 확대하지 않는다. 보완 검증·독립 재리뷰 결과는 구현 읽기 문서에 기록한다.
+**PR #82 보완:** ACTIVE/0은 기존 도메인에서 금지되지만 DB가 허용하는 조합이다. 순수 상태·금액 조합 테스트와 실제 취소 뒤 상태 손상 테스트를 추가하고 신규 조건으로 기록 이상을 보고한다. 정상 종료/0의 일치는 유지한다. 입력에 없는 수량·최초 예약액·정책 등 예약 객체 전체의 검증으로 범위를 확대하지 않는다. 보완 후 ledger 전체 39개·실제 DB 16개·구조 371개, 공통 린트와 P01~P09 확인이 성공했다. 작성 대화를 공유하지 않은 독립 재리뷰에서도 기존 반례가 통과하고 확인된 미해결 결함은 없었다. 실행·재사용 범위는 구현 읽기 문서에 구분한다.
