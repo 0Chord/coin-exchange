@@ -42,6 +42,8 @@ import org.springframework.jdbc.core.RowMapper
 import org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate
 import org.springframework.test.annotation.DirtiesContext
 import org.springframework.transaction.PlatformTransactionManager
+import org.springframework.transaction.TransactionStatus
+import org.springframework.transaction.TransactionSystemException
 import org.springframework.transaction.annotation.Propagation
 import org.springframework.transaction.annotation.Transactional
 import org.springframework.transaction.support.TransactionTemplate
@@ -429,5 +431,31 @@ class PostgresLedgerReconciliationStoreTest {
         assertNull(account.ledgerAvailable)
         assertTrue(report.differences.any { it.item == ReconciliationItem.MISSING_BALANCE && it.userId == buyer && it.assetId == krw })
         assertTrue(report.differences.any { it.item == ReconciliationItem.INVALID_RECORD && it.source != null })
+    }
+
+    @Test fun `모든 조회 뒤 트랜잭션 종료가 실패하면 완료 단계와 검증 불가를 보고한다`() {
+        seed()
+        reserve()
+        val before = databaseContents()
+        var completionReached = false
+        val failingManager =
+            object : PlatformTransactionManager by transactionManager {
+                override fun commit(status: TransactionStatus) {
+                    completionReached = true
+                    transactionManager.rollback(status)
+                    throw TransactionSystemException("테스트에서 종료 실패를 주입했습니다")
+                }
+            }
+        val report =
+            ReconcileLedgerUseCase(
+                PostgresLedgerReconciliationStore(NamedParameterJdbcTemplate(dataSource), failingManager),
+            ).reconcile(scope)
+        assertTrue(completionReached)
+        assertEquals(ReconciliationStatus.UNAVAILABLE, report.status)
+        assertEquals(ReconciliationFailure.DB_READ_FAILED, report.failure)
+        assertTrue(report.detail!!.contains("트랜잭션 완료"), report.detail)
+        assertTrue(report.accounts.isEmpty())
+        assertTrue(report.differences.isEmpty())
+        assertEquals(before, databaseContents())
     }
 }

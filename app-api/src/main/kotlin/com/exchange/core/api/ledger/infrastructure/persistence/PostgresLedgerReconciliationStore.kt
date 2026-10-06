@@ -120,6 +120,7 @@ class PostgresLedgerReconciliationStore(
                                     )
                                 }
                             }.filterNotNull()
+                    stage = "트랜잭션 완료"
                     LedgerReconciliationSnapshot(transactions, balances, reservations, problems)
                 },
             )
