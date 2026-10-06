@@ -1,8 +1,10 @@
 package com.exchange.core.api.config
 
 import com.exchange.core.api.ledger.application.PrepareDevelopmentBalanceUseCase
+import com.exchange.core.api.ledger.application.ReconcileLedgerUseCase
 import com.exchange.core.api.ledger.infrastructure.persistence.PostgresBalanceStore
 import com.exchange.core.api.ledger.infrastructure.persistence.PostgresDevelopmentBalanceStore
+import com.exchange.core.api.ledger.infrastructure.persistence.PostgresLedgerReconciliationStore
 import com.exchange.core.api.ledger.infrastructure.persistence.PostgresLedgerTransactionStore
 import com.exchange.core.api.order.application.OrderFundingService
 import com.exchange.core.api.order.application.OrderReservationReleaseService
@@ -12,6 +14,7 @@ import com.exchange.core.fee.TradingFeeCalculator
 import com.exchange.core.fee.TradingFeeReserveCalculator
 import com.exchange.core.ledger.BalanceStore
 import com.exchange.core.ledger.DevelopmentBalanceStore
+import com.exchange.core.ledger.LedgerReconciliationStore
 import com.exchange.core.ledger.LedgerTransactionStore
 import com.exchange.core.order.BuyOrderFundingQuoteCalculator
 import com.exchange.core.order.OrderFillSettlementCalculator
@@ -30,7 +33,7 @@ import org.springframework.transaction.PlatformTransactionManager
  * [OrderReservationStore]와 [LedgerTransactionStore]가 같은 DataSource와 Spring 트랜잭션을
  * 사용한다. 주문 예약 생성과 hold 변경, 예약 해제와 hold 반환을 각각 원자적으로 처리하며,
  * 체결 정산에서는 양쪽 예약·잔고 변경과 수수료를 포함한 원장 기록을 함께 커밋하거나 롤백한다.
- * 주문 예약 생성은 RESERVE 원장까지 함께 기록한다. 취소 해제의 RELEASE는 후속 범위다.
+ * 주문 예약 생성은 RESERVE 원장까지 함께 기록한다. 취소 해제도 RELEASE 원장과 함께 기록한다.
  */
 @Configuration
 @ConditionalOnProperty(
@@ -156,4 +159,14 @@ class LedgerPersistenceConfig {
     @Bean
     fun prepareDevelopmentBalanceUseCase(developmentBalanceStore: DevelopmentBalanceStore) =
         PrepareDevelopmentBalanceUseCase(developmentBalanceStore)
+
+    /** 거래 쓰기 경로와 분리된 읽기 전용 대조 저장소를 조립한다. */
+    @Bean
+    fun ledgerReconciliationStore(
+        jdbcTemplate: NamedParameterJdbcTemplate,
+        transactionManager: PlatformTransactionManager,
+    ): LedgerReconciliationStore = PostgresLedgerReconciliationStore(jdbcTemplate, transactionManager)
+
+    @Bean
+    fun reconcileLedgerUseCase(ledgerReconciliationStore: LedgerReconciliationStore) = ReconcileLedgerUseCase(ledgerReconciliationStore)
 }
