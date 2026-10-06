@@ -458,4 +458,35 @@ class PostgresLedgerReconciliationStoreTest {
         assertTrue(report.differences.isEmpty())
         assertEquals(before, databaseContents())
     }
+
+    @Test fun `취소된 예약 상태만 ACTIVE로 손상되면 금액이 맞아도 불일치로 보고한다`() {
+        seed()
+        reserve()
+        release.release(market.marketId, OrderId("buy"))
+        val normal = result()
+        assertEquals(ReconciliationStatus.MATCHED, normal.status)
+        assertEquals(number(1000), buyerKrw(normal).ledgerAvailable)
+        assertEquals(number(0), buyerKrw(normal).ledgerHold)
+        assertEquals(number(0), buyerKrw(normal).reservationHold)
+
+        // DB 제약은 ACTIVE/0을 허용하지만 도메인 상태 규칙은 허용하지 않는다.
+        assertEquals(
+            1,
+            jdbc.update("update order_reservations set status='ACTIVE', released_amount=null where market_id='BTC-KRW' and order_id='buy'"),
+        )
+        val before = databaseContents()
+        val report = result()
+        assertEquals(ReconciliationStatus.MISMATCHED, report.status)
+        val problem = report.differences.single { it.item == ReconciliationItem.INVALID_RECORD }
+        assertEquals(buyer, problem.userId)
+        assertEquals(krw, problem.assetId)
+        assertEquals("BTC-KRW/buy", problem.source)
+        val account = buyerKrw(report)
+        assertEquals(number(1000), account.available)
+        assertEquals(number(0), account.hold)
+        assertEquals(number(0), account.reservationHold)
+        assertNull(account.ledgerAvailable)
+        assertNull(account.ledgerHold)
+        assertEquals(before, databaseContents())
+    }
 }

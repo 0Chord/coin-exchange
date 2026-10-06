@@ -255,6 +255,43 @@ class LedgerReconciliationTest {
         assertFailsWith<IllegalArgumentException> { LedgerReconciliationScope(MarketId("*"), AssetId("BTC"), krw) }
     }
 
+    @Test
+    fun `예약 상태와 잔여금 조합은 합계가 같아도 기존 상태 규칙을 만족해야 한다`() {
+        val cases =
+            listOf(
+                Triple("ACTIVE", 0L, ReconciliationStatus.MISMATCHED),
+                Triple("ACTIVE", -1L, ReconciliationStatus.MISMATCHED),
+                Triple("SETTLED", 0L, ReconciliationStatus.MATCHED),
+                Triple("SETTLED", 1L, ReconciliationStatus.MISMATCHED),
+                Triple("RELEASED", 0L, ReconciliationStatus.MATCHED),
+                Triple("RELEASED", 1L, ReconciliationStatus.MISMATCHED),
+                Triple("UNKNOWN", 0L, ReconciliationStatus.MISMATCHED),
+            )
+        for ((status, remaining, expected) in cases) {
+            val report =
+                LedgerReconciliation().compare(
+                    scope,
+                    LedgerReconciliationSnapshot(
+                        emptyList(),
+                        listOf(Balance(buyer, krw, Amount.ZERO, Amount.ZERO)),
+                        listOf(ReservationHold("BTC-KRW", "boundary", buyer, krw, status, remaining)),
+                    ),
+                )
+            assertEquals(expected, report.status, "$status/$remaining")
+            if (expected == ReconciliationStatus.MATCHED) {
+                assertTrue(report.differences.isEmpty())
+                assertEquals(BigInteger.ZERO, report.accounts.single().reservationHold)
+            } else {
+                val problem = report.differences.single { it.item == ReconciliationItem.INVALID_RECORD }
+                assertEquals(buyer, problem.userId)
+                assertEquals(krw, problem.assetId)
+                assertEquals("BTC-KRW/boundary", problem.source)
+                assertNull(report.accounts.single().ledgerAvailable)
+                assertNull(report.accounts.single().ledgerHold)
+            }
+        }
+    }
+
     private fun reservedSnapshot(available: Long) =
         LedgerReconciliationSnapshot(
             transactions =

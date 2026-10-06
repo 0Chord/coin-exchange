@@ -60,6 +60,7 @@ class LedgerReconciliation {
         for (reservation in reservations) {
             if (reservation.status !in setOf("ACTIVE", "SETTLED", "RELEASED") ||
                 reservation.remainingAmount < 0 ||
+                (reservation.status == "ACTIVE" && reservation.remainingAmount == 0L) ||
                 (reservation.status != "ACTIVE" && reservation.remainingAmount != 0L)
             ) {
                 problems +=
