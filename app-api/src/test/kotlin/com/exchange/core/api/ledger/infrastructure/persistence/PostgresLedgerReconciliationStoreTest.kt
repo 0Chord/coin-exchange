@@ -364,8 +364,11 @@ class PostgresLedgerReconciliationStoreTest {
             assertEquals(number(1000), buyerKrw(report).available)
             assertEquals(number(0), buyerKrw(report).hold)
             assertEquals(number(0), buyerKrw(report).reservationHold)
-            assertEquals(number(700), buyerKrw(result()).available)
-            assertEquals(number(300), buyerKrw(result()).hold)
+            val nextReport = result()
+            assertEquals(ReconciliationStatus.MATCHED, nextReport.status)
+            assertEquals(number(700), buyerKrw(nextReport).available)
+            assertEquals(number(300), buyerKrw(nextReport).hold)
+            assertEquals(number(300), buyerKrw(nextReport).reservationHold)
         } finally {
             written.countDown()
             pool.shutdownNow()
