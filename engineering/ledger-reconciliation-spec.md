@@ -1,6 +1,6 @@
 # #74 원장으로 계산한 돈과 실제 잔고가 같은지 확인하기
 
-**로컬 구현·실행 검증·독립 리뷰 완료. 사람의 검토는 미완료.** #74는 내부 유즈케이스와 실제 DB 테스트로 검증한다. HTTP 조회 API는 제외하고, 복구 후 거래 재개 판단 연결은 #58에서 진행한다. 기준은 PR #80이 병합된 통합 브랜치 `eecbf481c75fbdcdb64b73234fa7ab3ceec2bafe`다. 선행 #43·71·72·73의 저장 계약을 유지한다.
+**PR #82의 ACTIVE/0 결함 보완 중. 이전 완료 기록과 보완 검증은 구분한다. 사람의 검토는 미완료.** #74는 내부 유즈케이스와 실제 DB 테스트로 검증한다. HTTP 조회 API는 제외하고, 복구 후 거래 재개 판단 연결은 #58에서 진행한다. 기준은 PR #80이 병합된 통합 브랜치 `eecbf481c75fbdcdb64b73234fa7ab3ceec2bafe`다. 선행 #43·71·72·73의 저장 계약을 유지한다.
 
 ## 1. 이번에 만들 결과
 
@@ -69,6 +69,7 @@ Spring의 readOnly 설정만으로 모든 쓰기 금지를 증명했다고 보�
 | 검사 대상 | 원장 사용자 계정 ∪ DB 잔고 ∪ 관련 예약의 사용자·자산. 잔고가 있는 행만 기준으로 JOIN해 나머지를 없애지 않는다 |
 | 없는 금액과 없는 행 | 한 계정의 분개 없음은 계산상 0이다. 하지만 원장/예약 근거가 있는데 필요한 DB 잔고 행이 없으면 행 누락이다. 0으로 대체해 일치시키지 않는다. 원장 없는 DB available/hold=0 준비 행은 정상이다 |
 | 예약 합계 | 해당 마켓의 ACTIVE 예약 `remainingAmount`만 합산한다. 이 값에 남은 수수료 예약도 포함되므로 `remainingFeeReserveAmount`를 한 번 더 더하지 않는다. SETTLED·RELEASED는 활성 합계에 넣지 않는다 |
+| 예약 상태와 금액 | 기존 `OrderReservation` 규칙에 따라 ACTIVE의 `remainingAmount`는 양수, SETTLED·RELEASED는 0이어야 한다. 합계가 맞아도 ACTIVE/0처럼 상태가 잘못된 기록은 `INVALID_RECORD`와 `MISMATCHED`로 보고한다 |
 | 자산·범위 | 지정된 두 자산의 사용자 금액을 검사한다. 잔고는 마켓별로 분리돼 있지 않으므로, 같은 자산의 다른 마켓 ACTIVE 예약을 발견하면 범위 미지원으로 검증 불가다. 이를 무시하고 hold가 맞는다고 하지 않는다. 현재 다른 목적의 hold는 없다는 전제를 명시한다 |
 | 큰 합계 | 원장·예약 합계와 차이는 BigInteger로 정확히 계산한다. 개별 DB 금액은 기존 Long을 유지한다. 합계가 Long 범위를 넘어도 잘라 쓰거나 0으로 돌리지 않는다 |
 | 읽기 실패 | 연결 실패·SQL 실패·트랜잭션 완료 실패는 검증 불가와 실패 단계/원인을 남긴다. 조회 실패를 빈 목록으로 바꾸지 않는다. 프로그래밍 오류까지 무조건 삼켜 정상 결과로 만들지 않는다 |
@@ -162,3 +163,5 @@ cd /Users/0chord/.codex/worktrees/issue74-ledger-reconciliation/exchange-core
 확인한 코드: [원장 거래와 BigInteger 검증](https://github.com/0Chord/coin-exchange/blob/eecbf481c75fbdcdb64b73234fa7ab3ceec2bafe/domain-ledger/src/main/kotlin/com/exchange/core/ledger/LedgerTransaction.kt), [개시 저장의 외부 트랜잭션 거절](https://github.com/0Chord/coin-exchange/blob/eecbf481c75fbdcdb64b73234fa7ab3ceec2bafe/app-api/src/main/kotlin/com/exchange/core/api/ledger/infrastructure/persistence/PostgresDevelopmentBalanceStore.kt), [기존 정산의 수수료·반환 사례](https://github.com/0Chord/coin-exchange/blob/eecbf481c75fbdcdb64b73234fa7ab3ceec2bafe/app-api/src/test/kotlin/com/exchange/core/api/order/application/TradeSettlementServiceTest.kt), [Bean 연결](https://github.com/0Chord/coin-exchange/blob/eecbf481c75fbdcdb64b73234fa7ab3ceec2bafe/app-api/src/main/kotlin/com/exchange/core/api/config/LedgerPersistenceConfig.kt).
 
 이슈의 기존 합의는 **“원장 기록의 빈틈과 잔고 대조까지 이번에 보강”**이다. 이번 문답에서 내부 유즈케이스·실제 DB 테스트 범위를 확정했다. 로컬에서 순수 합계·실제 DB 읽기·Bean 결과 전달을 구현했다. 새 테스트는 순수 13개와 실제 DB 15개다. domain-ledger 38개, 최종 새 DB 15개, 구조 371개가 실패·오류·skip 없이 실행됐고 공통 ktlintCheck와 필수 운영 검사 P01~P09 확인이 성공했다. 관련 기존 자금 저장 회귀도 별도 실행했다. 독립 리뷰의 초기 세 지적은 호환 ID 제약 제거·손상 기록의 식별 가능한 대상 유지·읽기 포트 검사 등록으로 수정했다. 후속 종료 실패의 진단 단계도 수정·재검증했다. 최종 구현 커밋 `b1360da7674fa12fe0edd31c3cae51532ec13afc`의 독립 재리뷰에서 확인된 미해결 결함은 없었다. [구현 흐름과 모든 새 테스트 설명](ledger-reconciliation-review.md)에서 실행 근거와 남은 한계를 확인할 수 있다. 이 문서는 #74 PR의 명세다. 게시·CI 상태는 PR에서 확인하며, 이슈 상태 변경은 별도 작업이다.
+
+**PR #82 보완:** ACTIVE/0은 기존 도메인에서 금지되지만 DB가 허용하는 조합이다. 순수 상태·금액 조합 테스트와 실제 취소 뒤 상태 손상 테스트를 추가하고 신규 조건으로 기록 이상을 보고한다. 정상 종료/0의 일치는 유지한다. 입력에 없는 수량·최초 예약액·정책 등 예약 객체 전체의 검증으로 범위를 확대하지 않는다. 보완 검증·독립 재리뷰 결과는 구현 읽기 문서에 기록한다.

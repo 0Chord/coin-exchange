@@ -1,6 +1,6 @@
 # #74 원장·잔고·예약 대조 — 구현 읽기
 
-**로컬 구현·실행 검증·독립 리뷰 완료. 사람의 검토는 미완료. 이 문서는 #74 PR의 검토 근거다. 게시·CI 상태는 PR에서 확인한다.**
+**PR #82의 ACTIVE/0 결함을 수정했다. 보완 테스트는 통과했고 독립 재리뷰는 진행 중이다. 사람의 검토는 미완료. 게시·CI 상태는 PR에서 확인한다.**
 
 작업 폴더: `/Users/0chord/.codex/worktrees/issue74-ledger-reconciliation/exchange-core` · 브랜치 `feat/ledger-reconciliation/74`.
 기준은 PR #80이 병합된 통합 브랜치 `eecbf481`이다. 기존에는 돈을 저장하는 기능만 있었고, 이번에는 기록을 더해 실제 잔고와 대조하는 내부 호출을 추가했다.
@@ -53,7 +53,7 @@
 
 ## 4. 테스트를 읽는 순서
 
-아래는 새 테스트 **28개 정의**의 모든 사례 설명이다. 순수 계산 13개, 실제 PostgreSQL 15개다. 일부 정의 안에는 입력 반복이 있다. 원장 손상은 3종류, hold 부족·초과는 2종류, 조회 미변경은 2회 반복한다. 정의 수와 반복 실행 횟수는 구분한다.
+아래는 새 테스트 **30개 정의**의 모든 사례 설명이다. 순수 계산 14개, 실제 PostgreSQL 16개다. 상태·금액 조합 검사는 7개 입력을 한 정의 안에서 반복한다. 일부 정의 안에는 입력 반복이 있다. 원장 손상은 3종류, hold 부족·초과는 2종류, 조회 미변경은 2회 반복한다. 정의 수와 반복 실행 횟수는 구분한다.
 
 DB 공통 준비는 테스트별 기존 자료를 지우고, 실제 개시·예약·정산·반환 서비스를 통해 새 자료를 만드는 것이다. PostgreSQL 16 Testcontainers와 실제 Spring Bean을 사용한다. HTTP·MockMvc는 사용하지 않는다. 동시 조회 테스트의 JDBC 하위 클래스는 실제 쿼리 결과를 만든 다음 대기 지점만 제공한다. 가짜 잔고나 가짜 DB 응답을 반환하지 않는다.
 
@@ -66,7 +66,7 @@ DB 공통 준비는 테스트별 기존 자료를 지우고, 실제 개시·예�
 - **When — 실행:** 순수 판단에 자료를 넘긴다.
 - **Then — 확인:** 일치·대상 1개·700/300/300·빈 차이 목록을 확인한다.
 
-[실제 테스트와 assertion 보기](https://github.com/0Chord/coin-exchange/blob/a1812588eca89b83f1eed5eff4133d37cea84c7c/domain-ledger/src/test/kotlin/com/exchange/core/ledger/LedgerReconciliationTest.kt#L21)
+[실제 테스트와 assertion 보기](https://github.com/0Chord/coin-exchange/blob/6450fc08720e33537d9375b15a6158a684393f7b/domain-ledger/src/test/kotlin/com/exchange/core/ledger/LedgerReconciliationTest.kt#L21)
 
 ### 순수 계산 2. DB available만 701이면 사용자와 자산과 차이 1을 보고한다
 
@@ -74,7 +74,7 @@ DB 공통 준비는 테스트별 기존 자료를 지우고, 실제 개시·예�
 - **When — 실행:** 비교한다.
 - **Then — 확인:** buyer/KRW의 AVAILABLE 기대 700·실제 701·차이 +1 한 건이다.
 
-[실제 테스트와 assertion 보기](https://github.com/0Chord/coin-exchange/blob/a1812588eca89b83f1eed5eff4133d37cea84c7c/domain-ledger/src/test/kotlin/com/exchange/core/ledger/LedgerReconciliationTest.kt#L38)
+[실제 테스트와 assertion 보기](https://github.com/0Chord/coin-exchange/blob/6450fc08720e33537d9375b15a6158a684393f7b/domain-ledger/src/test/kotlin/com/exchange/core/ledger/LedgerReconciliationTest.kt#L38)
 
 ### 순수 계산 3. 총액이 같아도 available hold 예약의 세 차이를 따로 보고한다
 
@@ -82,7 +82,7 @@ DB 공통 준비는 테스트별 기존 자료를 지우고, 실제 개시·예�
 - **When — 실행:** 비교한다.
 - **Then — 확인:** AVAILABLE +100, HOLD −100, RESERVATION_HOLD −100을 각각 확인한다.
 
-[실제 테스트와 assertion 보기](https://github.com/0Chord/coin-exchange/blob/a1812588eca89b83f1eed5eff4133d37cea84c7c/domain-ledger/src/test/kotlin/com/exchange/core/ledger/LedgerReconciliationTest.kt#L52)
+[실제 테스트와 assertion 보기](https://github.com/0Chord/coin-exchange/blob/6450fc08720e33537d9375b15a6158a684393f7b/domain-ledger/src/test/kotlin/com/exchange/core/ledger/LedgerReconciliationTest.kt#L52)
 
 ### 순수 계산 4. 빈 대상과 원장 없는 영 잔고는 서로 다른 결과다
 
@@ -90,7 +90,7 @@ DB 공통 준비는 테스트별 기존 자료를 지우고, 실제 개시·예�
 - **When — 실행:** 두 자료를 차례로 비교한다.
 - **Then — 확인:** 빈 자료는 대상 없음, 0 행은 일치·대상 1개다.
 
-[실제 테스트와 assertion 보기](https://github.com/0Chord/coin-exchange/blob/a1812588eca89b83f1eed5eff4133d37cea84c7c/domain-ledger/src/test/kotlin/com/exchange/core/ledger/LedgerReconciliationTest.kt#L69)
+[실제 테스트와 assertion 보기](https://github.com/0Chord/coin-exchange/blob/6450fc08720e33537d9375b15a6158a684393f7b/domain-ledger/src/test/kotlin/com/exchange/core/ledger/LedgerReconciliationTest.kt#L69)
 
 ### 순수 계산 5. 원장과 예약에만 있는 사용자도 누락된 잔고를 보고한다
 
@@ -98,7 +98,7 @@ DB 공통 준비는 테스트별 기존 자료를 지우고, 실제 개시·예�
 - **When — 실행:** 각각 비교한다.
 - **Then — 확인:** 누락된 잔고를 표시하고 DB 값을 null로 유지한다.
 
-[실제 테스트와 assertion 보기](https://github.com/0Chord/coin-exchange/blob/a1812588eca89b83f1eed5eff4133d37cea84c7c/domain-ledger/src/test/kotlin/com/exchange/core/ledger/LedgerReconciliationTest.kt#L83)
+[실제 테스트와 assertion 보기](https://github.com/0Chord/coin-exchange/blob/6450fc08720e33537d9375b15a6158a684393f7b/domain-ledger/src/test/kotlin/com/exchange/core/ledger/LedgerReconciliationTest.kt#L83)
 
 ### 순수 계산 6. Long 범위를 넘는 원장 합계와 차이도 정확히 계산한다
 
@@ -106,7 +106,7 @@ DB 공통 준비는 테스트별 기존 자료를 지우고, 실제 개시·예�
 - **When — 실행:** 원장을 합산한다.
 - **Then — 확인:** 합계 18,446,744,073,709,551,614와 차이가 BigInteger로 정확하다.
 
-[실제 테스트와 assertion 보기](https://github.com/0Chord/coin-exchange/blob/a1812588eca89b83f1eed5eff4133d37cea84c7c/domain-ledger/src/test/kotlin/com/exchange/core/ledger/LedgerReconciliationTest.kt#L104)
+[실제 테스트와 assertion 보기](https://github.com/0Chord/coin-exchange/blob/6450fc08720e33537d9375b15a6158a684393f7b/domain-ledger/src/test/kotlin/com/exchange/core/ledger/LedgerReconciliationTest.kt#L104)
 
 ### 순수 계산 7. 역분개도 합산하며 자산 간 차이를 상쇄하지 않는다
 
@@ -114,7 +114,7 @@ DB 공통 준비는 테스트별 기존 자료를 지우고, 실제 개시·예�
 - **When — 실행:** 역분개와 두 자산 자료를 각각 비교한다.
 - **Then — 확인:** 역분개로 합계 0이 되며 BTC −1과 KRW +1을 상쇄하지 않는다.
 
-[실제 테스트와 assertion 보기](https://github.com/0Chord/coin-exchange/blob/a1812588eca89b83f1eed5eff4133d37cea84c7c/domain-ledger/src/test/kotlin/com/exchange/core/ledger/LedgerReconciliationTest.kt#L121)
+[실제 테스트와 assertion 보기](https://github.com/0Chord/coin-exchange/blob/6450fc08720e33537d9375b15a6158a684393f7b/domain-ledger/src/test/kotlin/com/exchange/core/ledger/LedgerReconciliationTest.kt#L121)
 
 ### 순수 계산 8. 종료된 예약은 대상에 남지만 활성 hold에 더하지 않는다
 
@@ -122,7 +122,7 @@ DB 공통 준비는 테스트별 기존 자료를 지우고, 실제 개시·예�
 - **When — 실행:** 비교한다.
 - **Then — 확인:** 대상 1개가 유지되며 종료된 예약은 활성 합계에 들어가지 않아 예약 합계 0으로 일치한다.
 
-[실제 테스트와 assertion 보기](https://github.com/0Chord/coin-exchange/blob/a1812588eca89b83f1eed5eff4133d37cea84c7c/domain-ledger/src/test/kotlin/com/exchange/core/ledger/LedgerReconciliationTest.kt#L164)
+[실제 테스트와 assertion 보기](https://github.com/0Chord/coin-exchange/blob/6450fc08720e33537d9375b15a6158a684393f7b/domain-ledger/src/test/kotlin/com/exchange/core/ledger/LedgerReconciliationTest.kt#L164)
 
 ### 순수 계산 9. 같은 자산의 다른 마켓 활성 예약은 비교 범위를 지원하지 않는다
 
@@ -130,7 +130,7 @@ DB 공통 준비는 테스트별 기존 자료를 지우고, 실제 개시·예�
 - **When — 실행:** 비교한다.
 - **Then — 확인:** 범위 미지원 검증 불가이며 금액 목록은 비어 있다.
 
-[실제 테스트와 assertion 보기](https://github.com/0Chord/coin-exchange/blob/a1812588eca89b83f1eed5eff4133d37cea84c7c/domain-ledger/src/test/kotlin/com/exchange/core/ledger/LedgerReconciliationTest.kt#L177)
+[실제 테스트와 assertion 보기](https://github.com/0Chord/coin-exchange/blob/6450fc08720e33537d9375b15a6158a684393f7b/domain-ledger/src/test/kotlin/com/exchange/core/ledger/LedgerReconciliationTest.kt#L177)
 
 ### 순수 계산 10. 손상된 기록이 있으면 부분 합계를 원장 잔고로 제시하지 않는다
 
@@ -138,7 +138,7 @@ DB 공통 준비는 테스트별 기존 자료를 지우고, 실제 개시·예�
 - **When — 실행:** 비교한다.
 - **Then — 확인:** 불일치·원본 유지·원장 금액 null을 확인한다. 부분 합계를 정답으로 내놓지 않는다.
 
-[실제 테스트와 assertion 보기](https://github.com/0Chord/coin-exchange/blob/a1812588eca89b83f1eed5eff4133d37cea84c7c/domain-ledger/src/test/kotlin/com/exchange/core/ledger/LedgerReconciliationTest.kt#L193)
+[실제 테스트와 assertion 보기](https://github.com/0Chord/coin-exchange/blob/6450fc08720e33537d9375b15a6158a684393f7b/domain-ledger/src/test/kotlin/com/exchange/core/ledger/LedgerReconciliationTest.kt#L193)
 
 ### 순수 계산 11. 사용자 ID의 콜론은 보존하고 계정 자산 불일치는 손상으로 보고한다
 
@@ -146,7 +146,7 @@ DB 공통 준비는 테스트별 기존 자료를 지우고, 실제 개시·예�
 - **When — 실행:** 정상과 손상 자료를 각각 비교한다.
 - **Then — 확인:** 콜론 사용자 식별은 일치하며, 자산 불일치는 기록 이상으로 보고한다.
 
-[실제 테스트와 assertion 보기](https://github.com/0Chord/coin-exchange/blob/a1812588eca89b83f1eed5eff4133d37cea84c7c/domain-ledger/src/test/kotlin/com/exchange/core/ledger/LedgerReconciliationTest.kt#L212)
+[실제 테스트와 assertion 보기](https://github.com/0Chord/coin-exchange/blob/6450fc08720e33537d9375b15a6158a684393f7b/domain-ledger/src/test/kotlin/com/exchange/core/ledger/LedgerReconciliationTest.kt#L212)
 
 ### 순수 계산 12. 손상된 예약은 무시하지 않고 검사 입력 목록도 외부 수정으로 바뀌지 않는다
 
@@ -154,7 +154,7 @@ DB 공통 준비는 테스트별 기존 자료를 지우고, 실제 개시·예�
 - **When — 실행:** 외부 목록을 지운 뒤 비교하고 마지막에 보관 목록 수정도 시도한다.
 - **Then — 확인:** 스냅샷 자료는 유지되고 내부 목록 수정은 거절되며 예약 손상은 불일치다.
 
-[실제 테스트와 assertion 보기](https://github.com/0Chord/coin-exchange/blob/a1812588eca89b83f1eed5eff4133d37cea84c7c/domain-ledger/src/test/kotlin/com/exchange/core/ledger/LedgerReconciliationTest.kt#L241)
+[실제 테스트와 assertion 보기](https://github.com/0Chord/coin-exchange/blob/6450fc08720e33537d9375b15a6158a684393f7b/domain-ledger/src/test/kotlin/com/exchange/core/ledger/LedgerReconciliationTest.kt#L241)
 
 ### 순수 계산 13. 같은 자산과 와일드카드 범위는 입력에서 거절한다
 
@@ -162,7 +162,7 @@ DB 공통 준비는 테스트별 기존 자료를 지우고, 실제 개시·예�
 - **When — 실행:** 범위를 생성한다.
 - **Then — 확인:** 잘못된 입력은 IllegalArgumentException으로 거절된다.
 
-[실제 테스트와 assertion 보기](https://github.com/0Chord/coin-exchange/blob/a1812588eca89b83f1eed5eff4133d37cea84c7c/domain-ledger/src/test/kotlin/com/exchange/core/ledger/LedgerReconciliationTest.kt#L253)
+[실제 테스트와 assertion 보기](https://github.com/0Chord/coin-exchange/blob/6450fc08720e33537d9375b15a6158a684393f7b/domain-ledger/src/test/kotlin/com/exchange/core/ledger/LedgerReconciliationTest.kt#L253)
 
 
 ## 실제 DB 테스트
@@ -173,7 +173,7 @@ DB 공통 준비는 테스트별 기존 자료를 지우고, 실제 개시·예�
 - **When — 실행:** 전체 DB 내용을 보관하고 내부 대조를 두 번 호출한다.
 - **Then — 확인:** 일치·700/300/300, 차이 없음, 네 테이블의 값과 시각이 모두 그대로다.
 
-[실제 테스트와 assertion 보기](https://github.com/0Chord/coin-exchange/blob/a1812588eca89b83f1eed5eff4133d37cea84c7c/app-api/src/test/kotlin/com/exchange/core/api/ledger/infrastructure/persistence/PostgresLedgerReconciliationStoreTest.kt#L129)
+[실제 테스트와 assertion 보기](https://github.com/0Chord/coin-exchange/blob/6450fc08720e33537d9375b15a6158a684393f7b/app-api/src/test/kotlin/com/exchange/core/api/ledger/infrastructure/persistence/PostgresLedgerReconciliationStoreTest.kt#L129)
 
 ### 실제 DB 2. DB 사용 가능 금액만 1 늘어나면 원장 기준과 차이 1을 보고한다
 
@@ -181,7 +181,7 @@ DB 공통 준비는 테스트별 기존 자료를 지우고, 실제 개시·예�
 - **When — 실행:** 내부 대조를 호출한다.
 - **Then — 확인:** 불일치·AVAILABLE 기대 700·실제 701·차이 +1이다.
 
-[실제 테스트와 assertion 보기](https://github.com/0Chord/coin-exchange/blob/a1812588eca89b83f1eed5eff4133d37cea84c7c/app-api/src/test/kotlin/com/exchange/core/api/ledger/infrastructure/persistence/PostgresLedgerReconciliationStoreTest.kt#L145)
+[실제 테스트와 assertion 보기](https://github.com/0Chord/coin-exchange/blob/6450fc08720e33537d9375b15a6158a684393f7b/app-api/src/test/kotlin/com/exchange/core/api/ledger/infrastructure/persistence/PostgresLedgerReconciliationStoreTest.kt#L145)
 
 ### 실제 DB 3. 한 개 체결하고 두 개 취소한 뒤 네 잔고와 예약 합계를 대조한다
 
@@ -189,7 +189,7 @@ DB 공통 준비는 테스트별 기존 자료를 지우고, 실제 개시·예�
 - **When — 실행:** BUY 3개 예약 → SELL 1개 예약 → 1개 정산 → 남은 BUY 취소 → 대조한다. 이후 구매자 KRW available만 901로 바꾸고 다시 대조한다.
 - **Then — 확인:** 일치·구매자 KRW 900/BTC 1·판매자 KRW 100/BTC 9·활성 구매 예약 0이고 대조 전후 DB는 같다. 손상 뒤에는 원장 900·DB 901·차이 +1이며 검사 후 손상 자료도 자동 수정되지 않는다.
 
-[실제 테스트와 assertion 보기](https://github.com/0Chord/coin-exchange/blob/a1812588eca89b83f1eed5eff4133d37cea84c7c/app-api/src/test/kotlin/com/exchange/core/api/ledger/infrastructure/persistence/PostgresLedgerReconciliationStoreTest.kt#L190)
+[실제 테스트와 assertion 보기](https://github.com/0Chord/coin-exchange/blob/6450fc08720e33537d9375b15a6158a684393f7b/app-api/src/test/kotlin/com/exchange/core/api/ledger/infrastructure/persistence/PostgresLedgerReconciliationStoreTest.kt#L190)
 
 ### 실제 DB 4. 수수료와 가격 개선 반환이 있는 실제 정산도 자산별로 일치한다
 
@@ -197,7 +197,7 @@ DB 공통 준비는 테스트별 기존 자료를 지우고, 실제 개시·예�
 - **When — 실행:** BUY 2×100,000·SELL 2×90,000을 예약하고 2×90,000 정산 후 대조한다.
 - **Then — 확인:** 일치·구매자 KRW 818,200/BTC 2·판매자 KRW 179,100/BTC 8·hold 모두 0·시스템 수수료 2,700이다.
 
-[실제 테스트와 assertion 보기](https://github.com/0Chord/coin-exchange/blob/a1812588eca89b83f1eed5eff4133d37cea84c7c/app-api/src/test/kotlin/com/exchange/core/api/ledger/infrastructure/persistence/PostgresLedgerReconciliationStoreTest.kt#L212)
+[실제 테스트와 assertion 보기](https://github.com/0Chord/coin-exchange/blob/6450fc08720e33537d9375b15a6158a684393f7b/app-api/src/test/kotlin/com/exchange/core/api/ledger/infrastructure/persistence/PostgresLedgerReconciliationStoreTest.kt#L212)
 
 ### 실제 DB 5. 반환 원장만 삭제하거나 효과를 중복 기록하면 정상 잔고와 다른 합계를 보고한다
 
@@ -205,7 +205,7 @@ DB 공통 준비는 테스트별 기존 자료를 지우고, 실제 개시·예�
 - **When — 실행:** 다른 ID로 RELEASE 효과를 복제해 대조한 뒤 원본과 복제 RELEASE를 지우고 다시 대조한다.
 - **Then — 확인:** 중복은 원장 1,100/−200, 누락은 700/200으로 각각 불일치다. 중간 정상 상태를 다시 검사한 테스트는 아니다.
 
-[실제 테스트와 assertion 보기](https://github.com/0Chord/coin-exchange/blob/a1812588eca89b83f1eed5eff4133d37cea84c7c/app-api/src/test/kotlin/com/exchange/core/api/ledger/infrastructure/persistence/PostgresLedgerReconciliationStoreTest.kt#L231)
+[실제 테스트와 assertion 보기](https://github.com/0Chord/coin-exchange/blob/6450fc08720e33537d9375b15a6158a684393f7b/app-api/src/test/kotlin/com/exchange/core/api/ledger/infrastructure/persistence/PostgresLedgerReconciliationStoreTest.kt#L231)
 
 ### 실제 DB 6. 분개 없는 머리글과 일부 삭제와 계정 자산 손상은 부분 합계로 통과시키지 않는다
 
@@ -213,7 +213,7 @@ DB 공통 준비는 테스트별 기존 자료를 지우고, 실제 개시·예�
 - **When — 실행:** 각 손상마다 DB 내용을 보관하고 대조한다.
 - **Then — 확인:** 세 경우 모두 불일치·원본 기록 이상을 표시하고 검사 전후 DB가 같다.
 
-[실제 테스트와 assertion 보기](https://github.com/0Chord/coin-exchange/blob/a1812588eca89b83f1eed5eff4133d37cea84c7c/app-api/src/test/kotlin/com/exchange/core/api/ledger/infrastructure/persistence/PostgresLedgerReconciliationStoreTest.kt#L258)
+[실제 테스트와 assertion 보기](https://github.com/0Chord/coin-exchange/blob/6450fc08720e33537d9375b15a6158a684393f7b/app-api/src/test/kotlin/com/exchange/core/api/ledger/infrastructure/persistence/PostgresLedgerReconciliationStoreTest.kt#L258)
 
 ### 실제 DB 7. 잔고 행을 삭제해도 원장과 예약 사용자를 검사 대상에서 없애지 않는다
 
@@ -221,7 +221,7 @@ DB 공통 준비는 테스트별 기존 자료를 지우고, 실제 개시·예�
 - **When — 실행:** 대조한 뒤 원장도 지워 예약만 남겨 다시 대조한다.
 - **Then — 확인:** 두 경우 모두 사용자 대상과 MISSING_BALANCE가 남고 없는 잔고는 null이다.
 
-[실제 테스트와 assertion 보기](https://github.com/0Chord/coin-exchange/blob/a1812588eca89b83f1eed5eff4133d37cea84c7c/app-api/src/test/kotlin/com/exchange/core/api/ledger/infrastructure/persistence/PostgresLedgerReconciliationStoreTest.kt#L275)
+[실제 테스트와 assertion 보기](https://github.com/0Chord/coin-exchange/blob/6450fc08720e33537d9375b15a6158a684393f7b/app-api/src/test/kotlin/com/exchange/core/api/ledger/infrastructure/persistence/PostgresLedgerReconciliationStoreTest.kt#L275)
 
 ### 실제 DB 8. 빈 대상과 실제 영 잔고 그리고 관련 없는 자산을 구분한다
 
@@ -229,7 +229,7 @@ DB 공통 준비는 테스트별 기존 자료를 지우고, 실제 개시·예�
 - **When — 실행:** 각 단계에서 BTC/KRW를 대조한다.
 - **Then — 확인:** 앞의 두 단계는 대상 없음, KRW 0 행은 일치·대상 1개다.
 
-[실제 테스트와 assertion 보기](https://github.com/0Chord/coin-exchange/blob/a1812588eca89b83f1eed5eff4133d37cea84c7c/app-api/src/test/kotlin/com/exchange/core/api/ledger/infrastructure/persistence/PostgresLedgerReconciliationStoreTest.kt#L289)
+[실제 테스트와 assertion 보기](https://github.com/0Chord/coin-exchange/blob/6450fc08720e33537d9375b15a6158a684393f7b/app-api/src/test/kotlin/com/exchange/core/api/ledger/infrastructure/persistence/PostgresLedgerReconciliationStoreTest.kt#L289)
 
 ### 실제 DB 9. 외부 트랜잭션과 다른 마켓의 활성 예약은 검증 불가다
 
@@ -237,7 +237,7 @@ DB 공통 준비는 테스트별 기존 자료를 지우고, 실제 개시·예�
 - **When — 실행:** 외부 트랜잭션 안에서 대조한 뒤 다른 마켓 예약 자료를 대조한다.
 - **Then — 확인:** 둘 다 검증 불가지만 OUTER_TRANSACTION과 OTHER_MARKET_HOLD 원인이 구분된다.
 
-[실제 테스트와 assertion 보기](https://github.com/0Chord/coin-exchange/blob/a1812588eca89b83f1eed5eff4133d37cea84c7c/app-api/src/test/kotlin/com/exchange/core/api/ledger/infrastructure/persistence/PostgresLedgerReconciliationStoreTest.kt#L298)
+[실제 테스트와 assertion 보기](https://github.com/0Chord/coin-exchange/blob/6450fc08720e33537d9375b15a6158a684393f7b/app-api/src/test/kotlin/com/exchange/core/api/ledger/infrastructure/persistence/PostgresLedgerReconciliationStoreTest.kt#L298)
 
 ### 실제 DB 10. 예약 조회 SQL이 실패하면 앞서 읽은 원장과 잔고도 결과에서 버린다
 
@@ -245,7 +245,7 @@ DB 공통 준비는 테스트별 기존 자료를 지우고, 실제 개시·예�
 - **When — 실행:** 실제 대조 SQL을 실행하고 finally에서 예약 테이블 이름을 되돌린다.
 - **Then — 확인:** 예약 조회 단계의 검증 불가·빈 금액/차이 목록·원본 DB 내용 유지다.
 
-[실제 테스트와 assertion 보기](https://github.com/0Chord/coin-exchange/blob/a1812588eca89b83f1eed5eff4133d37cea84c7c/app-api/src/test/kotlin/com/exchange/core/api/ledger/infrastructure/persistence/PostgresLedgerReconciliationStoreTest.kt#L311)
+[실제 테스트와 assertion 보기](https://github.com/0Chord/coin-exchange/blob/6450fc08720e33537d9375b15a6158a684393f7b/app-api/src/test/kotlin/com/exchange/core/api/ledger/infrastructure/persistence/PostgresLedgerReconciliationStoreTest.kt#L311)
 
 ### 실제 DB 11. 첫 조회 뒤 예약이 커밋돼도 나머지 조회는 이전 스냅샷을 읽는다
 
@@ -253,7 +253,7 @@ DB 공통 준비는 테스트별 기존 자료를 지우고, 실제 개시·예�
 - **When — 실행:** 별도 연결의 실제 예약 서비스가 300을 커밋한다 → 읽기를 재개한다 → 다음 대조도 호출한다.
 - **Then — 확인:** 첫 대조는 1,000/0/0 일치, 다음 대조는 700/300/300으로 일치한다. 실제 DB 격리 repeatable read와 읽기 전용 on을 확인한다. sleep은 사용하지 않는다.
 
-[실제 테스트와 assertion 보기](https://github.com/0Chord/coin-exchange/blob/a1812588eca89b83f1eed5eff4133d37cea84c7c/app-api/src/test/kotlin/com/exchange/core/api/ledger/infrastructure/persistence/PostgresLedgerReconciliationStoreTest.kt#L329)
+[실제 테스트와 assertion 보기](https://github.com/0Chord/coin-exchange/blob/6450fc08720e33537d9375b15a6158a684393f7b/app-api/src/test/kotlin/com/exchange/core/api/ledger/infrastructure/persistence/PostgresLedgerReconciliationStoreTest.kt#L329)
 
 ### 실제 DB 12. 총액이 같아도 분류 오류와 예약 대비 hold 부족 초과를 각각 보고한다
 
@@ -261,7 +261,7 @@ DB 공통 준비는 테스트별 기존 자료를 지우고, 실제 개시·예�
 - **When — 실행:** 각 상태에서 대조한다.
 - **Then — 확인:** 첫 상태의 세 차이는 +100/−100/−100이다. hold 299·301은 원장/예약 대비 각각 −1·+1이다.
 
-[실제 테스트와 assertion 보기](https://github.com/0Chord/coin-exchange/blob/a1812588eca89b83f1eed5eff4133d37cea84c7c/app-api/src/test/kotlin/com/exchange/core/api/ledger/infrastructure/persistence/PostgresLedgerReconciliationStoreTest.kt#L380)
+[실제 테스트와 assertion 보기](https://github.com/0Chord/coin-exchange/blob/6450fc08720e33537d9375b15a6158a684393f7b/app-api/src/test/kotlin/com/exchange/core/api/ledger/infrastructure/persistence/PostgresLedgerReconciliationStoreTest.kt#L380)
 
 ### 실제 DB 13. 기존 원장이 허용한 빈 식별자에 새 제약을 덧붙이지 않는다
 
@@ -269,7 +269,7 @@ DB 공통 준비는 테스트별 기존 자료를 지우고, 실제 개시·예�
 - **When — 실행:** 기존 포트 조회와 신규 대조를 차례로 호출한다.
 - **Then — 확인:** 기존 조회는 성공하며 대조도 일치·원장 available 100이다. 기존 저장 계약에 새 ID 제약을 덧붙이지 않는다.
 
-[실제 테스트와 assertion 보기](https://github.com/0Chord/coin-exchange/blob/a1812588eca89b83f1eed5eff4133d37cea84c7c/app-api/src/test/kotlin/com/exchange/core/api/ledger/infrastructure/persistence/PostgresLedgerReconciliationStoreTest.kt#L401)
+[실제 테스트와 assertion 보기](https://github.com/0Chord/coin-exchange/blob/6450fc08720e33537d9375b15a6158a684393f7b/app-api/src/test/kotlin/com/exchange/core/api/ledger/infrastructure/persistence/PostgresLedgerReconciliationStoreTest.kt#L401)
 
 ### 실제 DB 14. 손상된 원장에만 남은 사용자도 대상과 누락 잔고를 보고한다
 
@@ -277,7 +277,7 @@ DB 공통 준비는 테스트별 기존 자료를 지우고, 실제 개시·예�
 - **When — 실행:** 대조한다.
 - **Then — 확인:** 불일치·buyer/KRW 대상 1개·원장 계산 불가·잔고 null·원본 이상과 MISSING_BALANCE를 함께 보고한다.
 
-[실제 테스트와 assertion 보기](https://github.com/0Chord/coin-exchange/blob/a1812588eca89b83f1eed5eff4133d37cea84c7c/app-api/src/test/kotlin/com/exchange/core/api/ledger/infrastructure/persistence/PostgresLedgerReconciliationStoreTest.kt#L422)
+[실제 테스트와 assertion 보기](https://github.com/0Chord/coin-exchange/blob/6450fc08720e33537d9375b15a6158a684393f7b/app-api/src/test/kotlin/com/exchange/core/api/ledger/infrastructure/persistence/PostgresLedgerReconciliationStoreTest.kt#L422)
 
 ### 실제 DB 15. 모든 조회 뒤 트랜잭션 종료가 실패하면 완료 단계와 검증 불가를 보고한다
 
@@ -285,7 +285,49 @@ DB 공통 준비는 테스트별 기존 자료를 지우고, 실제 개시·예�
 - **When — 실행:** 실제 원장·잔고·예약 조회가 끝난 뒤 관리자 종료 호출에서 예외를 발생시킨다.
 - **Then — 확인:** 종료 지점 도달·검증 불가·트랜잭션 완료 단계 표시·빈 숫자/차이 목록·DB 내용 유지다. 실제 네트워크 장애를 발생시키는 테스트는 아니다.
 
-[실제 테스트와 assertion 보기](https://github.com/0Chord/coin-exchange/blob/a1812588eca89b83f1eed5eff4133d37cea84c7c/app-api/src/test/kotlin/com/exchange/core/api/ledger/infrastructure/persistence/PostgresLedgerReconciliationStoreTest.kt#L436)
+[실제 테스트와 assertion 보기](https://github.com/0Chord/coin-exchange/blob/6450fc08720e33537d9375b15a6158a684393f7b/app-api/src/test/kotlin/com/exchange/core/api/ledger/infrastructure/persistence/PostgresLedgerReconciliationStoreTest.kt#L436)
+
+## PR #82 보완 · 금액이 맞아도 예약 상태가 잘못되면 불일치다
+
+이전 PR 리뷰에서 취소된 예약의 상태만 ACTIVE로 바꾼 데이터가 일치로 통과하는 결함을 발견했다. 새 조회 객체는 `OrderReservation` 생성자를 거치지 않기 때문에 원래 생성자의 상태·금액 규칙을 별도로 대조해야 한다. DB가 저장을 허용하는 것과 도메인 규칙을 만족하는 것은 다르다.
+
+| 기존 규칙과 출처 | 새 읽기 입력의 적용 | 정상·위반 근거 |
+| --- | --- | --- |
+| `OrderReservation`의 ACTIVE는 잔여금이 있어야 함 | `status=ACTIVE`이면 `remainingAmount>0` | 기존 ACTIVE/300은 정상, ACTIVE/0·ACTIVE/−1은 기록 이상 |
+| SETTLED·RELEASED의 잔여금은 0 | 두 종료 상태는 `remainingAmount=0` | 두 상태/0은 정상, 두 상태/1은 기록 이상 |
+| Amount는 음수가 아님 | 읽기 DTO의 Long은 손상값도 전달하므로 음수를 검사 | ACTIVE/−1 반례 |
+| 상태는 정의된 세 상태 중 하나 | 읽기 DTO의 문자열이 상태 목록에 속하는지 검사 | UNKNOWN/0 반례 |
+| 수량·최초 예약액·수수료 정책 등 나머지 도메인 필드 | 현재 읽기 입력에 없으며 이번 수정에서 필드를 추가하지 않음 | 이 대조 결과가 예약 객체 전체의 유효성을 증명한다고 하지 않음 |
+
+[원래 상태·금액 규칙](https://github.com/0Chord/coin-exchange/blob/6450fc08720e33537d9375b15a6158a684393f7b/domain-order/src/main/kotlin/com/exchange/core/order/OrderReservation.kt#L198)과 신규 순수 판단을 대조했다. 정상 생성 경로만 사용하면 ACTIVE/0을 만들 수 없지만 DB 제약은 이를 허용해서, 실제 SQL 손상을 읽는 테스트가 필요하다. 금액이 맞는다는 이유로 상태 규칙을 생략하지 않는다. 새 프레임워크·의존성·쓰기 SQL·migration은 추가하지 않았다.
+
+### 보완 순수 테스트 · 상태와 잔여금 조합
+
+- **Given — 준비:** 원장 없음·실제 0 잔고와 예약 하나. 아래 일곱 상태/금액 조합을 차례로 입력한다.
+- **When — 실행:** 기존 도메인 규칙에서 정한 기대값과 순수 대조 결과를 비교한다.
+- **Then — 확인:** 정상 종료/0은 차이 없는 일치다. 금지된 조합은 기록 이상으로 보고하고 사용자·자산·예약 식별자를 남기며 원장 금액은 계산 불가로 둔다. 기존 ACTIVE/300 정상 테스트도 유지한다.
+
+| 상태 | 잔여금 | 기대 |
+| --- | ---: | --- |
+| ACTIVE | 0 | MISMATCHED + INVALID_RECORD |
+| ACTIVE | −1 | MISMATCHED + INVALID_RECORD |
+| SETTLED | 0 | MATCHED |
+| SETTLED | 1 | MISMATCHED + INVALID_RECORD |
+| RELEASED | 0 | MATCHED |
+| RELEASED | 1 | MISMATCHED + INVALID_RECORD |
+| UNKNOWN | 0 | MISMATCHED + INVALID_RECORD |
+
+[실제 테스트와 assertion 보기](https://github.com/0Chord/coin-exchange/blob/6450fc08720e33537d9375b15a6158a684393f7b/domain-ledger/src/test/kotlin/com/exchange/core/ledger/LedgerReconciliationTest.kt#L259)
+
+### 보완 실제 DB 테스트 · 취소 뒤 상태만 손상
+
+- **Given — 준비:** 실제 개시 1,000 → 예약 300 → 취소 반환까지 저장한다. 대조가 일치하고 원장 available=1,000·hold=0·활성 예약 합계=0인지 먼저 확인한다.
+- **When — 실행:** 테스트 SQL로 예약의 상태만 ACTIVE로 바꾸고 `released_amount=null`로 둔다. 실제 DB가 한 행의 변경을 허용했음을 확인하고 대조를 호출한다.
+- **Then — 확인:** 돈은 여전히 DB available=1,000·hold=0·예약 합계=0이지만, 결과는 불일치이며 buyer/KRW와 BTC-KRW/buy에 INVALID_RECORD가 남는다. 원장 기준은 계산 불가로 표시하고, 검사 전후 네 테이블의 모든 값·시각은 그대로다. 손상을 자동으로 수리하지 않는다.
+
+[실제 테스트와 assertion 보기](https://github.com/0Chord/coin-exchange/blob/6450fc08720e33537d9375b15a6158a684393f7b/app-api/src/test/kotlin/com/exchange/core/api/ledger/infrastructure/persistence/PostgresLedgerReconciliationStoreTest.kt#L462)
+
+**보완 실행:** 두 신규 정의는 수정 전 각각 기대 MISMATCHED/실제 MATCHED 어설션에서 실패했다. 구현에는 ACTIVE의 잔여금 0을 거절하는 조건 한 줄을 추가했다. 수정 후 새 순수 14개를 포함한 ledger 전체 39개와 실제 DB 16개가 통과했다. 구조·린트 및 독립 재리뷰의 최종 결과는 마무리 기록에 갱신한다.
 
 ## 실행 기록과 남은 확인
 
@@ -306,7 +348,7 @@ cd /Users/0chord/.codex/worktrees/issue74-ledger-reconciliation/exchange-core
 
 [최종 DB 테스트 HTML](#실행-기록과-남은-확인) · [ledger 테스트 HTML](#실행-기록과-남은-확인) · [구조 테스트 HTML](#실행-기록과-남은-확인). 위 링크는 실행 기록으로 이동한다. 테스트 HTML은 각 모듈의 `build/reports/tests/test/index.html`에 생성되는 로컬 산출물이며 Git에는 포함하지 않는다. 재실행하면 갱신된다.
 
-**독립 검토 기록:** 작성 대화를 상속하지 않은 별도 에이전트가 고정 checkout `3160989`에서 직접 반례를 실행해 세 결함을 확인했다. 새 ID 제약 때문에 정상 기존 원장을 불일치로 판단한 점, 손상된 원장만 가진 사용자가 대상에서 빠진 점, 새 포트 검사 등록 누락이다. 범위를 축소하지 않고 실제 회귀 테스트와 공통 대상 보존 로직·기존 포트 목록을 수정했다. 수정본 재리뷰에서 종료 실패의 진단 단계가 마지막 예약 조회로 남는 P3도 확인했다. 실제 DB 읽기 후 관리자 종료 예외를 제어 주입하는 사례를 추가해 의도한 진단 assertion 실패를 확인하고 완료 단계 표시를 수정했다. 최종 구현 커밋 `b1360da7674fa12fe0edd31c3cae51532ec13afc`을 별도 checkout에서 재리뷰했고, 확인된 미해결 결함은 없었다. 리뷰어가 최종 실제 DB 테스트 15개와 공통 린트를 직접 실행했다. 직전 커밋에서 직접 실행한 ledger 전체 38개와 운영·역할 검사 13개, P01~P09 근거는 마지막 변경이 종료 단계 표시 한 줄인 점을 확인하고 재사용했다. 최종 테스트 링크 28개와 실제 코드 발췌·해시 8개도 소스와 대조했다. 이는 모든 잠재 결함이 없다는 보장은 아니다.
+**이전 구현의 독립 검토 기록:** 작성 대화를 상속하지 않은 별도 에이전트가 고정 checkout `3160989`에서 직접 반례를 실행해 세 결함을 확인했다. 새 ID 제약 때문에 정상 기존 원장을 불일치로 판단한 점, 손상된 원장만 가진 사용자가 대상에서 빠진 점, 새 포트 검사 등록 누락이다. 범위를 축소하지 않고 실제 회귀 테스트와 공통 대상 보존 로직·기존 포트 목록을 수정했다. 수정본 재리뷰에서 종료 실패의 진단 단계가 마지막 예약 조회로 남는 P3도 확인했다. 실제 DB 읽기 후 관리자 종료 예외를 제어 주입하는 사례를 추가해 의도한 진단 assertion 실패를 확인하고 완료 단계 표시를 수정했다. 최종 구현 커밋 `b1360da7674fa12fe0edd31c3cae51532ec13afc`을 별도 checkout에서 재리뷰했고, 확인된 미해결 결함은 없었다. 리뷰어가 최종 실제 DB 테스트 15개와 공통 린트를 직접 실행했다. 직전 커밋에서 직접 실행한 ledger 전체 38개와 운영·역할 검사 13개, P01~P09 근거는 마지막 변경이 종료 단계 표시 한 줄인 점을 확인하고 재사용했다. 최종 테스트 링크 28개와 실제 코드 발췌·해시 8개도 소스와 대조했다. 이는 당시 검토 범위의 결론이다. 이후 PR #82 리뷰에서 ACTIVE/0 누락을 새로 확인했고 위 보완 단위에서 수정했다.
 
 SQL 조회 실패·외부 트랜잭션·타 마켓 hold는 실제 실행했다. 트랜잭션 종료 예외는 실제 DB 읽기 뒤 관리자 예외를 제어해 처리 경계를 실행했다. 실제 네트워크 연결 단절이나 DB 자체의 종료 장애는 주입하지 않았다. 전체 app-api 테스트·JMH·부하 측정·원격 CI는 이번에 실행하지 않았다.
 
@@ -323,7 +365,7 @@ cd /Users/0chord/.codex/worktrees/issue74-ledger-reconciliation/exchange-core
 
 <details markdown="1"><summary>결과 전달과 실패 변환 — 실제 코드 펼치기</summary>
 
-소스 근거 · [전체 파일](https://github.com/0Chord/coin-exchange/blob/a1812588eca89b83f1eed5eff4133d37cea84c7c/app-api/src/main/kotlin/com/exchange/core/api/ledger/application/ReconcileLedgerUseCase.kt#L1) · 내용 해시 `1068d532cf56` · 1~20행
+소스 근거 · [전체 파일](https://github.com/0Chord/coin-exchange/blob/6450fc08720e33537d9375b15a6158a684393f7b/app-api/src/main/kotlin/com/exchange/core/api/ledger/application/ReconcileLedgerUseCase.kt#L1) · 내용 해시 `1068d532cf56` · 1~20행
 
 ```kotlin
 package com.exchange.core.api.ledger.application
@@ -353,7 +395,7 @@ class ReconcileLedgerUseCase(
 
 <details markdown="1"><summary>같은 DB 시점과 전체 읽기 — 실제 코드 펼치기</summary>
 
-소스 근거 · [전체 파일](https://github.com/0Chord/coin-exchange/blob/a1812588eca89b83f1eed5eff4133d37cea84c7c/app-api/src/main/kotlin/com/exchange/core/api/ledger/infrastructure/persistence/PostgresLedgerReconciliationStore.kt#L1) · 내용 해시 `0cefebc2604f` · 1~201행
+소스 근거 · [전체 파일](https://github.com/0Chord/coin-exchange/blob/6450fc08720e33537d9375b15a6158a684393f7b/app-api/src/main/kotlin/com/exchange/core/api/ledger/infrastructure/persistence/PostgresLedgerReconciliationStore.kt#L1) · 내용 해시 `0cefebc2604f` · 1~201행
 
 ```kotlin
 package com.exchange.core.api.ledger.infrastructure.persistence
@@ -564,7 +606,7 @@ class PostgresLedgerReconciliationStore(
 
 <details markdown="1"><summary>순수 합계와 세 비교 — 실제 코드 펼치기</summary>
 
-소스 근거 · [전체 파일](https://github.com/0Chord/coin-exchange/blob/a1812588eca89b83f1eed5eff4133d37cea84c7c/domain-ledger/src/main/kotlin/com/exchange/core/ledger/LedgerReconciliation.kt#L1) · 내용 해시 `8531c4ccb506` · 1~171행
+소스 근거 · [전체 파일](https://github.com/0Chord/coin-exchange/blob/6450fc08720e33537d9375b15a6158a684393f7b/domain-ledger/src/main/kotlin/com/exchange/core/ledger/LedgerReconciliation.kt#L1) · 내용 해시 `86367e05a7a4` · 1~172행
 
 ```kotlin
 package com.exchange.core.ledger
@@ -629,6 +671,7 @@ class LedgerReconciliation {
         for (reservation in reservations) {
             if (reservation.status !in setOf("ACTIVE", "SETTLED", "RELEASED") ||
                 reservation.remainingAmount < 0 ||
+                (reservation.status == "ACTIVE" && reservation.remainingAmount == 0L) ||
                 (reservation.status != "ACTIVE" && reservation.remainingAmount != 0L)
             ) {
                 problems +=
@@ -745,7 +788,7 @@ class LedgerReconciliation {
 
 <details markdown="1"><summary>네 결과와 차이 표현 — 실제 코드 펼치기</summary>
 
-소스 근거 · [전체 파일](https://github.com/0Chord/coin-exchange/blob/a1812588eca89b83f1eed5eff4133d37cea84c7c/domain-ledger/src/main/kotlin/com/exchange/core/ledger/LedgerReconciliationReport.kt#L1) · 내용 해시 `104b747921b2` · 1~44행
+소스 근거 · [전체 파일](https://github.com/0Chord/coin-exchange/blob/6450fc08720e33537d9375b15a6158a684393f7b/domain-ledger/src/main/kotlin/com/exchange/core/ledger/LedgerReconciliationReport.kt#L1) · 내용 해시 `104b747921b2` · 1~44행
 
 ```kotlin
 package com.exchange.core.ledger
@@ -799,7 +842,7 @@ data class LedgerReconciliationReport(
 
 <details markdown="1"><summary>범위·입력 자료 보관 — 실제 코드 펼치기</summary>
 
-소스 근거 · [전체 파일](https://github.com/0Chord/coin-exchange/blob/a1812588eca89b83f1eed5eff4133d37cea84c7c/domain-ledger/src/main/kotlin/com/exchange/core/ledger/LedgerReconciliationSnapshot.kt#L1) · 내용 해시 `1a8be1a201ad` · 1~45행
+소스 근거 · [전체 파일](https://github.com/0Chord/coin-exchange/blob/6450fc08720e33537d9375b15a6158a684393f7b/domain-ledger/src/main/kotlin/com/exchange/core/ledger/LedgerReconciliationSnapshot.kt#L1) · 내용 해시 `1a8be1a201ad` · 1~45행
 
 ```kotlin
 package com.exchange.core.ledger
@@ -854,7 +897,7 @@ class LedgerReconciliationSnapshot(
 
 <details markdown="1"><summary>기술을 노출하지 않는 읽기 포트 — 실제 코드 펼치기</summary>
 
-소스 근거 · [전체 파일](https://github.com/0Chord/coin-exchange/blob/a1812588eca89b83f1eed5eff4133d37cea84c7c/domain-ledger/src/main/kotlin/com/exchange/core/ledger/LedgerReconciliationStore.kt#L1) · 내용 해시 `e837c6267400` · 1~12행
+소스 근거 · [전체 파일](https://github.com/0Chord/coin-exchange/blob/6450fc08720e33537d9375b15a6158a684393f7b/domain-ledger/src/main/kotlin/com/exchange/core/ledger/LedgerReconciliationStore.kt#L1) · 내용 해시 `e837c6267400` · 1~12행
 
 ```kotlin
 package com.exchange.core.ledger
@@ -876,7 +919,7 @@ class LedgerReconciliationUnavailableException(
 
 <details markdown="1"><summary>기존 설정 안의 Bean 연결 — 실제 코드 펼치기</summary>
 
-소스 근거 · [전체 파일](https://github.com/0Chord/coin-exchange/blob/a1812588eca89b83f1eed5eff4133d37cea84c7c/app-api/src/main/kotlin/com/exchange/core/api/config/LedgerPersistenceConfig.kt#L1) · 내용 해시 `7c2541590004` · 1~172행
+소스 근거 · [전체 파일](https://github.com/0Chord/coin-exchange/blob/6450fc08720e33537d9375b15a6158a684393f7b/app-api/src/main/kotlin/com/exchange/core/api/config/LedgerPersistenceConfig.kt#L1) · 내용 해시 `7c2541590004` · 1~172행
 
 ```kotlin
 package com.exchange.core.api.config
@@ -1058,7 +1101,7 @@ class LedgerPersistenceConfig {
 
 <details markdown="1"><summary>기존 포트 검사 대상 추가 — 실제 코드 펼치기</summary>
 
-소스 근거 · [전체 파일](https://github.com/0Chord/coin-exchange/blob/a1812588eca89b83f1eed5eff4133d37cea84c7c/architecture-tests/src/test/kotlin/com/exchange/architecture/support/ProductionScope.kt#L1) · 내용 해시 `0926cfe19d6f` · 1~89행
+소스 근거 · [전체 파일](https://github.com/0Chord/coin-exchange/blob/6450fc08720e33537d9375b15a6158a684393f7b/architecture-tests/src/test/kotlin/com/exchange/architecture/support/ProductionScope.kt#L1) · 내용 해시 `0926cfe19d6f` · 1~89행
 
 ```kotlin
 package com.exchange.architecture.support
