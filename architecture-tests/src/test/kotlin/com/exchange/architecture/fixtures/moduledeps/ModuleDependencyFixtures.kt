@@ -60,3 +60,5 @@ class ReferenceShapes(
 class ExternalOnly(
     val timestamp: java.time.Instant,
 )
+
+class TradingMarker

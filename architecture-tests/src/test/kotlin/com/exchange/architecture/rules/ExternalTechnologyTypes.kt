@@ -13,6 +13,7 @@ object ExternalTechnologyTypes {
             "java.net.http.",
             "javax.net.",
             "org.apache.kafka.clients.",
+            "io.aeron.",
             "org.postgresql.",
             "org.hibernate.",
         )

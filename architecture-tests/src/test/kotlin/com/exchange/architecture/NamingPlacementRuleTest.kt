@@ -117,6 +117,35 @@ class NamingPlacementRuleTest {
         assertTrue("declaration" in r.items(EnumResolver::class.java))
     }
 
+    @Test fun `trading에는 Calculator만 허용하고 Resolver 위치는 확장하지 않는다`() {
+        // 패키지를 같게 두어 Resolver의 추가 허용 여부를 실제 모듈 소속으로만 확인한다.
+        val result =
+            namingInspect(
+                namingPolicy("domain-trading" to namingPkg, "domain-order" to namingPkg),
+                TradingFeeCalculator::class.java,
+                RuleCalculator::class.java,
+                FeeTierResolver::class.java,
+                module = "domain-trading",
+            )
+
+        result.assertReady()
+        assertEquals(emptySet(), result.items(TradingFeeCalculator::class.java))
+        assertEquals(emptySet(), result.items(RuleCalculator::class.java))
+        assertEquals(setOf("module"), result.items(FeeTierResolver::class.java))
+        assertEquals(setOf(FeeTierResolver::class.java.name), result.violations.map { it.subject }.toSet())
+    }
+
+    @Test fun `trading Calculator 허용이 app의 계산기 위치까지 열지 않는다`() {
+        val result =
+            namingInspect(
+                namingPolicy("order-application" to namingPkg, "domain-trading" to namingPkg),
+                TradingFeeCalculator::class.java,
+            )
+
+        result.assertReady()
+        assertEquals(setOf("module"), result.items(TradingFeeCalculator::class.java))
+    }
+
     @Test fun `Config는 이름 어노테이션 위치 세 조건을 각각 잡는다`() {
         val p = namingPolicy("config" to namingPkg)
         val r = namingInspect(p, ExplicitOrderConfig::class.java, Wiring::class.java, OrderConfig::class.java, Config::class.java)

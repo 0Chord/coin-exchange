@@ -6,6 +6,7 @@ include(
     "domain-matching",
     "domain-ledger",
     "domain-fee",
+    "domain-trading",
     "benchmark-jmh",
     "app-api",
     "architecture-tests",

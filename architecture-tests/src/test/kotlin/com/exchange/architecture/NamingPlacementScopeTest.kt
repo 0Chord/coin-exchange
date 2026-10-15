@@ -127,12 +127,13 @@ class NamingPlacementScopeTest {
         assertFalse(inspect(ProductionScopeImporter().load(listOf(ModuleOutput("app-api", listOf(output))), expectations)).evaluated)
     }
 
-    @Test fun `프로젝트 정책은 이유를 가진 정확한 17개 폴더다`() {
+    @Test fun `프로젝트 정책은 이유를 가진 정확한 18개 폴더다`() {
         val p = ProjectLayoutPolicy.target
         assertEquals(emptyList(), LayoutPolicyValidation.inspect(p, ProductionScope.requiredTypes.keys))
         assertEquals(emptyList(), PortPlacementPolicy.validate(p))
-        assertEquals(17, p.folders.size)
+        assertEquals(18, p.folders.size)
         assertEquals("com.exchange.core.ledger", p.folders.single { it.id == "domain-ledger" }.packageName)
+        assertEquals("com.exchange.core.trading", p.folders.single { it.id == "domain-trading" }.packageName)
         assertEquals("com.exchange.core.api.ledger.application", p.folders.single { it.id == "ledger-application" }.packageName)
         assertEquals("com.exchange.core.api.matching.application.port", p.folders.single { it.id == "matching-ports" }.packageName)
         assertTrue(p.folders.all { it.reason.isNotBlank() })

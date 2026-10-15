@@ -1,9 +1,11 @@
 package com.exchange.architecture
 
+import com.exchange.architecture.policy.ProjectLayoutPolicy
 import com.exchange.architecture.support.AllowedFolder
 import com.exchange.architecture.support.AllowedSourceRoot
 import com.exchange.architecture.support.LayoutPolicy
 import com.exchange.architecture.support.MainSourceRoot
+import com.exchange.architecture.support.ProductionScope
 import com.exchange.architecture.support.SourcePlacement
 import org.junit.jupiter.api.io.TempDir
 import java.nio.file.Files
@@ -53,6 +55,23 @@ class SourcePlacementContractTest {
         assertEquals(emptyList(), r.result.violations)
         assertEquals(setOf(source.toString()), r.result.evaluatedFiles)
         assertEquals(listOf("com", "example", "order", "application"), r.sources.single().packageSegments)
+    }
+
+    @Test fun `trading은 정확한 코어 폴더만 허용하고 임의 하위 폴더는 거절한다`() {
+        val allowed = file("com/exchange/core/trading/Candidate.kt", "package com.exchange.core.trading\nclass Candidate")
+        val nested = file("com/exchange/core/trading/internal/Detail.kt", "package com.exchange.core.trading.internal\nclass Detail")
+        val result =
+            SourcePlacement
+                .inspect(
+                    listOf(MainSourceRoot("domain-trading", root, "src/main/kotlin", setOf(allowed, nested))),
+                    ProjectLayoutPolicy.target,
+                    ProductionScope.requiredTypes.keys,
+                ).result
+
+        assertTrue(result.evaluated, result.problems.toString())
+        assertEquals(setOf(allowed.toString(), nested.toString()), result.evaluatedFiles)
+        assertEquals(setOf(nested.toString()), result.violations.map { it.subject }.toSet())
+        assertEquals(listOf("allowedFolder"), result.violations.map { it.item })
     }
 
     @Test fun `NAME-18 파일만 위로 옮기면 클래스가 없어도 폴더 불일치를 보고한다`() {

@@ -36,7 +36,7 @@ object ProjectLayoutPolicy {
                 app("matching-persistence", "$base/api/matching/infrastructure/persistence", "매칭 영속화"),
                 app("matching-publish", "$base/api/matching/infrastructure/publish", "명시한 미저장 발행 구현"),
             ) +
-                listOf("common", "fee", "order", "ledger", "matching").map {
+                listOf("common", "fee", "order", "ledger", "matching", "trading").map {
                     AllowedFolder("domain-$it", "domain-$it", root, "$base/$it", "기술 독립 코어")
                 },
             PortPlacementPolicy.common.copy(
