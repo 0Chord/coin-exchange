@@ -17,6 +17,7 @@ import com.exchange.architecture.fixtures.moduledeps.MatchingUsesOrder
 import com.exchange.architecture.fixtures.moduledeps.OrderMarker
 import com.exchange.architecture.fixtures.moduledeps.OrderValue
 import com.exchange.architecture.fixtures.moduledeps.ReferenceShapes
+import com.exchange.architecture.fixtures.moduledeps.TradingMarker
 import com.exchange.architecture.rules.ModuleDependencyDirection
 import com.exchange.architecture.support.GradleModuleInventory
 import com.exchange.architecture.support.MainProjectDependencies
@@ -96,7 +97,7 @@ class ModuleDependencyContractTest {
     }
 
     @Test
-    fun `여섯 운영 모듈의 모든 직접 방향을 명세의 허용 쌍과 대조한다`() {
+    fun `일곱 운영 모듈의 모든 직접 방향을 명세의 허용 쌍과 대조한다`() {
         // 구현의 허용표에서 정답을 만들지 않고 명세의 허용 쌍을 별도로 적는다.
         val permitted =
             setOf(
@@ -106,6 +107,10 @@ class ModuleDependencyContractTest {
                 "domain-ledger" to "domain-common",
                 "domain-matching" to "domain-common",
                 "domain-matching" to "domain-order",
+                "domain-trading" to "domain-common",
+                "domain-trading" to "domain-fee",
+                "domain-trading" to "domain-order",
+                "domain-trading" to "domain-ledger",
                 "app-api" to "domain-common",
                 "app-api" to "domain-fee",
                 "app-api" to "domain-order",
@@ -119,6 +124,7 @@ class ModuleDependencyContractTest {
                 "domain-order" to OrderMarker::class.java,
                 "domain-ledger" to LedgerMarker::class.java,
                 "domain-matching" to MatchingMarker::class.java,
+                "domain-trading" to TradingMarker::class.java,
                 "app-api" to ApiMarker::class.java,
             )
         val all =
@@ -142,7 +148,7 @@ class ModuleDependencyContractTest {
                 checked++
             }
         }
-        assertEquals(36, checked, "빈 반복으로 허용표 검증을 대신하지 않는다")
+        assertEquals(49, checked, "빈 반복으로 허용표 검증을 대신하지 않는다")
     }
 
     @Test

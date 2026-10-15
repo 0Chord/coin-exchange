@@ -272,25 +272,26 @@ object NamingRules {
         input: NamingPlacementInput,
         policy: LayoutPolicy,
         suffix: String,
+        locations: List<String>,
     ): ArchRule =
         classes()
             .that(suffixTargets(suffix))
             .should(
                 condition("$suffix 이름·선언·코어 위치를 지킨다") { t ->
                     name(t, input, suffix, suffix) + shape(t, input, suffix, !t.isEnum && !t.isAnnotation, "클래스 또는 일반 인터페이스") +
-                        position(t, input, suffix, listOf(area(policy, "domain-fee"), area(policy, "domain-order")))
+                        position(t, input, suffix, locations.map { area(policy, it) })
                 },
             ).allowEmptyShould(true)
 
     fun calculators(
         input: NamingPlacementInput,
         policy: LayoutPolicy,
-    ) = coreRule(input, policy, "Calculator")
+    ) = coreRule(input, policy, "Calculator", listOf("domain-fee", "domain-order", "domain-trading"))
 
     fun resolvers(
         input: NamingPlacementInput,
         policy: LayoutPolicy,
-    ) = coreRule(input, policy, "Resolver")
+    ) = coreRule(input, policy, "Resolver", listOf("domain-fee", "domain-order"))
 
     fun stores(
         input: NamingPlacementInput,

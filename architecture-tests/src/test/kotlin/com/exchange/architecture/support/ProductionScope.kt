@@ -18,6 +18,7 @@ object ProductionScope {
             "domain-order" to setOf("com.exchange.core.order.OrderReservation"),
             "domain-ledger" to setOf("com.exchange.core.ledger.Balance"),
             "domain-matching" to setOf("com.exchange.core.matching.MatchingEngine"),
+            "domain-trading" to setOf("com.exchange.core.trading.OrderAdmissionCalculator"),
             "app-api" to setOf("com.exchange.core.ExchangeCoreApplication"),
         )
     val roles =

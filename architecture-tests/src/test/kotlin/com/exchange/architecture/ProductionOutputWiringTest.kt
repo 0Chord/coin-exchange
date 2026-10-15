@@ -36,7 +36,7 @@ class ProductionOutputWiringTest {
     }
 
     @Test
-    fun `W01 여섯 운영 모듈의 실제 main 출력을 컴파일해 전달한다`() {
+    fun `W01 일곱 운영 모듈의 실제 main 출력을 컴파일해 전달한다`() {
         val required =
             mapOf(
                 "domain-common" to "com.exchange.core.common.Amount",
@@ -44,6 +44,7 @@ class ProductionOutputWiringTest {
                 "domain-order" to "com.exchange.core.order.OrderReservation",
                 "domain-ledger" to "com.exchange.core.ledger.Balance",
                 "domain-matching" to "com.exchange.core.matching.MatchingEngine",
+                "domain-trading" to "com.exchange.core.trading.OrderAdmissionCalculator",
                 "app-api" to "com.exchange.core.ExchangeCoreApplication",
             )
         val passedModules =
@@ -53,7 +54,7 @@ class ProductionOutputWiringTest {
                 .filter { it.startsWith("architecture.outputs.") }
                 .map { it.removePrefix("architecture.outputs.") }
                 .toSet()
-        assertEquals(required.keys, passedModules, "Use all six production outputs, not a transitive package scan")
+        assertEquals(required.keys, passedModules, "Use all seven production outputs, not a transitive package scan")
 
         required.forEach { (module, representative) ->
             val roots =

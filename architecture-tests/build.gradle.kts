@@ -51,6 +51,7 @@ val productionModules =
         "domain-order",
         "domain-ledger",
         "domain-matching",
+        "domain-trading",
         "app-api",
     )
 val nonProductionModules = listOf("architecture-tests", "benchmark-jmh")

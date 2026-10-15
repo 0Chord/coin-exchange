@@ -1,5 +1,6 @@
 package com.exchange.architecture
 
+import com.exchange.architecture.fixtures.AeronTypedDomain
 import com.exchange.architecture.fixtures.CallbackExecutor
 import com.exchange.architecture.fixtures.DomainAmount
 import com.exchange.architecture.fixtures.DomainBalance
@@ -27,10 +28,12 @@ import com.exchange.architecture.fixtures.portaccess.PortReferencingDomain
 import com.exchange.architecture.rules.ArchitectureRoles
 import com.exchange.architecture.rules.ArchitectureViolation
 import com.exchange.architecture.rules.DomainTechnologyIndependence
+import com.exchange.architecture.rules.ExternalTechnologyTypes
 import com.tngtech.archunit.core.domain.JavaClasses
 import com.tngtech.archunit.core.importer.ClassFileImporter
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
 
@@ -276,6 +279,13 @@ class ArchitectureRuleContractTest {
             BalancePortImplementation::class.java,
             23,
         )
+    }
+
+    @Test
+    fun `A24 순수 도메인의 Aeron 타입 참조는 거절하고 인접한 다른 패키지는 막지 않는다`() {
+        assertViolation(AeronTypedDomain::class.java, "io.aeron.architecturefixture.Transport")
+        assertFalse(ExternalTechnologyTypes.contains("io.aeronautics.Position"))
+        assertFalse(ExternalTechnologyTypes.contains("org.agrona.DirectBuffer"))
     }
 
     private fun assertPortAccessViolation(

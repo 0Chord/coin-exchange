@@ -76,3 +76,7 @@ class FrameworkApplication
 class JdbcAdapter(
     val connection: Connection,
 )
+
+class AeronTypedDomain(
+    val transport: io.aeron.architecturefixture.Transport,
+)
