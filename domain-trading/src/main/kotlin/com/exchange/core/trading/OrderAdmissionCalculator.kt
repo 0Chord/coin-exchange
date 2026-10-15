@@ -40,7 +40,7 @@ class OrderAdmissionCalculator(
         if (!validOrderIdentifiers(order)) {
             return OrderAdmissionResult.Rejected(Reason.INVALID_ORDER_IDENTIFIER)
         }
-        if (order.side != Side.BUY || order.orderType != OrderType.LIMIT || order.timeInForce != TimeInForce.GTC) {
+        if (order.orderType != OrderType.LIMIT || order.timeInForce != TimeInForce.GTC) {
             return OrderAdmissionResult.Rejected(Reason.UNSUPPORTED_ORDER_CONDITION)
         }
         if (order.quantity.value == 0L) {
@@ -49,7 +49,12 @@ class OrderAdmissionCalculator(
 
         require(order.marketId == market.marketId) { "주문과 마켓 정의가 다릅니다" }
         require(order.userId == balance.userId) { "주문과 잔고 소유자가 다릅니다" }
-        require(market.quoteAssetId == balance.assetId) { "BUY 잔고가 quote 자산이 아닙니다" }
+        val expectedAssetId =
+            when (order.side) {
+                Side.BUY -> market.quoteAssetId
+                Side.SELL -> market.baseAssetId
+            }
+        require(expectedAssetId == balance.assetId) { "주문 방향에 맞는 예약 자산의 잔고가 아닙니다" }
         require(validIdentifier(market.baseAssetId.value, accountPart = true)) { "base 자산 식별자가 잘못됐습니다" }
         require(validIdentifier(market.quoteAssetId.value, accountPart = true)) { "quote 자산 식별자가 잘못됐습니다" }
         require(feePolicySnapshot.productType == FeeProductType.SPOT) { "현물 수수료 정책이 필요합니다" }

@@ -77,6 +77,238 @@ class OrderAdmissionCalculatorTest {
     }
 
     @Test
+    fun `SELL 2개는 원본 BTC 3개를 바꾸지 않고 BTC 1개 2개의 예약 후보를 만든다`() {
+        val sell = order.copy(side = Side.SELL, quantity = Quantity(200_000_000))
+        val original = Balance(user, btc, Amount(300_000_000), Amount.ZERO)
+        val candidate = assertIs<OrderAdmissionResult.Calculated>(calculate(order = sell, balance = original)).candidate
+
+        assertCandidate(
+            candidate,
+            original,
+            Balance(user, btc, Amount(100_000_000), Amount(200_000_000)),
+            expectedOrder = sell,
+            expectedAsset = btc,
+            reservedAmount = 200_000_000,
+        )
+        assertEquals(Balance(user, btc, Amount(300_000_000), Amount.ZERO), original)
+    }
+
+    @Test
+    fun `SELL 2개에 BTC 1개만 있으면 BTC 부족 1개를 반환하고 원본을 유지한다`() {
+        val sell = order.copy(side = Side.SELL, quantity = Quantity(200_000_000))
+        val original = Balance(user, btc, Amount(100_000_000), Amount.ZERO)
+
+        assertEquals(
+            OrderAdmissionResult.Rejected(
+                Reason.INSUFFICIENT_BALANCE,
+                OrderAdmissionResult.InsufficientBalance(btc, Amount(100_000_000), Amount(200_000_000), Amount(100_000_000)),
+            ),
+            calculate(order = sell, balance = original),
+        )
+        assertEquals(Balance(user, btc, Amount(100_000_000), Amount.ZERO), original)
+    }
+
+    @Test
+    fun `SELL은 양수 수수료 정책을 보관해도 팔 BTC만 예약한다`() {
+        val sell = order.copy(side = Side.SELL, quantity = Quantity(200_000_000))
+        listOf(1_000L to 2_000L, 2_000L to 1_000L).forEach { (maker, taker) ->
+            val applied =
+                policy.copy(
+                    feeTier = FeeTier.VIP,
+                    scheduleVersion = 7,
+                    feeRates = MakerTakerFeeRates(FeeRate(maker), FeeRate(taker)),
+                )
+            val original = btcBalance(300_000_000)
+            val candidate =
+                assertIs<OrderAdmissionResult.Calculated>(
+                    calculate(order = sell, feePolicy = applied, balance = original),
+                ).candidate
+
+            assertCandidate(
+                candidate,
+                original,
+                btcBalance(100_000_000, 200_000_000),
+                expectedOrder = sell,
+                expectedPolicy = applied,
+                expectedAsset = btc,
+                reservedAmount = 200_000_000,
+            )
+            assertEquals(btcBalance(300_000_000), original)
+        }
+    }
+
+    @Test
+    fun `SELL은 정확히 필요한 수량도 허용하고 기존 BTC hold를 유지한다`() {
+        val sell = order.copy(side = Side.SELL, quantity = Quantity(200_000_000))
+        listOf(
+            btcBalance(200_000_000) to btcBalance(0, 200_000_000),
+            btcBalance(300_000_000, 50_000_000) to btcBalance(100_000_000, 250_000_000),
+        ).forEach { (original, expected) ->
+            val preserved = original.copy()
+            val candidate = assertIs<OrderAdmissionResult.Calculated>(calculate(order = sell, balance = original)).candidate
+
+            assertCandidate(candidate, original, expected, expectedOrder = sell, expectedAsset = btc, reservedAmount = 200_000_000)
+            assertEquals(preserved, original)
+        }
+    }
+
+    @Test
+    fun `SELL에 quote 잔고나 다른 사용자의 BTC를 연결하면 내부 오류다`() {
+        val sell = order.copy(side = Side.SELL)
+        listOf(balance(), btcBalance().copy(userId = UserId("other-user"))).forEach { wrong ->
+            val preserved = wrong.copy()
+
+            assertFailsWith<IllegalArgumentException> { calculate(order = sell, balance = wrong) }
+            assertEquals(preserved, wrong)
+        }
+    }
+
+    @Test
+    fun `SELL의 잘못된 마켓 정책 자산 ID 원장 ID는 업무 거절로 숨기지 않는다`() {
+        val sell = order.copy(side = Side.SELL)
+        val original = btcBalance()
+        assertFailsWith<IllegalArgumentException> {
+            calculate(order = sell, balance = original, market = market.copy(marketId = MarketId("OTHER-USDT")))
+        }
+        assertFailsWith<IllegalArgumentException> {
+            calculate(order = sell, balance = original, feePolicy = policy.copy(productType = FeeProductType.PERPETUAL_FUTURES))
+        }
+        (invalidIdentifiers() + listOf("", " ")).forEach { invalid ->
+            assertFailsWith<IllegalArgumentException> { calculate(order = sell, balance = original, ledgerTransactionId = invalid) }
+        }
+        (invalidIdentifiers() + "asset:other").forEach { invalid ->
+            val invalidAsset = AssetId(invalid)
+            assertFailsWith<IllegalArgumentException> {
+                calculate(order = sell, balance = original, market = market.copy(quoteAssetId = invalidAsset))
+            }
+            assertFailsWith<IllegalArgumentException> {
+                calculate(order = sell, balance = original.copy(assetId = invalidAsset), market = market.copy(baseAssetId = invalidAsset))
+            }
+        }
+        assertEquals(btcBalance(), original)
+    }
+
+    @Test
+    fun `SELL의 잘못된 주문 ID도 기존 식별자 거절을 유지한다`() {
+        val sell = order.copy(side = Side.SELL)
+        val original = btcBalance()
+        invalidIdentifiers().forEach { invalid ->
+            val badMarket = MarketId(invalid)
+            val badUser = UserId(invalid)
+            listOf(
+                Triple(sell.copy(orderId = OrderId(invalid)), market, original),
+                Triple(sell.copy(marketId = badMarket), market.copy(marketId = badMarket), original),
+                Triple(sell.copy(userId = badUser), market, original.copy(userId = badUser)),
+            ).forEach { (input, definition, source) ->
+                val preserved = source.copy()
+                assertEquals(
+                    OrderAdmissionResult.Rejected(Reason.INVALID_ORDER_IDENTIFIER),
+                    calculate(order = input, market = definition, balance = source),
+                )
+                assertEquals(preserved, source)
+            }
+        }
+        val colonUser = UserId("user:other")
+        assertEquals(
+            OrderAdmissionResult.Rejected(Reason.INVALID_ORDER_IDENTIFIER),
+            calculate(order = sell.copy(userId = colonUser), balance = original.copy(userId = colonUser)),
+        )
+        assertEquals(btcBalance(), original)
+    }
+
+    @Test
+    fun `SELL은 quote 대금 표현과 무관하게 base 최소 수량과 Long 최대 수량을 예약한다`() {
+        val maximumFee = policy.copy(feeRates = MakerTakerFeeRates(FeeRate(1_000_000), FeeRate(1_000_000)))
+        listOf(
+            Triple(order.copy(side = Side.SELL, price = Price(1), quantity = Quantity(1)), btcBalance(1), btcBalance(0, 1)),
+            Triple(
+                order.copy(side = Side.SELL, price = Price(Long.MAX_VALUE), quantity = Quantity(200_000_000)),
+                btcBalance(300_000_000),
+                btcBalance(100_000_000, 200_000_000),
+            ),
+            Triple(
+                order.copy(side = Side.SELL, price = Price(Long.MAX_VALUE), quantity = Quantity(Long.MAX_VALUE)),
+                btcBalance(Long.MAX_VALUE),
+                btcBalance(0, Long.MAX_VALUE),
+            ),
+        ).forEach { (sell, original, expected) ->
+            val preserved = original.copy()
+            val candidate =
+                assertIs<OrderAdmissionResult.Calculated>(
+                    calculate(order = sell, balance = original, feePolicy = maximumFee),
+                ).candidate
+            assertCandidate(
+                candidate,
+                original,
+                expected,
+                expectedOrder = sell,
+                expectedPolicy = maximumFee,
+                expectedAsset = btc,
+                reservedAmount = sell.quantity.value,
+            )
+            assertEquals(preserved, original)
+        }
+    }
+
+    @Test
+    fun `SELL도 hold 합산 초과만 중단하고 원본 총합에 새 상한을 만들지 않는다`() {
+        val sell = order.copy(side = Side.SELL, quantity = Quantity(1))
+        val overflowing = btcBalance(1, Long.MAX_VALUE)
+
+        assertFailsWith<ArithmeticException> { calculate(order = sell, balance = overflowing) }
+        assertEquals(btcBalance(1, Long.MAX_VALUE), overflowing)
+
+        val original = btcBalance(Long.MAX_VALUE, 1)
+        val candidate = assertIs<OrderAdmissionResult.Calculated>(calculate(order = sell, balance = original)).candidate
+        assertCandidate(
+            candidate,
+            original,
+            btcBalance(Long.MAX_VALUE - 1, 2),
+            expectedOrder = sell,
+            expectedAsset = btc,
+            reservedAmount = 1,
+        )
+        assertEquals(btcBalance(Long.MAX_VALUE, 1), original)
+    }
+
+    @Test
+    fun `SELL을 반복 계산해도 원본과 이전 후보는 유지하고 명시 ID 시각을 보존한다`() {
+        val sell = order.copy(side = Side.SELL, quantity = Quantity(200_000_000))
+        val original = btcBalance(300_000_000)
+        val preservedOrder = sell.copy()
+        val preservedMarket = market.copy()
+        val preservedPolicy = policy.copy()
+        val first = assertIs<OrderAdmissionResult.Calculated>(calculate(order = sell, balance = original)).candidate
+        val second = assertIs<OrderAdmissionResult.Calculated>(calculate(order = sell, balance = original)).candidate
+        val laterTime = time.plusSeconds(60)
+        val later =
+            assertIs<OrderAdmissionResult.Calculated>(
+                calculate(order = sell, balance = original, ledgerTransactionId = "ledger:later", occurredAt = laterTime),
+            ).candidate
+
+        listOf(first, second).forEach { candidate ->
+            assertCandidate(
+                candidate,
+                original,
+                btcBalance(100_000_000, 200_000_000),
+                expectedOrder = sell,
+                expectedAsset = btc,
+                reservedAmount = 200_000_000,
+            )
+        }
+        assertEquals("ledger:later", later.reserveTransaction.ledgerTransactionId)
+        assertEquals(laterTime, later.reserveTransaction.occurredAt)
+        assertEquals(first.reserveTransaction.sourceEventId, later.reserveTransaction.sourceEventId)
+        assertEquals(first.reservation, later.reservation)
+        assertEquals(first.nextBalance, later.nextBalance)
+        assertEquals(first.reserveTransaction.postings, later.reserveTransaction.postings)
+        assertEquals(btcBalance(300_000_000), original)
+        assertEquals(preservedOrder, sell)
+        assertEquals(preservedMarket, market)
+        assertEquals(preservedPolicy, policy)
+    }
+
+    @Test
     fun `기존 hold 20은 유지하고 이번 주문의 300만 새 예약으로 설명한다`() {
         val original = balance(1_000_000_000, 20_000_000)
         val candidate = assertIs<OrderAdmissionResult.Calculated>(calculate(balance = original)).candidate
@@ -156,25 +388,29 @@ class OrderAdmissionCalculatorTest {
     }
 
     @Test
-    fun `주문 수량 0은 값을 보정하지 않고 수량 거절이다`() {
-        val invalid = order.copy(quantity = Quantity.ZERO)
+    fun `BUY SELL 주문 수량 0은 값을 보정하지 않고 수량 거절이다`() {
+        Side.entries.forEach { side ->
+            val invalid = order.copy(side = side, quantity = Quantity.ZERO)
 
-        assertEquals(OrderAdmissionResult.Rejected(Reason.INVALID_QUANTITY), calculate(order = invalid))
-        assertEquals(Quantity.ZERO, invalid.quantity)
+            assertEquals(OrderAdmissionResult.Rejected(Reason.INVALID_QUANTITY), calculate(order = invalid))
+            assertEquals(Quantity.ZERO, invalid.quantity)
+        }
     }
 
     @Test
-    fun `SELL MARKET IOC는 각각 이번 BUY 범위의 미지원 조건 거절이다`() {
-        listOf(
-            order.copy(side = Side.SELL),
-            order.copy(orderType = OrderType.MARKET),
-            order.copy(timeInForce = TimeInForce.IOC),
-        ).forEach { unsupported ->
-            assertEquals(
-                OrderAdmissionResult.Rejected(Reason.UNSUPPORTED_ORDER_CONDITION),
-                calculate(order = unsupported),
-            )
-        }
+    fun `BUY SELL의 MARKET IOC는 각각 미지원 조건 거절이다`() {
+        Side.entries
+            .flatMap { side ->
+                listOf(
+                    order.copy(side = side, orderType = OrderType.MARKET),
+                    order.copy(side = side, timeInForce = TimeInForce.IOC),
+                )
+            }.forEach { unsupported ->
+                assertEquals(
+                    OrderAdmissionResult.Rejected(Reason.UNSUPPORTED_ORDER_CONDITION),
+                    calculate(order = unsupported),
+                )
+            }
     }
 
     @Test
@@ -463,12 +699,18 @@ class OrderAdmissionCalculatorTest {
         hold: Long = 0,
     ) = Balance(user, usdt, Amount(available), Amount(hold))
 
+    private fun btcBalance(
+        available: Long = 300_000_000,
+        hold: Long = 0,
+    ) = Balance(user, btc, Amount(available), Amount(hold))
+
     private fun assertCandidate(
         candidate: OrderAdmissionCandidate,
         previous: Balance,
         next: Balance,
         expectedOrder: OrderAdmissionInput = order,
         expectedPolicy: TradingFeePolicySnapshot = policy,
+        expectedAsset: AssetId = usdt,
         reservedAmount: Long = 300_000_000,
         feeAmount: Long = 0,
     ) {
@@ -482,8 +724,8 @@ class OrderAdmissionCalculatorTest {
                 marketId = expectedOrder.marketId,
                 orderId = expectedOrder.orderId,
                 userId = expectedOrder.userId,
-                side = Side.BUY,
-                assetId = usdt,
+                side = expectedOrder.side,
+                assetId = expectedAsset,
                 limitPrice = expectedOrder.price,
                 initialQuantity = expectedOrder.quantity,
                 remainingQuantity = expectedOrder.quantity,
@@ -509,8 +751,13 @@ class OrderAdmissionCalculatorTest {
         )
         assertEquals(
             listOf(
-                LedgerPosting("USER:user-1:USDT:AVAILABLE", usdt, LedgerPostingSide.DEBIT, Amount(reservedAmount)),
-                LedgerPosting("USER:user-1:USDT:HOLD", usdt, LedgerPostingSide.CREDIT, Amount(reservedAmount)),
+                LedgerPosting(
+                    "USER:user-1:${expectedAsset.value}:AVAILABLE",
+                    expectedAsset,
+                    LedgerPostingSide.DEBIT,
+                    Amount(reservedAmount),
+                ),
+                LedgerPosting("USER:user-1:${expectedAsset.value}:HOLD", expectedAsset, LedgerPostingSide.CREDIT, Amount(reservedAmount)),
             ),
             transaction.postings,
         )
