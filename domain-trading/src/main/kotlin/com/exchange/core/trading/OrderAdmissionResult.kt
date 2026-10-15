@@ -27,5 +27,6 @@ sealed class OrderAdmissionResult {
         INVALID_ORDER_IDENTIFIER,
         UNREPRESENTABLE_RESERVATION,
         INSUFFICIENT_BALANCE,
+        DUPLICATE_ORDER,
     }
 }
