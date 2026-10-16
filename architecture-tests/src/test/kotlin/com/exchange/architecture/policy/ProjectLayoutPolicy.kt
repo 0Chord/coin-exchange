@@ -11,6 +11,7 @@ import com.exchange.architecture.support.ScopeProblemCode
 object ProjectLayoutPolicy {
     val target: LayoutPolicy by lazy {
         val root = "src/main/kotlin"
+        val generatedRoot = "build/generated/sources/proto/main/java"
         val base = "com/exchange/core"
 
         fun app(
@@ -21,7 +22,8 @@ object ProjectLayoutPolicy {
         LayoutPolicy(
             ProductionScope.requiredTypes.keys
                 .sorted()
-                .map { AllowedSourceRoot(it, root) },
+                .map { AllowedSourceRoot(it, root) } +
+                AllowedSourceRoot("app-api", generatedRoot, ":app-api:generateProto"),
             listOf(
                 app("bootstrap", base, "앱 시작점"),
                 app("config", "$base/api/config", "명시한 Bean 조립"),
@@ -35,6 +37,14 @@ object ProjectLayoutPolicy {
                 app("matching-ports", "$base/api/matching/application/port", "매칭 저장·발행 계약"),
                 app("matching-persistence", "$base/api/matching/infrastructure/persistence", "매칭 영속화"),
                 app("matching-publish", "$base/api/matching/infrastructure/publish", "명시한 미저장 발행 구현"),
+                app("admission-codec", "$base/api/trading/infrastructure/codec", "주문 접수 명령·응답 변환"),
+                AllowedFolder(
+                    "admission-generated-codec",
+                    "app-api",
+                    generatedRoot,
+                    "$base/api/trading/infrastructure/codec/generated",
+                    "접수 Protobuf 스키마가 생성한 Java 변환 코드",
+                ),
             ) +
                 listOf("common", "fee", "order", "ledger", "matching", "trading").map {
                     AllowedFolder("domain-$it", "domain-$it", root, "$base/$it", "기술 독립 코어")

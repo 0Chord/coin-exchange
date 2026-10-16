@@ -10,6 +10,7 @@ import com.exchange.architecture.policy.LayoutPolicyValidation
 import com.exchange.architecture.policy.PortPlacementPolicy
 import com.exchange.architecture.policy.ProjectLayoutPolicy
 import com.exchange.architecture.rules.NamingRules
+import com.exchange.architecture.support.AllowedSourceRoot
 import com.exchange.architecture.support.BytecodeReader
 import com.exchange.architecture.support.LayoutPolicy
 import com.exchange.architecture.support.ModuleOutput
@@ -127,15 +128,25 @@ class NamingPlacementScopeTest {
         assertFalse(inspect(ProductionScopeImporter().load(listOf(ModuleOutput("app-api", listOf(output))), expectations)).evaluated)
     }
 
-    @Test fun `프로젝트 정책은 이유를 가진 정확한 18개 폴더다`() {
+    @Test fun `프로젝트 정책은 이유를 가진 정확한 20개 폴더다`() {
         val p = ProjectLayoutPolicy.target
         assertEquals(emptyList(), LayoutPolicyValidation.inspect(p, ProductionScope.requiredTypes.keys))
         assertEquals(emptyList(), PortPlacementPolicy.validate(p))
-        assertEquals(18, p.folders.size)
+        assertEquals(20, p.folders.size)
         assertEquals("com.exchange.core.ledger", p.folders.single { it.id == "domain-ledger" }.packageName)
         assertEquals("com.exchange.core.trading", p.folders.single { it.id == "domain-trading" }.packageName)
         assertEquals("com.exchange.core.api.ledger.application", p.folders.single { it.id == "ledger-application" }.packageName)
         assertEquals("com.exchange.core.api.matching.application.port", p.folders.single { it.id == "matching-ports" }.packageName)
+        val generatedRoot = "build/generated/sources/proto/main/java"
+        assertEquals(
+            listOf(AllowedSourceRoot("app-api", generatedRoot, ":app-api:generateProto")),
+            p.roots.filter { it.producer != null },
+        )
+        val generatedFolder = p.folders.single { it.id == "admission-generated-codec" }
+        assertEquals("app-api", generatedFolder.module)
+        assertEquals(generatedRoot, generatedFolder.sourceRoot)
+        assertEquals("com/exchange/core/api/trading/infrastructure/codec/generated", generatedFolder.folder)
+        assertEquals("com.exchange.core.api.trading.infrastructure.codec", p.folders.single { it.id == "admission-codec" }.packageName)
         assertTrue(p.folders.all { it.reason.isNotBlank() })
         assertTrue(p.folders.none { it.folder.endsWith("/internal") })
     }

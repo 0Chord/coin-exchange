@@ -44,7 +44,7 @@ object ModuleDependencyDirection {
             "domain-ledger" to setOf("domain-common"),
             "domain-matching" to setOf("domain-common", "domain-order"),
             "domain-trading" to setOf("domain-common", "domain-fee", "domain-order", "domain-ledger"),
-            "app-api" to setOf("domain-common", "domain-fee", "domain-order", "domain-ledger", "domain-matching"),
+            "app-api" to setOf("domain-common", "domain-fee", "domain-order", "domain-ledger", "domain-matching", "domain-trading"),
         )
 
     /**

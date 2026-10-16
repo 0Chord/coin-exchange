@@ -4,6 +4,7 @@ plugins {
     kotlin("plugin.jpa")
     id("org.springframework.boot")
     id("io.spring.dependency-management")
+    id("com.google.protobuf")
 }
 
 java {
@@ -24,11 +25,26 @@ allOpen {
     annotation("jakarta.persistence.Embeddable")
 }
 
+val protobufVersion = "4.33.2"
+protobuf {
+    protoc {
+        artifact = "com.google.protobuf:protoc:$protobufVersion"
+    }
+    generateProtoTasks {
+        all().configureEach {
+            // Boot가 자동 등록한 gRPC 생성기는 접수 메시지 변환에 사용하지 않는다.
+            plugins.remove(plugins.getByName("grpc"))
+        }
+    }
+}
+
 dependencies {
     implementation(project(":domain-common"))
     implementation(project(":domain-order"))
     implementation(project(":domain-matching"))
     implementation(project(":domain-ledger"))
+    implementation(project(":domain-trading"))
+    implementation("com.google.protobuf:protobuf-java:$protobufVersion")
 
     implementation("org.springframework.boot:spring-boot-starter-actuator")
     implementation("org.springframework.boot:spring-boot-starter-data-jpa")

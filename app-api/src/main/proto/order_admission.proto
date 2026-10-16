@@ -1,0 +1,104 @@
+syntax = "proto3";
+
+package exchange.admission;
+
+option java_package = "com.exchange.core.api.trading.infrastructure.codec.generated";
+option java_multiple_files = true;
+
+// 8바이트 little-endian 헤더(본문 길이·종류·스키마 87·버전 2)는 이 본문 바깥에서 다룬다.
+// optional은 누락과 명시한 0·빈 문자열을 구분하며 코덱이 필수 필드를 검사한다.
+// 수치 범위와 식별자 바이트 길이는 변환 코드에서 검증한다.
+message AdmissionCommand {
+  optional Side side = 1;
+  optional OrderType order_type = 2;
+  optional TimeInForce time_in_force = 3;
+  optional int64 price = 4;
+  optional int64 quantity = 5;
+  optional int32 base_asset_scale = 6;
+  optional ProductType product_type = 7;
+  optional FeeTier fee_tier = 8;
+  optional int64 schedule_version = 9;
+  optional int32 maker_ppm = 10;
+  optional int32 taker_ppm = 11;
+  optional int64 occurred_at_epoch_second = 12;
+  optional int32 occurred_at_nano = 13;
+  optional string request_id = 14;
+  optional string user_id = 15;
+  optional string market_id = 16;
+  optional string order_id = 17;
+  optional string definition_market_id = 18;
+  optional string base_asset_id = 19;
+  optional string quote_asset_id = 20;
+  optional string ledger_transaction_id = 21;
+}
+
+message AdmissionAccepted {
+  optional int64 sequence = 1;
+  optional string request_id = 2;
+  optional string user_id = 3;
+  optional string market_id = 4;
+  optional string order_id = 5;
+}
+
+message AdmissionRejected {
+  optional RejectionReason reason = 1;
+  // INSUFFICIENT_BALANCE 사유에만 포함한다.
+  optional InsufficientBalance insufficient_balance = 2;
+  optional string request_id = 3;
+  optional string user_id = 4;
+  optional string market_id = 5;
+  optional string order_id = 6;
+}
+
+message InsufficientBalance {
+  optional string asset_id = 1;
+  optional int64 available = 2;
+  optional int64 required = 3;
+  optional int64 shortfall = 4;
+}
+
+// 기존 접수 계약의 열거값 숫자를 유지한다.
+enum Side {
+  SIDE_UNSPECIFIED = 0;
+  BUY = 1;
+  SELL = 2;
+}
+
+enum OrderType {
+  ORDER_TYPE_UNSPECIFIED = 0;
+  LIMIT = 1;
+  MARKET = 2;
+}
+
+enum TimeInForce {
+  TIME_IN_FORCE_UNSPECIFIED = 0;
+  GTC = 1;
+  IOC = 2;
+}
+
+enum ProductType {
+  PRODUCT_TYPE_UNSPECIFIED = 0;
+  SPOT = 1;
+  PERPETUAL_FUTURES = 2;
+  DATED_FUTURES = 3;
+}
+
+enum FeeTier {
+  FEE_TIER_UNSPECIFIED = 0;
+  NORMAL = 1;
+  VIP = 2;
+  VVIP = 3;
+  VVVIP = 4;
+}
+
+enum RejectionReason {
+  REJECTION_REASON_UNSPECIFIED = 0;
+  UNSUPPORTED_ORDER_CONDITION = 1;
+  INVALID_QUANTITY = 2;
+  INVALID_ORDER_IDENTIFIER = 3;
+  UNREPRESENTABLE_RESERVATION = 4;
+  INSUFFICIENT_BALANCE = 5;
+  DUPLICATE_ORDER = 6;
+  INVALID_REQUEST_IDENTIFIER = 7;
+  REQUEST_CONTENT_CONFLICT = 8;
+}
