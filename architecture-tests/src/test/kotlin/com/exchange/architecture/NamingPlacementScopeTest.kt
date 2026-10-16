@@ -137,9 +137,9 @@ class NamingPlacementScopeTest {
         assertEquals("com.exchange.core.trading", p.folders.single { it.id == "domain-trading" }.packageName)
         assertEquals("com.exchange.core.api.ledger.application", p.folders.single { it.id == "ledger-application" }.packageName)
         assertEquals("com.exchange.core.api.matching.application.port", p.folders.single { it.id == "matching-ports" }.packageName)
-        val generatedRoot = "build/generated/sources/sbe/main/java"
+        val generatedRoot = "build/generated/sources/proto/main/java"
         assertEquals(
-            listOf(AllowedSourceRoot("app-api", generatedRoot, ":app-api:generateAdmissionCodecs")),
+            listOf(AllowedSourceRoot("app-api", generatedRoot, ":app-api:generateProto")),
             p.roots.filter { it.producer != null },
         )
         val generatedFolder = p.folders.single { it.id == "admission-generated-codec" }

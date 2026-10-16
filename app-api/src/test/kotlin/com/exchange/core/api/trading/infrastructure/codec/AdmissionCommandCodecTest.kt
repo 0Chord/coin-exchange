@@ -25,7 +25,19 @@ class AdmissionCommandCodecTest {
     private val codec = AdmissionCommandCodec()
 
     @Test
-    fun `주문과 판단 정보를 SBE로 보냈다가 같은 값으로 읽는다`() {
+    fun `접수 명령은 Protobuf 전송 계약 버전 2로 인코딩한다`() {
+        val encoded = codec.encode(exampleCommand())
+        val version =
+            java.nio.ByteBuffer
+                .wrap(encoded)
+                .order(java.nio.ByteOrder.LITTLE_ENDIAN)
+                .getShort(6)
+                .toInt() and 0xFFFF
+        assertEquals(2, version, "SBE 버전 1 바이트를 새 Protobuf 메시지로 보내면 안 됩니다")
+    }
+
+    @Test
+    fun `주문과 판단 정보를 Protobuf로 보냈다가 같은 값으로 읽는다`() {
         val command = exampleCommand()
         val encoded = codec.encode(command)
         assertEquals(command, codec.decode(encoded))
@@ -34,11 +46,13 @@ class AdmissionCommandCodecTest {
 
     @Test
     fun `스키마에서 독립적으로 정한 바이트와 양방향으로 대조한다`() {
-        // 8바이트 헤더, 50바이트 고정 필드, 길이와 UTF-8 문자열 8개를 명세 순서로 적었다.
+        // 헤더의 본문 길이는 65, 종류 1·스키마 87·버전 2다.
+        // 태그=(필드번호<<3)|wireType. 필드 6의 명시한 0도 30 00으로 남긴다.
+        // 초 1234567890=d2 85 d8 cc 04, 나노초 123456789=95 9a ef 3a (varint).
         val expected =
             java.util.HexFormat.of().parseHex(
-                "3200010057000100010101640000000000000003000000000000000001010700000000000000" +
-                    "0a00000014000000d20296490000000015cd5b070200523101007501006d01006f01006d01004201005102004c31",
+                "4100010057000200080110011801206428033000380140014807500a581460d285d8cc0468959aef3a" +
+                    "720252317a01758201016d8a01016f9201016d9a010142a2010151aa01024c31",
             )
         assertContentEquals(expected, codec.encode(exampleCommand()))
         assertEquals(exampleCommand(), codec.decode(expected))

@@ -11,7 +11,7 @@ import com.exchange.architecture.support.ScopeProblemCode
 object ProjectLayoutPolicy {
     val target: LayoutPolicy by lazy {
         val root = "src/main/kotlin"
-        val generatedRoot = "build/generated/sources/sbe/main/java"
+        val generatedRoot = "build/generated/sources/proto/main/java"
         val base = "com/exchange/core"
 
         fun app(
@@ -23,7 +23,7 @@ object ProjectLayoutPolicy {
             ProductionScope.requiredTypes.keys
                 .sorted()
                 .map { AllowedSourceRoot(it, root) } +
-                AllowedSourceRoot("app-api", generatedRoot, ":app-api:generateAdmissionCodecs"),
+                AllowedSourceRoot("app-api", generatedRoot, ":app-api:generateProto"),
             listOf(
                 app("bootstrap", base, "앱 시작점"),
                 app("config", "$base/api/config", "명시한 Bean 조립"),
@@ -43,7 +43,7 @@ object ProjectLayoutPolicy {
                     "app-api",
                     generatedRoot,
                     "$base/api/trading/infrastructure/codec/generated",
-                    "접수 SBE 스키마가 생성한 Java 변환 코드",
+                    "접수 Protobuf 스키마가 생성한 Java 변환 코드",
                 ),
             ) +
                 listOf("common", "fee", "order", "ledger", "matching", "trading").map {

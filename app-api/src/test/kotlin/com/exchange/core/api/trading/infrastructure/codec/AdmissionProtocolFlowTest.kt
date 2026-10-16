@@ -20,6 +20,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertIs
+import com.exchange.core.api.trading.infrastructure.codec.generated.AdmissionRejected as WireAdmissionRejected
 
 class AdmissionProtocolFlowTest {
     private val commands = AdmissionCommandCodec()
@@ -218,8 +219,8 @@ class AdmissionProtocolFlowTest {
     @Test
     fun `작은 승인 응답은 독립 예시 바이트와 최대 순번을 보존한다`() {
         val response = AdmissionResultPayload.Accepted("u", "r", "m", "o", 1)
-        // 헤더 8바이트, 순번 8바이트, r·u·m·o 각각 길이 2바이트와 UTF-8 1바이트다.
-        val golden = "0800020057000100010000000000000001007201007501006d01006f".hexToByteArray()
+        // 본문 14바이트: 순번 태그 08·값 01, 문자열 태그 12/1a/22/2a·길이 01·본문.
+        val golden = "0e0002005700020008011201721a017522016d2a016f".hexToByteArray()
         assertContentEquals(golden, results.encode(response))
         assertEquals(response, results.decode(golden))
         val largest = response.copy(sequence = Long.MAX_VALUE)
@@ -237,8 +238,8 @@ class AdmissionProtocolFlowTest {
                 OrderAdmissionResult.Reason.INSUFFICIENT_BALANCE,
                 OrderAdmissionResult.InsufficientBalance(AssetId("Q"), Amount(200), Amount(300), Amount(100)),
             )
-        // 고정 영역 26바이트: 사유 5·상세 있음 1·현재 200·필요 300·부족 100 순서다.
-        val golden = "1a000300570001000501c8000000000000002c01000000000000640000000000000001007201007501006d01006f010051".hexToByteArray()
+        // 본문 27바이트: 사유 08 05, 상세 12 0b 뒤 자산 Q·200(c8 01)·300(ac 02)·100(64).
+        val golden = "1b000300570002000805120b0a015110c80118ac0220641a01722201752a016d32016f".hexToByteArray()
         assertContentEquals(golden, results.encode(response))
         assertEquals(response, results.decode(golden))
     }
@@ -266,7 +267,7 @@ class AdmissionProtocolFlowTest {
                 }
             val response = AdmissionResultPayload.Rejected("u", "r", "m", "o", reason, detail)
             val bytes = results.encode(response)
-            assertEquals(code, bytes[8].toInt())
+            assertEquals(code, WireAdmissionRejected.parseFrom(bytes.copyOfRange(8, bytes.size)).reasonValue)
             assertEquals(response, results.decode(bytes))
         }
     }
