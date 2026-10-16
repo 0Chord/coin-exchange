@@ -96,19 +96,29 @@ UTF-8 길이는 문자 수와 다르다. 64개 이모지는 256바이트로 보�
 
 ### 주문과 판단 정보를 SBE로 보냈다가 같은 값으로 읽는다
 
-- **Given · 상황:** 요청 R1, 가격100·수량3, 마켓·요율10/20ppm·나노초가 있는 명령.
+- **Given · 상황:** 요청 R1, 가격 정수 100·수량 정수 3, maker 10ppm·taker 20ppm과 나노초 시각이 있는 명령.
 - **When · 실행:** 인코딩 후 디코딩하고 원본 명령을 다시 인코딩한다.
 - **Then · 실제 확인:** 명령 전체가 같고 두 인코딩의 바이트 배열도 같다.
 
+<details markdown="1">
+<summary>코드에서 확인하기</summary>
+
 [AdmissionCommandCodecTest.kt · L28–33](../app-api/src/test/kotlin/com/exchange/core/api/trading/infrastructure/codec/AdmissionCommandCodecTest.kt#L28) · 확인문: [assertEquals L31](../app-api/src/test/kotlin/com/exchange/core/api/trading/infrastructure/codec/AdmissionCommandCodecTest.kt#L31), [assertContentEquals L32](../app-api/src/test/kotlin/com/exchange/core/api/trading/infrastructure/codec/AdmissionCommandCodecTest.kt#L32)
+
+</details>
 
 ### 스키마에서 독립적으로 정한 바이트와 양방향으로 대조한다
 
-- **Given · 상황:** XML 순서를 따라 직접 적은 헤더8·고정50·문자열8개의 hex 예시.
+- **Given · 상황:** XML 순서를 따라 직접 적은 헤더 8바이트·고정 본문 50바이트·문자열 8개의 16진수 예시.
 - **When · 실행:** 예시 명령의 encode와 예시 바이트의 decode를 각각 실행한다.
 - **Then · 실제 확인:** encode 결과가 고정 바이트와 같고 decode 결과도 준비한 명령과 같다.
 
+<details markdown="1">
+<summary>코드에서 확인하기</summary>
+
 [AdmissionCommandCodecTest.kt · L36–45](../app-api/src/test/kotlin/com/exchange/core/api/trading/infrastructure/codec/AdmissionCommandCodecTest.kt#L36) · 확인문: [assertContentEquals L43](../app-api/src/test/kotlin/com/exchange/core/api/trading/infrastructure/codec/AdmissionCommandCodecTest.kt#L43), [assertEquals L44](../app-api/src/test/kotlin/com/exchange/core/api/trading/infrastructure/codec/AdmissionCommandCodecTest.kt#L44)
+
+</details>
 
 </details>
 
@@ -117,19 +127,29 @@ UTF-8 길이는 문자 수와 다르다. 64개 이모지는 256바이트로 보�
 
 ### 실제 접수 승인은 자금 반영 뒤 작은 확인 응답으로 왕복한다
 
-- **Given · 상황:** 1,000 USDT와 BUY100 USDT×3 BTC, 수수료0.
+- **Given · 상황:** 사용 가능 1,000 USDT에서 가격 100 USDT·수량 3 BTC의 매수 요청. 수수료는 0이다.
 - **When · 실행:** 명령 왕복 → 실제 admit → 작은 승인 응답 왕복.
-- **Then · 실제 확인:** 응답 전체·순번1, 잔고700/예약300 USDT, 대기1·요청1·순번1, 원장 분개2개·예약액300,000,000을 확인한다.
+- **Then · 실제 확인:** 작은 승인 응답과 순번 1을 확인한다. 사용 가능 700 USDT·예약 300 USDT이며 대기 주문과 요청 기록이 각각 1개다. 원장 분개 2개와 예약액 정수 300,000,000도 확인한다.
+
+<details markdown="1">
+<summary>코드에서 확인하기</summary>
 
 [AdmissionResultCodecTest.kt · L18–32](../app-api/src/test/kotlin/com/exchange/core/api/trading/infrastructure/codec/AdmissionResultCodecTest.kt#L18) · 확인문: [assertIs L21](../app-api/src/test/kotlin/com/exchange/core/api/trading/infrastructure/codec/AdmissionResultCodecTest.kt#L21), [assertEquals L23](../app-api/src/test/kotlin/com/exchange/core/api/trading/infrastructure/codec/AdmissionResultCodecTest.kt#L23), [assertEquals L24](../app-api/src/test/kotlin/com/exchange/core/api/trading/infrastructure/codec/AdmissionResultCodecTest.kt#L24), [assertEquals L26](../app-api/src/test/kotlin/com/exchange/core/api/trading/infrastructure/codec/AdmissionResultCodecTest.kt#L26), [assertEquals L27](../app-api/src/test/kotlin/com/exchange/core/api/trading/infrastructure/codec/AdmissionResultCodecTest.kt#L27), [assertEquals L28](../app-api/src/test/kotlin/com/exchange/core/api/trading/infrastructure/codec/AdmissionResultCodecTest.kt#L28), [assertEquals L29](../app-api/src/test/kotlin/com/exchange/core/api/trading/infrastructure/codec/AdmissionResultCodecTest.kt#L29), [assertEquals L30](../app-api/src/test/kotlin/com/exchange/core/api/trading/infrastructure/codec/AdmissionResultCodecTest.kt#L30), [assertEquals L31](../app-api/src/test/kotlin/com/exchange/core/api/trading/infrastructure/codec/AdmissionResultCodecTest.kt#L31)
 
+</details>
+
 ### 실제 자금 부족 거절은 당시 부족 상세를 그대로 왕복한다
 
-- **Given · 상황:** 사용 가능200 USDT, 필요한 예약300 USDT.
+- **Given · 상황:** 사용 가능 200 USDT, 필요한 예약 300 USDT.
 - **When · 실행:** 명령 왕복 → 실제 admit → 거절 응답 왕복.
-- **Then · 실제 확인:** 응답 전체가 부족 사유와200/300/100 USDT 상세를 보존하고, 잔고200/예약0·대기0·순번0·요청1이다.
+- **Then · 실제 확인:** 응답에 현재 200 USDT·필요 300 USDT·부족 100 USDT가 그대로 남는다. 사용 가능 200 USDT·예약 0 USDT, 대기 주문 없음·승인 순번 0·최초 거절 기록 1개다.
+
+<details markdown="1">
+<summary>코드에서 확인하기</summary>
 
 [AdmissionResultCodecTest.kt · L35–56](../app-api/src/test/kotlin/com/exchange/core/api/trading/infrastructure/codec/AdmissionResultCodecTest.kt#L35) · 확인문: [assertEquals L48](../app-api/src/test/kotlin/com/exchange/core/api/trading/infrastructure/codec/AdmissionResultCodecTest.kt#L48), [assertEquals L49](../app-api/src/test/kotlin/com/exchange/core/api/trading/infrastructure/codec/AdmissionResultCodecTest.kt#L49), [assertEquals L51](../app-api/src/test/kotlin/com/exchange/core/api/trading/infrastructure/codec/AdmissionResultCodecTest.kt#L51), [assertEquals L52](../app-api/src/test/kotlin/com/exchange/core/api/trading/infrastructure/codec/AdmissionResultCodecTest.kt#L52), [assertEquals L53](../app-api/src/test/kotlin/com/exchange/core/api/trading/infrastructure/codec/AdmissionResultCodecTest.kt#L53), [assertEquals L54](../app-api/src/test/kotlin/com/exchange/core/api/trading/infrastructure/codec/AdmissionResultCodecTest.kt#L54)
+
+</details>
 
 </details>
 
@@ -138,11 +158,16 @@ UTF-8 길이는 문자 수와 다르다. 64개 이모지는 256바이트로 보�
 
 ### 수수료가 있는 매도도 BTC 두 개만 예약하고 당시 정책을 보존한다
 
-- **Given · 상황:** BTC3개, SELL2개, VVIP·버전7·maker500/taker1,000ppm.
+- **Given · 상황:** 사용 가능 BTC 3개 중 2개를 매도한다. VVIP·정책 버전 7, maker 500ppm·taker 1,000ppm이다.
 - **When · 실행:** 명령을 왕복해 실제 코어에 적용하고 승인 응답도 왕복한다.
-- **Then · 실제 확인:** 명령과 정책 전체, BTC사용 가능1/예약2, 수수료 선예약0, 응답 전체가 일치한다.
+- **Then · 실제 확인:** 명령과 정책이 그대로 보존된다. BTC 사용 가능 1개·예약 2개이며 수수료 선예약은 0이다. 작은 승인 응답도 같다.
+
+<details markdown="1">
+<summary>코드에서 확인하기</summary>
 
 [AdmissionProtocolFlowTest.kt · L29–55](../app-api/src/test/kotlin/com/exchange/core/api/trading/infrastructure/codec/AdmissionProtocolFlowTest.kt#L29) · 확인문: [assertEquals L47](../app-api/src/test/kotlin/com/exchange/core/api/trading/infrastructure/codec/AdmissionProtocolFlowTest.kt#L47), [assertIs L48](../app-api/src/test/kotlin/com/exchange/core/api/trading/infrastructure/codec/AdmissionProtocolFlowTest.kt#L48), [assertEquals L49](../app-api/src/test/kotlin/com/exchange/core/api/trading/infrastructure/codec/AdmissionProtocolFlowTest.kt#L49), [assertEquals L50](../app-api/src/test/kotlin/com/exchange/core/api/trading/infrastructure/codec/AdmissionProtocolFlowTest.kt#L50), [assertEquals L51](../app-api/src/test/kotlin/com/exchange/core/api/trading/infrastructure/codec/AdmissionProtocolFlowTest.kt#L51), [assertEquals L52](../app-api/src/test/kotlin/com/exchange/core/api/trading/infrastructure/codec/AdmissionProtocolFlowTest.kt#L52), [assertEquals L54](../app-api/src/test/kotlin/com/exchange/core/api/trading/infrastructure/codec/AdmissionProtocolFlowTest.kt#L54)
+
+</details>
 
 ### 같은 원본 재전송은 쓰지 않을 새 문맥보다 최초 승인을 우선한다
 
@@ -150,7 +175,12 @@ UTF-8 길이는 문자 수와 다르다. 64개 이모지는 256바이트로 보�
 - **When · 실행:** 마켓 불일치·선물 정책·빈 원장ID/Instant.MAX를 각각 바꿔 재전송한 뒤, 같은 문맥을 R2/O2로 새로 보낸다.
 - **Then · 실제 확인:** 재전송은 첫 응답·snapshot 유지. 새 요청은 각 문맥의 IllegalArgumentException 메시지가 일치하고 snapshot·비차단 상태도 유지된다.
 
+<details markdown="1">
+<summary>코드에서 확인하기</summary>
+
 [AdmissionProtocolFlowTest.kt · L58–89](../app-api/src/test/kotlin/com/exchange/core/api/trading/infrastructure/codec/AdmissionProtocolFlowTest.kt#L58) · 확인문: [assertEquals L78](../app-api/src/test/kotlin/com/exchange/core/api/trading/infrastructure/codec/AdmissionProtocolFlowTest.kt#L78), [assertEquals L79](../app-api/src/test/kotlin/com/exchange/core/api/trading/infrastructure/codec/AdmissionProtocolFlowTest.kt#L79), [assertEquals L80](../app-api/src/test/kotlin/com/exchange/core/api/trading/infrastructure/codec/AdmissionProtocolFlowTest.kt#L80), [assertFailsWith L82](../app-api/src/test/kotlin/com/exchange/core/api/trading/infrastructure/codec/AdmissionProtocolFlowTest.kt#L82), [assertEquals L85](../app-api/src/test/kotlin/com/exchange/core/api/trading/infrastructure/codec/AdmissionProtocolFlowTest.kt#L85), [assertEquals L86](../app-api/src/test/kotlin/com/exchange/core/api/trading/infrastructure/codec/AdmissionProtocolFlowTest.kt#L86), [assertFalse L88](../app-api/src/test/kotlin/com/exchange/core/api/trading/infrastructure/codec/AdmissionProtocolFlowTest.kt#L88)
+
+</details>
 
 ### 같은 요청의 다른 주문과 새 요청의 기존 주문은 서로 다른 거절이다
 
@@ -158,15 +188,25 @@ UTF-8 길이는 문자 수와 다르다. 64개 이모지는 256바이트로 보�
 - **When · 실행:** R1의 주문ID 또는 수량을 바꾸고, 별도로 R2/O1도 보낸다.
 - **Then · 실제 확인:** 앞 둘은 현재 제출 주문을 가리키는 내용 충돌과 전체 snapshot 유지. R2/O1은 주문 중복이며 자금·대기·순번1 유지, 요청 기록은2개다.
 
+<details markdown="1">
+<summary>코드에서 확인하기</summary>
+
 [AdmissionProtocolFlowTest.kt · L92–124](../app-api/src/test/kotlin/com/exchange/core/api/trading/infrastructure/codec/AdmissionProtocolFlowTest.kt#L92) · 확인문: [assertEquals L103](../app-api/src/test/kotlin/com/exchange/core/api/trading/infrastructure/codec/AdmissionProtocolFlowTest.kt#L103), [assertEquals L113](../app-api/src/test/kotlin/com/exchange/core/api/trading/infrastructure/codec/AdmissionProtocolFlowTest.kt#L113), [assertEquals L115](../app-api/src/test/kotlin/com/exchange/core/api/trading/infrastructure/codec/AdmissionProtocolFlowTest.kt#L115), [assertEquals L120](../app-api/src/test/kotlin/com/exchange/core/api/trading/infrastructure/codec/AdmissionProtocolFlowTest.kt#L120), [assertEquals L121](../app-api/src/test/kotlin/com/exchange/core/api/trading/infrastructure/codec/AdmissionProtocolFlowTest.kt#L121), [assertEquals L122](../app-api/src/test/kotlin/com/exchange/core/api/trading/infrastructure/codec/AdmissionProtocolFlowTest.kt#L122), [assertEquals L123](../app-api/src/test/kotlin/com/exchange/core/api/trading/infrastructure/codec/AdmissionProtocolFlowTest.kt#L123)
+
+</details>
 
 ### 현재 잔고가 줄어도 같은 요청은 최초 부족 금액을 반환한다
 
-- **Given · 상황:** 200 USDT에서 R1은 필요300/부족100으로 거절된다.
-- **When · 실행:** R2의100 USDT 주문을 승인해 가용액100으로 만든 뒤 R1을 다시 보낸다.
-- **Then · 실제 확인:** 처음 상세200/300/100과 재전송 응답이 같고, 재전송 직전 snapshot이 유지된다.
+- **Given · 상황:** 사용 가능 200 USDT에서 R1은 필요 300 USDT·부족 100 USDT로 거절된다.
+- **When · 실행:** R2의 100 USDT 주문을 승인해 사용 가능 금액을 100 USDT로 만든 뒤 R1을 다시 보낸다.
+- **Then · 실제 확인:** R1의 응답은 처음의 현재 200 USDT·필요 300 USDT·부족 100 USDT를 유지한다. 재전송 직전의 상태 전체도 그대로다.
+
+<details markdown="1">
+<summary>코드에서 확인하기</summary>
 
 [AdmissionProtocolFlowTest.kt · L127–141](../app-api/src/test/kotlin/com/exchange/core/api/trading/infrastructure/codec/AdmissionProtocolFlowTest.kt#L127) · 확인문: [assertIs L131](../app-api/src/test/kotlin/com/exchange/core/api/trading/infrastructure/codec/AdmissionProtocolFlowTest.kt#L131), [assertEquals L132](../app-api/src/test/kotlin/com/exchange/core/api/trading/infrastructure/codec/AdmissionProtocolFlowTest.kt#L132), [assertEquals L133](../app-api/src/test/kotlin/com/exchange/core/api/trading/infrastructure/codec/AdmissionProtocolFlowTest.kt#L133), [assertEquals L134](../app-api/src/test/kotlin/com/exchange/core/api/trading/infrastructure/codec/AdmissionProtocolFlowTest.kt#L134), [assertIs L136](../app-api/src/test/kotlin/com/exchange/core/api/trading/infrastructure/codec/AdmissionProtocolFlowTest.kt#L136), [assertEquals L138](../app-api/src/test/kotlin/com/exchange/core/api/trading/infrastructure/codec/AdmissionProtocolFlowTest.kt#L138), [assertEquals L139](../app-api/src/test/kotlin/com/exchange/core/api/trading/infrastructure/codec/AdmissionProtocolFlowTest.kt#L139), [assertEquals L140](../app-api/src/test/kotlin/com/exchange/core/api/trading/infrastructure/codec/AdmissionProtocolFlowTest.kt#L140)
+
+</details>
 
 ### 문자열을 정규화하지 않아 서로 다른 요청 키와 원문을 유지한다
 
@@ -174,7 +214,12 @@ UTF-8 길이는 문자 수와 다르다. 64개 이모지는 256바이트로 보�
 - **When · 실행:** 각 명령을 왕복하고 순서대로 실제 코어에 보낸다.
 - **Then · 실제 확인:** 각 원문 명령이 같고 승인 순번1·2·3, 저장 요청ID 목록도 원문 순서 그대로다.
 
+<details markdown="1">
+<summary>코드에서 확인하기</summary>
+
 [AdmissionProtocolFlowTest.kt · L144–152](../app-api/src/test/kotlin/com/exchange/core/api/trading/infrastructure/codec/AdmissionProtocolFlowTest.kt#L144) · 확인문: [assertEquals L148](../app-api/src/test/kotlin/com/exchange/core/api/trading/infrastructure/codec/AdmissionProtocolFlowTest.kt#L148), [assertEquals L149](../app-api/src/test/kotlin/com/exchange/core/api/trading/infrastructure/codec/AdmissionProtocolFlowTest.kt#L149), [assertEquals L151](../app-api/src/test/kotlin/com/exchange/core/api/trading/infrastructure/codec/AdmissionProtocolFlowTest.kt#L151)
+
+</details>
 
 ### 승인 뒤 응답 변환 실패는 이미 반영된 자금을 되돌리지 않는다
 
@@ -182,7 +227,12 @@ UTF-8 길이는 문자 수와 다르다. 64개 이모지는 256바이트로 보�
 - **When · 실행:** 응답 requestId를257바이트로 바꿔 encode 실패시킨 다음 원본 명령을 재전송한다.
 - **Then · 실제 확인:** AdmissionMessageException 뒤 snapshot 유지, 재전송은 원래 승인 응답과 같고 snapshot도 유지된다.
 
+<details markdown="1">
+<summary>코드에서 확인하기</summary>
+
 [AdmissionProtocolFlowTest.kt · L155–165](../app-api/src/test/kotlin/com/exchange/core/api/trading/infrastructure/codec/AdmissionProtocolFlowTest.kt#L155) · 확인문: [assertIs L160](../app-api/src/test/kotlin/com/exchange/core/api/trading/infrastructure/codec/AdmissionProtocolFlowTest.kt#L160), [assertFailsWith L161](../app-api/src/test/kotlin/com/exchange/core/api/trading/infrastructure/codec/AdmissionProtocolFlowTest.kt#L161), [assertEquals L162](../app-api/src/test/kotlin/com/exchange/core/api/trading/infrastructure/codec/AdmissionProtocolFlowTest.kt#L162), [assertEquals L163](../app-api/src/test/kotlin/com/exchange/core/api/trading/infrastructure/codec/AdmissionProtocolFlowTest.kt#L163), [assertEquals L164](../app-api/src/test/kotlin/com/exchange/core/api/trading/infrastructure/codec/AdmissionProtocolFlowTest.kt#L164)
+
+</details>
 
 ### 다른 주문의 승인 결과를 응답으로 연결하면 내부 오류로 중단한다
 
@@ -190,7 +240,12 @@ UTF-8 길이는 문자 수와 다르다. 64개 이모지는 256바이트로 보�
 - **When · 실행:** 현재 명령의 주문ID·사용자·마켓·수량을 각각 바꿔 같은 승인을 응답에 연결한다.
 - **Then · 실제 확인:** 모두 IllegalStateException이며 승인 순번은1이다. 이 테스트의 마지막 직접 상태 관측은 순번이다.
 
+<details markdown="1">
+<summary>코드에서 확인하기</summary>
+
 [AdmissionProtocolFlowTest.kt · L168–187](../app-api/src/test/kotlin/com/exchange/core/api/trading/infrastructure/codec/AdmissionProtocolFlowTest.kt#L168) · 확인문: [assertFailsWith L182](../app-api/src/test/kotlin/com/exchange/core/api/trading/infrastructure/codec/AdmissionProtocolFlowTest.kt#L182), [assertEquals L186](../app-api/src/test/kotlin/com/exchange/core/api/trading/infrastructure/codec/AdmissionProtocolFlowTest.kt#L186)
+
+</details>
 
 ### 다음 변환과 입력 버퍼 덮어쓰기는 이전 바이트와 접수 기록을 바꾸지 않는다
 
@@ -198,7 +253,12 @@ UTF-8 길이는 문자 수와 다르다. 64개 이모지는 256바이트로 보�
 - **When · 실행:** 다음 명령과 다른 응답을 encode하고, 첫 입력/응답 배열을0으로 덮어쓴다.
 - **Then · 실제 확인:** 다음 encode가 이전 배열을 바꾸지 않으며, 덮어쓰기 뒤 명령·snapshot·저장한 요청의 원본/정책/문맥 각 필드가 유지된다.
 
+<details markdown="1">
+<summary>코드에서 확인하기</summary>
+
 [AdmissionProtocolFlowTest.kt · L190–216](../app-api/src/test/kotlin/com/exchange/core/api/trading/infrastructure/codec/AdmissionProtocolFlowTest.kt#L190) · 확인문: [assertContentEquals L203](../app-api/src/test/kotlin/com/exchange/core/api/trading/infrastructure/codec/AdmissionProtocolFlowTest.kt#L203), [assertContentEquals L204](../app-api/src/test/kotlin/com/exchange/core/api/trading/infrastructure/codec/AdmissionProtocolFlowTest.kt#L204), [assertEquals L207](../app-api/src/test/kotlin/com/exchange/core/api/trading/infrastructure/codec/AdmissionProtocolFlowTest.kt#L207), [assertEquals L208](../app-api/src/test/kotlin/com/exchange/core/api/trading/infrastructure/codec/AdmissionProtocolFlowTest.kt#L208), [assertEquals L210](../app-api/src/test/kotlin/com/exchange/core/api/trading/infrastructure/codec/AdmissionProtocolFlowTest.kt#L210), [assertEquals L211](../app-api/src/test/kotlin/com/exchange/core/api/trading/infrastructure/codec/AdmissionProtocolFlowTest.kt#L211), [assertEquals L212](../app-api/src/test/kotlin/com/exchange/core/api/trading/infrastructure/codec/AdmissionProtocolFlowTest.kt#L212), [assertEquals L213](../app-api/src/test/kotlin/com/exchange/core/api/trading/infrastructure/codec/AdmissionProtocolFlowTest.kt#L213), [assertEquals L214](../app-api/src/test/kotlin/com/exchange/core/api/trading/infrastructure/codec/AdmissionProtocolFlowTest.kt#L214), [assertEquals L215](../app-api/src/test/kotlin/com/exchange/core/api/trading/infrastructure/codec/AdmissionProtocolFlowTest.kt#L215)
+
+</details>
 
 ### 작은 승인 응답은 독립 예시 바이트와 최대 순번을 보존한다
 
@@ -206,7 +266,12 @@ UTF-8 길이는 문자 수와 다르다. 64개 이모지는 256바이트로 보�
 - **When · 실행:** 예시 바이트와 양방향 대조하고 Long.MAX_VALUE 순번도 왕복한다.
 - **Then · 실제 확인:** encode 바이트와 decode 응답이 각각 독립 예시와 일치하고 최대 순번도 같다.
 
+<details markdown="1">
+<summary>코드에서 확인하기</summary>
+
 [AdmissionProtocolFlowTest.kt · L219–227](../app-api/src/test/kotlin/com/exchange/core/api/trading/infrastructure/codec/AdmissionProtocolFlowTest.kt#L219) · 확인문: [assertContentEquals L223](../app-api/src/test/kotlin/com/exchange/core/api/trading/infrastructure/codec/AdmissionProtocolFlowTest.kt#L223), [assertEquals L224](../app-api/src/test/kotlin/com/exchange/core/api/trading/infrastructure/codec/AdmissionProtocolFlowTest.kt#L224), [assertEquals L226](../app-api/src/test/kotlin/com/exchange/core/api/trading/infrastructure/codec/AdmissionProtocolFlowTest.kt#L226)
+
+</details>
 
 ### 부족 응답의 현재 필요 부족 금액 위치를 독립 바이트로 대조한다
 
@@ -214,7 +279,12 @@ UTF-8 길이는 문자 수와 다르다. 64개 이모지는 256바이트로 보�
 - **When · 실행:** 응답 encode와 독립 바이트 decode를 각각 실행한다.
 - **Then · 실제 확인:** 고정 영역 금액 위치를 포함한 바이트 전체와 응답 전체가 각각 일치한다.
 
+<details markdown="1">
+<summary>코드에서 확인하기</summary>
+
 [AdmissionProtocolFlowTest.kt · L230–244](../app-api/src/test/kotlin/com/exchange/core/api/trading/infrastructure/codec/AdmissionProtocolFlowTest.kt#L230) · 확인문: [assertContentEquals L242](../app-api/src/test/kotlin/com/exchange/core/api/trading/infrastructure/codec/AdmissionProtocolFlowTest.kt#L242), [assertEquals L243](../app-api/src/test/kotlin/com/exchange/core/api/trading/infrastructure/codec/AdmissionProtocolFlowTest.kt#L243)
+
+</details>
 
 ### 모든 거절 사유는 명시된 전송 코드와 상세 유무를 보존한다
 
@@ -222,7 +292,12 @@ UTF-8 길이는 문자 수와 다르다. 64개 이모지는 256바이트로 보�
 - **When · 실행:** 각 응답을 encode/decode한다.
 - **Then · 실제 확인:** 준비한 코드 표가 기존 사유 전부를 포함하고, 실제 bytes[8] 코드와 응답 전체가 일치한다.
 
+<details markdown="1">
+<summary>코드에서 확인하기</summary>
+
 [AdmissionProtocolFlowTest.kt · L247–272](../app-api/src/test/kotlin/com/exchange/core/api/trading/infrastructure/codec/AdmissionProtocolFlowTest.kt#L247) · 확인문: [assertEquals L259](../app-api/src/test/kotlin/com/exchange/core/api/trading/infrastructure/codec/AdmissionProtocolFlowTest.kt#L259), [assertEquals L269](../app-api/src/test/kotlin/com/exchange/core/api/trading/infrastructure/codec/AdmissionProtocolFlowTest.kt#L269), [assertEquals L270](../app-api/src/test/kotlin/com/exchange/core/api/trading/infrastructure/codec/AdmissionProtocolFlowTest.kt#L270)
+
+</details>
 
 </details>
 
@@ -235,7 +310,12 @@ UTF-8 길이는 문자 수와 다르다. 64개 이모지는 256바이트로 보�
 - **When · 실행:** 정확 구간을 읽고 배열을0으로 덮어쓴다. 이어서 마지막 바이트를 논리 구간 밖에 두고 읽는다.
 - **Then · 실제 확인:** 먼저 읽은 명령은 원본과 같다. 잘린 구간은 공통 helper에서 변환 예외·코어 진입0·기존 snapshot 유지·비차단을 확인한다.
 
+<details markdown="1">
+<summary>코드에서 확인하기</summary>
+
 [AdmissionMessageBoundaryTest.kt · L31–45](../app-api/src/test/kotlin/com/exchange/core/api/trading/infrastructure/codec/AdmissionMessageBoundaryTest.kt#L31) · 확인문: [assertEquals L41](../app-api/src/test/kotlin/com/exchange/core/api/trading/infrastructure/codec/AdmissionMessageBoundaryTest.kt#L41), [assertCommandRejected L44](../app-api/src/test/kotlin/com/exchange/core/api/trading/infrastructure/codec/AdmissionMessageBoundaryTest.kt#L44)
+
+</details>
 
 ### 구간과 필수 문자열이 잘렸거나 남은 바이트가 있으면 코어 진입 전에 실패한다
 
@@ -243,7 +323,12 @@ UTF-8 길이는 문자 수와 다르다. 64개 이모지는 256바이트로 보�
 - **When · 실행:** 각 손상 구간을 실제 명령 디코더에 넘기고 성공했을 때만 코어를 호출한다.
 - **Then · 실제 확인:** 모든 입력이 변환 예외이며 공통 helper의 진입0·전체 snapshot 유지·비차단 assertion을 통과해야 한다.
 
+<details markdown="1">
+<summary>코드에서 확인하기</summary>
+
 [AdmissionMessageBoundaryTest.kt · L48–67](../app-api/src/test/kotlin/com/exchange/core/api/trading/infrastructure/codec/AdmissionMessageBoundaryTest.kt#L48) · 확인문: [assertCommandRejected L66](../app-api/src/test/kotlin/com/exchange/core/api/trading/infrastructure/codec/AdmissionMessageBoundaryTest.kt#L66)
+
+</details>
 
 ### 다른 스키마 버전 종류 고정 길이는 추측해 읽지 않는다
 
@@ -251,7 +336,12 @@ UTF-8 길이는 문자 수와 다르다. 64개 이모지는 256바이트로 보�
 - **When · 실행:** 각 바이트를 실제 디코더에 넘긴다.
 - **Then · 실제 확인:** 변환 예외·코어 진입0·기존 전체 snapshot 유지·비차단을 공통 helper에서 확인한다.
 
+<details markdown="1">
+<summary>코드에서 확인하기</summary>
+
 [AdmissionMessageBoundaryTest.kt · L70–84](../app-api/src/test/kotlin/com/exchange/core/api/trading/infrastructure/codec/AdmissionMessageBoundaryTest.kt#L70) · 확인문: [assertCommandRejected L83](../app-api/src/test/kotlin/com/exchange/core/api/trading/infrastructure/codec/AdmissionMessageBoundaryTest.kt#L83)
+
+</details>
 
 ### 스키마의 모든 명령 열거 필드에서 미지 코드와 NULL 코드를 거절한다
 
@@ -259,7 +349,12 @@ UTF-8 길이는 문자 수와 다르다. 64개 이모지는 256바이트로 보�
 - **When · 실행:** 각 조합의 바이트를 실제 디코더로 읽는다.
 - **Then · 실제 확인:** 총10개 손상 조합에서 변환 예외·진입0·snapshot 유지·비차단을 확인한다.
 
+<details markdown="1">
+<summary>코드에서 확인하기</summary>
+
 [AdmissionMessageBoundaryTest.kt · L87–103](../app-api/src/test/kotlin/com/exchange/core/api/trading/infrastructure/codec/AdmissionMessageBoundaryTest.kt#L87) · 확인문: [assertCommandRejected L100](../app-api/src/test/kotlin/com/exchange/core/api/trading/infrastructure/codec/AdmissionMessageBoundaryTest.kt#L100)
+
+</details>
 
 ### 도메인 값으로 표현할 수 없는 숫자와 정규화될 나노초는 변환 오류다
 
@@ -267,7 +362,12 @@ UTF-8 길이는 문자 수와 다르다. 64개 이모지는 256바이트로 보�
 - **When · 실행:** 각 숫자를 바이트에 직접 넣어 디코딩한다.
 - **Then · 실제 확인:** 숫자를 보정하지 않고 변환 예외. 공통 helper에서 진입0·snapshot 유지·비차단을 확인한다.
 
+<details markdown="1">
+<summary>코드에서 확인하기</summary>
+
 [AdmissionMessageBoundaryTest.kt · L106–126](../app-api/src/test/kotlin/com/exchange/core/api/trading/infrastructure/codec/AdmissionMessageBoundaryTest.kt#L106) · 확인문: [assertCommandRejected L125](../app-api/src/test/kotlin/com/exchange/core/api/trading/infrastructure/codec/AdmissionMessageBoundaryTest.kt#L125)
+
+</details>
 
 ### 256바이트 UTF8 경계는 보존하고 잘못된 길이와 문자열은 대체하지 않는다
 
@@ -275,7 +375,12 @@ UTF-8 길이는 문자 수와 다르다. 64개 이모지는 256바이트로 보�
 - **When · 실행:** 정상 경계는 왕복하고, 손상 바이트를 decode하거나 잘못된 원문을 encode한 뒤 읽는다.
 - **Then · 실제 확인:** 64개 이모지는256바이트이고 명령 전체가 같다. 나머지는 변환 예외·진입0·snapshot 유지·비차단이다.
 
+<details markdown="1">
+<summary>코드에서 확인하기</summary>
+
 [AdmissionMessageBoundaryTest.kt · L129–157](../app-api/src/test/kotlin/com/exchange/core/api/trading/infrastructure/codec/AdmissionMessageBoundaryTest.kt#L129) · 확인문: [assertEquals L131](../app-api/src/test/kotlin/com/exchange/core/api/trading/infrastructure/codec/AdmissionMessageBoundaryTest.kt#L131), [assertEquals L132](../app-api/src/test/kotlin/com/exchange/core/api/trading/infrastructure/codec/AdmissionMessageBoundaryTest.kt#L132), [assertCommandRejected L152](../app-api/src/test/kotlin/com/exchange/core/api/trading/infrastructure/codec/AdmissionMessageBoundaryTest.kt#L152), [assertRejectedBeforeAdmission L155](../app-api/src/test/kotlin/com/exchange/core/api/trading/infrastructure/codec/AdmissionMessageBoundaryTest.kt#L155)
+
+</details>
 
 ### Long 최대 값과 Instant 양 끝 및 수치 상한은 손실이나 NULL 대체 없이 왕복한다
 
@@ -283,7 +388,12 @@ UTF-8 길이는 문자 수와 다르다. 64개 이모지는 256바이트로 보�
 - **When · 실행:** 시각 경계 명령들을 왕복하고, scale0·시각EPOCH의 복원 명령을 실제 코어에 적용한다.
 - **Then · 실제 확인:** 각 명령 전체가 같고, 실제 SELL 승인의 주문·예약액Long.MAX_VALUE와 BTC사용 가능0/예약Long.MAX_VALUE 목록이 일치한다. USDT 항목은 없다.
 
+<details markdown="1">
+<summary>코드에서 확인하기</summary>
+
 [AdmissionMessageBoundaryTest.kt · L160–194](../app-api/src/test/kotlin/com/exchange/core/api/trading/infrastructure/codec/AdmissionMessageBoundaryTest.kt#L160) · 확인문: [assertEquals L175](../app-api/src/test/kotlin/com/exchange/core/api/trading/infrastructure/codec/AdmissionMessageBoundaryTest.kt#L175), [assertEquals L179](../app-api/src/test/kotlin/com/exchange/core/api/trading/infrastructure/codec/AdmissionMessageBoundaryTest.kt#L179), [assertIs L186](../app-api/src/test/kotlin/com/exchange/core/api/trading/infrastructure/codec/AdmissionMessageBoundaryTest.kt#L186), [assertEquals L187](../app-api/src/test/kotlin/com/exchange/core/api/trading/infrastructure/codec/AdmissionMessageBoundaryTest.kt#L187), [assertEquals L188](../app-api/src/test/kotlin/com/exchange/core/api/trading/infrastructure/codec/AdmissionMessageBoundaryTest.kt#L188), [assertEquals L189](../app-api/src/test/kotlin/com/exchange/core/api/trading/infrastructure/codec/AdmissionMessageBoundaryTest.kt#L189)
+
+</details>
 
 ### 표현 가능한 업무 위반은 코어의 정상 거절 사유와 요청 기록 규칙을 유지한다
 
@@ -291,7 +401,12 @@ UTF-8 길이는 문자 수와 다르다. 64개 이모지는 256바이트로 보�
 - **When · 실행:** 변환에서 원문을 보존한 뒤 실제 코어에 적용한다.
 - **Then · 실제 확인:** 명령 전체가 같고 기존 정상 거절 사유가 맞으며 자금·대기·순번은 유지한다. 요청 기록 수는 사례별0 또는1, 비차단 상태다.
 
+<details markdown="1">
+<summary>코드에서 확인하기</summary>
+
 [AdmissionMessageBoundaryTest.kt · L197–254](../app-api/src/test/kotlin/com/exchange/core/api/trading/infrastructure/codec/AdmissionMessageBoundaryTest.kt#L197) · 확인문: [assertEquals L244](../app-api/src/test/kotlin/com/exchange/core/api/trading/infrastructure/codec/AdmissionMessageBoundaryTest.kt#L244), [assertIs L245](../app-api/src/test/kotlin/com/exchange/core/api/trading/infrastructure/codec/AdmissionMessageBoundaryTest.kt#L245), [assertEquals L246](../app-api/src/test/kotlin/com/exchange/core/api/trading/infrastructure/codec/AdmissionMessageBoundaryTest.kt#L246), [assertEquals L248](../app-api/src/test/kotlin/com/exchange/core/api/trading/infrastructure/codec/AdmissionMessageBoundaryTest.kt#L248), [assertEquals L249](../app-api/src/test/kotlin/com/exchange/core/api/trading/infrastructure/codec/AdmissionMessageBoundaryTest.kt#L249), [assertEquals L250](../app-api/src/test/kotlin/com/exchange/core/api/trading/infrastructure/codec/AdmissionMessageBoundaryTest.kt#L250), [assertEquals L251](../app-api/src/test/kotlin/com/exchange/core/api/trading/infrastructure/codec/AdmissionMessageBoundaryTest.kt#L251), [assertFalse L252](../app-api/src/test/kotlin/com/exchange/core/api/trading/infrastructure/codec/AdmissionMessageBoundaryTest.kt#L252)
+
+</details>
 
 ### 작은 응답도 정확한 구간과 Long 최대 순번 및 금액을 보존한다
 
@@ -299,7 +414,12 @@ UTF-8 길이는 문자 수와 다르다. 64개 이모지는 256바이트로 보�
 - **When · 실행:** 승인을 offset7의 정확 구간에서 읽은 뒤 공유 배열을 덮어쓰고, 부족 응답도 왕복한다.
 - **Then · 실제 확인:** 먼저 읽은 승인 응답 전체와 최대 금액 부족 응답 전체가 원본과 같다.
 
+<details markdown="1">
+<summary>코드에서 확인하기</summary>
+
 [AdmissionMessageBoundaryTest.kt · L257–268](../app-api/src/test/kotlin/com/exchange/core/api/trading/infrastructure/codec/AdmissionMessageBoundaryTest.kt#L257) · 확인문: [assertEquals L264](../app-api/src/test/kotlin/com/exchange/core/api/trading/infrastructure/codec/AdmissionMessageBoundaryTest.kt#L264), [assertEquals L267](../app-api/src/test/kotlin/com/exchange/core/api/trading/infrastructure/codec/AdmissionMessageBoundaryTest.kt#L267)
+
+</details>
 
 ### 응답의 종류 고정 블록 필수 문자열과 마지막 바이트도 검증한다
 
@@ -307,7 +427,12 @@ UTF-8 길이는 문자 수와 다르다. 64개 이모지는 256바이트로 보�
 - **When · 실행:** 각 응답의 실제 구간을 디코딩한다.
 - **Then · 실제 확인:** 각각 AdmissionMessageException이다. 이 테스트는 코어를 호출하지 않으며 별도 상태 snapshot은 관측하지 않는다.
 
+<details markdown="1">
+<summary>코드에서 확인하기</summary>
+
 [AdmissionMessageBoundaryTest.kt · L271–290](../app-api/src/test/kotlin/com/exchange/core/api/trading/infrastructure/codec/AdmissionMessageBoundaryTest.kt#L271) · 확인문: [assertFailsWith L286](../app-api/src/test/kotlin/com/exchange/core/api/trading/infrastructure/codec/AdmissionMessageBoundaryTest.kt#L286), [assertFailsWith L287](../app-api/src/test/kotlin/com/exchange/core/api/trading/infrastructure/codec/AdmissionMessageBoundaryTest.kt#L287)
+
+</details>
 
 ### 응답 순번과 거절의 상세 유무 금액은 서로 일치해야 한다
 
@@ -315,7 +440,12 @@ UTF-8 길이는 문자 수와 다르다. 64개 이모지는 256바이트로 보�
 - **When · 실행:** 손상 응답을 decode하고 모순된 응답 값도 encode한다.
 - **Then · 실제 확인:** 모든 손상 바이트와 모순된 값이 AdmissionMessageException이다. 코어 실행·상태는 이 테스트 범위 밖이다.
 
+<details markdown="1">
+<summary>코드에서 확인하기</summary>
+
 [AdmissionMessageBoundaryTest.kt · L293–329](../app-api/src/test/kotlin/com/exchange/core/api/trading/infrastructure/codec/AdmissionMessageBoundaryTest.kt#L293) · 확인문: [assertFailsWith L319](../app-api/src/test/kotlin/com/exchange/core/api/trading/infrastructure/codec/AdmissionMessageBoundaryTest.kt#L319), [assertFailsWith L328](../app-api/src/test/kotlin/com/exchange/core/api/trading/infrastructure/codec/AdmissionMessageBoundaryTest.kt#L328)
+
+</details>
 
 </details>
 
@@ -343,7 +473,7 @@ Agrona 2.6.1의 buffer를 실제 사용하는 JVM은 **`--add-opens=java.base/jd
 
 ## 7. 소스 스냅샷과 검증 상태
 
-기준은 통합 `0cf852318e4173f06160fd5bafd4b846b5efdf88`, 구현 위치는 `/Users/0chord/.codex/worktrees/issue87-admission-protocol/exchange-core`, 브랜치는 `feat/admission-protocol/87`이다. 아래 발췌와 해시는 로컬 미커밋 파일의 생성 시점 기준이며 파일 변경 후 렌더러를 다시 실행해야 한다.
+기준은 통합 `0cf852318e4173f06160fd5bafd4b846b5efdf88`, 구현 위치는 `/Users/0chord/.codex/worktrees/issue87-admission-protocol/exchange-core`, 브랜치는 `feat/admission-protocol/87`이다. 아래 발췌와 해시는 구현 파일을 읽은 생성 시점 기준이며 파일 변경 후 렌더러를 다시 실행해야 한다.
 
 <!-- evidence87:start -->
 | 현재 근거 | 확인한 줄 | SHA-256 앞 12자리 |
@@ -375,7 +505,11 @@ app-api의 clean을 단독 실행한 뒤 생성→Kotlin/Java 컴파일→코덱
 
 명령 테스트 2개와 응답 테스트 2개는 처음에 미구현 함수의 `NotImplementedError`로 실패한 뒤 구현 후 통과했다. 별도로 발견한 Agrona의 JVM 접근 오류는 테스트 JVM 옵션으로 해결했다. 포맷·clean·검사를 한 호출에 묶은 시도는 Gradle 작업 순서에서 진행하지 못해, 이후 clean과 검사를 분리해 최종 성공을 확인했다. 이 실패를 제품 동작의 Red나 테스트 통과로 세지 않았다.
 
-**독립 검토는 진행 중**이다. 문서 설명, 테스트 정의, 실행 결과, 독립 AI 검토, 사람의 이해·승인은 별도 상태다. 검토 대상은 제품·테스트·빌드와 이 안내 문서를 포함한 고정 커밋이며, 작성 대화를 공유하지 않은 별도 checkout에서 확인한다.
+**독립 검토 결과:** 작성 대화를 공유하지 않은 별도 에이전트가 분리된 checkout에서 제품·테스트·빌드·안내 문서를 검토했다. 기존 app-api 전체 211개·접수 코어 82개·구조 375개, 총 668개가 실패·오류·skip 없이 통과했고 P01~P09 보고서와 전체 ktlint도 통과했다. 이 668개는 위 구현 폴더의 483개와 겹치므로 둘을 더하지 않는다.
+
+리뷰어가 인코더를 쓰지 않고 직접 만든 명령·승인·거절 프레임으로 별도 임시 테스트 3개도 실행했다. 모든 잘림 위치 159개, 다섯 열거 필드의 1,280개 코드 조합, 여덟 문자열의 UTF-8·길이 손상 16개, 최대 2,122바이트 명령, 실제 코어의 사용 가능 700 USDT·예약 300 USDT와 재전송 문맥을 대조했다. 생성 파일 삭제 뒤 재생성과 오래된 출력 제거도 확인했다. 임시 검증은 저장소의 668개 테스트와 별도이며 운영 테스트 파일로 남기지 않았다.
+
+검토 범위에서 확인된 미해결 결함은 없다. 제품 코드의 검토 시작점은 `67e59ee`, 실행 기록을 추가한 `8a14fc9`와 제품·테스트·빌드가 같다. 최종 문서 변경은 같은 리뷰어가 별도로 대조한다. 문서 설명·테스트 실행·AI 검토 완료를 사람의 이해·승인이나 실제 Aeron 통신·고가용성 검증으로 확대하지 않는다.
 
 실행할 때는 구현 위치를 명시한다. 예: `./gradlew -p /Users/0chord/.codex/worktrees/issue87-admission-protocol/exchange-core :app-api:test --tests '*Admission*Test'`. 이 줄 자체는 실행 결과가 아니다.
 
