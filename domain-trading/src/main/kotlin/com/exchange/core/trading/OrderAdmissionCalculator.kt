@@ -112,13 +112,13 @@ class OrderAdmissionCalculator(
         )
     }
 
-    private fun validOrderIdentifiers(order: OrderAdmissionInput): Boolean =
+    internal fun validOrderIdentifiers(order: OrderAdmissionInput): Boolean =
         validIdentifier(order.marketId.value) &&
             validIdentifier(order.orderId.value) &&
             validIdentifier(order.userId.value, accountPart = true)
 
     /** UTF-8 변환 전에 잘못된 서로게이트를 거절하고, 길이는 UTF-16 칸 수가 아닌 code point로 센다. */
-    private fun validIdentifier(
+    internal fun validIdentifier(
         value: String,
         accountPart: Boolean = false,
     ): Boolean {

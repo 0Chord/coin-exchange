@@ -28,5 +28,7 @@ sealed class OrderAdmissionResult {
         UNREPRESENTABLE_RESERVATION,
         INSUFFICIENT_BALANCE,
         DUPLICATE_ORDER,
+        INVALID_REQUEST_IDENTIFIER,
+        REQUEST_CONTENT_CONFLICT,
     }
 }
