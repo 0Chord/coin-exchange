@@ -116,6 +116,7 @@ class ModuleDependencyContractTest {
                 "app-api" to "domain-order",
                 "app-api" to "domain-ledger",
                 "app-api" to "domain-matching",
+                "app-api" to "domain-trading",
             )
         val markers =
             mapOf(

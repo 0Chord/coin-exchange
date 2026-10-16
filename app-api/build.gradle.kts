@@ -24,11 +24,49 @@ allOpen {
     annotation("jakarta.persistence.Embeddable")
 }
 
+val sbeGenerator by configurations.creating
+val admissionSchema = layout.projectDirectory.file("src/main/sbe/order-admission.xml")
+val admissionGeneratedSources = layout.buildDirectory.dir("generated/sources/sbe/main/java")
+val generateAdmissionCodecs by tasks.registering(JavaExec::class) {
+    group = "build"
+    description = "주문 접수 SBE 스키마에서 Java 변환 코드를 생성한다."
+    javaLauncher.set(javaToolchains.launcherFor(java.toolchain))
+    classpath = sbeGenerator
+    mainClass.set("uk.co.real_logic.sbe.SbeTool")
+    inputs.file(admissionSchema)
+    outputs.dir(admissionGeneratedSources)
+    systemProperty("sbe.target.language", "Java")
+    systemProperty("sbe.output.dir", admissionGeneratedSources.get().asFile.absolutePath)
+    systemProperty("sbe.validation.stop.on.error", "true")
+    systemProperty("sbe.generate.precedence.checks", "true")
+    args(admissionSchema.asFile.absolutePath)
+    doFirst {
+        // 스키마에서 제거한 타입도 남지 않도록 이 작업이 소유한 출력만 지운다.
+        delete(admissionGeneratedSources)
+    }
+}
+
+sourceSets.named("main") {
+    java.srcDir(generateAdmissionCodecs)
+}
+
+tasks.named("compileKotlin") {
+    dependsOn(generateAdmissionCodecs)
+}
+
+tasks.named("compileJava") {
+    dependsOn(generateAdmissionCodecs)
+}
+
 dependencies {
+    sbeGenerator("uk.co.real-logic:sbe-tool:1.40.2")
+
     implementation(project(":domain-common"))
     implementation(project(":domain-order"))
     implementation(project(":domain-matching"))
     implementation(project(":domain-ledger"))
+    implementation(project(":domain-trading"))
+    implementation("org.agrona:agrona:2.6.1")
 
     implementation("org.springframework.boot:spring-boot-starter-actuator")
     implementation("org.springframework.boot:spring-boot-starter-data-jpa")
@@ -57,4 +95,7 @@ dependencies {
 
 tasks.withType<Test> {
     useJUnitPlatform()
+    // Agrona 2.6.1의 UnsafeApi가 사용하는 JDK 내부 패키지를 테스트 JVM에 연다.
+    jvmArgs("--add-opens=java.base/jdk.internal.misc=ALL-UNNAMED")
+    systemProperty("sbe.enable.precedence.checks", "true")
 }

@@ -1,0 +1,106 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<sbe:messageSchema xmlns:sbe="http://fixprotocol.io/2016/sbe"
+                   package="com.exchange.core.api.trading.infrastructure.codec.generated"
+                   id="87"
+                   version="1"
+                   semanticVersion="1.0.0"
+                   byteOrder="littleEndian"
+                   description="접수 명령과 작은 접수 응답">
+    <types>
+        <composite name="messageHeader" description="8바이트 SBE 메시지 헤더">
+            <type name="blockLength" primitiveType="uint16"/>
+            <type name="templateId" primitiveType="uint16"/>
+            <type name="schemaId" primitiveType="uint16"/>
+            <type name="version" primitiveType="uint16"/>
+        </composite>
+        <type name="positiveLong" primitiveType="int64" minValue="1" maxValue="9223372036854775807"/>
+        <type name="nonNegativeLong" primitiveType="int64" minValue="0" maxValue="9223372036854775807"/>
+        <type name="assetScale" primitiveType="uint8" minValue="0" maxValue="18"/>
+        <type name="feePpm" primitiveType="int32" minValue="0" maxValue="1000000"/>
+        <type name="epochSecond" primitiveType="int64"/>
+        <type name="nanoOfSecond" primitiveType="int32" minValue="0" maxValue="999999999"/>
+        <enum name="Side" encodingType="uint8">
+            <validValue name="BUY">1</validValue>
+            <validValue name="SELL">2</validValue>
+        </enum>
+        <enum name="OrderType" encodingType="uint8">
+            <validValue name="LIMIT">1</validValue>
+            <validValue name="MARKET">2</validValue>
+        </enum>
+        <enum name="TimeInForce" encodingType="uint8">
+            <validValue name="GTC">1</validValue>
+            <validValue name="IOC">2</validValue>
+        </enum>
+        <enum name="ProductType" encodingType="uint8">
+            <validValue name="SPOT">1</validValue>
+            <validValue name="PERPETUAL_FUTURES">2</validValue>
+            <validValue name="DATED_FUTURES">3</validValue>
+        </enum>
+        <enum name="FeeTier" encodingType="uint8">
+            <validValue name="NORMAL">1</validValue>
+            <validValue name="VIP">2</validValue>
+            <validValue name="VVIP">3</validValue>
+            <validValue name="VVVIP">4</validValue>
+        </enum>
+        <enum name="RejectionReason" encodingType="uint8">
+            <validValue name="UNSUPPORTED_ORDER_CONDITION">1</validValue>
+            <validValue name="INVALID_QUANTITY">2</validValue>
+            <validValue name="INVALID_ORDER_IDENTIFIER">3</validValue>
+            <validValue name="UNREPRESENTABLE_RESERVATION">4</validValue>
+            <validValue name="INSUFFICIENT_BALANCE">5</validValue>
+            <validValue name="DUPLICATE_ORDER">6</validValue>
+            <validValue name="INVALID_REQUEST_IDENTIFIER">7</validValue>
+            <validValue name="REQUEST_CONTENT_CONFLICT">8</validValue>
+        </enum>
+        <enum name="InsufficientBalancePresence" encodingType="uint8">
+            <validValue name="ABSENT">0</validValue>
+            <validValue name="PRESENT">1</validValue>
+        </enum>
+        <composite name="identifierEncoding" description="빈 식별자도 표현하며 원문을 바꾸지 않는 UTF-8 바이트">
+            <type name="length" primitiveType="uint16" minValue="0" maxValue="256"/>
+            <type name="varData" primitiveType="uint8" length="0" characterEncoding="UTF-8"/>
+        </composite>
+    </types>
+    <sbe:message name="AdmissionCommand" id="1" blockLength="50">
+        <field name="side" id="1" type="Side"/>
+        <field name="orderType" id="2" type="OrderType"/>
+        <field name="timeInForce" id="3" type="TimeInForce"/>
+        <field name="price" id="4" type="positiveLong"/>
+        <field name="quantity" id="5" type="nonNegativeLong"/>
+        <field name="baseAssetScale" id="6" type="assetScale"/>
+        <field name="productType" id="7" type="ProductType"/>
+        <field name="feeTier" id="8" type="FeeTier"/>
+        <field name="scheduleVersion" id="9" type="positiveLong"/>
+        <field name="makerPpm" id="10" type="feePpm"/>
+        <field name="takerPpm" id="11" type="feePpm"/>
+        <field name="occurredAtEpochSecond" id="12" type="epochSecond"/>
+        <field name="occurredAtNano" id="13" type="nanoOfSecond"/>
+        <data name="requestId" id="14" type="identifierEncoding"/>
+        <data name="userId" id="15" type="identifierEncoding"/>
+        <data name="marketId" id="16" type="identifierEncoding"/>
+        <data name="orderId" id="17" type="identifierEncoding"/>
+        <data name="definitionMarketId" id="18" type="identifierEncoding"/>
+        <data name="baseAssetId" id="19" type="identifierEncoding"/>
+        <data name="quoteAssetId" id="20" type="identifierEncoding"/>
+        <data name="ledgerTransactionId" id="21" type="identifierEncoding"/>
+    </sbe:message>
+    <sbe:message name="AdmissionAccepted" id="2" blockLength="8">
+        <field name="sequence" id="1" type="positiveLong"/>
+        <data name="requestId" id="2" type="identifierEncoding"/>
+        <data name="userId" id="3" type="identifierEncoding"/>
+        <data name="marketId" id="4" type="identifierEncoding"/>
+        <data name="orderId" id="5" type="identifierEncoding"/>
+    </sbe:message>
+    <sbe:message name="AdmissionRejected" id="3" blockLength="26">
+        <field name="reason" id="1" type="RejectionReason"/>
+        <field name="hasInsufficientBalance" id="2" type="InsufficientBalancePresence"/>
+        <field name="available" id="3" type="nonNegativeLong"/>
+        <field name="required" id="4" type="nonNegativeLong"/>
+        <field name="shortfall" id="5" type="nonNegativeLong"/>
+        <data name="requestId" id="6" type="identifierEncoding"/>
+        <data name="userId" id="7" type="identifierEncoding"/>
+        <data name="marketId" id="8" type="identifierEncoding"/>
+        <data name="orderId" id="9" type="identifierEncoding"/>
+        <data name="assetId" id="10" type="identifierEncoding"/>
+    </sbe:message>
+</sbe:messageSchema>
