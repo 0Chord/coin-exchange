@@ -7,6 +7,10 @@ import com.exchange.core.common.OrderId
 import com.exchange.core.common.UserId
 import com.exchange.core.fee.TradingFeePolicySnapshot
 import com.exchange.core.ledger.Balance
+import com.exchange.core.ledger.LedgerTransaction
+import com.exchange.core.ledger.OpeningBalance
+import com.exchange.core.ledger.OpeningBalanceRequestConflictException
+import com.exchange.core.ledger.OpeningBalanceResult
 import com.exchange.core.order.MarketDefinition
 import com.exchange.core.order.Side
 import java.time.Instant
@@ -40,6 +44,16 @@ class OrderAdmissionState(
     private val transactionIds = mutableSetOf<String>()
     private val sourceEventIds = mutableSetOf<String>()
     private val requestRecords: MutableMap<RequestKey, RequestRecord> = linkedMapOf()
+    private val preparations: MutableMap<String, PreparationRecord> = linkedMapOf()
+    private val initiallyUsedBalances =
+        initialBalances
+            .filter { it.available != Amount.ZERO }
+            .map {
+                BalanceKey(
+                    it.userId,
+                    it.assetId,
+                )
+            }.toSet()
     private var lastSequence = 0L
 
     /** 차단 여부만 진단할 수 있다. 부분 반영 가능성이 있는 잔고를 정상 조회로 내보내지 않는다. */
@@ -88,7 +102,53 @@ class OrderAdmissionState(
         val pendingOrders: List<Record>,
         val lastSequence: Long,
         val requests: List<RequestRecord> = emptyList(),
+        val preparations: List<PreparationRecord> = emptyList(),
     )
+
+    /** 최초 지급 원본·결과와 실제 OPENING. 현재 잔고는 별도의 balances에서 관찰한다. */
+    class PreparationRecord internal constructor(
+        val result: OpeningBalanceResult,
+        val transaction: LedgerTransaction,
+    )
+
+    /** 같은 준비는 최초 결과를 돌려주며, 신규 지급만 주문과 같은 잔고·원장 ID 이력에 반영한다. */
+    fun prepareDevelopmentBalance(
+        opening: OpeningBalance,
+        ledgerTransactionId: String,
+        occurredAt: Instant,
+    ): OpeningBalanceResult {
+        checkUsable()
+        val previous = preparations[opening.preparationId]
+        if (previous != null) {
+            if (previous.result.opening != opening) {
+                throw OpeningBalanceRequestConflictException("같은 준비 ID의 사용자·자산·금액이 다릅니다")
+            }
+            return previous.result.copy(alreadyPrepared = true)
+        }
+
+        val key = BalanceKey(opening.userId, opening.assetId)
+        val current = balances[key] ?: Balance(opening.userId, opening.assetId, Amount.ZERO, Amount.ZERO)
+        val hasHistory =
+            key in initiallyUsedBalances ||
+                preparations.values.any { it.result.opening.userId == opening.userId && it.result.opening.assetId == opening.assetId } ||
+                records.values.any { it.candidate.order.userId == opening.userId && it.candidate.reservation.assetId == opening.assetId }
+        opening.requireUnused(current, hasHistory)
+        require(calculator.validIdentifier(ledgerTransactionId)) { "원장 거래 식별자가 잘못됐습니다" }
+        val next = current.credit(opening.amount)
+        val transaction = opening.transaction(ledgerTransactionId, occurredAt)
+        checkUnusedTransaction(transaction)
+        val result = OpeningBalanceResult(opening, ledgerTransactionId, occurredAt, alreadyPrepared = false)
+        val record = PreparationRecord(result, transaction)
+
+        // 쓰기를 시작한 뒤에는 일부만 반영됐을 수 있다. 전부 끝나야 정상 사용을 허용한다.
+        isBlocked = true
+        balances[key] = next
+        preparations[opening.preparationId] = record
+        transactionIds.add(transaction.ledgerTransactionId)
+        sourceEventIds.add(transaction.sourceEventId)
+        isBlocked = false
+        return result
+    }
 
     /**
      * 유효한 사용자·요청 ID의 첫 결과를 보존한다. 같은 원본의 재전송은 현재 서버 문맥을 쓰지 않는다.
@@ -141,7 +201,13 @@ class OrderAdmissionState(
     /** 반환 목록은 내부 자료와 분리되며 이후 접수로 이미 반환한 값이 바뀌지 않는다. */
     fun snapshot(): Snapshot {
         checkUsable()
-        return Snapshot(immutableList(balances.values), immutableList(records.values), lastSequence, immutableList(requestRecords.values))
+        return Snapshot(
+            immutableList(balances.values),
+            immutableList(records.values),
+            lastSequence,
+            immutableList(requestRecords.values),
+            immutableList(preparations.values),
+        )
     }
 
     fun pendingOrders(marketId: MarketId): List<Record> {
@@ -170,8 +236,7 @@ class OrderAdmissionState(
         check(candidate.order == order && candidate.market == market && candidate.feePolicySnapshot == feePolicySnapshot) {
             "후보의 주문·마켓·정책 연결이 다릅니다"
         }
-        check(candidate.reserveTransaction.ledgerTransactionId !in transactionIds) { "원장 거래 ID가 이미 사용됐습니다" }
-        check(candidate.reserveTransaction.sourceEventId !in sourceEventIds) { "원장 사건 ID가 이미 사용됐습니다" }
+        checkUnusedTransaction(candidate.reserveTransaction)
         return Result.Accepted(Record(Math.addExact(lastSequence, 1), candidate))
     }
 
@@ -205,6 +270,11 @@ class OrderAdmissionState(
     }
 
     private fun checkUsable() = check(!isBlocked) { "반영 중 오류로 접수 상태가 차단됐습니다" }
+
+    private fun checkUnusedTransaction(transaction: LedgerTransaction) {
+        check(transaction.ledgerTransactionId !in transactionIds) { "원장 거래 ID가 이미 사용됐습니다" }
+        check(transaction.sourceEventId !in sourceEventIds) { "원장 사건 ID가 이미 사용됐습니다" }
+    }
 
     private fun <T> immutableList(values: Collection<T>): List<T> = Collections.unmodifiableList(values.toList())
 }
