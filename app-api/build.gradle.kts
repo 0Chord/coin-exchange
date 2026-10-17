@@ -26,6 +26,7 @@ allOpen {
 }
 
 val protobufVersion = "4.33.2"
+val aeronVersion = "1.53.3"
 protobuf {
     protoc {
         artifact = "com.google.protobuf:protoc:$protobufVersion"
@@ -45,6 +46,7 @@ dependencies {
     implementation(project(":domain-ledger"))
     implementation(project(":domain-trading"))
     implementation("com.google.protobuf:protobuf-java:$protobufVersion")
+    implementation("io.aeron:aeron-cluster:$aeronVersion")
 
     implementation("org.springframework.boot:spring-boot-starter-actuator")
     implementation("org.springframework.boot:spring-boot-starter-data-jpa")
@@ -73,4 +75,21 @@ dependencies {
 
 tasks.withType<Test> {
     useJUnitPlatform()
+    jvmArgs("--add-opens=java.base/jdk.internal.misc=ALL-UNNAMED", "--add-opens=java.base/java.util.zip=ALL-UNNAMED")
+    systemProperty("developmentFundingRuntimeClasspath", sourceSets["main"].runtimeClasspath.asPath)
+}
+
+springBoot {
+    mainClass.set("com.exchange.core.ExchangeCoreApplicationKt")
+}
+
+listOf("Node", "Client").forEach { entry ->
+    tasks.register<JavaExec>("runDevelopmentFunding$entry") {
+        group = "application"
+        description = "DB/Kafka 없이 개발용 자금 준비 ${if (entry == "Node") "노드" else "클라이언트"}를 실행한다."
+        classpath = sourceSets["main"].runtimeClasspath
+        mainClass.set("com.exchange.core.api.trading.infrastructure.aeron.DevelopmentFunding${entry}Kt")
+        javaLauncher.set(javaToolchains.launcherFor(java.toolchain))
+        jvmArgs("--add-opens=java.base/jdk.internal.misc=ALL-UNNAMED", "--add-opens=java.base/java.util.zip=ALL-UNNAMED")
+    }
 }
