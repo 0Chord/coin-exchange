@@ -102,3 +102,39 @@ enum RejectionReason {
   INVALID_REQUEST_IDENTIFIER = 7;
   REQUEST_CONTENT_CONFLICT = 8;
 }
+
+// 개발용 자금 준비는 주문 접수와 별도 종류(4·5·6)를 사용한다.
+message DevelopmentBalanceCommand {
+  optional string preparation_id = 1;
+  optional string user_id = 2;
+  optional string asset_id = 3;
+  optional int64 amount = 4;
+  optional string ledger_transaction_id = 5;
+  optional int64 occurred_at_epoch_second = 6;
+  optional int32 occurred_at_nano = 7;
+}
+
+message DevelopmentBalancePrepared {
+  optional string preparation_id = 1;
+  optional string user_id = 2;
+  optional string asset_id = 3;
+  optional int64 amount = 4;
+  optional string ledger_transaction_id = 5;
+  optional int64 occurred_at_epoch_second = 6;
+  optional int32 occurred_at_nano = 7;
+  optional bool already_prepared = 8;
+}
+
+message DevelopmentBalanceRejected {
+  optional string preparation_id = 1;
+  optional string user_id = 2;
+  optional string asset_id = 3;
+  optional int64 amount = 4;
+  optional DevelopmentBalanceRejectionReason reason = 5;
+}
+
+enum DevelopmentBalanceRejectionReason {
+  DEVELOPMENT_BALANCE_REJECTION_REASON_UNSPECIFIED = 0;
+  DEVELOPMENT_BALANCE_REQUEST_CONTENT_CONFLICT = 1;
+  DEVELOPMENT_BALANCE_ACCOUNT_ALREADY_USED = 2;
+}
