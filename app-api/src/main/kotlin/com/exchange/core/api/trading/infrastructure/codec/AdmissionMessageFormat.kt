@@ -24,6 +24,9 @@ internal object AdmissionMessageFormat {
     const val COMMAND = 1
     const val ACCEPTED = 2
     const val REJECTED = 3
+    const val DEVELOPMENT_BALANCE_COMMAND = 4
+    const val DEVELOPMENT_BALANCE_PREPARED = 5
+    const val DEVELOPMENT_BALANCE_REJECTED = 6
     private const val SCHEMA = 87
     private const val VERSION = 2
 
