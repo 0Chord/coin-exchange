@@ -38,6 +38,7 @@ object ProjectLayoutPolicy {
                 app("matching-persistence", "$base/api/matching/infrastructure/persistence", "매칭 영속화"),
                 app("matching-publish", "$base/api/matching/infrastructure/publish", "명시한 미저장 발행 구현"),
                 app("admission-codec", "$base/api/trading/infrastructure/codec", "주문 접수 명령·응답 변환"),
+                app("development-aeron", "$base/api/trading/infrastructure/aeron", "개발용 자금 준비의 실제 Aeron 실행"),
                 AllowedFolder(
                     "admission-generated-codec",
                     "app-api",
