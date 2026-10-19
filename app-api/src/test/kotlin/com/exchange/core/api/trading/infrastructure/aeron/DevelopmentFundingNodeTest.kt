@@ -1,10 +1,8 @@
 package com.exchange.core.api.trading.infrastructure.aeron
 
-import com.exchange.core.api.trading.infrastructure.codec.AdmissionCommandCodec
 import com.exchange.core.api.trading.infrastructure.codec.DevelopmentBalanceCommandPayload
 import com.exchange.core.api.trading.infrastructure.codec.DevelopmentBalanceRejectionReason
 import com.exchange.core.api.trading.infrastructure.codec.DevelopmentBalanceResultPayload
-import com.exchange.core.api.trading.infrastructure.codec.admissionCommand
 import com.exchange.core.common.Amount
 import com.exchange.core.common.AssetId
 import com.exchange.core.common.UserId
@@ -141,7 +139,7 @@ class DevelopmentFundingNodeTest {
     }
 
     @Test
-    fun `두 정상 충돌과 손상 주문 메시지 뒤에도 다른 사용자의 준비를 처리한다`() {
+    fun `두 정상 충돌과 손상 미지원 메시지 뒤에도 다른 사용자의 준비를 처리한다`() {
         val config = config()
         DevelopmentFundingNode.start(config).use { node ->
             DevelopmentFundingClient(config).use { client ->
@@ -160,7 +158,7 @@ class DevelopmentFundingNodeTest {
                 listOf(
                     ByteArray(7),
                     byteArrayOf(0, 0, 4, 0, 87, 0, 2, 0),
-                    AdmissionCommandCodec().encode(admissionCommand()),
+                    byteArrayOf(0, 0, 2, 0, 87, 0, 2, 0),
                 ).forEach { bytes ->
                     eventually { client.connection.offer(UnsafeBuffer(bytes), 0, bytes.size) > 0 }
                 }

@@ -197,7 +197,7 @@ class DevelopmentBalanceProtocolFlowTest {
         val state = state()
         val originalOrder = admissionCommand()
         val first = assertIs<AdmissionResultPayload.Rejected>(sendOrder(state, originalOrder))
-        assertEquals(OrderAdmissionResult.Reason.INSUFFICIENT_BALANCE, first.reason)
+        assertEquals(AdmissionResultPayload.Reason.INSUFFICIENT_BALANCE, first.reason)
         assertEquals(
             OrderAdmissionResult.InsufficientBalance(usdt, Amount.ZERO, Amount(300_000_000), Amount(300_000_000)),
             first.insufficientBalance,

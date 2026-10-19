@@ -1,25 +1,25 @@
 # Aeron 연결을 한 기능씩 이어 만들기
 
-**#95는 PR #100으로 통합됐고, #96 자금 준비 메시지 변환은 로컬 구현·검증을 마쳤다.** #96의 PR·CI·병합 상태는 GitHub의 연결 PR에서 확인한다. 실제 통신은 #97부터 연결한다. [#96 구현 흐름·테스트](development-balance-protocol.md).
+**#95·#96·#97은 PR #100·#101·#102로 통합됐다. 현재 작업은 #98 주문 접수 연결이다.** #98의 로컬 구현·검증·독립 리뷰 상태는 [구현 설명](aeron-order-admission.md)에서 확인한다. 다음 #99는 실제 Archive 입력 대조다.
 
 **왜 나누나:** 초기 자금 계산, 메시지 변환, 실제 통신, 주문 접수, 실제 기록 검증을 한 PR에 넣으면 무엇이 바뀌었는지 판단하기 어렵다. 각 이슈의 동작과 관련 테스트를 한 PR에 담고 순서대로 이어간다.
 
 | 순서 | 이슈 | PR 하나가 끝났을 때 확인할 것 |
 | --- | --- | --- |
 | 1 · 통합 완료 | [#95 · 초기 자금](https://github.com/0Chord/coin-exchange/issues/95) | 메모리에 첫 자금을 준비하고 반복 지급을 막는다 |
-| **2 · 로컬 완료** | [#96 · 자금 준비 메시지](https://github.com/0Chord/coin-exchange/issues/96) | 요청·결과가 Protobuf로 변환·복원된다 |
-| 3 | [#97 · 실제 자금 준비 통신](https://github.com/0Chord/coin-exchange/issues/97) | Aeron 개발 노드에 보내 실제 준비 결과를 받는다 |
-| 4 | [#98 · 실제 주문 접수](https://github.com/0Chord/coin-exchange/issues/98) | 준비한 돈으로 주문을 보내 승인·거절을 확인한다 |
+| 2 · 통합 완료 | [#96 · 자금 준비 메시지](https://github.com/0Chord/coin-exchange/issues/96) | 요청·결과가 Protobuf로 변환·복원된다 |
+| 3 · 통합 완료 | [#97 · 실제 자금 준비 통신](https://github.com/0Chord/coin-exchange/issues/97) | Aeron 개발 노드에 보내 실제 준비 결과를 받는다 |
+| **4 · 로컬 구현·검증 완료** | [#98 · 실제 주문 접수](https://github.com/0Chord/coin-exchange/issues/98) | 준비한 돈으로 주문을 보내 승인·거절을 확인했다. 원격 진행은 연결 PR 참조 |
 | 5 | [#99 · 실제 기록 대조](https://github.com/0Chord/coin-exchange/issues/99) | 보낸 입력·정책·순서가 실제 Archive에 있는지 대조한다 |
 
-**상태:** #95의 PR #100 통합 커밋은 `c6f962c96bb60d731377e5e3e75b08a1203eefc0`다. #96은 이 코드에서 변환·코어 연계 테스트를 구현하고 필수 검사·독립 리뷰를 마쳤다. #97~99는 명세만 작성한 미구현 상태다. 로컬 검증과 PR·CI·병합은 구분한다.
+**상태 기준:** #97의 PR #102 통합 커밋은 d6d1db401eb7913cb944bd33512275e95d7787a4다. #98은 이 기준에서 로컬 구현·검증·독립 리뷰를 마쳤다. [#98 구현 결과와 테스트](aeron-order-admission.md)에서 근거를 확인하며, PR·CI·병합은 #98에 연결한 PR에서 별도로 확인한다. #99는 아직 명세 단계다. 아래 접이식 내용은 분할 당시의 기능 계약이며, 실제 구현 여부는 이 상태와 연결된 구현 기록에서 확인한다.
 
-[#95 구현 결과·테스트 설명](engine-opening-balance.md)에서 로컬 결과를 읽고, [합의 명세](engine-opening-balance-spec.md)에서 원래 계약을 확인한다. 나머지 네 이슈의 상세 계약은 각 GitHub 본문이 기준이며, 웹 읽기 화면도 해당 본문을 사용한다.
+[#95 구현 결과·테스트 설명](engine-opening-balance.md)에서 로컬 결과를 읽고, [합의 명세](engine-opening-balance-spec.md)에서 원래 계약을 확인한다. 각 후속 이슈의 상세 계약은 GitHub 본문이 기준이며, 웹 읽기 화면도 해당 본문을 사용한다.
 
 <details markdown="1">
 <summary>공식 설명과 비교해 보완한 최종 계약</summary>
 
-Kotlin/JVM·Spring과 Aeron의 조합은 가능하다. 그 사실을 고정 TPS·지연·즉시 무중단 전환·노드의 매 순간 동일 메모리를 보장하는 말로 바꾸지 않는다. 아래 항목을 각 기능의 완료 기준에 연결했다. #95의 순수 상태와 #96의 변환·코어 연계 사례는 실행·검증했다. #97~99의 통신·기록 사례는 앞으로 구현할 계약이며 실행 근거가 아니다.
+Kotlin/JVM·Spring과 Aeron의 조합은 가능하다. 그 사실을 고정 TPS·지연·즉시 무중단 전환·노드의 매 순간 동일 메모리를 보장하는 말로 바꾸지 않는다. 아래 항목을 각 기능의 완료 기준에 연결했다. #95~97의 구현은 통합됐다. #98의 실행 근거는 현재 구현 설명에, #99의 미구현 기록 계약은 해당 이슈에 구분한다.
 
 | 항목 | 현재 단계의 최종 계약 | 확인 위치 |
 | --- | --- | --- |
@@ -32,7 +32,7 @@ Kotlin/JVM·Spring과 Aeron의 조합은 가능하다. 그 사실을 고정 TPS�
 | 기록·복제 대조 | 기록 상한 L과 업무 순번·전송 수용을 구분. 사본은 같은 적용 위치 L에서 비교 | #99·#89 |
 | 현재 도구 유지 | 기본 Spring MVC·기존 도메인 규칙·Protobuf를 유지. WebFlux 전환이나 Agrona 전면 교체를 필수 작업으로 넣지 않음 | 이번 다섯 PR |
 
-**두 가지 snapshot:** `OrderAdmissionState.snapshot()`은 불변 관찰값이다. Aeron의 영구 Snapshot은 `onTakeSnapshot`으로 저장하고 `onStart(..., snapshotImage)`에서 복원한다. 1.53.3에 `onLoadSnapshot` 콜백은 없다. 후속 #97은 영구 Snapshot을 구현하지 않으므로 지원하는 것처럼 정상 완료하지 않는 경계만 확인할 예정이다. #95에는 Aeron Snapshot 콜백을 추가하지 않았다. framework의 실패 기록 흔적은 남을 수 있으며 파일 0건을 성공 기준으로 삼지 않는다. [실제 API](https://github.com/aeron-io/aeron/blob/1.53.3/aeron-cluster/src/main/java/io/aeron/cluster/service/ClusteredService.java), [실제 실행·Snapshot 처리](https://github.com/aeron-io/aeron/blob/1.53.3/aeron-cluster/src/main/java/io/aeron/cluster/service/ClusteredServiceAgent.java).
+**두 가지 snapshot:** `OrderAdmissionState.snapshot()`은 불변 관찰값이다. Aeron의 영구 Snapshot은 `onTakeSnapshot`으로 저장하고 `onStart(..., snapshotImage)`에서 복원한다. 1.53.3에 `onLoadSnapshot` 콜백은 없다. 병합된 #97은 영구 Snapshot을 구현하지 않고 지원하는 것처럼 정상 완료하지 않는 중단 경계를 둔다. #95에는 Aeron Snapshot 콜백을 추가하지 않았다. framework의 실패 기록 흔적은 남을 수 있으며 파일 0건을 성공 기준으로 삼지 않는다. [실제 API](https://github.com/aeron-io/aeron/blob/1.53.3/aeron-cluster/src/main/java/io/aeron/cluster/service/ClusteredService.java), [실제 실행·Snapshot 처리](https://github.com/aeron-io/aeron/blob/1.53.3/aeron-cluster/src/main/java/io/aeron/cluster/service/ClusteredServiceAgent.java).
 
 **시간과 ID:** 클러스터 callback timestamp는 클러스터 이벤트 시각이다. 현재 업무 시각은 명령 본문에 보존한 Instant다. timestamp만 허용하거나 ID를 무조건 Long으로 바꾸는 규칙을 만들지 않는다. 필요한 값이 모든 사본의 같은 입력에서 나와야 한다. 단위는 `Cluster.timeUnit()` 등 실제 설정과 대조하며 임의로 밀리초라고 가정하지 않는다.
 

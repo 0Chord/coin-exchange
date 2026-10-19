@@ -1,6 +1,8 @@
 package com.exchange.core.api.trading.infrastructure.aeron
 
 import com.exchange.core.api.trading.infrastructure.codec.AdmissionCommandCodec
+import com.exchange.core.api.trading.infrastructure.codec.AdmissionResultCodec
+import com.exchange.core.api.trading.infrastructure.codec.AdmissionResultPayload
 import com.exchange.core.api.trading.infrastructure.codec.DevelopmentBalanceCommandCodec
 import com.exchange.core.api.trading.infrastructure.codec.DevelopmentBalanceCommandPayload
 import com.exchange.core.api.trading.infrastructure.codec.DevelopmentBalanceRejectionReason
@@ -148,8 +150,10 @@ class DevelopmentFundingAdapterTest {
         val missing =
             com.exchange.core.api.trading.infrastructure.codec
                 .protobufFrame(4, byteArrayOf())
-        val order = AdmissionCommandCodec().encode(admissionCommand())
-        listOf(bytes.copyOf(7), bytes.copyOf(bytes.size - 1), missing, order, ByteArray(4097)).forEach {
+        val unsupported =
+            com.exchange.core.api.trading.infrastructure.codec
+                .protobufFrame(2, byteArrayOf())
+        listOf(bytes.copyOf(7), bytes.copyOf(bytes.size - 1), missing, unsupported, ByteArray(4097)).forEach {
             sendBytes(fixture, it)
         }
         fixture.service.onSessionMessage(fixture.session, 0, UnsafeBuffer(bytes), -1, bytes.size, header)
@@ -167,6 +171,141 @@ class DevelopmentFundingAdapterTest {
                 .preparations.size,
         )
         assertTrue(fixture.failures.isEmpty())
+    }
+
+    @Test
+    fun `주문 응답이 밀려도 같은 바이트만 다시 보내고 예약은 한 번만 만든다`() {
+        val fixture = fixture(offers = listOf(Publication.BACK_PRESSURED, Publication.ADMIN_ACTION, 99L))
+        sendBytes(fixture, commands.encode(command()), null)
+        val command = admissionCommand().let { it.copy(order = it.order.copy(userId = UserId("U1"))) }
+        val bytes = AdmissionCommandCodec().encode(command)
+        val shared = ByteArray(bytes.size + 17) { 0x7F }
+        bytes.copyInto(shared, 9)
+
+        fixture.service.onSessionMessage(fixture.session, Long.MAX_VALUE, UnsafeBuffer(shared), 9, bytes.size, header)
+        shared.fill(0)
+
+        assertEquals(3, fixture.replies.size)
+        fixture.replies.forEach { assertContentEquals(fixture.replies.first(), it) }
+        val accepted = assertIs<AdmissionResultPayload.Accepted>(AdmissionResultCodec().decode(fixture.replies.first()))
+        assertEquals(1L, accepted.sequence)
+        val observation = assertNotNull(fixture.service.observation)
+        assertEquals(accepted, observation.admissionResult)
+        assertNull(observation.result)
+        assertEquals("OFFERED", observation.replyStatus)
+        assertEquals(3, observation.replyAttempts)
+        val snapshot = assertNotNull(observation.snapshot)
+        assertEquals(
+            700_000_000L,
+            snapshot.balances
+                .single()
+                .available.value,
+        )
+        assertEquals(
+            300_000_000L,
+            snapshot.balances
+                .single()
+                .hold.value,
+        )
+        assertEquals(
+            command.occurredAt,
+            snapshot.pendingOrders
+                .single()
+                .candidate.reserveTransaction.occurredAt,
+        )
+        assertEquals(1, snapshot.requests.size)
+        verify(
+            fixture.state,
+            times(1),
+        ).admit(
+            command.requestId,
+            command.order,
+            command.market,
+            command.feePolicySnapshot,
+            command.ledgerTransactionId,
+            command.occurredAt,
+        )
+    }
+
+    @Test
+    fun `주문 응답의 종단 상한 팔로워와 닫는 세션은 예약을 취소하지 않는다`() {
+        val cases =
+            listOf(
+                Publication.NOT_CONNECTED to "NOT_CONNECTED",
+                Publication.CLOSED to "CLOSED",
+                Publication.MAX_POSITION_EXCEEDED to "MAX_POSITION_EXCEEDED",
+                Publication.BACK_PRESSURED to "ATTEMPTS_EXHAUSTED",
+            )
+        cases.forEach { (offer, expected) ->
+            val fixture = fixture(offers = listOf(offer), maxReplyAttempts = 2)
+            sendBytes(fixture, commands.encode(command()), null)
+            sendBytes(
+                fixture,
+                AdmissionCommandCodec().encode(admissionCommand().let { it.copy(order = it.order.copy(userId = UserId("U1"))) }),
+            )
+
+            val observation = assertNotNull(fixture.service.observation)
+            assertEquals(expected, observation.replyStatus)
+            assertEquals(if (offer == Publication.BACK_PRESSURED) 2 else 1, observation.replyAttempts)
+            assertEquals(
+                300_000_000L,
+                observation.snapshot!!
+                    .balances
+                    .single()
+                    .hold.value,
+            )
+            assertEquals(1, observation.snapshot.pendingOrders.size)
+            assertTrue(fixture.failures.isEmpty())
+        }
+        listOf(Cluster.Role.FOLLOWER to true, Cluster.Role.LEADER to false, Cluster.Role.LEADER to true).forEach { (role, hasSession) ->
+            val fixture = fixture(role = role)
+            sendBytes(fixture, commands.encode(command()), null)
+            if (hasSession && role == Cluster.Role.LEADER) `when`(fixture.session.isClosing).thenReturn(true)
+
+            sendBytes(
+                fixture,
+                AdmissionCommandCodec().encode(
+                    admissionCommand().let {
+                        it.copy(order = it.order.copy(userId = UserId("U1")))
+                    },
+                ),
+                if (hasSession) fixture.session else null,
+            )
+
+            val observation = assertNotNull(fixture.service.observation)
+            assertIs<AdmissionResultPayload.Accepted>(observation.admissionResult)
+            assertEquals(
+                300_000_000L,
+                observation.snapshot!!
+                    .balances
+                    .single()
+                    .hold.value,
+            )
+            assertEquals(0, observation.replyAttempts)
+            assertTrue(fixture.replies.isEmpty())
+        }
+    }
+
+    @Test
+    fun `주문 반영 전 오류와 반영 중 오류는 정상 거절 대신 개발 서비스를 중단한다`() {
+        listOf(false, true).forEach { failDuringWrite ->
+            val fixture = fixture()
+            sendBytes(fixture, commands.encode(command()), null)
+            val order = admissionCommand().let { it.copy(order = it.order.copy(userId = UserId("U1"))) }
+            if (failDuringWrite) failOnWrite(fixture.state, "records", IllegalStateException("주문 저장 실패"))
+            val bad = if (failDuringWrite) order else order.copy(ledgerTransactionId = "")
+
+            val fatal = assertFailsWith<AgentTerminationException> { sendBytes(fixture, AdmissionCommandCodec().encode(bad)) }
+
+            assertSame(fatal.cause, fixture.failures.single())
+            assertFalse(fixture.service.started)
+            assertEquals(failDuringWrite, fixture.state.isBlocked)
+            assertNull(fixture.service.observation!!.snapshot)
+            assertNull(fixture.service.observation!!.admissionResult)
+            assertTrue(fixture.replies.isEmpty())
+            assertFailsWith<AgentTerminationException> { sendBytes(fixture, AdmissionCommandCodec().encode(order)) }
+            if (failDuringWrite) assertFailsWith<IllegalStateException> { fixture.state.hasRequest(order.order.userId, order.requestId) }
+        }
     }
 
     @Test
@@ -487,8 +626,14 @@ class DevelopmentFundingAdapterTest {
     private fun failOnPreparationWrite(
         state: OrderAdmissionState,
         failure: Throwable,
+    ) = failOnWrite(state, "preparations", failure)
+
+    private fun failOnWrite(
+        state: OrderAdmissionState,
+        fieldName: String,
+        failure: Throwable,
     ) {
-        val field = OrderAdmissionState::class.java.getDeclaredField("preparations").apply { isAccessible = true }
+        val field = OrderAdmissionState::class.java.getDeclaredField(fieldName).apply { isAccessible = true }
 
         @Suppress("UNCHECKED_CAST")
         val original = field.get(state) as MutableMap<Any, Any>

@@ -107,14 +107,14 @@ class AdmissionProtocolFlowTest {
                     "R1",
                     "BTC-USDT",
                     command.order.orderId.value,
-                    OrderAdmissionResult.Reason.REQUEST_CONTENT_CONFLICT,
+                    AdmissionResultPayload.Reason.REQUEST_CONTENT_CONFLICT,
                 ),
                 send(state, command),
             )
             assertEquals(snapshot, state.snapshot())
         }
         assertEquals(
-            AdmissionResultPayload.Rejected("user-1", "R2", "BTC-USDT", "O1", OrderAdmissionResult.Reason.DUPLICATE_ORDER),
+            AdmissionResultPayload.Rejected("user-1", "R2", "BTC-USDT", "O1", AdmissionResultPayload.Reason.DUPLICATE_ORDER),
             send(state, original.copy(requestId = "R2")),
         )
         val after = state.snapshot()
@@ -200,7 +200,7 @@ class AdmissionProtocolFlowTest {
         val snapshot = state.snapshot()
 
         commands.encode(admissionCommand("R2", "O2"))
-        results.encode(AdmissionResultPayload.Rejected("other-user", "R2", "BTC-USDT", "O2", OrderAdmissionResult.Reason.DUPLICATE_ORDER))
+        results.encode(AdmissionResultPayload.Rejected("other-user", "R2", "BTC-USDT", "O2", AdmissionResultPayload.Reason.DUPLICATE_ORDER))
         assertContentEquals(preservedBytes, firstBytes)
         assertContentEquals(preservedResponse, firstResponse)
         firstBytes.fill(0)
@@ -235,7 +235,7 @@ class AdmissionProtocolFlowTest {
                 "r",
                 "m",
                 "o",
-                OrderAdmissionResult.Reason.INSUFFICIENT_BALANCE,
+                AdmissionResultPayload.Reason.INSUFFICIENT_BALANCE,
                 OrderAdmissionResult.InsufficientBalance(AssetId("Q"), Amount(200), Amount(300), Amount(100)),
             )
         // 본문 27바이트: 사유 08 05, 상세 12 0b 뒤 자산 Q·200(c8 01)·300(ac 02)·100(64).
@@ -248,19 +248,20 @@ class AdmissionProtocolFlowTest {
     fun `모든 거절 사유는 명시된 전송 코드와 상세 유무를 보존한다`() {
         val expectedCodes =
             mapOf(
-                OrderAdmissionResult.Reason.UNSUPPORTED_ORDER_CONDITION to 1,
-                OrderAdmissionResult.Reason.INVALID_QUANTITY to 2,
-                OrderAdmissionResult.Reason.INVALID_ORDER_IDENTIFIER to 3,
-                OrderAdmissionResult.Reason.UNREPRESENTABLE_RESERVATION to 4,
-                OrderAdmissionResult.Reason.INSUFFICIENT_BALANCE to 5,
-                OrderAdmissionResult.Reason.DUPLICATE_ORDER to 6,
-                OrderAdmissionResult.Reason.INVALID_REQUEST_IDENTIFIER to 7,
-                OrderAdmissionResult.Reason.REQUEST_CONTENT_CONFLICT to 8,
+                AdmissionResultPayload.Reason.UNSUPPORTED_ORDER_CONDITION to 1,
+                AdmissionResultPayload.Reason.INVALID_QUANTITY to 2,
+                AdmissionResultPayload.Reason.INVALID_ORDER_IDENTIFIER to 3,
+                AdmissionResultPayload.Reason.UNREPRESENTABLE_RESERVATION to 4,
+                AdmissionResultPayload.Reason.INSUFFICIENT_BALANCE to 5,
+                AdmissionResultPayload.Reason.DUPLICATE_ORDER to 6,
+                AdmissionResultPayload.Reason.INVALID_REQUEST_IDENTIFIER to 7,
+                AdmissionResultPayload.Reason.REQUEST_CONTENT_CONFLICT to 8,
+                AdmissionResultPayload.Reason.EXECUTION_CONTEXT_MISMATCH to 9,
             )
-        assertEquals(OrderAdmissionResult.Reason.entries.toSet(), expectedCodes.keys)
+        assertEquals(AdmissionResultPayload.Reason.entries.toSet(), expectedCodes.keys)
         expectedCodes.forEach { (reason, code) ->
             val detail =
-                if (reason == OrderAdmissionResult.Reason.INSUFFICIENT_BALANCE) {
+                if (reason == AdmissionResultPayload.Reason.INSUFFICIENT_BALANCE) {
                     OrderAdmissionResult.InsufficientBalance(AssetId("USDT"), Amount.ZERO, Amount(Long.MAX_VALUE), Amount(Long.MAX_VALUE))
                 } else {
                     null

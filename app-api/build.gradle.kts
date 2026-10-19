@@ -93,3 +93,12 @@ listOf("Node", "Client").forEach { entry ->
         jvmArgs("--add-opens=java.base/jdk.internal.misc=ALL-UNNAMED", "--add-opens=java.base/java.util.zip=ALL-UNNAMED")
     }
 }
+
+tasks.register<JavaExec>("runDevelopmentOrderClient") {
+    group = "application"
+    description = "같은 개발 노드에 LIMIT+GTC 주문을 보내 접수 승인·거절을 확인한다."
+    classpath = sourceSets["main"].runtimeClasspath
+    mainClass.set("com.exchange.core.api.trading.infrastructure.aeron.DevelopmentOrderClientKt")
+    javaLauncher.set(javaToolchains.launcherFor(java.toolchain))
+    jvmArgs("--add-opens=java.base/jdk.internal.misc=ALL-UNNAMED", "--add-opens=java.base/java.util.zip=ALL-UNNAMED")
+}
