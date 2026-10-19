@@ -597,6 +597,41 @@ class OrderAdmissionRequestTest {
         assertEquals(1, usedIds(state, "sourceEventIds").size)
     }
 
+    @Test
+    fun `R13 요청 존재 조회는 승인과 거절을 찾고 사용자별 키와 상태를 보존한다`() {
+        val state = OrderAdmissionState(listOf(balance(1_000_000_000)), calculator)
+        val other = UserId("other-user")
+        val empty = state.snapshot()
+
+        assertFalse(state.hasRequest(user, "accepted"))
+        assertFalse(state.hasRequest(user, "rejected"))
+        assertSnapshotValue(empty, state.snapshot())
+        assertIs<OrderAdmissionState.Result.Accepted>(admit(state, "accepted"))
+        assertEquals(
+            OrderAdmissionState.Result.Rejected(OrderAdmissionResult.Reason.INVALID_QUANTITY),
+            admit(state, "rejected", order("rejected").copy(quantity = Quantity.ZERO)),
+        )
+        val before = state.snapshot()
+
+        assertTrue(state.hasRequest(user, "accepted"))
+        assertTrue(state.hasRequest(user, "rejected"))
+        assertFalse(state.hasRequest(user, "missing"))
+        assertFalse(state.hasRequest(other, "accepted"))
+        assertFalse(state.hasRequest(other, "rejected"))
+        assertSnapshotValue(before, state.snapshot())
+        assertEquals(
+            OrderAdmissionState.Result.Rejected(OrderAdmissionResult.Reason.INVALID_QUANTITY),
+            admit(state, "accepted", order("other-order").copy(userId = other, quantity = Quantity.ZERO)),
+        )
+        val afterOtherRequest = state.snapshot()
+
+        assertTrue(state.hasRequest(other, "accepted"))
+        assertTrue(state.hasRequest(user, "accepted"))
+        assertFalse(state.hasRequest(other, "rejected"))
+        assertSnapshotValue(afterOtherRequest, state.snapshot())
+        assertFalse(state.isBlocked)
+    }
+
     private fun assertBuyRecord(
         record: OrderAdmissionState.Record,
         input: OrderAdmissionInput,
@@ -755,6 +790,10 @@ class OrderAdmissionRequestTest {
         assertFailsWith<IllegalStateException> { legacyAdmit(state, order("legacy")) }
         assertFailsWith<IllegalStateException> { state.snapshot() }
         assertFailsWith<IllegalStateException> { state.pendingOrders(market.marketId) }
+        assertFailsWith<IllegalStateException> { state.hasRequest(user, "previous-accepted") }
+        assertFailsWith<IllegalStateException> { state.hasRequest(user, "previous-rejected") }
+        assertFailsWith<IllegalStateException> { state.hasRequest(user, "missing") }
+        assertFailsWith<IllegalStateException> { state.hasRequest(UserId("other-user"), "previous-accepted") }
         // 오류 뒤 내부 상태의 rollback을 가정하지 않고, 전에 반환한 관찰값만 그대로 확인한다.
         assertEquals(listOf(balance(700_000_000, 300_000_000)), before.balances)
         assertEquals(1L, before.lastSequence)

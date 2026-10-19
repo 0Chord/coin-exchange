@@ -252,7 +252,7 @@ class DevelopmentBalanceCodecTest {
                 "r",
                 "m",
                 "o",
-                OrderAdmissionResult.Reason.INSUFFICIENT_BALANCE,
+                AdmissionResultPayload.Reason.INSUFFICIENT_BALANCE,
                 OrderAdmissionResult.InsufficientBalance(AssetId("Q"), Amount(200), Amount(300), Amount(100)),
             ),
             orderResults.decode(orderRejectedGolden),

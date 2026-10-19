@@ -2,7 +2,6 @@ package com.exchange.core.api.trading.infrastructure.codec
 
 import com.exchange.core.api.trading.infrastructure.codec.generated.AdmissionAccepted
 import com.exchange.core.api.trading.infrastructure.codec.generated.AdmissionRejected
-import com.exchange.core.api.trading.infrastructure.codec.generated.RejectionReason
 import com.exchange.core.common.Amount
 import com.exchange.core.common.AssetId
 import com.exchange.core.trading.OrderAdmissionResult
@@ -35,8 +34,19 @@ class AdmissionResultCodec {
                 val message =
                     AdmissionRejected
                         .newBuilder()
-                        .setReason(RejectionReason.valueOf(result.reason.name))
-                        .setRequestId(requestId)
+                        .setReasonValue(
+                            when (result.reason) {
+                                AdmissionResultPayload.Reason.UNSUPPORTED_ORDER_CONDITION -> 1
+                                AdmissionResultPayload.Reason.INVALID_QUANTITY -> 2
+                                AdmissionResultPayload.Reason.INVALID_ORDER_IDENTIFIER -> 3
+                                AdmissionResultPayload.Reason.UNREPRESENTABLE_RESERVATION -> 4
+                                AdmissionResultPayload.Reason.INSUFFICIENT_BALANCE -> 5
+                                AdmissionResultPayload.Reason.DUPLICATE_ORDER -> 6
+                                AdmissionResultPayload.Reason.INVALID_REQUEST_IDENTIFIER -> 7
+                                AdmissionResultPayload.Reason.REQUEST_CONTENT_CONFLICT -> 8
+                                AdmissionResultPayload.Reason.EXECUTION_CONTEXT_MISMATCH -> 9
+                            },
+                        ).setRequestId(requestId)
                         .setUserId(userId)
                         .setMarketId(marketId)
                         .setOrderId(orderId)
@@ -91,7 +101,19 @@ class AdmissionResultCodec {
             message.hasReason() && message.hasRequestId() && message.hasUserId() && message.hasMarketId() && message.hasOrderId(),
             "거절 응답의 필수 필드가 누락됐습니다",
         )
-        val reason = OrderAdmissionResult.Reason.valueOf(message.reason.name)
+        val reason =
+            when (message.reasonValue) {
+                1 -> AdmissionResultPayload.Reason.UNSUPPORTED_ORDER_CONDITION
+                2 -> AdmissionResultPayload.Reason.INVALID_QUANTITY
+                3 -> AdmissionResultPayload.Reason.INVALID_ORDER_IDENTIFIER
+                4 -> AdmissionResultPayload.Reason.UNREPRESENTABLE_RESERVATION
+                5 -> AdmissionResultPayload.Reason.INSUFFICIENT_BALANCE
+                6 -> AdmissionResultPayload.Reason.DUPLICATE_ORDER
+                7 -> AdmissionResultPayload.Reason.INVALID_REQUEST_IDENTIFIER
+                8 -> AdmissionResultPayload.Reason.REQUEST_CONTENT_CONFLICT
+                9 -> AdmissionResultPayload.Reason.EXECUTION_CONTEXT_MISMATCH
+                else -> throw AdmissionMessageException("지원하지 않는 거절 사유입니다")
+            }
         val detail =
             if (message.hasInsufficientBalance()) {
                 val value = message.insufficientBalance
@@ -121,11 +143,11 @@ class AdmissionResultCodec {
     }
 
     private fun validateDetails(
-        reason: OrderAdmissionResult.Reason,
+        reason: AdmissionResultPayload.Reason,
         detail: OrderAdmissionResult.InsufficientBalance?,
     ) {
         AdmissionMessageFormat.verify(
-            (reason == OrderAdmissionResult.Reason.INSUFFICIENT_BALANCE) == (detail != null),
+            (reason == AdmissionResultPayload.Reason.INSUFFICIENT_BALANCE) == (detail != null),
             "거절 사유와 부족 상세의 유무가 다릅니다",
         )
         if (detail != null) {

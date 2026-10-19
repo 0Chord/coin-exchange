@@ -150,6 +150,15 @@ class OrderAdmissionState(
         return result
     }
 
+    /** 차단 여부를 먼저 확인하고 요청 키의 존재만 조회한다. 원본 비교와 결과 판단은 admit에서 수행한다. */
+    fun hasRequest(
+        userId: UserId,
+        requestId: String,
+    ): Boolean {
+        checkUsable()
+        return RequestKey(userId, requestId) in requestRecords
+    }
+
     /**
      * 유효한 사용자·요청 ID의 첫 결과를 보존한다. 같은 원본의 재전송은 현재 서버 문맥을 쓰지 않는다.
      * 입구 식별자 오류·내용 충돌·반영 전 내부 오류는 새 최초 결과로 저장하지 않는다.

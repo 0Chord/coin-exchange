@@ -1,7 +1,16 @@
 package com.exchange.core.api.trading.infrastructure.aeron
 
+import com.exchange.core.api.trading.infrastructure.codec.AdmissionMessageFormat
+import com.exchange.core.common.AssetId
+import com.exchange.core.common.MarketId
+import com.exchange.core.fee.FeeProductType
+import com.exchange.core.fee.FeeRate
+import com.exchange.core.fee.FeeTier
+import com.exchange.core.fee.MakerTakerFeeRates
+import com.exchange.core.fee.TradingFeePolicySnapshot
 import com.exchange.core.fee.TradingFeeReserveCalculator
 import com.exchange.core.order.BuyOrderFundingQuoteCalculator
+import com.exchange.core.order.MarketDefinition
 import com.exchange.core.order.OrderReservationCalculator
 import com.exchange.core.trading.OrderAdmissionCalculator
 import com.exchange.core.trading.OrderAdmissionState
@@ -32,12 +41,21 @@ internal data class DevelopmentFundingSettings(
     val resultTimeoutMs: Long = 5_000,
     val maxReplyAttempts: Int = 100,
     val replyTimeoutMs: Long = 100,
+    val market: MarketDefinition = MarketDefinition(MarketId("BTC-USDT"), AssetId("BTC"), AssetId("USDT"), 8),
+    val feePolicySnapshot: TradingFeePolicySnapshot =
+        TradingFeePolicySnapshot(FeeProductType.SPOT, FeeTier.NORMAL, 1, MakerTakerFeeRates(FeeRate.ZERO, FeeRate.ZERO)),
 ) {
     init {
         require(runRoot.isAbsolute) { "실행 루트는 절대 경로여야 합니다" }
         require(basePort in 1024..65528) { "연속 8개 포트가 필요합니다" }
         require(startupTimeoutMs in 1..60_000 && resultTimeoutMs in 1..60_000)
         require(maxReplyAttempts in 1..10_000 && replyTimeoutMs in 1..1_000)
+        require(feePolicySnapshot.productType == FeeProductType.SPOT) { "개발 접수에는 현물 수수료 정책이 필요합니다" }
+        listOf(market.marketId.value, market.baseAssetId.value, market.quoteAssetId.value).forEach {
+            AdmissionMessageFormat.text(it)
+            require('\u0000' !in it && it.codePointCount(0, it.length) <= 64) { "개발 마켓 식별자가 잘못됐습니다" }
+        }
+        require(':' !in market.baseAssetId.value && ':' !in market.quoteAssetId.value) { "개발 자산 식별자에는 콜론을 쓸 수 없습니다" }
     }
 
     val driverDirectory: String get() = runRoot.resolve("driver").toString()
@@ -90,7 +108,9 @@ internal class DevelopmentFundingNode private constructor(
             ),
             config.maxReplyAttempts,
             TimeUnit.MILLISECONDS.toNanos(config.replyTimeoutMs),
-            ::fail,
+            market = config.market,
+            feePolicySnapshot = config.feePolicySnapshot,
+            onFatal = ::fail,
         )
     val observation: FundingObservation? get() = service.observation
     val error: Throwable? get() = failure.get()
@@ -265,7 +285,9 @@ fun main(args: Array<String>) {
         val shutdown = Thread({ node.close() }, "development-funding-shutdown")
         Runtime.getRuntime().addShutdownHook(shutdown)
         try {
-            println("READY root=${config.runRoot} members=${config.members} driver=${config.driverDirectory} sync=${node.storageLevels}")
+            println(
+                "READY root=${config.runRoot} members=${config.members} driver=${config.driverDirectory} sync=${node.storageLevels} market=${config.market} fee=${config.feePolicySnapshot}",
+            )
             var last: FundingObservation? = null
             while (!node.awaitClosed(100)) {
                 val observed = node.observation

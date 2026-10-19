@@ -10,6 +10,18 @@ sealed interface AdmissionResultPayload {
     val marketId: String
     val orderId: String
 
+    enum class Reason {
+        UNSUPPORTED_ORDER_CONDITION,
+        INVALID_QUANTITY,
+        INVALID_ORDER_IDENTIFIER,
+        UNREPRESENTABLE_RESERVATION,
+        INSUFFICIENT_BALANCE,
+        DUPLICATE_ORDER,
+        INVALID_REQUEST_IDENTIFIER,
+        REQUEST_CONTENT_CONFLICT,
+        EXECUTION_CONTEXT_MISMATCH,
+    }
+
     data class Accepted(
         override val userId: String,
         override val requestId: String,
@@ -23,7 +35,7 @@ sealed interface AdmissionResultPayload {
         override val requestId: String,
         override val marketId: String,
         override val orderId: String,
-        val reason: OrderAdmissionResult.Reason,
+        val reason: Reason,
         val insufficientBalance: OrderAdmissionResult.InsufficientBalance? = null,
     ) : AdmissionResultPayload
 
@@ -51,7 +63,16 @@ sealed interface AdmissionResultPayload {
                         command.requestId,
                         command.order.marketId.value,
                         command.order.orderId.value,
-                        result.reason,
+                        when (result.reason) {
+                            OrderAdmissionResult.Reason.UNSUPPORTED_ORDER_CONDITION -> Reason.UNSUPPORTED_ORDER_CONDITION
+                            OrderAdmissionResult.Reason.INVALID_QUANTITY -> Reason.INVALID_QUANTITY
+                            OrderAdmissionResult.Reason.INVALID_ORDER_IDENTIFIER -> Reason.INVALID_ORDER_IDENTIFIER
+                            OrderAdmissionResult.Reason.UNREPRESENTABLE_RESERVATION -> Reason.UNREPRESENTABLE_RESERVATION
+                            OrderAdmissionResult.Reason.INSUFFICIENT_BALANCE -> Reason.INSUFFICIENT_BALANCE
+                            OrderAdmissionResult.Reason.DUPLICATE_ORDER -> Reason.DUPLICATE_ORDER
+                            OrderAdmissionResult.Reason.INVALID_REQUEST_IDENTIFIER -> Reason.INVALID_REQUEST_IDENTIFIER
+                            OrderAdmissionResult.Reason.REQUEST_CONTENT_CONFLICT -> Reason.REQUEST_CONTENT_CONFLICT
+                        },
                         result.insufficientBalance,
                     )
                 }

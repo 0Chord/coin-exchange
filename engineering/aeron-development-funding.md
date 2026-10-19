@@ -2,7 +2,7 @@
 
 **기존 자금 준비 함수를 실제 Aeron 통신에 연결했다.** 같은 저장소에서 개발 노드와 개발 클라이언트를 각각 실행한다. 클라이언트는 요청을 보내는 작은 프로그램이고, 노드는 그 요청으로 같은 메모리 엔진의 잔고를 바꾸는 프로그램이다.
 
-예: **P1로 A에게 1,000 USDT 준비 → 노드에 1,000 USDT와 OPENING 기록 → 클라이언트가 결과 수신.** 같은 P1을 다시 보내도 추가 지급하지 않는다. 이 돈으로 주문을 보내는 연결은 #98에서 한다.
+예: **P1로 A에게 1,000 USDT 준비 → 노드에 1,000 USDT와 OPENING 기록 → 클라이언트가 결과 수신.** 같은 P1을 다시 보내도 추가 지급하지 않는다. 같은 돈으로 주문을 보내는 연결은 [#98 구현 설명](aeron-order-admission.md)에서 이어진다.
 
 이 문서는 [구현 명세 #97](https://github.com/0Chord/coin-exchange/issues/97)의 단일 개발 노드 범위를 다룬다.
 
@@ -23,7 +23,7 @@
 
 1. [DevelopmentFundingClient.kt](../app-api/src/main/kotlin/com/exchange/core/api/trading/infrastructure/aeron/DevelopmentFundingClient.kt)의 개발용 `main`이 명시한 값으로 준비 요청을 만든다. `send`는 기존 #96 코덱으로 바이트를 만들고 `AeronCluster.offer`에 전달한다. 양수면 전송 수용이다.
 2. [DevelopmentFundingNode.kt](../app-api/src/main/kotlin/com/exchange/core/api/trading/infrastructure/aeron/DevelopmentFundingNode.kt)의 개발용 `main`은 실제 Driver·Archive·Consensus·서비스와 **빈 OrderAdmissionState 하나**를 만든다. 기본 Spring HTTP 실행은 이 코드를 호출하지 않는다.
-3. [DevelopmentFundingAdapter.kt](../app-api/src/main/kotlin/com/exchange/core/api/trading/infrastructure/aeron/DevelopmentFundingAdapter.kt)의 `onSessionMessage`는 확정 callback의 정확한 바이트 구간을 복사하고 기존 코덱으로 읽는다. 손상되거나 주문 종류인 메시지는 여기서 거절해 코어에 보내지 않는다.
+3. [DevelopmentFundingAdapter.kt](../app-api/src/main/kotlin/com/exchange/core/api/trading/infrastructure/aeron/DevelopmentFundingAdapter.kt)의 `onSessionMessage`는 확정 callback의 정확한 바이트 구간을 복사하고 기존 코덱으로 읽는다. 손상되거나 미지원인 메시지는 여기서 제외한다. #98부터 정상 주문 종류는 같은 상태의 주문 접수로 연결한다.
 4. `prepare`가 **같은** [OrderAdmissionState.prepareDevelopmentBalance](../domain-trading/src/main/kotlin/com/exchange/core/trading/OrderAdmissionState.kt)를 호출한다. 돈이 바뀌는 곳은 여기다. 첫 요청이면 잔고·준비 기록·OPENING을 반영하고, 같은 요청이면 이미 저장한 첫 결과만 반환한다.
 5. 어댑터는 결과를 바이트로 만들고, 같은 서비스 스레드에서 완성한 불변 관찰값과 적용 위치를 공개한다. 외부 관찰자가 가변 엔진을 직접 읽지 않는다. 이 관찰값은 디스크 Snapshot이 아니다.
 6. 리더·유효 세션일 때만 이미 만든 결과 바이트를 보낸다. 전달이 밀려도 돈을 다시 준비하지 않는다. 역할·세션이 없는 경우에도 확정된 업무 적용을 건너뛰지 않는다.
@@ -122,12 +122,12 @@ cd "$(git rev-parse --show-toplevel)"
 
 검증 범위: 요청·클러스터 처리·코어·응답 전송은 실제다. 통제한 곳은 클라이언트가 읽은 결과를 버리는 지점 하나다. 네트워크 단절·프로세스 강제 종료·복구를 재현한 것은 아니다. 대기 종료가 미지급을 뜻하지 않는 사례다.
 
-### 두 정상 충돌과 손상 주문 메시지 뒤에도 다른 사용자의 준비를 처리한다
+### 두 정상 충돌과 손상 미지원 메시지 뒤에도 다른 사용자의 준비를 처리한다
 
 [실제 검증문과 준비 코드](../app-api/src/test/kotlin/com/exchange/core/api/trading/infrastructure/aeron/DevelopmentFundingNodeTest.kt#L144)
 
 - **Given:** 실제 노드에서 P1·U1의 첫 준비를 완료한다.
-- **When:** 같은 P1의 금액을 2,000,000,000으로 바꾸고, P2로 같은 U1 계정을 다시 준비한다. 이어 7바이트 메시지·빈 명령 본문·기존 주문 명령의 세 입력을 직접 전송한 뒤 P3·U2·L3을 보낸다.
+- **When:** 같은 P1의 금액을 2,000,000,000으로 바꾸고, P2로 같은 U1 계정을 다시 준비한다. 이어 7바이트 메시지·빈 명령 본문·명령이 아닌 접수 응답 종류 2의 세 입력을 직접 전송한 뒤 P3·U2·L3을 보낸다.
 - **Then:** 금액 변경은 REQUEST_CONTENT_CONFLICT, P2는 ACCOUNT_ALREADY_USED다. 세 잘못된 입력은 malformedMessages=3으로 관측된다. 뒤의 U2 준비는 성공하고 준비 이력은 총 2건, 대기 주문은 없으며 노드 오류도 없다.
 
 검증 범위: 모든 메시지가 실제 UDP·클러스터 경로를 지난다. 코어 호출 0회는 이 테스트에서 직접 계수하지 않으며, 개별 잘못된 입력의 진단 사유도 비교하지 않는다.

@@ -1,13 +1,26 @@
 package com.exchange.core.api.trading.infrastructure.aeron
 
+import com.exchange.core.api.trading.infrastructure.codec.AdmissionCommandCodec
+import com.exchange.core.api.trading.infrastructure.codec.AdmissionCommandPayload
 import com.exchange.core.api.trading.infrastructure.codec.AdmissionMessageException
 import com.exchange.core.api.trading.infrastructure.codec.AdmissionMessageFormat
+import com.exchange.core.api.trading.infrastructure.codec.AdmissionMessageReader
+import com.exchange.core.api.trading.infrastructure.codec.AdmissionResultCodec
+import com.exchange.core.api.trading.infrastructure.codec.AdmissionResultPayload
 import com.exchange.core.api.trading.infrastructure.codec.DevelopmentBalanceCommandCodec
 import com.exchange.core.api.trading.infrastructure.codec.DevelopmentBalanceCommandPayload
 import com.exchange.core.api.trading.infrastructure.codec.DevelopmentBalanceResultCodec
 import com.exchange.core.api.trading.infrastructure.codec.DevelopmentBalanceResultPayload
+import com.exchange.core.common.AssetId
+import com.exchange.core.common.MarketId
+import com.exchange.core.fee.FeeProductType
+import com.exchange.core.fee.FeeRate
+import com.exchange.core.fee.FeeTier
+import com.exchange.core.fee.MakerTakerFeeRates
+import com.exchange.core.fee.TradingFeePolicySnapshot
 import com.exchange.core.ledger.OpeningBalanceConflictException
 import com.exchange.core.ledger.OpeningBalanceRequestConflictException
+import com.exchange.core.order.MarketDefinition
 import com.exchange.core.trading.OrderAdmissionState
 import io.aeron.ExclusivePublication
 import io.aeron.Image
@@ -31,6 +44,7 @@ internal data class FundingObservation(
     val replyAttempts: Int = 0,
     val replyStatus: String? = null,
     val blocked: Boolean = false,
+    val admissionResult: AdmissionResultPayload? = null,
 )
 
 /** 확정 callback에서 같은 코어에 동기 적용하고, 이미 만든 결과의 전달만 재시도한다. */
@@ -38,10 +52,15 @@ internal class DevelopmentFundingAdapter(
     private val state: OrderAdmissionState,
     private val maxReplyAttempts: Int = 100,
     private val replyTimeoutNs: Long = 100_000_000,
+    private val market: MarketDefinition = MarketDefinition(MarketId("BTC-USDT"), AssetId("BTC"), AssetId("USDT"), 8),
+    private val feePolicySnapshot: TradingFeePolicySnapshot =
+        TradingFeePolicySnapshot(FeeProductType.SPOT, FeeTier.NORMAL, 1, MakerTakerFeeRates(FeeRate.ZERO, FeeRate.ZERO)),
     private val onFatal: (Throwable) -> Unit,
 ) : ClusteredService {
     private val commands = DevelopmentBalanceCommandCodec()
     private val results = DevelopmentBalanceResultCodec()
+    private val admissionCommands = AdmissionCommandCodec()
+    private val admissionResults = AdmissionResultCodec()
     private lateinit var cluster: Cluster
     private var malformedMessages = 0L
     private var fatalCause: Throwable? = null
@@ -96,15 +115,28 @@ internal class DevelopmentFundingAdapter(
                 }
 
             // 역할·세션·전송 성공 여부가 확정된 업무 적용을 바꾸지 않는다.
-            val result = prepare(command)
-            val reply = results.encode(result)
+            var fundingResult: DevelopmentBalanceResultPayload? = null
+            var admissionResult: AdmissionResultPayload? = null
+            val reply =
+                when (command) {
+                    is Command.Funding -> {
+                        fundingResult = prepare(command.value)
+                        results.encode(fundingResult)
+                    }
+
+                    is Command.Admission -> {
+                        admissionResult = admit(command.value)
+                        admissionResults.encode(admissionResult)
+                    }
+                }
             val applied =
                 FundingObservation(
                     cluster.logPosition(),
                     state.snapshot(),
-                    result,
+                    fundingResult,
                     malformedMessages = malformedMessages,
                     replyStatus = "PENDING",
+                    admissionResult = admissionResult,
                 )
             observation = applied
             observation = sendReply(session, reply, applied)
@@ -117,7 +149,7 @@ internal class DevelopmentFundingAdapter(
         buffer: DirectBuffer,
         offset: Int,
         length: Int,
-    ): DevelopmentBalanceCommandPayload {
+    ): Command {
         if (offset < 0 || length < AdmissionMessageFormat.HEADER_LENGTH ||
             length > AdmissionMessageFormat.MAX_MESSAGE_LENGTH || offset > buffer.capacity() - length
         ) {
@@ -125,7 +157,48 @@ internal class DevelopmentFundingAdapter(
         }
         val bytes = ByteArray(length)
         buffer.getBytes(offset, bytes)
-        return commands.decode(bytes)
+        return when (AdmissionMessageReader(bytes, 0, bytes.size).kind) {
+            AdmissionMessageFormat.DEVELOPMENT_BALANCE_COMMAND -> Command.Funding(commands.decode(bytes))
+            AdmissionMessageFormat.COMMAND -> Command.Admission(admissionCommands.decode(bytes))
+            else -> throw AdmissionMessageException("지원하지 않는 명령 종류입니다")
+        }
+    }
+
+    private sealed interface Command {
+        data class Funding(
+            val value: DevelopmentBalanceCommandPayload,
+        ) : Command
+
+        data class Admission(
+            val value: AdmissionCommandPayload,
+        ) : Command
+    }
+
+    private fun admit(command: AdmissionCommandPayload): AdmissionResultPayload {
+        // 기존 결과가 있으면 새 실행 문맥보다 코어의 최초 판단이 우선한다.
+        val knownRequest = state.hasRequest(command.order.userId, command.requestId)
+        if (!knownRequest &&
+            (command.order.marketId != market.marketId || command.market != market || command.feePolicySnapshot != feePolicySnapshot)
+        ) {
+            return AdmissionResultPayload.Rejected(
+                command.order.userId.value,
+                command.requestId,
+                command.order.marketId.value,
+                command.order.orderId.value,
+                AdmissionResultPayload.Reason.EXECUTION_CONTEXT_MISMATCH,
+            )
+        }
+        return AdmissionResultPayload.from(
+            command,
+            state.admit(
+                command.requestId,
+                command.order,
+                command.market,
+                command.feePolicySnapshot,
+                command.ledgerTransactionId,
+                command.occurredAt,
+            ),
+        )
     }
 
     private fun prepare(command: DevelopmentBalanceCommandPayload): DevelopmentBalanceResultPayload {

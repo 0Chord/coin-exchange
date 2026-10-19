@@ -547,8 +547,8 @@ class AdmissionMessageBoundaryTest {
         val invalidPayloads =
             listOf(
                 AdmissionResultPayload.Accepted("user-1", "R1", "BTC-USDT", "O1", 0),
-                withoutInsufficientBalance().copy(reason = OrderAdmissionResult.Reason.INSUFFICIENT_BALANCE),
-                insufficient().copy(reason = OrderAdmissionResult.Reason.UNSUPPORTED_ORDER_CONDITION),
+                withoutInsufficientBalance().copy(reason = AdmissionResultPayload.Reason.INSUFFICIENT_BALANCE),
+                insufficient().copy(reason = AdmissionResultPayload.Reason.UNSUPPORTED_ORDER_CONDITION),
                 insufficient(shortfall = 99),
                 insufficient(available = 300, required = 300, shortfall = 0),
             )
@@ -619,12 +619,12 @@ class AdmissionMessageBoundaryTest {
         "R1",
         "BTC-USDT",
         "O1",
-        OrderAdmissionResult.Reason.INSUFFICIENT_BALANCE,
+        AdmissionResultPayload.Reason.INSUFFICIENT_BALANCE,
         OrderAdmissionResult.InsufficientBalance(AssetId("USDT"), Amount(available), Amount(required), Amount(shortfall)),
     )
 
     private fun withoutInsufficientBalance() =
-        AdmissionResultPayload.Rejected("user-1", "R1", "BTC-USDT", "O1", OrderAdmissionResult.Reason.UNSUPPORTED_ORDER_CONDITION)
+        AdmissionResultPayload.Rejected("user-1", "R1", "BTC-USDT", "O1", AdmissionResultPayload.Reason.UNSUPPORTED_ORDER_CONDITION)
 
     private fun ByteArray.changed(change: ByteBuffer.() -> Unit): ByteArray =
         copyOf().also {
