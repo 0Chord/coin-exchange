@@ -43,6 +43,8 @@ dependencies {
     testImplementation("tools.jackson.core:jackson-databind")
     // 생성 메시지의 상위 타입까지 읽기 위한 런타임이다. 검사 대상을 제외하지 않는다.
     testRuntimeOnly("com.google.protobuf:protobuf-java:4.33.2")
+    // 실제 Aeron 어댑터의 상위 타입도 읽는다. 운영 검사 대상을 제외하지 않는다.
+    testRuntimeOnly("io.aeron:aeron-cluster:1.53.3")
     testRuntimeOnly("org.junit.platform:junit-platform-launcher")
 }
 
