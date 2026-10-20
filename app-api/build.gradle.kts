@@ -73,10 +73,26 @@ dependencies {
     testRuntimeOnly("org.junit.platform:junit-platform-launcher")
 }
 
+val fundingDistributionDirectory = layout.buildDirectory.dir("aeron-development")
+val stageDevelopmentFundingRuntime by tasks.registering(Sync::class) {
+    group = "distribution"
+    description = "개발용 Aeron 노드와 클라이언트의 클래스·리소스·실행 의존성을 한 번 모은다."
+    into(fundingDistributionDirectory)
+    from(sourceSets["main"].output) {
+        into("classes")
+    }
+    from(configurations.runtimeClasspath) {
+        into("lib")
+    }
+}
+
 tasks.withType<Test> {
+    dependsOn(stageDevelopmentFundingRuntime)
     useJUnitPlatform()
     jvmArgs("--add-opens=java.base/jdk.internal.misc=ALL-UNNAMED", "--add-opens=java.base/java.util.zip=ALL-UNNAMED")
     systemProperty("developmentFundingRuntimeClasspath", sourceSets["main"].runtimeClasspath.asPath)
+    systemProperty("fundingProjectDirectory", projectDir.absolutePath)
+    systemProperty("fundingDistributionDirectory", fundingDistributionDirectory.get().asFile.absolutePath)
 }
 
 springBoot {

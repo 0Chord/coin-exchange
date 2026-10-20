@@ -121,8 +121,8 @@ jobs:
         id: lint
         run: ./gradlew ktlintCheck --no-daemon --console=plain --continue
 
-      # PostgreSQL은 테스트 코드의 Testcontainers가 직접 시작·종료한다.
-      - name: Verify Docker for Testcontainers
+      # PostgreSQL은 Testcontainers가, Aeron 복제 검사는 Compose가 직접 시작·종료한다.
+      - name: Verify Docker for integration tests
         id: docker
         run: docker info
 
@@ -141,6 +141,7 @@ jobs:
             **/build/reports/tests/test/**
             **/build/test-results/test/*.xml
             **/build/reports/ktlint/**
+            app-api/build/reports/aeron-funding/**
           if-no-files-found: warn
           retention-days: 7
 
@@ -169,7 +170,7 @@ jobs:
             echo "- 실행 상태: Kotlin 린트=$CI_LINT_OUTCOME / Docker 준비=$CI_DOCKER_OUTCOME / 전체 build=$CI_TESTS_OUTCOME / 보고서 업로드=$CI_REPORTS_OUTCOME"
             echo "- 기준 커밋: $GITHUB_SHA"
             echo '- 명령: `./gradlew ktlintCheck --no-daemon --console=plain --continue` → `./gradlew build test --rerun --no-daemon --continue --stacktrace`'
-            echo '- 보고서: `test-reports` · 생성된 모듈별 HTML과 XML, ktlint 텍스트/XML · 7일 보관. 준비 단계에서 실패하면 보고서가 없을 수 있습니다.'
+            echo '- 보고서: `test-reports` · 모듈별 HTML과 XML, ktlint 텍스트/XML, Aeron 자금 준비의 노드별 관찰·Archive 기록 · 7일 보관. 준비 단계에서 실패하면 보고서가 없을 수 있습니다.'
             echo '- 구조 작업의 성공은 제품·DB 성공을 뜻하지 않습니다. **Architecture checks** 결과는 별도로 확인하세요.'
             echo '- 읽는 절차: 저장소 README의 **CI 실패 이유와 보고서 읽기** 항목'
           } >> "$GITHUB_STEP_SUMMARY"

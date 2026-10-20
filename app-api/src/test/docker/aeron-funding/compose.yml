@@ -1,0 +1,74 @@
+x-node: &node
+  image: ${FUNDING_IMAGE:?FUNDING_IMAGE must identify the prepared image}
+  stop_grace_period: 15s
+  networks:
+    - funding
+
+x-common-environment: &common-environment
+  FUNDING_RUN_ID: ${FUNDING_RUN_ID:?FUNDING_RUN_ID must identify this verification}
+  FUNDING_MEMBERS: "0,node0:19700,node0:19701,node0:19702,node0:19703,node0:19704|1,node1:19700,node1:19701,node1:19702,node1:19703,node1:19704|2,node2:19700,node2:19701,node2:19702,node2:19703,node2:19704"
+  FUNDING_BIND_HOST: 0.0.0.0
+  FUNDING_BASE_PORT: "19700"
+
+services:
+  node0:
+    <<: *node
+    hostname: node0
+    environment:
+      <<: *common-environment
+      FUNDING_MEMBER_ID: "0"
+      FUNDING_HOST: node0
+      FUNDING_RUN_ROOT: /records/${FUNDING_RUN_ID}
+    volumes:
+      - node0-records:/records
+
+  node1:
+    <<: *node
+    hostname: node1
+    environment:
+      <<: *common-environment
+      FUNDING_MEMBER_ID: "1"
+      FUNDING_HOST: node1
+      FUNDING_RUN_ROOT: /records/${FUNDING_RUN_ID}
+    volumes:
+      - node1-records:/records
+
+  node2:
+    <<: *node
+    hostname: node2
+    environment:
+      <<: *common-environment
+      FUNDING_MEMBER_ID: "2"
+      FUNDING_HOST: node2
+      FUNDING_RUN_ROOT: /records/${FUNDING_RUN_ID}
+    volumes:
+      - node2-records:/records
+
+  client:
+    <<: *node
+    hostname: client
+    profiles:
+      - client
+    environment:
+      <<: *common-environment
+      FUNDING_HOST: client
+      FUNDING_RUN_ROOT: /tmp/${FUNDING_RUN_ID}-client
+    command:
+      - com.exchange.core.api.trading.infrastructure.aeron.DevelopmentFundingClientKt
+      - --cluster-env
+      - P1
+      - U1
+      - USDT
+      - "1000000000"
+      - L-OPEN-1
+      - "2026-10-20T00:00:00.123456789Z"
+
+networks:
+  funding:
+    driver: bridge
+    internal: true
+
+volumes:
+  node0-records:
+  node1-records:
+  node2-records:

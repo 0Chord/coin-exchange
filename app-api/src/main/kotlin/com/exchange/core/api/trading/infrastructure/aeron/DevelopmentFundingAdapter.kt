@@ -45,6 +45,7 @@ internal data class FundingObservation(
     val replyStatus: String? = null,
     val blocked: Boolean = false,
     val admissionResult: AdmissionResultPayload? = null,
+    val appliedRole: String? = null,
 )
 
 /** 확정 callback에서 같은 코어에 동기 적용하고, 이미 만든 결과의 전달만 재시도한다. */
@@ -137,6 +138,7 @@ internal class DevelopmentFundingAdapter(
                     malformedMessages = malformedMessages,
                     replyStatus = "PENDING",
                     admissionResult = admissionResult,
+                    appliedRole = cluster.role().name,
                 )
             observation = applied
             observation = sendReply(session, reply, applied)
