@@ -40,6 +40,7 @@ internal fun compareRecordedInputs(
         return RecordingComparison(RecordingComparisonStatus.UNVERIFIABLE, listOf("고정한 L까지 완전히 읽지 못했습니다"))
     }
     val differences = mutableListOf<String>()
+    val decodingFailures = mutableListOf<String>()
     if (expected.size != actual.inputs.size) differences.add("입력 건수: expected=${expected.size}, actual=${actual.inputs.size}")
     expected.zip(actual.inputs).forEachIndexed { index, (sent, recorded) ->
         val prefix = "입력 ${index + 1}"
@@ -63,7 +64,8 @@ internal fun compareRecordedInputs(
                     }
                 }
             } catch (error: Exception) {
-                return RecordingComparison(RecordingComparisonStatus.UNVERIFIABLE, listOf("$prefix 업무 값 해석 실패: ${error.message}"))
+                decodingFailures.add("$prefix 업무 값 해석 실패: ${error.message}")
+                return@forEachIndexed
             }
         (sent.values.keys + values.keys).forEach { field ->
             if (sent.values[field] != values[field]) {
@@ -72,8 +74,12 @@ internal fun compareRecordedInputs(
         }
     }
     return RecordingComparison(
-        if (differences.isEmpty()) RecordingComparisonStatus.MATCH else RecordingComparisonStatus.MISMATCH,
-        differences,
+        when {
+            differences.isNotEmpty() -> RecordingComparisonStatus.MISMATCH
+            decodingFailures.isNotEmpty() -> RecordingComparisonStatus.UNVERIFIABLE
+            else -> RecordingComparisonStatus.MATCH
+        },
+        differences + decodingFailures,
     )
 }
 

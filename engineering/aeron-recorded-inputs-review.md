@@ -71,7 +71,7 @@ R1 재전송은 응답만 같다고 새 처리가 끝난 것으로 보지 않는
 </details>
 
 <details markdown="1">
-<summary>3. 파서·기록 식별의 경계를 확인하는 15개 테스트</summary>
+<summary>3. 파서·기록 식별·비교 판정의 경계를 확인하는 17개 테스트</summary>
 
 이 표는 파일을 읽는 통합 검사와 구분한 단위/제어 검사다. 실제 Aeron 생성 decoder·FragmentAssembler·Agrona counter 구현은 사용하지만, 실제 서버 장애·불완전 디스크를 만들었다고 해석하지 않는다. 여섯 제어 종류나 여러 반례를 한 테스트 안에서 반복하는 경우도 있어 테스트 정의 수와 입력 조합 수는 다르다.
 
@@ -92,8 +92,14 @@ R1 재전송은 응답만 같다고 새 처리가 끝난 것으로 보지 않는
 | 실제 publication 채널 연결 | 공식 PublisherPos 생성기로 92바이트 key보다 긴 전체 채널 메타데이터 준비 | 기록 태그·session·stream을 실제 publication에 연결하고 전체 채널 설정을 확인. 다른/누락된 routing·spy·tag·session은 거절 |
 | publication 메타데이터 누락 | 잘린 label·key/label 불일치·다른 registration을 준비 | 부분 채널이나 추측 값으로 검사를 통과시키지 않음 |
 | publication 없음·모호함·재사용 | 실제 counter 해제·두 후보·다른 registration으로 재사용 | 유효한 송신 채널을 하나로 확정할 수 없으면 거절 |
+| 업무 해석 실패 앞뒤의 차이 | 정상 세 입력의 완전한 읽기 모델 준비 → 둘째 본문을 미지원 업무 종류/손상 Protobuf로 바꾸고, 첫째·셋째 기대 값도 변경 | 불일치이며 첫째·셋째 필드 차이, 둘째 바이트 차이·해석 실패 이유 네 가지를 모두 보존. 중간 오류로 뒤 입력을 생략하지 않음 |
+| 동일 바이트의 해석 실패와 뒤의 차이 | 첫째 입력의 기대/실제 바이트를 동일한 미지원 종류/손상 본문으로 변경 → 이후 셋째 기대 금액만 추가 변경 | 처음은 해석 실패 한 이유와 검증 불가. 이후에는 셋째 차이도 찾아 불일치로 판정하고 두 이유를 보존 |
 
 근거 파일: [RecordedClusterFrameParserTest.kt](../app-api/src/test/kotlin/com/exchange/core/api/trading/infrastructure/aeron/RecordedClusterFrameParserTest.kt), [RecordedArchiveReaderTest.kt](../app-api/src/test/kotlin/com/exchange/core/api/trading/infrastructure/aeron/RecordedArchiveReaderTest.kt).
+
+마지막 두 사례는 [RecordedInputComparisonTest.kt](../app-api/src/test/kotlin/com/exchange/core/api/trading/infrastructure/aeron/RecordedInputComparisonTest.kt)의 비교기 단위 검사다. 기존 코덱으로 정상 본문을 만들고 기대 필드 값은 리터럴로 준비한다. 미지원 업무 종류와 금지된 Protobuf tag 0을 각각 반복한다. 읽기 완료 모델의 본문만 통제하며, 실제 디스크 손상을 만들거나 돈을 다시 적용하지 않는다.
+
+비교기는 이제 확인한 차이와 해석 실패를 따로 모은다. 해석 실패가 나면 해당 입력의 의미 필드 비교만 멈추고 다음 입력으로 이어간다. 모든 입력 비교 뒤 차이가 하나라도 있으면 `MISMATCH`, 차이 없이 해석 실패만 있으면 `UNVERIFIABLE`, 둘 다 없으면 `MATCH`다. 읽기 자체가 불완전할 때는 기존대로 검증 불가다.
 
 </details>
 
@@ -107,7 +113,7 @@ R1 재전송은 응답만 같다고 새 처리가 끝난 것으로 보지 않는
 | 테스트 도구 | [RecordedArchiveReader](../app-api/src/test/kotlin/com/exchange/core/api/trading/infrastructure/aeron/RecordedArchiveReader.kt): 활성 기록과 descriptor/counter 대조 → 유한 구간 읽기 → L 완료 확인 → 자신의 구독/replay 정리 |
 | 테스트 도구 | [RecordedClusterFrameParser](../app-api/src/test/kotlin/com/exchange/core/api/trading/infrastructure/aeron/RecordedClusterFrameParser.kt): 조각 합치기, Cluster wrapper/제어 이벤트 구분, 원본 frame 추출 |
 | 테스트 도구 | [RecordedInputComparison](../app-api/src/test/kotlin/com/exchange/core/api/trading/infrastructure/aeron/RecordedInputComparison.kt): 완전한 읽기와 기대 입력을 대조해 일치·불일치·검증 불가로 구분 |
-| 테스트 | 위의 실물 8개와 경계 15개 테스트. 새 돈 계산기·업무 상태·원장 생성 규칙은 추가하지 않음 |
+| 테스트 | 위의 실물 8개와 경계 17개 테스트. 새 돈 계산기·업무 상태·원장 생성 규칙은 추가하지 않음 |
 | 문서 | 합의한 상세 명세와 이 구현/테스트 설명 |
 
 Cluster는 기록 채널에 실행 중 publication의 tag/session 참조를 남긴다. 설정의 endpoint 문자열과 똑같을 것이라고 가정하지 않고 실제 기록의 채널 형태·매체·alias/tag/session 및 활성 counter를 함께 확인한다. 이어 그 태그와 session/stream의 실제 PublisherPos 메타데이터에서 전체 송신 채널을 확인한다. 이 counter의 위치를 L로 사용하지는 않는다.
@@ -123,31 +129,31 @@ Aeron 1.53.3은 MDC 로그에서 control-mode를 manual로 적용하고, 기본 
 <details markdown="1">
 <summary>5. 실제 검사·독립 리뷰와 남은 범위</summary>
 
-아래 task·필터로 게시 대상과 같은 코드의 검사를 실행했다. 재실행할 때는 체크아웃한 저장소 루트에서 실행한다.
+아래는 본문 해석 실패 판정을 수정한 뒤 다시 실행한 검사다. 재실행할 때는 체크아웃한 저장소 루트에서 실행한다.
 
 ~~~~sh
-./gradlew -p . :app-api:test --tests 'com.exchange.core.api.trading.infrastructure.aeron.*' --tests 'com.exchange.core.api.trading.infrastructure.codec.*' :domain-trading:test :architecture-tests:test :architecture-tests:verifyArchitectureReport ktlintCheck --console=plain
+./gradlew -p . :app-api:test --tests 'com.exchange.core.api.trading.infrastructure.aeron.*' --tests 'com.exchange.core.api.trading.infrastructure.codec.*' ktlintCheck --console=plain
 ~~~~
 
 실행 근거는 각 모듈의 `build/test-results/test/TEST-*.xml`, `build/reports/tests/test/index.html`, 구조 보고서 및 ktlint 보고서다. skip/실패/미실행을 통과 수에 합치지 않는다.
 
 | 검사 | 확인 결과 | 실행 구분 |
 | --- | --- | --- |
-| 실제 통신·Protobuf 코덱 | 141개, 실패·오류·skip 0 | 채널 수정 후 실제 재실행. 신규 23개 포함 |
-| 순수 도메인 | 100개, 실패·오류·skip 0 | 이번 구현에서 실제 실행했고 이후 도메인 변경이 없어 최종 명령은 UP-TO-DATE로 재사용 |
-| 구조 검사 | 375개, 실패·오류·skip 0 | Node 관찰 getter 수정 후 실제 재실행 |
-| 필수 구조 보고서 | P01~P09 실행·성공 | `verifyArchitectureReport` 확인 |
-| 공통 린트 | 통과 | `ktlintCheck`. 자동 포맷 후 남은 긴 줄도 정리 |
+| 실제 통신·Protobuf 코덱 | 143개, 실패·오류·skip 0 | 해석 실패 판정 수정 후 재실행. #99 신규 25개 포함 |
+| 순수 도메인 | 100개, 실패·오류·skip 0 | 초기 구현의 실행 근거 재사용. 이번 수정은 테스트 소스·문서이며 도메인·운영 코드·빌드 설정 불변 |
+| 구조 검사 | 375개, 실패·오류·skip 0 | 초기 Node 관찰 getter 검증 근거 재사용. 이번 수정은 운영 검사 대상에 영향 없음 |
+| 필수 구조 보고서 | P01~P09 실행·성공 | 초기 `verifyArchitectureReport` 결과 재사용 |
+| 공통 린트 | 통과 | 이번 수정 후 `ktlintCheck` 확인 |
 
-최종 전체 명령은 BUILD SUCCESSFUL(2분 48초)이었다. 실제 큰 주문은 1,617바이트, ingress maxPayload는 1,376바이트였고 Archive에서 실제 두 조각을 재조립했다. 이 숫자는 해당 로컬 실행의 관찰값이며 지연 시간·처리량 벤치마크가 아니다.
+초기 전체 명령은 BUILD SUCCESSFUL(2분 48초)이었고, 위의 추가 수정 검사는 BUILD SUCCESSFUL(26초)이었다. 실제 큰 주문은 1,617바이트, ingress maxPayload는 1,376바이트였고 Archive에서 실제 두 조각을 재조립했다. 이 숫자는 해당 로컬 실행의 관찰값이며 지연 시간·처리량 벤치마크가 아니다.
 
 독립 리뷰는 작성 대화를 상속하지 않는 별도 에이전트가 고정 사본과 파일 해시 manifest를 기준으로 수행했다. `review-v1`에서는 잘못된 기대 control 채널도 일치시키는 P2 한 건을 실제 노드 반례로 찾았다. 이는 기록 태그만 보고 실제 publication 설정까지 연결하지 않았던 원인이었다.
 
 그 반례가 실패하는 회귀 테스트를 먼저 확인한 뒤, 실제 PublisherPos 메타데이터와 기대 채널을 연결했다. 라이브러리가 실행 시 적용하는 기본 채널은 Node의 관찰 getter에서 공개 API로 계산하며, 실행 플래그는 바꾸지 않았다. 정상 대조와 잘못된 control/mode/term/tag/session/endpoint·설정 누락·spy 사례, 메타데이터 잘림·모호함·counter 재사용을 보강했다.
 
-수정된 `review-v2`는 manifest SHA-256 `97586b173fcba1d0d486fe56a52f74d898132b74380ebde9a22d8a198e7d2f1d`의 별도 고정 사본이다. v2 코드 9개 파일은 최종 전달 코드와 해시가 같다. 독립 리뷰어는 같은 검사 명령을 그 사본에서 전부 새로 실행해 616개·실패/오류/skip 0, P01~P09·린트 통과를 확인했다(BUILD SUCCESSFUL, 4분 19초). 실제 별도 노드에서 정상 채널·매개변수 순서만 바꾼 채널은 일치하고, 원래 잘못된 control 반례와 인접 잘못된 설정은 검증 불가임을 확인했다.
+초기 `review-v2`는 manifest SHA-256 `97586b173fcba1d0d486fe56a52f74d898132b74380ebde9a22d8a198e7d2f1d`의 별도 고정 사본이다. #104 최초 커밋 `685bd48`의 코드 9개가 그 사본과 같았다. 독립 리뷰어는 그 시점의 검사 명령을 전부 새로 실행해 616개·실패/오류/skip 0, P01~P09·린트 통과를 확인했다(BUILD SUCCESSFUL, 4분 19초). 실제 별도 노드에서 정상 채널·매개변수 순서만 바꾼 채널은 일치하고, 원래 잘못된 control 반례와 인접 잘못된 설정은 검증 불가임을 확인했다.
 
-최종 판단은 **검토한 범위에서 확인된 미해결 결함 없음**이다. v2 이후에는 이 문서와 명세의 실행 결과·완료 표시·원격 문서 링크만 정리했으며, 코드·테스트는 바꾸지 않았다. 이후 코드가 바뀌면 그 영향 범위의 검사·재리뷰를 갱신한다. 이 판단이 모든 장애·미래 결함이 없다는 보장은 아니다.
+이후 [#104의 추가 리뷰](https://github.com/0Chord/coin-exchange/pull/104#discussion_r4321279875)에서 본문 해석 실패가 기존 불일치 사유를 지우는 경계를 발견했다. 새 단위 검사 두 개가 기존 코드에서 `MISMATCH` 대신 `UNVERIFIABLE`을 반환해 실패하는 것을 확인한 뒤, 비교기에서 확인된 차이와 해석 실패를 따로 모으도록 수정했다. 두 종류의 잘못된 본문과 앞뒤 입력 차이를 함께 검증한다. 운영 실행·자금 규칙·Archive reader는 이 추가 수정에서 바꾸지 않았다. 수정분의 독립 재검토 및 원격 CI 상태는 [PR #104](https://github.com/0Chord/coin-exchange/pull/104)에서 확인하며, 과거 리뷰 통과를 이후 코드의 검토 결과로 대신하지 않는다.
 
 복구·스냅샷 저장/복원·프로세스 재시작·세 노드 복제·장애 전환·Kafka/DB 적재·HTTP 전환·성능 수치 보장은 제외한다. 실제 `[2,2,2]` 저장 설정과 기록 읽기 성공으로 전원 장애·호스트 유실 내구성까지 보장하지 않는다. 관련 통신/코덱·도메인·구조·린트를 확인하며, 범위 밖 전체 DB/HTTP 제품 검사를 실행한 것으로 표현하지 않는다.
 
