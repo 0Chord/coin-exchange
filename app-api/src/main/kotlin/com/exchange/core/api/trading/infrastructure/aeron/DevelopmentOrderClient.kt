@@ -86,7 +86,10 @@ internal class DevelopmentOrderClient(
         )
 
     /** 양수 반환은 전송 수용이다. 이 메서드가 끝나도 결과를 수신한 것은 아니다. */
-    fun send(command: AdmissionCommandPayload): Boolean {
+    fun send(
+        command: AdmissionCommandPayload,
+        onAcceptedFrame: ((ByteArray, Long) -> Unit)? = null,
+    ): Boolean {
         check(pending == null) { "기존 요청의 결과 대기를 먼저 끝내세요" }
         val bytes = commandCodec.encode(command)
         pending = command
@@ -105,6 +108,8 @@ internal class DevelopmentOrderClient(
             val position = connection.offer(buffer, 0, bytes.size)
             if (position > 0) {
                 accepted = true
+                // 실제 offer의 원본만 복사한다. 관찰자가 전송 버퍼를 바꾸지 못하게 한다.
+                onAcceptedFrame?.invoke(bytes.copyOf(), position)
                 return true
             }
             if (position != Publication.BACK_PRESSURED && position != Publication.ADMIN_ACTION) {

@@ -14,9 +14,11 @@ import com.exchange.core.order.MarketDefinition
 import com.exchange.core.order.OrderReservationCalculator
 import com.exchange.core.trading.OrderAdmissionCalculator
 import com.exchange.core.trading.OrderAdmissionState
+import io.aeron.ChannelUri
 import io.aeron.archive.Archive
 import io.aeron.archive.ArchiveThreadingMode
 import io.aeron.archive.client.AeronArchive
+import io.aeron.cluster.ClusterMember
 import io.aeron.cluster.ConsensusModule
 import io.aeron.cluster.service.Cluster
 import io.aeron.cluster.service.ClusteredServiceContainer
@@ -113,6 +115,23 @@ internal class DevelopmentFundingNode private constructor(
             onFatal = ::fail,
         )
     val observation: FundingObservation? get() = service.observation
+    internal val logStreamId: Int get() = requireNotNull(consensus).context().logStreamId()
+
+    /** Aeron이 단일 노드의 MDC publication에 적용하는 실제 기본 채널 설정이다. 실행 설정은 바꾸지 않는다. */
+    internal val logChannel: String
+        get() {
+            val context = requireNotNull(consensus).context()
+            val channel = ChannelUri.parse(context.logChannel())
+            if (channel.isUdp && channel.get("endpoint") == null) {
+                channel.put("control-mode", "manual")
+                if (context.enableControlOnLogControl()) {
+                    val members = ClusterMember.parse(context.clusterMembers())
+                    val member = requireNotNull(ClusterMember.findMember(members, context.clusterMemberId()))
+                    channel.put("control", ChannelUri.replacePortWithWildcard(member.logEndpoint()))
+                }
+            }
+            return channel.toString()
+        }
     val error: Throwable? get() = failure.get()
     val isClosed: Boolean get() = stopped.count == 0L
     val storageLevels: List<Int>
