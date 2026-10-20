@@ -11,9 +11,12 @@ import com.exchange.core.common.UserId
 import com.exchange.core.ledger.OpeningBalance
 import io.aeron.Publication
 import io.aeron.cluster.client.AeronCluster
+import io.aeron.driver.MediaDriver
+import io.aeron.driver.ThreadingMode
 import io.aeron.exceptions.AeronException
 import org.agrona.concurrent.SleepingMillisIdleStrategy
 import org.agrona.concurrent.UnsafeBuffer
+import java.nio.file.Files
 import java.nio.file.Path
 import java.time.Instant
 import java.util.concurrent.TimeUnit
@@ -53,7 +56,7 @@ internal class DevelopmentFundingClient(
                 .errorHandler { transportFailure.compareAndSet(null, it) }
                 .aeronDirectoryName(config.driverDirectory)
                 .ingressChannel("aeron:udp?term-length=64k")
-                .ingressEndpoints("0=${config.endpoint(0)}")
+                .ingressEndpoints(config.ingressEndpoints)
                 .egressChannel(config.udp(7))
                 .messageTimeoutNs(TimeUnit.MILLISECONDS.toNanos(config.startupTimeoutMs))
                 .egressListener { _, _, buffer, offset, length, _ ->
@@ -197,31 +200,80 @@ internal class DevelopmentFundingClient(
 
 /** 금액은 Amount의 최소 단위로 입력한다. 이 실행은 지급 완료와 현재 잔고를 혼동하지 않는다. */
 fun main(args: Array<String>) {
-    require(args.size == 8) { "사용법: 노드루트 기준포트 준비ID 사용자 자산 금액최소단위 원장ID 업무Instant" }
-    val config = DevelopmentFundingSettings(Path.of(args[0]), args[1].toInt())
+    val structured = args.firstOrNull() == "--cluster-env"
+    require((structured && args.size == 7) || (!structured && args.size == 8)) {
+        "사용법: 노드루트 기준포트 준비ID 사용자 자산 금액최소단위 원장ID 업무Instant 또는 --cluster-env 준비ID 사용자 자산 금액최소단위 원장ID 업무Instant"
+    }
+    val config = if (structured) developmentClusterSettings() else DevelopmentFundingSettings(Path.of(args[0]), args[1].toInt())
+    val values = if (structured) args.drop(1) else args.drop(2)
     val command =
         DevelopmentBalanceCommandPayload(
-            OpeningBalance(args[2], UserId(args[3]), AssetId(args[4]), Amount(args[5].toLong())),
-            args[6],
-            Instant.parse(args[7]),
+            OpeningBalance(values[0], UserId(values[1]), AssetId(values[2]), Amount(values[3].toLong())),
+            values[4],
+            Instant.parse(values[5]),
         )
-    val client =
-        try {
-            DevelopmentFundingClient(config)
-        } catch (error: AeronException) {
-            println("UNCONFIRMED transportAccepted=false 연결 문제: ${error.message}")
-            throw IllegalStateException("미지급으로 단정하지 마세요. 같은 준비 ID와 원본으로 재확인해야 합니다", error)
+    // 기존 로컬 실행은 노드 Driver에 연결한다. 별도 컨테이너에서는 자기 Driver를 소유한다.
+    val driver =
+        if (structured) {
+            Files.createDirectory(config.runRoot)
+            MediaDriver.launch(
+                MediaDriver
+                    .Context()
+                    .aeronDirectoryName(config.driverDirectory)
+                    .dirDeleteOnStart(false)
+                    .dirDeleteOnShutdown(false)
+                    .threadingMode(ThreadingMode.SHARED)
+                    .sharedIdleStrategy(SleepingMillisIdleStrategy(1)),
+            )
+        } else {
+            null
         }
-    client.use {
-        when (val outcome = client.request(command) { println("TRANSPORT_ACCEPTED 전송 수용 · 결과 대기. 아직 지급 완료를 확인하지 못했습니다") }) {
-            is FundingRequestOutcome.Confirmed -> {
-                println("RESULT_RECEIVED ${outcome.result}")
+    try {
+        val client =
+            try {
+                DevelopmentFundingClient(config)
+            } catch (error: AeronException) {
+                println("UNCONFIRMED transportAccepted=false 연결 문제: ${error.message}")
+                throw IllegalStateException("미지급으로 단정하지 마세요. 같은 준비 ID와 원본으로 재확인해야 합니다", error)
             }
+        client.use {
+            when (
+                val outcome =
+                    client.request(command) {
+                        if (structured) {
+                            fundingEvent(
+                                mapOf(
+                                    "kind" to "TRANSPORT_ACCEPTED",
+                                    "runId" to config.runId,
+                                    "preparationId" to command.opening.preparationId,
+                                ),
+                            )
+                        } else {
+                            println("TRANSPORT_ACCEPTED 전송 수용 · 결과 대기. 아직 지급 완료를 확인하지 못했습니다")
+                        }
+                    }
+            ) {
+                is FundingRequestOutcome.Confirmed -> {
+                    if (structured) {
+                        fundingEvent(
+                            mapOf(
+                                "kind" to "RESULT_RECEIVED",
+                                "runId" to config.runId,
+                                "result" to fundingResultFields(outcome.result),
+                            ),
+                        )
+                    } else {
+                        println("RESULT_RECEIVED ${outcome.result}")
+                    }
+                }
 
-            is FundingRequestOutcome.Unconfirmed -> {
-                println("UNCONFIRMED transportAccepted=${outcome.transportAccepted} ${outcome.reason}")
-                throw IllegalStateException("미지급으로 단정하지 마세요. 같은 준비 ID로 재확인해야 합니다")
+                is FundingRequestOutcome.Unconfirmed -> {
+                    println("UNCONFIRMED transportAccepted=${outcome.transportAccepted} ${outcome.reason}")
+                    throw IllegalStateException("미지급으로 단정하지 마세요. 같은 준비 ID로 재확인해야 합니다")
+                }
             }
         }
+    } finally {
+        driver?.close()
     }
 }

@@ -20,6 +20,7 @@ import io.aeron.archive.ArchiveThreadingMode
 import io.aeron.archive.client.AeronArchive
 import io.aeron.cluster.ClusterMember
 import io.aeron.cluster.ConsensusModule
+import io.aeron.cluster.ElectionState
 import io.aeron.cluster.service.Cluster
 import io.aeron.cluster.service.ClusteredServiceContainer
 import io.aeron.driver.MediaDriver
@@ -35,7 +36,7 @@ import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicReference
 
-/** 단일 개발 노드만을 위한 고정 포트 묶음. 기존 실행 디렉터리는 재사용하지 않는다. */
+/** 기존 단일 실행과 세 노드 실행의 주소·멤버·경로. 기존 실행 디렉터리는 재사용하지 않는다. */
 internal data class DevelopmentFundingSettings(
     val runRoot: Path,
     val basePort: Int = 19700,
@@ -46,6 +47,11 @@ internal data class DevelopmentFundingSettings(
     val market: MarketDefinition = MarketDefinition(MarketId("BTC-USDT"), AssetId("BTC"), AssetId("USDT"), 8),
     val feePolicySnapshot: TradingFeePolicySnapshot =
         TradingFeePolicySnapshot(FeeProductType.SPOT, FeeTier.NORMAL, 1, MakerTakerFeeRates(FeeRate.ZERO, FeeRate.ZERO)),
+    val memberId: Int = 0,
+    val advertisedHost: String = "127.0.0.1",
+    val bindHost: String = advertisedHost,
+    val clusterMembers: String? = null,
+    val runId: String? = null,
 ) {
     init {
         require(runRoot.isAbsolute) { "실행 루트는 절대 경로여야 합니다" }
@@ -53,6 +59,13 @@ internal data class DevelopmentFundingSettings(
         require(startupTimeoutMs in 1..60_000 && resultTimeoutMs in 1..60_000)
         require(maxReplyAttempts in 1..10_000 && replyTimeoutMs in 1..1_000)
         require(feePolicySnapshot.productType == FeeProductType.SPOT) { "개발 접수에는 현물 수수료 정책이 필요합니다" }
+        require(advertisedHost.isNotBlank() && advertisedHost != "0.0.0.0") { "도달 가능한 광고 주소가 필요합니다" }
+        require(bindHost.isNotBlank())
+        val configured = ClusterMember.parse(members)
+        require(configured.size == 1 || configured.size == 3) { "개발 실행은 한 노드 또는 세 노드입니다" }
+        require(configured.map { it.id() }.distinct().size == configured.size)
+        require(configured.any { it.id() == memberId }) { "멤버 목록에 자기 ID가 없습니다" }
+        require(runId == null || runId.matches(Regex("[a-z0-9-]{1,64}")))
         listOf(market.marketId.value, market.baseAssetId.value, market.quoteAssetId.value).forEach {
             AdmissionMessageFormat.text(it)
             require('\u0000' !in it && it.codePointCount(0, it.length) <= 64) { "개발 마켓 식별자가 잘못됐습니다" }
@@ -65,15 +78,16 @@ internal data class DevelopmentFundingSettings(
     val clusterDirectory: Path get() = runRoot.resolve("cluster")
     val clusterId: Int get() = 97
     val serviceId: Int get() = 0
-    val memberId: Int get() = 0
     val sessionTimeoutMs: Long get() = 10_000
     val keepAliveMs: Long get() = 500
 
-    fun endpoint(portOffset: Int): String = "127.0.0.1:${basePort + portOffset}"
+    fun endpoint(portOffset: Int): String = "$advertisedHost:${basePort + portOffset}"
 
     fun udp(portOffset: Int): String = "aeron:udp?endpoint=${endpoint(portOffset)}"
 
-    val members: String get() = "0,${(0..4).joinToString(",") { endpoint(it) }}"
+    val members: String get() = clusterMembers ?: "$memberId,${(0..4).joinToString(",") { endpoint(it) }}"
+    val ingressEndpoints: String get() = ClusterMember.parse(members).joinToString(",") { "${it.id()}=${it.ingressEndpoint()}" }
+    val clustered: Boolean get() = ClusterMember.parse(members).size > 1
 
     fun archiveClient(): AeronArchive.Context =
         AeronArchive
@@ -134,6 +148,8 @@ internal class DevelopmentFundingNode private constructor(
         }
     val error: Throwable? get() = failure.get()
     val isClosed: Boolean get() = stopped.count == 0L
+    val role: Cluster.Role
+        get() = Cluster.Role.get(requireNotNull(consensus).context().clusterNodeRoleCounter().get())
     val storageLevels: List<Int>
         get() =
             listOf(
@@ -159,7 +175,7 @@ internal class DevelopmentFundingNode private constructor(
                 val socket = DatagramSocket(null)
                 ports.add(socket)
                 socket.reuseAddress = false
-                socket.bind(InetSocketAddress("127.0.0.1", config.basePort + offset))
+                socket.bind(InetSocketAddress(config.bindHost, config.basePort + offset))
             }
         } finally {
             ports.forEach { it.close() }
@@ -203,7 +219,7 @@ internal class DevelopmentFundingNode private constructor(
                     .aeronDirectoryName(config.driverDirectory)
                     .clusterId(config.clusterId)
                     .clusterMemberId(config.memberId)
-                    .appointedLeaderId(config.memberId)
+                    .appointedLeaderId(if (config.clustered) -1 else config.memberId)
                     .clusterMembers(config.members)
                     .clusterDir(config.clusterDirectory.toFile())
                     .deleteDirOnStart(false)
@@ -233,10 +249,8 @@ internal class DevelopmentFundingNode private constructor(
             )
         check(storageLevels == listOf(2, 2, 2)) { "실제 저장 설정이 다릅니다" }
         while (!service.started ||
-            requireNotNull(consensus).context().clusterNodeRoleCounter().get() !=
-            Cluster.Role.LEADER
-                .code()
-                .toLong()
+            requireNotNull(consensus).context().electionStateCounter().get() != ElectionState.CLOSED.code().toLong() ||
+            (!config.clustered && role != Cluster.Role.LEADER)
         ) {
             error?.let { throw IllegalStateException("개발 노드 시작 실패", it) }
             check(System.nanoTime() < deadline) { "개발 노드 준비 기한을 초과했습니다" }
@@ -298,30 +312,71 @@ internal class DevelopmentFundingNode private constructor(
 
 /** 기본 HTTP 실행과 독립된 개발 진입점. 자금은 클라이언트의 명시 요청으로만 준비한다. */
 fun main(args: Array<String>) {
-    require(args.size in 1..2) { "사용법: 절대경로의새실행루트 [기준포트=19700]" }
-    val config = DevelopmentFundingSettings(Path.of(args[0]), args.getOrNull(1)?.toInt() ?: 19700)
-    DevelopmentFundingNode.start(config).use { node ->
-        val shutdown = Thread({ node.close() }, "development-funding-shutdown")
-        Runtime.getRuntime().addShutdownHook(shutdown)
-        try {
-            println(
-                "READY root=${config.runRoot} members=${config.members} driver=${config.driverDirectory} sync=${node.storageLevels} market=${config.market} fee=${config.feePolicySnapshot}",
+    val structured = args.contentEquals(arrayOf("--cluster-env"))
+    require(structured || args.size in 1..2) { "사용법: 절대경로의새실행루트 [기준포트=19700] 또는 --cluster-env" }
+    val config =
+        if (structured) {
+            developmentClusterSettings()
+        } else {
+            DevelopmentFundingSettings(
+                Path.of(args[0]),
+                args.getOrNull(1)?.toInt() ?: 19700,
             )
-            var last: FundingObservation? = null
-            while (!node.awaitClosed(100)) {
-                val observed = node.observation
-                if (observed != null && observed !== last) {
-                    println("OBSERVATION $observed")
-                    last = observed
+        }
+    try {
+        DevelopmentFundingNode.start(config).use { node ->
+            val shutdown =
+                Thread({
+                    node.close()
+                    if (structured) {
+                        fundingEvent(
+                            mapOf(
+                                "kind" to "STOPPED",
+                                "runId" to config.runId,
+                                "memberId" to config.memberId,
+                                "closed" to node.isClosed,
+                                "failure" to node.error?.toString(),
+                            ),
+                        )
+                    }
+                }, "development-funding-shutdown")
+            Runtime.getRuntime().addShutdownHook(shutdown)
+            try {
+                if (structured) {
+                    fundingReadyEvent(config, node)
+                } else {
+                    println(
+                        "READY root=${config.runRoot} members=${config.members} driver=${config.driverDirectory} sync=${node.storageLevels} market=${config.market} fee=${config.feePolicySnapshot}",
+                    )
+                }
+                var last: FundingObservation? = null
+                while (!node.awaitClosed(100)) {
+                    val observed = node.observation
+                    if (observed != null && observed !== last) {
+                        if (structured) fundingAppliedEvent(config, observed) else println("OBSERVATION $observed")
+                        last = observed
+                    }
+                }
+                node.error?.let { throw IllegalStateException("개발 노드가 오류로 중단됐습니다", it) }
+            } finally {
+                try {
+                    Runtime.getRuntime().removeShutdownHook(shutdown)
+                } catch (_: IllegalStateException) {
+                    // JVM 종료 중에는 hook 등록을 변경할 수 없다. 자원은 같은 close 경로로 닫힌다.
                 }
             }
-            node.error?.let { throw IllegalStateException("개발 노드가 오류로 중단됐습니다", it) }
-        } finally {
-            try {
-                Runtime.getRuntime().removeShutdownHook(shutdown)
-            } catch (_: IllegalStateException) {
-                // JVM 종료 중에는 hook 등록을 변경할 수 없다. 자원은 같은 close 경로로 닫힌다.
-            }
         }
+    } catch (error: Throwable) {
+        if (structured) {
+            fundingEvent(
+                mapOf(
+                    "kind" to "ERROR",
+                    "runId" to config.runId,
+                    "memberId" to config.memberId,
+                    "failure" to error.toString(),
+                ),
+            )
+        }
+        throw error
     }
 }
