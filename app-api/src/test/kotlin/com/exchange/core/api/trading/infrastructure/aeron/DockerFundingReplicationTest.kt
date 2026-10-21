@@ -23,7 +23,10 @@ class DockerFundingReplicationTest {
     }
 }
 
-private class DockerFundingVerification {
+internal class DockerFundingVerification(
+    private val scenario: OrderReplicationScenario? = null,
+    sharedImage: String? = null,
+) {
     private val mapper = jacksonObjectMapper()
     private val projectDirectory = Path.of(requireNotNull(System.getProperty("fundingProjectDirectory")))
     private val distributionDirectory = Path.of(requireNotNull(System.getProperty("fundingDistributionDirectory")))
@@ -31,7 +34,8 @@ private class DockerFundingVerification {
     val reportDirectory: Path = projectDirectory.resolve("build/reports/aeron-funding/$runId")
     private val composeFile = projectDirectory.resolve("src/test/docker/aeron-funding/compose.yml")
     private val dockerfile = projectDirectory.resolve("src/test/docker/aeron-funding/Dockerfile")
-    private val image = "exchange-funding:$runId"
+    val image = sharedImage ?: "exchange-funding:$runId"
+    private val buildImage = sharedImage == null
     private val environment = mapOf("FUNDING_IMAGE" to image, "FUNDING_RUN_ID" to runId)
     private val issues = mutableListOf<FundingVerificationIssue>()
     private val commands = mutableListOf<Map<String, Any?>>()
@@ -40,7 +44,9 @@ private class DockerFundingVerification {
     private val events = linkedMapOf<Int, List<JsonNode>>()
     private val inspections = linkedMapOf<Int, JsonNode>()
     private var clientEvents = emptyList<JsonNode>()
-    private var clientCreated = false
+    private val clients = mutableListOf<String>()
+    private val stepReports = mutableListOf<Map<String, Any?>>()
+    private val attemptedSteps = mutableListOf<Triple<OrderReplicationStep, Long, List<JsonNode>>>()
     private var inputAttempted = false
     private var composeAttempted = false
     private var cleanStop = false
@@ -54,10 +60,15 @@ private class DockerFundingVerification {
                 must(command(listOf("docker", "version"), 15_000), "Docker 준비")
                 must(compose(listOf("version"), 15_000), "Compose 준비")
                 check(Files.isDirectory(distributionDirectory.resolve("lib"))) { "선행 Gradle 작업의 개발 배포 산출물이 없습니다: $distributionDirectory" }
-                must(
-                    command(listOf("docker", "build", "-f", dockerfile.toString(), "-t", image, distributionDirectory.toString()), 300_000),
-                    "이미지 준비",
-                )
+                if (buildImage) {
+                    must(
+                        command(
+                            listOf("docker", "build", "-f", dockerfile.toString(), "-t", image, distributionDirectory.toString()),
+                            300_000,
+                        ),
+                        "이미지 준비",
+                    )
+                }
                 must(command(listOf("docker", "image", "inspect", image), 15_000), "이미지 식별")
             }
             timed("startup") {
@@ -77,30 +88,7 @@ private class DockerFundingVerification {
                 validateIsolation()
                 check(issues.isEmpty()) { "컨테이너 격리·설정 확인 실패" }
             }
-            timed("client") {
-                stage = "클라이언트"
-                inputAttempted = true
-                clientCreated = true
-                val response = compose(listOf("run", "--use-aliases", "--name", "$runId-client", "client"), 20_000)
-                Files.writeString(reportDirectory.resolve("client.stdout.log"), response.stdout)
-                Files.writeString(reportDirectory.resolve("client.stderr.log"), response.stderr)
-                clientEvents = readFundingEvents(response.stdout, issues)
-                if (!response.succeeded) issues.add(FundingVerificationIssue("UNVERIFIABLE", "클라이언트 응답 미확인: ${response.failure()}"))
-            }
-            timed("observations") {
-                stage = "관찰"
-                val deadline = deadline(15_000)
-                while (true) {
-                    collectNodes(deadline, requireRunning = true)
-                    comparison = compareFundingReplication(runId, events, clientEvents)
-                    issues.addAll(comparison.issues.filter { it.category == "MISMATCH" })
-                    // 누락은 상한까지 기다린다. 이미 관찰한 업무 차이는 최종 결과에 그대로 남긴다.
-                    if (hasThreeFreshObservations() || events.values.flatten().any { it.path("kind").asString() == "ERROR" }) break
-                    if (System.nanoTime() >= deadline) break
-                    Thread.sleep(100)
-                }
-                issues.addAll(comparison.issues)
-            }
+            if (scenario == null) runFundingInput() else runOrderInputs(scenario)
         } catch (error: Exception) {
             issues.add(
                 FundingVerificationIssue(
@@ -110,15 +98,118 @@ private class DockerFundingVerification {
             )
         } finally {
             preserveAndClose()
-            if (inputAttempted) {
-                // 수집/정리 실패가 기존의 업무 불일치나 클라이언트 미확인을 지우지 않는다.
-                comparison = compareFundingReplication(runId, events, clientEvents, collectionIssues = issues)
-            } else {
-                comparison = FundingReplicationComparison(null, issues.distinct())
-            }
+            recheckOrderInputs()
+            // 이미 확인한 차이는 마지막 부분 수집이나 정리 실패로 덮어쓰지 않는다.
+            comparison =
+                if (inputAttempted && scenario == null) {
+                    compareFundingReplication(runId, events, clientEvents, collectionIssues = issues)
+                } else {
+                    FundingReplicationComparison(comparison.position, issues.distinct())
+                }
             writeReport()
         }
         return comparison
+    }
+
+    private fun runFundingInput() {
+        timed("client") {
+            stage = "클라이언트"
+            inputAttempted = true
+            val response = runClient("client", emptyList())
+            clientEvents = readFundingEvents(response.stdout, issues)
+            if (!response.succeeded) issues.add(FundingVerificationIssue("UNVERIFIABLE", "클라이언트 응답 미확인: ${response.failure()}"))
+        }
+        timed("observations") {
+            stage = "관찰"
+            val deadline = deadline(15_000)
+            while (true) {
+                collectNodes(deadline, requireRunning = true)
+                comparison = compareFundingReplication(runId, events, clientEvents)
+                issues.addAll(comparison.issues.filter { it.category == "MISMATCH" })
+                if (hasThreeFreshObservations() || events.values.flatten().any { it.path("kind").asString() == "ERROR" }) break
+                if (System.nanoTime() >= deadline) break
+                Thread.sleep(100)
+            }
+            issues.addAll(comparison.issues)
+        }
+    }
+
+    private fun runOrderInputs(scenario: OrderReplicationScenario) {
+        var previousPosition = 0L
+        for (step in scenario.steps()) {
+            stage = "${scenario.name}/${step.name}"
+            inputAttempted = true
+            val response = runClient(step.name.lowercase(), listOf(step.mainClass, "--cluster-env") + step.arguments)
+            val stepClientEvents = readFundingEvents(response.stdout, issues)
+            attemptedSteps.add(Triple(step, previousPosition, stepClientEvents))
+            clientEvents = clientEvents + stepClientEvents
+            if (!response.succeeded) issues.add(FundingVerificationIssue("UNVERIFIABLE", "$stage 응답 미확인: ${response.failure()}"))
+            timed("$stage-observations") {
+                val deadline = deadline(15_000)
+                while (true) {
+                    collectNodes(deadline, requireRunning = true)
+                    comparison = compareOrderReplication(runId, step, events, stepClientEvents, previousPosition)
+                    issues.addAll(comparison.issues.filter { it.category == "MISMATCH" })
+                    if (hasOrderObservations(step, comparison.position, previousPosition) ||
+                        events.values.flatten().any { it.path("kind").asString() == "ERROR" }
+                    ) {
+                        break
+                    }
+                    if (System.nanoTime() >= deadline) break
+                    Thread.sleep(100)
+                }
+                issues.addAll(comparison.issues)
+            }
+            recheckOrderInputs()
+            stepReports.add(
+                mapOf(
+                    "step" to step.name,
+                    "inputKind" to step.inputKind,
+                    "arguments" to step.arguments,
+                    "previousPosition" to previousPosition,
+                    "position" to comparison.position,
+                    "expectedResult" to step.expectedResult,
+                    "expectedState" to step.expectedState,
+                    "clientEvents" to stepClientEvents,
+                    "issues" to comparison.issues,
+                ),
+            )
+            // 응답과 세 사본이 확인되지 않았으면 다음 입력을 보내지 않는다.
+            if (issues.isNotEmpty()) break
+            previousPosition = checkNotNull(comparison.position)
+        }
+    }
+
+    private fun recheckOrderInputs() {
+        for ((step, previousPosition, responses) in attemptedSteps) {
+            issues.addAll(compareOrderReplication(runId, step, events, responses, previousPosition).issues)
+        }
+    }
+
+    private fun hasOrderObservations(
+        step: OrderReplicationStep,
+        position: Long?,
+        previousPosition: Long,
+    ): Boolean =
+        position != null && position > previousPosition &&
+            (0..2).all { member ->
+                events[member].orEmpty().any { event ->
+                    event.path("kind").asString() == "APPLIED" && event.path("runId").asString() == runId &&
+                        event.path("position").asLong() == position &&
+                        step.identity.all { (key, value) -> event.path(key).asString() == value }
+                }
+            }
+
+    private fun runClient(
+        suffix: String,
+        arguments: List<String>,
+    ): CommandResult {
+        val name = "$runId-client-$suffix"
+        clients.add(name) // Compose 명령이 중간에 실패해도 실제 JVM을 추적한다.
+        val result = compose(listOf("run", "--use-aliases", "--name", name, "client") + arguments, 100_000)
+        Files.writeString(reportDirectory.resolve("$suffix-client.stdout.log"), result.stdout)
+        Files.writeString(reportDirectory.resolve("$suffix-client.stderr.log"), result.stderr)
+        return result
     }
 
     private fun findNodeIds(
@@ -230,10 +321,10 @@ private class DockerFundingVerification {
                 val deadline = deadline(15_000)
                 if (nodeIds.size < 3) findNodeIds(deadline, required = false)
                 collectNodes(deadline, requireRunning = inputAttempted)
-                if (clientCreated) {
-                    val client = command(listOf("docker", "inspect", "$runId-client"), remaining(deadline))
+                for (name in clients) {
+                    val client = command(listOf("docker", "inspect", name), remaining(deadline))
                     if (client.succeeded) {
-                        Files.writeString(reportDirectory.resolve("client.inspect.json"), client.stdout)
+                        Files.writeString(reportDirectory.resolve("$name.inspect.json"), client.stdout)
                         val data = mapper.readTree(client.stdout).path(0)
                         val node = inspections[0]
                         if (node != null && (
@@ -259,6 +350,33 @@ private class DockerFundingVerification {
             }
         } catch (error: Exception) {
             issues.add(FundingVerificationIssue("COLLECTION", "종료 전 관찰 수집 실패: ${error.message}"))
+        }
+        // CLI 타임아웃이 컨테이너의 JVM을 취소하지는 않는다. 쓰기 주체를 먼저 닫는다.
+        for (name in clients) {
+            try {
+                val inspection = command(listOf("docker", "inspect", name), 5_000)
+                must(inspection, "$name 종료 전 식별")
+                val before = mapper.readTree(inspection.stdout).path(0).path("State")
+                if (before.path("Running").asBoolean()) {
+                    issues.add(FundingVerificationIssue("UNVERIFIABLE", "$name client가 계속 실행 중이어서 중단합니다"))
+                    must(command(listOf("docker", "stop", "--time", "10", name), 15_000), "$name 중단")
+                } else if (before.path("ExitCode").asInt() != 0 || before.path("OOMKilled").asBoolean()) {
+                    issues.add(FundingVerificationIssue("UNVERIFIABLE", "$name client 비정상 종료: $before"))
+                }
+                val closed = command(listOf("docker", "inspect", name), 5_000)
+                must(closed, "$name 종료 확인")
+                Files.writeString(reportDirectory.resolve("$name.stopped.inspect.json"), closed.stdout)
+                check(
+                    !mapper
+                        .readTree(closed.stdout)
+                        .path(0)
+                        .path("State")
+                        .path("Running")
+                        .asBoolean(),
+                ) { "$name JVM 종료 미확인" }
+            } catch (error: Exception) {
+                issues.add(FundingVerificationIssue("CLEANUP", "$name client 종료 확인 실패: ${error.message}"))
+            }
         }
         try {
             timed("stop") {
@@ -327,6 +445,10 @@ private class DockerFundingVerification {
         val report =
             linkedMapOf(
                 "runId" to runId,
+                "scenario" to (scenario?.name ?: "FUNDING"),
+                "image" to image,
+                "imageBuilt" to buildImage,
+                "steps" to stepReports,
                 "createdAt" to Instant.now().toString(),
                 "success" to comparison.succeeded,
                 "position" to comparison.position,
@@ -339,7 +461,9 @@ private class DockerFundingVerification {
                     mapOf(
                         "image" to 300_000,
                         "startup" to 60_000,
-                        "clientProcess" to 20_000,
+                        "clientProcess" to 100_000,
+                        "clientConnect" to 60_000,
+                        "clientSend" to 5_000,
                         "clientResult" to 5_000,
                         "observations" to 15_000,
                         "stop" to 15_000,
@@ -357,7 +481,7 @@ private class DockerFundingVerification {
             reportDirectory.resolve("summary.txt"),
             buildString {
                 appendLine("${if (comparison.succeeded) "PASS" else "FAIL"} $runId; appliedPosition=${comparison.position}")
-                appendLine("P1 한 건, 세 독립 Docker JVM. 복구·장애 전환·성능 검증은 포함하지 않습니다.")
+                appendLine("${scenario?.name ?: "P1 한 건"}, 세 독립 Docker JVM. 복구·장애 전환·성능 검증은 포함하지 않습니다.")
                 appendLine("입력 시도=$inputAttempted; 정상 종료 확인=$cleanStop; 기록 볼륨 삭제는 요청하지 않았습니다.")
                 comparison.issues.forEach { appendLine("${it.category}: ${it.message}") }
                 appendLine("durationMs=$timings")
