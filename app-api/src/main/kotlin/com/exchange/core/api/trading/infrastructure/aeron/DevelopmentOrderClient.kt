@@ -15,9 +15,12 @@ import com.exchange.core.order.TimeInForce
 import com.exchange.core.trading.OrderAdmissionInput
 import io.aeron.Publication
 import io.aeron.cluster.client.AeronCluster
+import io.aeron.driver.MediaDriver
+import io.aeron.driver.ThreadingMode
 import io.aeron.exceptions.AeronException
 import org.agrona.concurrent.SleepingMillisIdleStrategy
 import org.agrona.concurrent.UnsafeBuffer
+import java.nio.file.Files
 import java.nio.file.Path
 import java.time.Instant
 import java.util.concurrent.TimeUnit
@@ -57,7 +60,7 @@ internal class DevelopmentOrderClient(
                 .errorHandler { transportFailure.compareAndSet(null, it) }
                 .aeronDirectoryName(config.driverDirectory)
                 .ingressChannel("aeron:udp?term-length=64k")
-                .ingressEndpoints("0=${config.endpoint(0)}")
+                .ingressEndpoints(config.ingressEndpoints)
                 .egressChannel(config.udp(7))
                 .messageTimeoutNs(TimeUnit.MILLISECONDS.toNanos(config.startupTimeoutMs))
                 .egressListener { _, _, buffer, offset, length, _ ->
@@ -192,44 +195,121 @@ internal class DevelopmentOrderClient(
 
 /** 기본 HTTP와 독립된 LIMIT+GTC 접수 도구. 가격·수량은 기존 최소 단위로 입력한다. */
 fun main(args: Array<String>) {
-    require(args.size == 10) { "사용법: 노드루트 기준포트 요청ID 사용자 주문ID BUY|SELL 가격최소단위 수량최소단위 원장ID 업무Instant" }
-    val config = DevelopmentFundingSettings(Path.of(args[0]), args[1].toInt())
+    runDevelopmentOrderClient(args)
+}
+
+internal fun runDevelopmentOrderClient(
+    args: Array<String>,
+    environment: Map<String, String> = System.getenv(),
+) {
+    val structured = args.firstOrNull() == "--cluster-env"
+    require((structured && args.size == 9) || (!structured && args.size == 10)) {
+        "사용법: 노드루트 기준포트 요청ID 사용자 주문ID BUY|SELL 가격최소단위 수량최소단위 원장ID 업무Instant 또는 --cluster-env 요청ID 사용자 주문ID BUY|SELL 가격최소단위 수량최소단위 원장ID 업무Instant"
+    }
+    val config = if (structured) developmentClusterSettings(environment) else DevelopmentFundingSettings(Path.of(args[0]), args[1].toInt())
+    val values = if (structured) args.drop(1) else args.drop(2)
     val command =
         AdmissionCommandPayload(
-            args[2],
+            values[0],
             OrderAdmissionInput(
                 config.market.marketId,
-                OrderId(args[4]),
-                UserId(args[3]),
-                Side.valueOf(args[5]),
+                OrderId(values[2]),
+                UserId(values[1]),
+                Side.valueOf(values[3]),
                 OrderType.LIMIT,
                 TimeInForce.GTC,
-                Price(args[6].toLong()),
-                Quantity(args[7].toLong()),
+                Price(values[4].toLong()),
+                Quantity(values[5].toLong()),
             ),
             config.market,
             config.feePolicySnapshot,
-            args[8],
-            Instant.parse(args[9]),
+            values[6],
+            Instant.parse(values[7]),
         )
-    val client =
-        try {
-            DevelopmentOrderClient(config)
-        } catch (error: AeronException) {
-            println("UNCONFIRMED transportAccepted=false 연결 문제: ${error.message}")
-            throw IllegalStateException("미접수로 단정하지 마세요. 같은 사용자·요청 ID와 주문 원본으로 재확인해야 합니다", error)
+    // 기존 로컬 실행은 노드 Driver에 연결한다. 별도 컨테이너에서는 자기 Driver를 소유한다.
+    val driver =
+        if (structured) {
+            Files.createDirectory(config.runRoot)
+            MediaDriver.launch(
+                MediaDriver
+                    .Context()
+                    .aeronDirectoryName(config.driverDirectory)
+                    .dirDeleteOnStart(false)
+                    .dirDeleteOnShutdown(false)
+                    .threadingMode(ThreadingMode.SHARED)
+                    .sharedIdleStrategy(SleepingMillisIdleStrategy(1)),
+            )
+        } else {
+            null
         }
-    client.use {
-        when (val outcome = it.request(command) { println("TRANSPORT_ACCEPTED 결과 대기") }) {
-            is OrderRequestOutcome.Confirmed -> {
-                println("RESULT_RECEIVED ${outcome.result}")
-                println("접수 결과이며 체결·정산 완료가 아닙니다")
+    try {
+        val client =
+            try {
+                DevelopmentOrderClient(config)
+            } catch (error: AeronException) {
+                val reason = "연결 문제: ${error.message}"
+                if (structured) {
+                    orderClientEvent(config, command, "UNCONFIRMED", mapOf("transportAccepted" to false, "reason" to reason))
+                } else {
+                    println("UNCONFIRMED transportAccepted=false $reason")
+                }
+                throw IllegalStateException("미접수로 단정하지 마세요. 같은 사용자·요청 ID와 주문 원본으로 재확인해야 합니다", error)
             }
+        client.use {
+            when (
+                val outcome =
+                    it.request(command) {
+                        if (structured) {
+                            orderClientEvent(config, command, "TRANSPORT_ACCEPTED")
+                        } else {
+                            println("TRANSPORT_ACCEPTED 결과 대기")
+                        }
+                    }
+            ) {
+                is OrderRequestOutcome.Confirmed -> {
+                    if (structured) {
+                        orderClientEvent(config, command, "RESULT_RECEIVED", mapOf("result" to admissionResultFields(outcome.result)))
+                    } else {
+                        println("RESULT_RECEIVED ${outcome.result}")
+                        println("접수 결과이며 체결·정산 완료가 아닙니다")
+                    }
+                }
 
-            is OrderRequestOutcome.Unconfirmed -> {
-                println("UNCONFIRMED transportAccepted=${outcome.transportAccepted} ${outcome.reason}")
-                throw IllegalStateException("미접수로 단정하지 마세요. 같은 사용자·요청 ID와 주문 원본으로 재확인해야 합니다")
+                is OrderRequestOutcome.Unconfirmed -> {
+                    if (structured) {
+                        orderClientEvent(
+                            config,
+                            command,
+                            "UNCONFIRMED",
+                            mapOf("transportAccepted" to outcome.transportAccepted, "reason" to outcome.reason),
+                        )
+                    } else {
+                        println("UNCONFIRMED transportAccepted=${outcome.transportAccepted} ${outcome.reason}")
+                    }
+                    throw IllegalStateException("미접수로 단정하지 마세요. 같은 사용자·요청 ID와 주문 원본으로 재확인해야 합니다")
+                }
             }
         }
+    } finally {
+        driver?.close()
     }
+}
+
+private fun orderClientEvent(
+    config: DevelopmentFundingSettings,
+    command: AdmissionCommandPayload,
+    kind: String,
+    fields: Map<String, Any?> = emptyMap(),
+) {
+    fundingEvent(
+        mapOf(
+            "kind" to kind,
+            "runId" to config.runId,
+            "inputKind" to "ORDER",
+            "userId" to command.order.userId.value,
+            "requestId" to command.requestId,
+            "marketId" to command.order.marketId.value,
+            "orderId" to command.order.orderId.value,
+        ) + fields,
+    )
 }

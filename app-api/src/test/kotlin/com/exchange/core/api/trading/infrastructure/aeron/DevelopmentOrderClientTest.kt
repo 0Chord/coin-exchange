@@ -11,9 +11,11 @@ import com.exchange.core.api.trading.infrastructure.codec.generated.AdmissionRej
 import com.exchange.core.api.trading.infrastructure.codec.protobufFrame
 import com.exchange.core.common.Amount
 import com.exchange.core.common.AssetId
+import com.exchange.core.common.Quantity
 import com.exchange.core.common.UserId
 import com.exchange.core.ledger.OpeningBalance
 import com.exchange.core.ledger.OpeningBalanceResult
+import io.aeron.CommonContext
 import io.aeron.Publication
 import io.aeron.cluster.client.AeronCluster
 import io.aeron.exceptions.AeronException
@@ -28,12 +30,15 @@ import org.mockito.Mockito.never
 import org.mockito.Mockito.times
 import org.mockito.Mockito.verify
 import org.mockito.Mockito.`when`
+import tools.jackson.databind.JsonNode
+import tools.jackson.module.kotlin.jacksonObjectMapper
 import java.io.ByteArrayOutputStream
 import java.io.PrintStream
 import java.net.DatagramSocket
 import java.nio.file.Files
 import java.nio.file.Path
 import java.time.Instant
+import java.util.concurrent.TimeUnit
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
@@ -118,6 +123,123 @@ class DevelopmentOrderClientTest {
             assertEquals(command.occurredAt, candidate.reserveTransaction.occurredAt)
             assertEquals(listOf(300_000_000L, 300_000_000L), candidate.reserveTransaction.postings.map { it.amount.value })
             assertNull(node.error)
+        }
+    }
+
+    @Test
+    fun `환경 주문 실행은 별도 Driver로 승인과 부족 거절을 받고 자기 Driver만 닫는다`() {
+        val nodeConfig = config()
+        DevelopmentFundingNode.start(nodeConfig).use { node ->
+            prepare(nodeConfig, 1_000_000_000)
+            val accepted = order()
+            val rejected = order("R2", "O2").let { it.copy(order = it.order.copy(quantity = Quantity(800_000_000))) }
+            listOf(accepted, rejected).forEachIndexed { index, command ->
+                val clientConfig = config()
+                val environment = clientEnvironment(clientConfig, nodeConfig.members)
+
+                val events = captureEvents { runDevelopmentOrderClient(clusterArguments(command), environment) }
+
+                assertEquals(listOf("TRANSPORT_ACCEPTED", "RESULT_RECEIVED"), events.map { it.path("kind").asString() })
+                events.forEach { event ->
+                    assertEquals("order-client-test", event.path("runId").asString())
+                    assertEquals("ORDER", event.path("inputKind").asString())
+                    assertEquals("U1", event.path("userId").asString())
+                    assertEquals(command.requestId, event.path("requestId").asString())
+                    assertEquals("BTC-USDT", event.path("marketId").asString())
+                    assertEquals(command.order.orderId.value, event.path("orderId").asString())
+                }
+                val expectedResult =
+                    if (index == 0) {
+                        """{"outcome":"ACCEPTED","userId":"U1","requestId":"R1","marketId":"BTC-USDT","orderId":"O1","sequence":1}"""
+                    } else {
+                        """{"outcome":"REJECTED","userId":"U1","requestId":"R2","marketId":"BTC-USDT","orderId":"O2","reason":"INSUFFICIENT_BALANCE","insufficientBalance":{"assetId":"USDT","available":700000000,"required":800000000,"shortfall":100000000}}"""
+                    }
+                assertEquals(jacksonObjectMapper().readTree(expectedResult), events.last().path("result"))
+                assertTrue(Files.exists(Path.of(clientConfig.driverDirectory).resolve("cnc.dat")))
+                assertFalse(CommonContext.isDriverActive(Path.of(clientConfig.driverDirectory).toFile(), 1_000) {})
+                assertTrue(CommonContext.isDriverActive(Path.of(nodeConfig.driverDirectory).toFile(), 1_000) {})
+            }
+            val snapshot = assertNotNull(node.observation?.snapshot)
+            assertEquals(
+                700_000_000L,
+                snapshot.balances
+                    .single()
+                    .available.value,
+            )
+            assertEquals(
+                300_000_000L,
+                snapshot.balances
+                    .single()
+                    .hold.value,
+            )
+            assertEquals(1, snapshot.pendingOrders.size)
+            assertEquals(2, snapshot.requests.size)
+            assertEquals(1L, snapshot.lastSequence)
+            assertNull(node.error)
+        }
+    }
+
+    @Test
+    fun `주문 연결은 모든 멤버 ingress와 광고된 응답 주소를 사용한다`() {
+        val members = (0..2).joinToString("|") { member -> "$member," + (0..4).joinToString(",") { "node$member:${19700 + it}" } }
+        val config = isolatedSettings.copy(advertisedHost = "order-client", bindHost = "0.0.0.0", clusterMembers = members)
+        val connection = mock(AeronCluster::class.java)
+        var actualContext: AeronCluster.Context? = null
+        mockStatic(AeronCluster::class.java).use { factory ->
+            factory.`when`<AeronCluster> { AeronCluster.connect(any(AeronCluster.Context::class.java)) }.thenAnswer {
+                actualContext = it.getArgument(0)
+                `when`(connection.context()).thenReturn(actualContext)
+                connection
+            }
+
+            DevelopmentOrderClient(config).use {
+                val context = assertNotNull(actualContext)
+                assertEquals("0=node0:19700,1=node1:19700,2=node2:19700", context.ingressEndpoints())
+                assertEquals("aeron:udp?endpoint=order-client:19707", context.egressChannel())
+                assertEquals(config.driverDirectory, context.aeronDirectoryName())
+                assertEquals(TimeUnit.MILLISECONDS.toNanos(config.startupTimeoutMs), context.messageTimeoutNs())
+            }
+        }
+    }
+
+    @Test
+    fun `환경 주문의 연결 실패와 수용 후 실패는 미확인 이벤트와 종료로 남기고 Driver를 닫는다`() {
+        listOf(false, true).forEach { afterTransportAccepted ->
+            val config = config()
+            val environment = clientEnvironment(config)
+            val connection = mock(AeronCluster::class.java)
+            `when`(connection.offer(any(DirectBuffer::class.java), anyInt(), anyInt())).thenReturn(123L)
+            `when`(connection.pollEgress()).thenThrow(AeronException("controlled-result"))
+            mockStatic(AeronCluster::class.java).use { factory ->
+                factory.`when`<AeronCluster> { AeronCluster.connect(any(AeronCluster.Context::class.java)) }.thenAnswer {
+                    if (!afterTransportAccepted) throw AeronException("controlled-connect")
+                    `when`(connection.context()).thenReturn(it.getArgument(0))
+                    connection
+                }
+                val events =
+                    captureEvents {
+                        val error =
+                            assertFailsWith<IllegalStateException> {
+                                runDevelopmentOrderClient(clusterArguments(order()), environment)
+                            }
+                        assertTrue(error.message.orEmpty().contains("미접수로 단정하지 마세요"))
+                    }
+
+                assertEquals(
+                    if (afterTransportAccepted) listOf("TRANSPORT_ACCEPTED", "UNCONFIRMED") else listOf("UNCONFIRMED"),
+                    events.map { it.path("kind").asString() },
+                )
+                val terminal = events.last()
+                assertEquals(afterTransportAccepted, terminal.path("transportAccepted").asBoolean())
+                assertTrue(
+                    terminal.path("reason").asString().contains(if (afterTransportAccepted) "controlled-result" else "controlled-connect"),
+                )
+                assertEquals("ORDER", terminal.path("inputKind").asString())
+                assertEquals("R1", terminal.path("requestId").asString())
+                assertEquals("O1", terminal.path("orderId").asString())
+                assertFalse(CommonContext.isDriverActive(Path.of(config.driverDirectory).toFile(), 1_000) {})
+                verify(connection, times(if (afterTransportAccepted) 1 else 0)).offer(any(DirectBuffer::class.java), anyInt(), anyInt())
+            }
         }
     }
 
@@ -334,6 +456,51 @@ class DevelopmentOrderClientTest {
                     .result.opening.amount.value,
             )
         }
+    }
+
+    private fun clusterArguments(command: AdmissionCommandPayload): Array<String> =
+        arrayOf(
+            "--cluster-env",
+            command.requestId,
+            command.order.userId.value,
+            command.order.orderId.value,
+            command.order.side.name,
+            command.order.price.value
+                .toString(),
+            command.order.quantity.value
+                .toString(),
+            command.ledgerTransactionId,
+            command.occurredAt.toString(),
+        )
+
+    private fun clientEnvironment(
+        config: DevelopmentFundingSettings,
+        members: String = config.members,
+    ): Map<String, String> =
+        mapOf(
+            "FUNDING_RUN_ID" to "order-client-test",
+            "FUNDING_RUN_ROOT" to config.runRoot.toString(),
+            "FUNDING_BASE_PORT" to config.basePort.toString(),
+            "FUNDING_MEMBERS" to members,
+            "FUNDING_HOST" to "127.0.0.1",
+            "FUNDING_BIND_HOST" to "0.0.0.0",
+        )
+
+    private fun captureEvents(action: () -> Unit): List<JsonNode> {
+        val output = ByteArrayOutputStream()
+        val original = System.out
+        try {
+            System.setOut(PrintStream(output, true, Charsets.UTF_8))
+            action()
+        } finally {
+            System.setOut(original)
+        }
+        return output
+            .toString(Charsets.UTF_8)
+            .lineSequence()
+            .filter { it.startsWith("FUNDING_EVENT ") }
+            .map { jacksonObjectMapper().readTree(it.removePrefix("FUNDING_EVENT ")) }
+            .toList()
     }
 
     private fun config(): DevelopmentFundingSettings {
