@@ -24,6 +24,58 @@ class DevelopmentOrderStartGateTest {
     lateinit var directory: Path
 
     @Test
+    fun `먼저 준비된 클라이언트는 늦은 READY와 컨테이너 확인 뒤의 GO도 기다린다`() {
+        for (goAfterMs in listOf(75_000L, 89_999L, 100_000L)) {
+            val path = directory.resolve("go-$goAfterMs")
+            val events = mutableListOf<String>()
+            var now = 0L
+            val gate =
+                DevelopmentOrderStartGate(
+                    path,
+                    "run-current",
+                    "A",
+                    nanoTime = { now },
+                    idle = { now = TimeUnit.MILLISECONDS.toNanos(goAfterMs) },
+                )
+
+            gate.await(
+                pollConnection = {
+                    if (now == TimeUnit.MILLISECONDS.toNanos(goAfterMs)) Files.writeString(path, "run-current")
+                },
+                onReady = { events.add("READY") },
+                onGo = { events.add("GO") },
+            )
+
+            assertEquals(listOf("READY", "GO"), events)
+            assertEquals(TimeUnit.MILLISECONDS.toNanos(goAfterMs), now)
+        }
+    }
+
+    @Test
+    fun `검증용 기본 GO 기한에도 출발 신호가 없으면 유한 종료한다`() {
+        val events = mutableListOf<String>()
+        var now = 0L
+        val gate =
+            DevelopmentOrderStartGate(
+                directory.resolve("missing-go"),
+                "run-current",
+                "A",
+                nanoTime = { now },
+                idle = { now += TimeUnit.SECONDS.toNanos(1) },
+            )
+
+        val error =
+            assertFailsWith<IllegalStateException> {
+                gate.await({}, { events.add("READY") }, { events.add("GO") })
+                events.add("SEND")
+            }
+
+        assertTrue(error.message.orEmpty().contains("기한"))
+        assertEquals(TimeUnit.SECONDS.toNanos(120), now)
+        assertEquals(listOf("READY"), events)
+    }
+
+    @Test
     fun `연결 준비 후 같은 실행의 GO를 확인해야 출발하고 대기 중에도 연결을 처리한다`() {
         val events = mutableListOf<String>()
         val path = directory.resolve("go")

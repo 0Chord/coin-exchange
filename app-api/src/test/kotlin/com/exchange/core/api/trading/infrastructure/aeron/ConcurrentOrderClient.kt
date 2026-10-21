@@ -19,7 +19,6 @@ internal fun runConcurrentOrderClient(
             Path.of(requireNotNull(environment["ORDER_START_GATE"]) { "ORDER_START_GATE가 필요합니다" }),
             requireNotNull(config.runId),
             requireNotNull(environment["ORDER_CLIENT_ID"]) { "ORDER_CLIENT_ID가 필요합니다" },
-            config.startupTimeoutMs,
         )
     launchDevelopmentOrderDriver(config).use {
         val client =
@@ -45,7 +44,7 @@ internal fun runConcurrentOrderClient(
                     "driverDirectory" to config.driverDirectory,
                     "runRoot" to config.runRoot.toString(),
                     "gatePath" to gate.path.toString(),
-                    "gateTimeoutMs" to config.startupTimeoutMs,
+                    "gateTimeoutMs" to gate.timeoutMs,
                 )
             try {
                 gate.await(

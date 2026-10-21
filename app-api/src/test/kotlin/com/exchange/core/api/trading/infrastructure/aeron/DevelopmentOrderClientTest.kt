@@ -268,6 +268,7 @@ class DevelopmentOrderClientTest {
                 assertEquals(clientConfig.udp(7), event.path("egressChannel").asString())
                 assertEquals(clientConfig.driverDirectory, event.path("driverDirectory").asString())
                 assertEquals(clientConfig.runRoot.toString(), event.path("runRoot").asString())
+                assertEquals(120_000L, event.path("gateTimeoutMs").asLong())
             }
             assertEquals(expected(command, 1), node.observation?.admissionResult)
             assertEquals(1, assertNotNull(node.observation?.snapshot).pendingOrders.size)

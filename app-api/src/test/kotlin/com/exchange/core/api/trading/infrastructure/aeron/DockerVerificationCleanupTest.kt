@@ -74,7 +74,7 @@ class DockerVerificationCleanupTest {
     fun `동시 단계의 상한과 확인한 GO 대기를 기록하고 실패한 단계의 소요 시간도 남긴다`() {
         val runner = verification()
         val events = field<MutableMap<String, List<JsonNode>>>(runner, "pairClientEvents")
-        events["A"] = listOf(jacksonObjectMapper().readTree("""{"kind":"READY","gateTimeoutMs":60000}"""))
+        events["A"] = listOf(jacksonObjectMapper().readTree("""{"kind":"READY","gateTimeoutMs":120000}"""))
         // B의 READY는 관찰하지 않았다. 임의의 GO 상한을 대신 채우면 안 된다.
         val failedAction: () -> Unit = { error("controlled-response-failure") }
         val timed = runner.javaClass.getDeclaredMethod("timed", String::class.java, Function0::class.java).apply { isAccessible = true }
@@ -89,9 +89,10 @@ class DockerVerificationCleanupTest {
         val report = jacksonObjectMapper().readTree(Files.readString(directory.resolve("result.json")))
         val limits = report.path("limitsMs")
         assertEquals(90_000L, limits.path("concurrentReady").asLong())
+        assertEquals(5_000L, limits.path("concurrentClientInspect").asLong())
         assertEquals(20_000L, limits.path("concurrentResponses").asLong())
         assertEquals(15_000L, limits.path("concurrentObservations").asLong())
-        assertEquals(60_000L, limits.path("concurrentClientGoById").path("A").asLong())
+        assertEquals(120_000L, limits.path("concurrentClientGoById").path("A").asLong())
         assertTrue(limits.path("concurrentClientGoById").path("B").isNull)
         val duration = report.path("durationMs").path("concurrent-responses")
         assertTrue(duration.isIntegralNumber && duration.asLong() >= 0L)

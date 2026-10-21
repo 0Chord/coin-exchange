@@ -28,7 +28,6 @@ internal class DockerFundingVerification(
     sharedImage: String? = null,
     private val concurrentOrders: Boolean = false,
 ) {
-    private val concurrentReadyTimeoutMs = 90_000L
     private val concurrentResponseTimeoutMs = 20_000L
     private val concurrentObservationTimeoutMs = 15_000L
     private val mapper = jacksonObjectMapper()
@@ -218,6 +217,7 @@ internal class DockerFundingVerification(
         Files.createDirectory(controlDirectory)
         val running = linkedMapOf<String, RunningVerificationCommand>()
         val barrier = ConcurrentClientBarrier(controlDirectory, runId)
+        val readyDeadline = deadline(CONCURRENT_READY_TIMEOUT_MS)
         for ((id, arguments) in ConcurrentOrderReplicationScenario.clientArguments) {
             val suffix = id.lowercase()
             val name = "$runId-client-$suffix"
@@ -240,7 +240,6 @@ internal class DockerFundingVerification(
             check(!running.getValue(id).failedToStart) { "$id 클라이언트 기동 실패" }
         }
         timed("concurrent-ready") {
-            val readyDeadline = deadline(concurrentReadyTimeoutMs)
             while (true) {
                 for ((id, process) in running) {
                     // 실행 중 마지막 미완성 JSON 행은 다음 수집 때 읽는다.
@@ -325,7 +324,7 @@ internal class DockerFundingVerification(
         val ids = mutableListOf<String>()
         for (clientId in listOf("A", "B")) {
             val name = "$runId-client-${clientId.lowercase()}"
-            val result = command(listOf("docker", "inspect", name), 5_000)
+            val result = command(listOf("docker", "inspect", name), CONCURRENT_CLIENT_INSPECTION_TIMEOUT_MS)
             must(result, "$clientId 실제 클라이언트 식별")
             Files.writeString(reportDirectory.resolve("$name.ready.inspect.json"), result.stdout)
             val client = mapper.readTree(result.stdout).path(0)
@@ -687,7 +686,8 @@ internal class DockerFundingVerification(
                         "stop" to 15_000,
                         "records" to 15_000,
                         "cleanup" to 15_000,
-                        "concurrentReady" to if (concurrentOrders) concurrentReadyTimeoutMs else null,
+                        "concurrentReady" to if (concurrentOrders) CONCURRENT_READY_TIMEOUT_MS else null,
+                        "concurrentClientInspect" to if (concurrentOrders) CONCURRENT_CLIENT_INSPECTION_TIMEOUT_MS else null,
                         "concurrentResponses" to if (concurrentOrders) concurrentResponseTimeoutMs else null,
                         "concurrentObservations" to if (concurrentOrders) concurrentObservationTimeoutMs else null,
                         // READY 전 실패하면 실제 클라이언트 설정을 관찰하지 못했으므로 null이다.
