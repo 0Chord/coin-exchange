@@ -203,11 +203,19 @@ internal fun runDevelopmentOrderClient(
     environment: Map<String, String> = System.getenv(),
 ) {
     val structured = args.firstOrNull() == "--cluster-env"
-    require((structured && args.size == 9) || (!structured && args.size == 10)) {
-        "사용법: 노드루트 기준포트 요청ID 사용자 주문ID BUY|SELL 가격최소단위 수량최소단위 원장ID 업무Instant 또는 --cluster-env 요청ID 사용자 주문ID BUY|SELL 가격최소단위 수량최소단위 원장ID 업무Instant"
+    require((structured && args.size in 9..10) || (!structured && args.size in 10..11)) {
+        "사용법: 노드루트 기준포트 요청ID 사용자 주문ID BUY|SELL 가격최소단위 수량최소단위 원장ID 업무Instant [수수료정책버전] 또는 --cluster-env 요청ID 사용자 주문ID BUY|SELL 가격최소단위 수량최소단위 원장ID 업무Instant [수수료정책버전]"
     }
     val config = if (structured) developmentClusterSettings(environment) else DevelopmentFundingSettings(Path.of(args[0]), args[1].toInt())
     val values = if (structured) args.drop(1) else args.drop(2)
+    val feePolicy =
+        if (values.size == 9) {
+            val version = values[8].toLongOrNull()
+            require(version != null && version > 0) { "수수료 정책 버전은 양수 Long이어야 합니다" }
+            config.feePolicySnapshot.copy(scheduleVersion = version)
+        } else {
+            config.feePolicySnapshot
+        }
     val command =
         AdmissionCommandPayload(
             values[0],
@@ -222,7 +230,7 @@ internal fun runDevelopmentOrderClient(
                 Quantity(values[5].toLong()),
             ),
             config.market,
-            config.feePolicySnapshot,
+            feePolicy,
             values[6],
             Instant.parse(values[7]),
         )

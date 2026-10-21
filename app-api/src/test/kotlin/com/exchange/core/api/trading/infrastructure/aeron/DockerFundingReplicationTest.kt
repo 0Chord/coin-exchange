@@ -46,7 +46,15 @@ internal class DockerFundingVerification(
     private var clientEvents = emptyList<JsonNode>()
     private val clients = mutableListOf<String>()
     private val stepReports = mutableListOf<Map<String, Any?>>()
-    private val attemptedSteps = mutableListOf<Triple<OrderReplicationStep, Long, List<JsonNode>>>()
+
+    private data class OrderCheckpoint(
+        val step: OrderReplicationStep,
+        val previousPosition: Long,
+        val position: Long?,
+        val responses: List<JsonNode>,
+    )
+
+    private val attemptedSteps = mutableListOf<OrderCheckpoint>()
     private var inputAttempted = false
     private var composeAttempted = false
     private var cleanStop = false
@@ -139,9 +147,9 @@ internal class DockerFundingVerification(
         for (step in scenario.steps()) {
             stage = "${scenario.name}/${step.name}"
             inputAttempted = true
+            val observationCursors = events.mapValues { it.value.size }
             val response = runClient(step.name.lowercase(), listOf(step.mainClass, "--cluster-env") + step.arguments)
             val stepClientEvents = readFundingEvents(response.stdout, issues)
-            attemptedSteps.add(Triple(step, previousPosition, stepClientEvents))
             clientEvents = clientEvents + stepClientEvents
             if (!response.succeeded) issues.add(FundingVerificationIssue("UNVERIFIABLE", "$stage 응답 미확인: ${response.failure()}"))
             timed("$stage-observations") {
@@ -160,12 +168,14 @@ internal class DockerFundingVerification(
                 }
                 issues.addAll(comparison.issues)
             }
+            attemptedSteps.add(OrderCheckpoint(step, previousPosition, comparison.position, stepClientEvents))
             recheckOrderInputs()
             stepReports.add(
                 mapOf(
                     "step" to step.name,
                     "inputKind" to step.inputKind,
                     "arguments" to step.arguments,
+                    "observationCursors" to observationCursors,
                     "previousPosition" to previousPosition,
                     "position" to comparison.position,
                     "expectedResult" to step.expectedResult,
@@ -181,8 +191,10 @@ internal class DockerFundingVerification(
     }
 
     private fun recheckOrderInputs() {
-        for ((step, previousPosition, responses) in attemptedSteps) {
-            issues.addAll(compareOrderReplication(runId, step, events, responses, previousPosition).issues)
+        for ((step, previousPosition, position, responses) in attemptedSteps) {
+            issues.addAll(
+                compareOrderReplication(runId, step, events, responses, previousPosition, pinnedPosition = position).issues,
+            )
         }
     }
 

@@ -118,6 +118,7 @@ class DevelopmentOrderClientTest {
             assertEquals(1, snapshot.requests.size)
             val candidate = snapshot.pendingOrders.single().candidate
             assertEquals(command.order, candidate.order)
+            assertEquals(1L, candidate.feePolicySnapshot.scheduleVersion)
             assertEquals(300_000_000L, candidate.reservation.reservedAmount.value)
             assertEquals(command.ledgerTransactionId, candidate.reserveTransaction.ledgerTransactionId)
             assertEquals(command.occurredAt, candidate.reserveTransaction.occurredAt)
@@ -173,9 +174,88 @@ class DevelopmentOrderClientTest {
                     .hold.value,
             )
             assertEquals(1, snapshot.pendingOrders.size)
+            assertEquals(
+                1L,
+                snapshot.pendingOrders
+                    .single()
+                    .candidate.feePolicySnapshot.scheduleVersion,
+            )
             assertEquals(2, snapshot.requests.size)
             assertEquals(1L, snapshot.lastSequence)
             assertNull(node.error)
+        }
+    }
+
+    @Test
+    fun `선택 정책 버전은 로컬과 환경 주문에서 실제 접수 원본에 전달된다`() {
+        listOf(false, true).forEach { structured ->
+            val defaults = config()
+            val nodeConfig = defaults.copy(feePolicySnapshot = defaults.feePolicySnapshot.copy(scheduleVersion = 2))
+            DevelopmentFundingNode.start(nodeConfig).use { node ->
+                prepare(nodeConfig, 1_000_000_000)
+                val command = order()
+                val clientConfig = if (structured) config() else nodeConfig
+                val arguments =
+                    if (structured) {
+                        clusterArguments(command)
+                    } else {
+                        arrayOf(nodeConfig.runRoot.toString(), nodeConfig.basePort.toString()) + clusterArguments(command).drop(1)
+                    }
+
+                captureEvents {
+                    runDevelopmentOrderClient(arguments + "2", clientEnvironment(clientConfig, nodeConfig.members))
+                }
+
+                val observation = assertNotNull(node.observation)
+                assertEquals(expected(command, 1), observation.admissionResult)
+                val snapshot = assertNotNull(observation.snapshot)
+                val admitted = snapshot.pendingOrders.single().candidate
+                assertEquals(2L, admitted.feePolicySnapshot.scheduleVersion)
+                assertEquals(
+                    2L,
+                    snapshot.requests
+                        .single()
+                        .feePolicySnapshot.scheduleVersion,
+                )
+                assertEquals(
+                    700_000_000L,
+                    snapshot.balances
+                        .single()
+                        .available.value,
+                )
+                assertEquals(
+                    300_000_000L,
+                    snapshot.balances
+                        .single()
+                        .hold.value,
+                )
+                assertEquals(1L, snapshot.lastSequence)
+                assertNull(node.error)
+            }
+        }
+    }
+
+    @Test
+    fun `잘못된 선택 정책 버전은 Driver 생성과 전송 전에 거절한다`() {
+        listOf(false, true).forEach { structured ->
+            listOf("0", "-1", "two", "9223372036854775808").forEach { invalidVersion ->
+                val config = config()
+                val command = order()
+                val arguments =
+                    if (structured) {
+                        clusterArguments(command)
+                    } else {
+                        arrayOf(config.runRoot.toString(), config.basePort.toString()) + clusterArguments(command).drop(1)
+                    }
+
+                val error =
+                    assertFailsWith<IllegalArgumentException> {
+                        runDevelopmentOrderClient(arguments + invalidVersion, clientEnvironment(config))
+                    }
+
+                assertTrue(error.message.orEmpty().contains("수수료 정책 버전"), error.message)
+                assertFalse(Files.exists(config.runRoot))
+            }
         }
     }
 

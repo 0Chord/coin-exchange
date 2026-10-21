@@ -11,6 +11,7 @@ internal fun compareOrderReplication(
     clientEvents: List<JsonNode>,
     previousPosition: Long,
     collectionIssues: List<FundingVerificationIssue> = emptyList(),
+    pinnedPosition: Long? = null,
 ): FundingReplicationComparison {
     val issues = collectionIssues.toMutableList()
 
@@ -30,8 +31,9 @@ internal fun compareOrderReplication(
             .filter { it.path("role").asString() == "LEADER" }
             .map { it.path("position").asLong() }
             .distinct()
-    val position = leaders.singleOrNull()
-    if (position == null || position <= previousPosition) {
+    // 최초 수집에서는 직전 입력보다 새 위치를 고른다. 재검사에서는 그때 고정한 위치만 읽는다.
+    val position = pinnedPosition ?: leaders.filter { it > previousPosition }.singleOrNull()
+    if (position == null || position <= previousPosition || position !in leaders) {
         issues.add(FundingVerificationIssue("UNVERIFIABLE", "${step.name} 새 리더 적용 위치 없음: previous=$previousPosition, actual=$leaders"))
     }
     for (member in 0..2) {
@@ -43,14 +45,19 @@ internal fun compareOrderReplication(
         val observations =
             source.filter {
                 it.path("kind").asString() == "APPLIED" &&
-                    (belongs(it) || (position != null && it.path("position").asLong() == position))
+                    (
+                        it.path("position").asLong() == position ||
+                            (pinnedPosition == null && belongs(it) && it.path("position").asLong() > previousPosition)
+                    )
             }
         if (position == null || position <= previousPosition || identified.none { it.path("position").asLong() == position }) {
             issues.add(FundingVerificationIssue("UNVERIFIABLE", "${step.name} node$member 새 동일 위치 관찰 누락: expected=$position"))
         }
-        if (observations.any { it.path("position").asLong() != position }) {
+        if (observations.any { it.path("position").asLong() != position } ||
+            (position != null && identified.isNotEmpty() && identified.none { it.path("position").asLong() == position })
+        ) {
             issues.add(
-                FundingVerificationIssue("UNVERIFIABLE", "${step.name} node$member 적용 위치 불일치: ${observations.map { it.path("position") }}"),
+                FundingVerificationIssue("UNVERIFIABLE", "${step.name} node$member 적용 위치 불일치: ${identified.map { it.path("position") }}"),
             )
         }
         // 같은 L의 응답 진단 갱신은 허용한다. 한 행의 업무 차이도 다른 정상 행으로 가리지 않는다.

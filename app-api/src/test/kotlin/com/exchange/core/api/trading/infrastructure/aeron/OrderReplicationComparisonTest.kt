@@ -11,7 +11,56 @@ import kotlin.test.assertTrue
 
 class OrderReplicationComparisonTest {
     @Test
-    fun `세 독립 사례의 준비와 모든 주문 단계를 새 동일 위치에서 확인한다`() {
+    fun `같은 R1의 과거 관찰이 있어도 이번 전송의 새 위치를 따로 확인한다`() {
+        val first = fixture()
+        val replay = Fixture(first.runId, first.step, 928L, first.position)
+        val history = (0..2).associateWith { listOf(first.applied(it), replay.applied(it)) }
+
+        val result = replay.compare(events = history)
+
+        assertTrue(result.succeeded, result.issues.toString())
+        assertEquals(928L, result.position)
+    }
+
+    @Test
+    fun `나중 R1 위치는 고정한 과거 위치를 바꾸지 않고 뒤늦은 과거 모순은 잡는다`() {
+        val first = fixture()
+        val replay = Fixture(first.runId, first.step, 928L, first.position)
+        val history = (0..2).associateWith { listOf(first.applied(it), replay.applied(it)) }
+        assertTrue(first.compare(events = history, pinnedPosition = first.position).succeeded)
+
+        val late = first.applied(2).change("/state/balances/0/hold", 600_000_000L)
+        val result =
+            first.compare(
+                events = history + (2 to (history.getValue(2) + listOf(late))),
+                pinnedPosition = first.position,
+            )
+
+        assertEquals(first.position, result.position)
+        assertIssue(result, "MISMATCH", "state.balances[0].hold expected=300000000, actual=600000000")
+    }
+
+    @Test
+    fun `R1 재전송에 과거 위치만 있거나 한 사본이 새 위치를 빠뜨리면 실패한다`() {
+        val first = fixture()
+        val replay = Fixture(first.runId, first.step, 928L, first.position)
+        assertIssue(replay.compare(events = first.replicas()), "UNVERIFIABLE", "새 리더 적용 위치 없음")
+        val missing = replay.replicas() + (2 to listOf(first.applied(2)))
+        assertIssue(replay.compare(events = missing), "UNVERIFIABLE", "node2 새 동일 위치 관찰 누락")
+    }
+
+    @Test
+    fun `전송 단계 이름과 실제 R1 O1 식별자를 분리한다`() {
+        val first = fixture().step
+        val replay = first.copy(name = "A-2")
+
+        assertEquals(first.identity, replay.identity)
+        assertEquals("R1", replay.identity["requestId"])
+        assertEquals("O1", replay.identity["orderId"])
+    }
+
+    @Test
+    fun `모든 독립 사례의 준비와 주문 단계를 새 동일 위치에서 확인한다`() {
         for (scenario in OrderReplicationScenario.entries) {
             for (index in scenario.steps().indices) {
                 val fixture = fixture(scenario, index)
@@ -480,6 +529,89 @@ class OrderReplicationComparisonTest {
         }
     }
 
+    @Test
+    fun `재전송이 최초 후보 원장 정책 시각이나 현재 돈과 이력을 바꾸면 실패한다`() {
+        val replay = fixture(OrderReplicationScenario.ACCEPTED_REPLAY, 3)
+        replay.assertMutations(
+            listOf(
+                Mutation("/state/balances/0/hold", 600_000_000L),
+                Mutation("/state/pendingOrderCount", 2L),
+                Mutation("/state/requestRecordCount", 2L),
+                Mutation("/state/lastSequence", 2L),
+                Mutation("/state/requests/0/order/price", 101_000_000L),
+                Mutation("/state/requests/0/feePolicy/scheduleVersion", 2L),
+                Mutation("/state/requests/0/ledgerTransactionId", "L-RETRY-3"),
+                Mutation("/state/requests/0/occurredAtEpochSecond", 1_792_540_803L),
+                Mutation("/state/requests/0/occurredAtNano", 123_456_788L),
+                Mutation("/state/requests/0/result/record/candidate/nextBalance/hold", 600_000_000L),
+                Mutation("/state/transactions/1/transactionId", "L-RETRY-3"),
+            ),
+        )
+        val extra = replay.applied(2)
+        (extra.at("/state/transactions") as ArrayNode).add(extra.at("/state/transactions/1").deepCopy())
+        assertIssue(replay.compare(events = replay.replicas() + (2 to listOf(extra))), "MISMATCH", "transactions count expected=2")
+    }
+
+    @Test
+    fun `새 요청의 주문 중복은 이력을 늘리고 내용 충돌과 정책 불일치는 늘리지 않는다`() {
+        val cases =
+            listOf(
+                Triple(OrderReplicationScenario.ACCEPTED_REPLAY, 5, 1L),
+                Triple(OrderReplicationScenario.ACCEPTED_REPLAY, 4, 2L),
+                Triple(OrderReplicationScenario.CONTEXT_CORRECTION, 1, 1L),
+            )
+        for ((scenario, index, wrongCount) in cases) {
+            fixture(scenario, index).assertMutations(listOf(Mutation("/state/requestRecordCount", wrongCount)))
+        }
+    }
+
+    @Test
+    fun `첫 부족 상세를 현재 돈이나 주문 중복으로 바꾸면 세 사본이 같아도 실패한다`() {
+        for (index in listOf(2, 4)) {
+            val replay = fixture(OrderReplicationScenario.REJECTED_REPLAY, index)
+            replay.assertMutations(
+                listOf(
+                    Mutation("/result/insufficientBalance/available", 1_000_000_000L),
+                    Mutation("/result/reason", "DUPLICATE_ORDER"),
+                    Mutation("/state/requests/0/result/insufficientBalance/available", 1_000_000_000L),
+                ),
+            )
+            val wrong =
+                (0..2).associateWith { member ->
+                    listOf(replay.applied(member).change("/result/reason", "DUPLICATE_ORDER"))
+                }
+            assertIssue(replay.compare(events = wrong), "MISMATCH", ".result.reason")
+        }
+    }
+
+    @Test
+    fun `나중 C2 승인이 있어도 C1 정책 불일치의 관찰을 대신하지 못한다`() {
+        val mismatch = fixture(OrderReplicationScenario.CONTEXT_CORRECTION, 1)
+        val corrected = fixture(OrderReplicationScenario.CONTEXT_CORRECTION, 2)
+
+        val result = mismatch.compare(events = corrected.replicas(), pinnedPosition = mismatch.position)
+
+        assertIssue(result, "UNVERIFIABLE", "node0 새 동일 위치 관찰 누락")
+    }
+
+    @Test
+    fun `각 실행의 전송 단계 이름은 고유하고 같은 R1은 서로 다른 client 파일을 사용한다`() {
+        for (scenario in OrderReplicationScenario.entries) {
+            val steps = scenario.steps()
+            assertEquals(steps.size, steps.map { it.name.lowercase() }.toSet().size)
+        }
+        val steps = OrderReplicationScenario.ACCEPTED_REPLAY.steps()
+        assertEquals(listOf("R1", "R1", "R1", "R1"), steps.subList(1, 5).map { it.identity["requestId"] })
+        assertEquals(listOf("A-1", "A-2", "A-3", "A-4"), steps.subList(1, 5).map { it.name })
+        assertEquals(
+            "ORDER",
+            OrderReplicationScenario.REJECTED_REPLAY
+                .steps()
+                .first()
+                .inputKind,
+        )
+    }
+
     private fun orderMutations(root: String): List<Mutation> =
         listOf(
             Mutation("$root/marketId", "ETH-USDT"),
@@ -574,8 +706,8 @@ class OrderReplicationComparisonTest {
         Fixture(
             "run-${scenario.name.lowercase()}",
             scenario.steps()[index],
-            listOf(128L, 448L, 928L)[index],
-            if (index == 0) 0 else listOf(128L, 448L, 928L)[index - 1],
+            128L + 320L * index,
+            if (index == 0) 0 else 128L + 320L * (index - 1),
         )
 
     private data class Mutation(
@@ -625,7 +757,9 @@ class OrderReplicationComparisonTest {
             client: List<JsonNode> = client(),
             previousPosition: Long = this.previousPosition,
             collectionIssues: List<FundingVerificationIssue> = emptyList(),
-        ): FundingReplicationComparison = compareOrderReplication(runId, step, events, client, previousPosition, collectionIssues)
+            pinnedPosition: Long? = null,
+        ): FundingReplicationComparison =
+            compareOrderReplication(runId, step, events, client, previousPosition, collectionIssues, pinnedPosition)
     }
 
     private fun tree(value: Any): ObjectNode = jacksonObjectMapper().valueToTree(value)

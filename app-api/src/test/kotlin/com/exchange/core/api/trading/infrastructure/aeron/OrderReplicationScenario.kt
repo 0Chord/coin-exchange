@@ -1,6 +1,6 @@
 package com.exchange.core.api.trading.infrastructure.aeron
 
-/** 도메인 계산기를 호출하지 않는 #107의 고정 입력과 독립 정답이다. */
+/** 도메인 계산기를 호출하지 않는 세 노드 검사의 고정 입력과 독립 정답이다. */
 internal enum class OrderReplicationScenario(
     val asset: String,
     val openingAmount: Long,
@@ -8,9 +8,18 @@ internal enum class OrderReplicationScenario(
     BUY_SEQUENCE("USDT", 1_000_000_000),
     SELL("BTC", 300_000_000),
     INSUFFICIENT("USDT", 1_000_000_000),
+    ACCEPTED_REPLAY("USDT", 1_000_000_000),
+    REJECTED_REPLAY("USDT", 1_000_000_000),
+    CONTEXT_CORRECTION("USDT", 1_000_000_000),
     ;
 
     fun steps(): List<OrderReplicationStep> {
+        when (this) {
+            ACCEPTED_REPLAY -> return acceptedReplaySteps()
+            REJECTED_REPLAY -> return rejectedReplaySteps()
+            CONTEXT_CORRECTION -> return contextCorrectionSteps()
+            else -> Unit
+        }
         val opening = OrderReplicationStep("P1", "FUNDING", fundingArguments(), fundingResult(), state(emptyList(), false))
         val first = OrderReplicationStep("R1", "ORDER", orderArguments(1), accepted(1), state(listOf(1), false))
         return when (this) {
@@ -24,6 +33,10 @@ internal enum class OrderReplicationScenario(
 
             SELL -> {
                 listOf(opening, first)
+            }
+
+            ACCEPTED_REPLAY, REJECTED_REPLAY, CONTEXT_CORRECTION -> {
+                error("재전송 사례는 위에서 구성한다")
             }
 
             INSUFFICIENT -> {
@@ -256,9 +269,9 @@ internal data class OrderReplicationStep(
 ) {
     val identity: Map<String, Any?> get() =
         if (inputKind == "FUNDING") {
-            mapOf("preparationId" to "P1")
+            mapOf("preparationId" to arguments[0])
         } else {
-            mapOf("userId" to "U1", "requestId" to name, "marketId" to "BTC-USDT", "orderId" to "O${name.drop(1)}")
+            mapOf("userId" to arguments[1], "requestId" to arguments[0], "marketId" to "BTC-USDT", "orderId" to arguments[2])
         }
     val mainClass: String get() {
         val operation = if (inputKind == "FUNDING") "Funding" else "Order"
