@@ -26,7 +26,11 @@ class DockerFundingReplicationTest {
 internal class DockerFundingVerification(
     private val scenario: OrderReplicationScenario? = null,
     sharedImage: String? = null,
+    private val concurrentOrders: Boolean = false,
 ) {
+    private val concurrentReadyTimeoutMs = 90_000L
+    private val concurrentResponseTimeoutMs = 20_000L
+    private val concurrentObservationTimeoutMs = 15_000L
     private val mapper = jacksonObjectMapper()
     private val projectDirectory = Path.of(requireNotNull(System.getProperty("fundingProjectDirectory")))
     private val distributionDirectory = Path.of(requireNotNull(System.getProperty("fundingDistributionDirectory")))
@@ -36,9 +40,15 @@ internal class DockerFundingVerification(
     private val dockerfile = projectDirectory.resolve("src/test/docker/aeron-funding/Dockerfile")
     val image = sharedImage ?: "exchange-funding:$runId"
     private val buildImage = sharedImage == null
-    private val environment = mapOf("FUNDING_IMAGE" to image, "FUNDING_RUN_ID" to runId)
+    private val controlDirectory = reportDirectory.resolve("control")
+    private val environment =
+        mapOf(
+            "FUNDING_IMAGE" to image,
+            "FUNDING_RUN_ID" to runId,
+            "FUNDING_CONTROL_DIRECTORY" to controlDirectory.toString(),
+        )
     private val issues = mutableListOf<FundingVerificationIssue>()
-    private val commands = mutableListOf<Map<String, Any?>>()
+    private val commandProcesses = VerificationCommands(projectDirectory, reportDirectory, environment)
     private val timings = linkedMapOf<String, Long>()
     private val nodeIds = linkedMapOf<Int, String>()
     private val events = linkedMapOf<Int, List<JsonNode>>()
@@ -55,6 +65,10 @@ internal class DockerFundingVerification(
     )
 
     private val attemptedSteps = mutableListOf<OrderCheckpoint>()
+    private var openingPosition: Long? = null
+    private var pairPositions: Map<String, Long>? = null
+    private val pairClientEvents = linkedMapOf<String, List<JsonNode>>()
+    private var pairAttempted = false
     private var inputAttempted = false
     private var composeAttempted = false
     private var cleanStop = false
@@ -96,20 +110,26 @@ internal class DockerFundingVerification(
                 validateIsolation()
                 check(issues.isEmpty()) { "컨테이너 격리·설정 확인 실패" }
             }
-            if (scenario == null) runFundingInput() else runOrderInputs(scenario)
+            when {
+                concurrentOrders -> runConcurrentInputs()
+                scenario != null -> runOrderInputs(scenario.steps())
+                else -> runFundingInput()
+            }
         } catch (error: Exception) {
             issues.add(
                 FundingVerificationIssue(
-                    if (inputAttempted) "UNVERIFIABLE" else "SETUP",
+                    if (inputAttempted && !(concurrentOrders && openingPosition != null && !pairAttempted)) "UNVERIFIABLE" else "SETUP",
                     "$stage 실패: ${error.javaClass.simpleName}: ${error.message}",
                 ),
             )
         } finally {
+            issues.addAll(commandProcesses.closeRunning())
             preserveAndClose()
             recheckOrderInputs()
+            recheckConcurrentInputs()
             // 이미 확인한 차이는 마지막 부분 수집이나 정리 실패로 덮어쓰지 않는다.
             comparison =
-                if (inputAttempted && scenario == null) {
+                if (inputAttempted && scenario == null && !concurrentOrders) {
                     compareFundingReplication(runId, events, clientEvents, collectionIssues = issues)
                 } else {
                     FundingReplicationComparison(comparison.position, issues.distinct())
@@ -142,10 +162,10 @@ internal class DockerFundingVerification(
         }
     }
 
-    private fun runOrderInputs(scenario: OrderReplicationScenario) {
+    private fun runOrderInputs(steps: List<OrderReplicationStep>) {
         var previousPosition = 0L
-        for (step in scenario.steps()) {
-            stage = "${scenario.name}/${step.name}"
+        for (step in steps) {
+            stage = "${scenario?.name ?: "CONCURRENT"}/${step.name}"
             inputAttempted = true
             val observationCursors = events.mapValues { it.value.size }
             val response = runClient(step.name.lowercase(), listOf(step.mainClass, "--cluster-env") + step.arguments)
@@ -190,6 +210,188 @@ internal class DockerFundingVerification(
         }
     }
 
+    private fun runConcurrentInputs() {
+        runOrderInputs(listOf(ConcurrentOrderReplicationScenario.openingStep))
+        if (issues.isNotEmpty()) return
+        openingPosition = checkNotNull(comparison.position)
+        stage = "CONCURRENT/연결 준비"
+        Files.createDirectory(controlDirectory)
+        val running = linkedMapOf<String, RunningVerificationCommand>()
+        val barrier = ConcurrentClientBarrier(controlDirectory, runId)
+        for ((id, arguments) in ConcurrentOrderReplicationScenario.clientArguments) {
+            val suffix = id.lowercase()
+            val name = "$runId-client-$suffix"
+            clients.add(name)
+            running[id] =
+                commandProcesses.start(
+                    composeArguments(
+                        listOf(
+                            "run",
+                            "--use-aliases",
+                            "--name",
+                            name,
+                            "client-$suffix",
+                            "com.exchange.core.api.trading.infrastructure.aeron.DevelopmentOrderClientKt",
+                            "--cluster-env",
+                        ) +
+                            arguments,
+                    ),
+                )
+            check(!running.getValue(id).failedToStart) { "$id 클라이언트 기동 실패" }
+        }
+        timed("concurrent-ready") {
+            val readyDeadline = deadline(concurrentReadyTimeoutMs)
+            while (true) {
+                for ((id, process) in running) {
+                    // 실행 중 마지막 미완성 JSON 행은 다음 수집 때 읽는다.
+                    val output = if (Files.exists(process.stdoutPath)) Files.readString(process.stdoutPath) else ""
+                    pairClientEvents[id] = readFundingEvents(output.substringBeforeLast('\n', ""), issues)
+                }
+                val readiness = compareConcurrentClientReadiness(runId, pairClientEvents)
+                if (readiness.isEmpty()) break
+                check(running.values.all { it.isAlive }) { "GO 전 클라이언트 종료: $readiness" }
+                check(System.nanoTime() < readyDeadline) { "두 연결 준비 상한: $readiness" }
+                Thread.sleep(20)
+            }
+        }
+        validateConcurrentClients()
+        check(issues.isEmpty()) { "두 클라이언트 격리·출력 검증 실패" }
+        val gateIssues = barrier.release(pairClientEvents)
+        issues.addAll(gateIssues)
+        check(gateIssues.isEmpty()) { "공통 출발 조건 미충족" }
+        pairAttempted = true
+        stage = "CONCURRENT/동시 전송"
+        // 두 프로세스는 이미 출발했다. A의 응답은 B의 시작 조건이 아니다.
+        timed("concurrent-responses") {
+            val responseDeadline = deadline(concurrentResponseTimeoutMs)
+            for ((id, process) in running) {
+                val result = process.await(remaining(responseDeadline))
+                Files.writeString(reportDirectory.resolve("${id.lowercase()}-client.stdout.log"), result.stdout)
+                Files.writeString(reportDirectory.resolve("${id.lowercase()}-client.stderr.log"), result.stderr)
+                pairClientEvents[id] = readFundingEvents(result.stdout, issues)
+                if (!result.succeeded) issues.add(FundingVerificationIssue("UNVERIFIABLE", "$id 결과 미확인: ${result.failure()}"))
+            }
+        }
+        clientEvents = clientEvents + pairClientEvents.values.flatten()
+        issues.addAll(compareConcurrentClientProgress(runId, pairClientEvents))
+        stage = "CONCURRENT/두 위치의 세 사본"
+        timed("concurrent-observations") {
+            val observationDeadline = deadline(concurrentObservationTimeoutMs)
+            while (true) {
+                collectNodes(observationDeadline, requireRunning = true)
+                val pair =
+                    compareConcurrentOrderReplication(
+                        runId,
+                        events,
+                        pairClientEvents,
+                        checkNotNull(openingPosition),
+                        pinnedPositions = pairPositions,
+                    )
+                if (pair.positions.size == 2 && pair.positions.values
+                        .distinct()
+                        .size == 2 &&
+                    pairPositions == null
+                ) {
+                    pairPositions = pair.positions
+                }
+                issues.addAll(pair.issues.filter { it.category == "MISMATCH" })
+                comparison = FundingReplicationComparison(pair.position, pair.issues)
+                if (pair.orderedSteps.size == 2 &&
+                    pair.orderedSteps.all { hasOrderObservations(it, pair.positions[it.name], checkNotNull(openingPosition)) }
+                ) {
+                    issues.addAll(pair.issues)
+                    stepReports.add(
+                        mapOf(
+                            "step" to "CONCURRENT",
+                            "openingPosition" to openingPosition,
+                            "positions" to pair.positions,
+                            "expectedSteps" to pair.orderedSteps,
+                            "clientEvents" to pairClientEvents,
+                            "issues" to pair.issues,
+                        ),
+                    )
+                    break
+                }
+                if (System.nanoTime() >= observationDeadline || events.values.flatten().any { it.path("kind").asString() == "ERROR" }) {
+                    issues.addAll(pair.issues)
+                    break
+                }
+                Thread.sleep(100)
+            }
+        }
+    }
+
+    private fun validateConcurrentClients() {
+        val ids = mutableListOf<String>()
+        for (clientId in listOf("A", "B")) {
+            val name = "$runId-client-${clientId.lowercase()}"
+            val result = command(listOf("docker", "inspect", name), 5_000)
+            must(result, "$clientId 실제 클라이언트 식별")
+            Files.writeString(reportDirectory.resolve("$name.ready.inspect.json"), result.stdout)
+            val client = mapper.readTree(result.stdout).path(0)
+            ids.add(client.path("Id").asString())
+            val node = inspections.getValue(0)
+            check(client.path("State").path("Running").asBoolean()) { "$clientId GO 전 JVM이 종료됐습니다" }
+            check(client.path("Image") == node.path("Image")) { "$clientId 실제 이미지가 노드와 다릅니다" }
+            check(
+                client
+                    .path("NetworkSettings")
+                    .path("Networks")
+                    .propertyNames()
+                    .toSet() ==
+                    node
+                        .path("NetworkSettings")
+                        .path("Networks")
+                        .propertyNames()
+                        .toSet(),
+            ) { "$clientId 전용 bridge 불일치" }
+            check(
+                client.path("HostConfig").path("NetworkMode").asString() != "host" &&
+                    client.path("HostConfig").path("IpcMode").asString() != "host",
+            ) { "$clientId 호스트 공유로 격리를 우회했습니다" }
+        }
+        check(ids.distinct().size == 2 && ids.none { it in nodeIds.values || it.isBlank() }) { "독립된 두 클라이언트 컨테이너가 아닙니다" }
+    }
+
+    private fun recheckConcurrentInputs() {
+        if (!pairAttempted) return
+        issues.addAll(compareConcurrentClientProgress(runId, pairClientEvents))
+        val pair =
+            compareConcurrentOrderReplication(
+                runId,
+                events,
+                pairClientEvents,
+                checkNotNull(openingPosition),
+                pinnedPositions = pairPositions,
+            )
+        issues.addAll(pair.issues)
+        comparison = FundingReplicationComparison(pair.position, issues.distinct())
+    }
+
+    private fun collectConcurrentClientOutputs() {
+        if (!concurrentOrders || openingPosition == null) return
+        for (id in listOf("A", "B")) {
+            val name = "$runId-client-${id.lowercase()}"
+            if (name !in clients) continue
+            try {
+                val logs = command(listOf("docker", "logs", name), 5_000)
+                if (!logs.succeeded) issues.add(FundingVerificationIssue("COLLECTION", "$id 최종 클라이언트 출력 미확인: ${logs.failure()}"))
+                Files.writeString(reportDirectory.resolve("${id.lowercase()}-client.final.stdout.log"), logs.stdout)
+                Files.writeString(reportDirectory.resolve("${id.lowercase()}-client.final.stderr.log"), logs.stderr)
+                val parsed = readFundingEvents(logs.stdout, issues)
+                val previous = pairClientEvents[id].orEmpty()
+                if (parsed.take(previous.size) !=
+                    previous
+                ) {
+                    issues.add(FundingVerificationIssue("COLLECTION", "$id 기존 출력이 최종 로그의 접두부와 다릅니다"))
+                }
+                if (parsed.size >= previous.size) pairClientEvents[id] = parsed
+            } catch (error: Exception) {
+                issues.add(FundingVerificationIssue("COLLECTION", "$id 최종 클라이언트 출력 수집 실패: ${error.message}"))
+            }
+        }
+    }
+
     private fun recheckOrderInputs() {
         for ((step, previousPosition, position, responses) in attemptedSteps) {
             issues.addAll(
@@ -215,7 +417,7 @@ internal class DockerFundingVerification(
     private fun runClient(
         suffix: String,
         arguments: List<String>,
-    ): CommandResult {
+    ): VerificationCommandResult {
         val name = "$runId-client-$suffix"
         clients.add(name) // Compose 명령이 중간에 실패해도 실제 JVM을 추적한다.
         val result = compose(listOf("run", "--use-aliases", "--name", name, "client") + arguments, 100_000)
@@ -390,6 +592,7 @@ internal class DockerFundingVerification(
                 issues.add(FundingVerificationIssue("CLEANUP", "$name client 종료 확인 실패: ${error.message}"))
             }
         }
+        collectConcurrentClientOutputs()
         try {
             timed("stop") {
                 val deadline = deadline(15_000)
@@ -403,7 +606,10 @@ internal class DockerFundingVerification(
                             it.path("kind").asString() == "STOPPED" && it.path("runId").asString() == runId &&
                                 it.path("memberId").asInt() == member
                         }
-                    if (stoppedEvent == null || !stoppedEvent.path("closed").asBoolean() || stoppedEvent.hasNonNull("failure")) {
+                    if (stoppedEvent == null || !stoppedEvent.path("closed").asBoolean() ||
+                        !stoppedEvent.path("observationDrained").asBoolean() ||
+                        stoppedEvent.hasNonNull("failure")
+                    ) {
                         cleanStop = false
                         issues.add(FundingVerificationIssue("CLEANUP", "node$member 기록 파일을 닫은 STOPPED 근거가 없습니다: $stoppedEvent"))
                     }
@@ -457,7 +663,7 @@ internal class DockerFundingVerification(
         val report =
             linkedMapOf(
                 "runId" to runId,
-                "scenario" to (scenario?.name ?: "FUNDING"),
+                "scenario" to (scenario?.name ?: if (concurrentOrders) "CONCURRENT" else "FUNDING"),
                 "image" to image,
                 "imageBuilt" to buildImage,
                 "steps" to stepReports,
@@ -481,10 +687,27 @@ internal class DockerFundingVerification(
                         "stop" to 15_000,
                         "records" to 15_000,
                         "cleanup" to 15_000,
+                        "concurrentReady" to if (concurrentOrders) concurrentReadyTimeoutMs else null,
+                        "concurrentResponses" to if (concurrentOrders) concurrentResponseTimeoutMs else null,
+                        "concurrentObservations" to if (concurrentOrders) concurrentObservationTimeoutMs else null,
+                        // READY 전 실패하면 실제 클라이언트 설정을 관찰하지 못했으므로 null이다.
+                        "concurrentClientGoById" to
+                            if (concurrentOrders) {
+                                listOf("A", "B").associateWith { id ->
+                                    pairClientEvents[id]
+                                        ?.firstOrNull { it.path("kind").asString() == "READY" }
+                                        ?.get("gateTimeoutMs")
+                                        ?.asLong()
+                                }
+                            } else {
+                                null
+                            },
                     ),
                 "durationMs" to timings,
                 "issues" to comparison.issues,
-                "commands" to commands,
+                "commands" to commandProcesses.records,
+                "concurrentPositions" to pairPositions,
+                "concurrentClientEvents" to pairClientEvents,
                 "observations" to events,
                 "clientEvents" to clientEvents,
             )
@@ -493,7 +716,9 @@ internal class DockerFundingVerification(
             reportDirectory.resolve("summary.txt"),
             buildString {
                 appendLine("${if (comparison.succeeded) "PASS" else "FAIL"} $runId; appliedPosition=${comparison.position}")
-                appendLine("${scenario?.name ?: "P1 한 건"}, 세 독립 Docker JVM. 복구·장애 전환·성능 검증은 포함하지 않습니다.")
+                appendLine(
+                    "${scenario?.name ?: if (concurrentOrders) "두 클라이언트 동시 주문" else "P1 한 건"}, 세 독립 Docker JVM. 복구·장애 전환·성능 검증은 포함하지 않습니다.",
+                )
                 appendLine("입력 시도=$inputAttempted; 정상 종료 확인=$cleanStop; 기록 볼륨 삭제는 요청하지 않았습니다.")
                 comparison.issues.forEach { appendLine("${it.category}: ${it.message}") }
                 appendLine("durationMs=$timings")
@@ -504,58 +729,18 @@ internal class DockerFundingVerification(
     private fun compose(
         arguments: List<String>,
         timeoutMs: Long,
-    ): CommandResult =
-        command(listOf("docker", "compose", "--project-name", runId, "--file", composeFile.toString()) + arguments, timeoutMs)
+    ): VerificationCommandResult = command(composeArguments(arguments), timeoutMs)
+
+    private fun composeArguments(arguments: List<String>) =
+        listOf("docker", "compose", "--project-name", runId, "--file", composeFile.toString()) + arguments
 
     private fun command(
         arguments: List<String>,
         timeoutMs: Long,
-    ): CommandResult {
-        val index = commands.size
-        val stdout = reportDirectory.resolve("command-$index.stdout.log")
-        val stderr = reportDirectory.resolve("command-$index.stderr.log")
-        val started = System.nanoTime()
-        var exit: Int? = null
-        var failure: String? = null
-        var timedOut = false
-        try {
-            val builder =
-                ProcessBuilder(
-                    arguments,
-                ).directory(projectDirectory.toFile()).redirectOutput(stdout.toFile()).redirectError(stderr.toFile())
-            builder.environment().putAll(environment)
-            val process = builder.start()
-            if (!process.waitFor(timeoutMs.coerceAtLeast(1), TimeUnit.MILLISECONDS)) {
-                timedOut = true
-                process.destroyForcibly()
-                process.waitFor(1, TimeUnit.SECONDS)
-            } else {
-                exit = process.exitValue()
-            }
-        } catch (error: Exception) {
-            failure = "${error.javaClass.simpleName}: ${error.message}"
-        }
-        val duration = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - started)
-        commands.add(
-            mapOf(
-                "arguments" to arguments,
-                "exitCode" to exit,
-                "timedOut" to timedOut,
-                "failure" to failure,
-                "durationMs" to duration,
-            ),
-        )
-        return CommandResult(
-            exit,
-            timedOut,
-            failure,
-            if (Files.exists(stdout)) Files.readString(stdout) else "",
-            if (Files.exists(stderr)) Files.readString(stderr) else "",
-        )
-    }
+    ): VerificationCommandResult = commandProcesses.start(arguments).await(timeoutMs)
 
     private fun must(
-        result: CommandResult,
+        result: VerificationCommandResult,
         action: String,
     ) = check(result.succeeded) { "$action: ${result.failure()}" }
 
@@ -577,17 +762,5 @@ internal class DockerFundingVerification(
         val remaining = TimeUnit.NANOSECONDS.toMillis(deadline - System.nanoTime())
         check(remaining > 0) { "단계 대기 상한을 초과했습니다" }
         return remaining
-    }
-
-    private data class CommandResult(
-        val exitCode: Int?,
-        val timedOut: Boolean,
-        val error: String?,
-        val stdout: String,
-        val stderr: String,
-    ) {
-        val succeeded: Boolean get() = exitCode == 0 && !timedOut && error == null
-
-        fun failure(): String = "exit=$exitCode, timedOut=$timedOut, error=$error, stderr=${stderr.takeLast(4000)}"
     }
 }

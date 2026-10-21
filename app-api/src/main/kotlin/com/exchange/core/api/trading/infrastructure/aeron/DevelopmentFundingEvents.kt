@@ -56,6 +56,7 @@ internal fun fundingReadyEvent(
                     "archiveDirectory" to config.archiveDirectory.toString(),
                     "clusterDirectory" to config.clusterDirectory.toString(),
                     "storageLevels" to node.storageLevels,
+                    "observationCapacity" to config.observationCapacity,
                     "market" to
                         mapOf(
                             "marketId" to config.market.marketId.value,
@@ -133,6 +134,7 @@ internal fun fundingAppliedFields(
         "marketId" to admission?.get("marketId"),
         "orderId" to admission?.get("orderId"),
         "failure" to observation.failure,
+        "malformedMessages" to observation.malformedMessages,
         "replyStatus" to observation.replyStatus,
         "result" to (funding ?: admission),
         "state" to observation.snapshot?.let(::admissionStateFields),

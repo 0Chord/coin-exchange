@@ -165,6 +165,23 @@ internal class DevelopmentOrderClient(
             unconfirmed(error)
         }
 
+    /** 출발 대기도 연결 소유 스레드에서 진행해 세션의 egress·keepalive 처리를 이어간다. */
+    fun awaitStartGate(
+        gate: DevelopmentOrderStartGate,
+        onReady: () -> Unit,
+        onGo: () -> Unit,
+    ) {
+        check(pending == null) { "이미 보낸 주문이 있습니다" }
+        gate.await(
+            pollConnection = {
+                check(transportFailure.get() == null && !connection.isClosed) { "출발 대기 중 연결이 종료됐습니다" }
+                poll()
+            },
+            onReady = onReady,
+            onGo = onGo,
+        )
+    }
+
     private fun unconfirmed(error: Throwable? = transportFailure.get()): OrderRequestOutcome.Unconfirmed {
         val reason =
             if (error != null) {
@@ -207,6 +224,14 @@ internal fun runDevelopmentOrderClient(
         "사용법: 노드루트 기준포트 요청ID 사용자 주문ID BUY|SELL 가격최소단위 수량최소단위 원장ID 업무Instant [수수료정책버전] 또는 --cluster-env 요청ID 사용자 주문ID BUY|SELL 가격최소단위 수량최소단위 원장ID 업무Instant [수수료정책버전]"
     }
     val config = if (structured) developmentClusterSettings(environment) else DevelopmentFundingSettings(Path.of(args[0]), args[1].toInt())
+    val gatePath = environment["ORDER_START_GATE"]
+    val clientId = environment["ORDER_CLIENT_ID"]
+    require((gatePath == null) == (clientId == null)) { "ORDER_START_GATE와 ORDER_CLIENT_ID는 함께 지정해야 합니다" }
+    require(gatePath == null || structured) { "공통 출발 신호는 --cluster-env 개발 실행에서만 사용합니다" }
+    val gate =
+        gatePath?.let {
+            DevelopmentOrderStartGate(Path.of(it), requireNotNull(config.runId), requireNotNull(clientId), config.startupTimeoutMs)
+        }
     val values = if (structured) args.drop(1) else args.drop(2)
     val feePolicy =
         if (values.size == 9) {
@@ -257,18 +282,64 @@ internal fun runDevelopmentOrderClient(
             } catch (error: AeronException) {
                 val reason = "연결 문제: ${error.message}"
                 if (structured) {
-                    orderClientEvent(config, command, "UNCONFIRMED", mapOf("transportAccepted" to false, "reason" to reason))
+                    orderClientEvent(
+                        config,
+                        command,
+                        if (gate == null) "UNCONFIRMED" else "SETUP_FAILED",
+                        mapOf("transportAccepted" to false, "reason" to reason, "clientId" to clientId),
+                    )
                 } else {
                     println("UNCONFIRMED transportAccepted=false $reason")
                 }
-                throw IllegalStateException("미접수로 단정하지 마세요. 같은 사용자·요청 ID와 주문 원본으로 재확인해야 합니다", error)
+                throw IllegalStateException(
+                    if (gate == null) {
+                        "미접수로 단정하지 마세요. 같은 사용자·요청 ID와 주문 원본으로 재확인해야 합니다"
+                    } else {
+                        "공통 출발 전 연결이 실패해 주문을 보내지 않았습니다"
+                    },
+                    error,
+                )
             }
         client.use {
+            val identity =
+                if (gate != null) {
+                    mapOf(
+                        "clientId" to gate.clientId,
+                        "sessionId" to it.connection.clusterSessionId(),
+                        "pid" to ProcessHandle.current().pid(),
+                        "advertisedHost" to config.advertisedHost,
+                        "egressChannel" to config.udp(7),
+                        "driverDirectory" to config.driverDirectory,
+                        "runRoot" to config.runRoot.toString(),
+                        "gatePath" to gate.path.toString(),
+                        "gateTimeoutMs" to config.startupTimeoutMs,
+                    )
+                } else {
+                    emptyMap()
+                }
+            if (gate != null) {
+                try {
+                    it.awaitStartGate(
+                        gate,
+                        onReady = { orderClientEvent(config, command, "READY", identity) },
+                        onGo = { orderClientEvent(config, command, "GO_OBSERVED", identity) },
+                    )
+                } catch (error: Exception) {
+                    orderClientEvent(
+                        config,
+                        command,
+                        "SETUP_FAILED",
+                        identity + mapOf("reason" to error.message, "transportAccepted" to false),
+                    )
+                    throw IllegalStateException("공통 출발 전 준비가 실패해 주문을 보내지 않았습니다", error)
+                }
+                orderClientEvent(config, command, "SEND_STARTED", identity)
+            }
             when (
                 val outcome =
                     it.request(command) {
                         if (structured) {
-                            orderClientEvent(config, command, "TRANSPORT_ACCEPTED")
+                            orderClientEvent(config, command, "TRANSPORT_ACCEPTED", identity)
                         } else {
                             println("TRANSPORT_ACCEPTED 결과 대기")
                         }
@@ -276,7 +347,12 @@ internal fun runDevelopmentOrderClient(
             ) {
                 is OrderRequestOutcome.Confirmed -> {
                     if (structured) {
-                        orderClientEvent(config, command, "RESULT_RECEIVED", mapOf("result" to admissionResultFields(outcome.result)))
+                        orderClientEvent(
+                            config,
+                            command,
+                            "RESULT_RECEIVED",
+                            identity + mapOf("result" to admissionResultFields(outcome.result)),
+                        )
                     } else {
                         println("RESULT_RECEIVED ${outcome.result}")
                         println("접수 결과이며 체결·정산 완료가 아닙니다")
@@ -289,7 +365,7 @@ internal fun runDevelopmentOrderClient(
                             config,
                             command,
                             "UNCONFIRMED",
-                            mapOf("transportAccepted" to outcome.transportAccepted, "reason" to outcome.reason),
+                            identity + mapOf("transportAccepted" to outcome.transportAccepted, "reason" to outcome.reason),
                         )
                     } else {
                         println("UNCONFIRMED transportAccepted=${outcome.transportAccepted} ${outcome.reason}")

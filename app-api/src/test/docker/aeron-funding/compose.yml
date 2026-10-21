@@ -63,6 +63,33 @@ services:
       - L-OPEN-1
       - "2026-10-20T00:00:00.123456789Z"
 
+
+  client-a:
+    <<: *node
+    hostname: client-a
+    profiles: [client]
+    environment:
+      <<: *common-environment
+      FUNDING_HOST: client-a
+      FUNDING_RUN_ROOT: /tmp/${FUNDING_RUN_ID}-client-a
+      ORDER_CLIENT_ID: A
+      ORDER_START_GATE: /control/go
+    volumes:
+      - ${FUNDING_CONTROL_DIRECTORY:-/tmp}:/control:ro
+
+  client-b:
+    <<: *node
+    hostname: client-b
+    profiles: [client]
+    environment:
+      <<: *common-environment
+      FUNDING_HOST: client-b
+      FUNDING_RUN_ROOT: /tmp/${FUNDING_RUN_ID}-client-b
+      ORDER_CLIENT_ID: B
+      ORDER_START_GATE: /control/go
+    volumes:
+      - ${FUNDING_CONTROL_DIRECTORY:-/tmp}:/control:ro
+
 networks:
   funding:
     driver: bridge

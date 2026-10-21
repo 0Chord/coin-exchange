@@ -25,6 +25,7 @@ import io.aeron.cluster.service.Cluster
 import io.aeron.cluster.service.ClusteredServiceContainer
 import io.aeron.driver.MediaDriver
 import io.aeron.driver.ThreadingMode
+import io.aeron.exceptions.AeronException
 import org.agrona.ErrorHandler
 import org.agrona.concurrent.SleepingMillisIdleStrategy
 import java.net.DatagramSocket
@@ -52,8 +53,12 @@ internal data class DevelopmentFundingSettings(
     val bindHost: String = advertisedHost,
     val clusterMembers: String? = null,
     val runId: String? = null,
+    val observationCapacity: Int = 0,
 ) {
     init {
+        require(observationCapacity == 0 || (observationCapacity in 1..1024 && Integer.bitCount(observationCapacity) == 1)) {
+            "관찰 용량은 0 또는 1..1024 범위의 2의 거듭제곱이어야 합니다"
+        }
         require(runRoot.isAbsolute) { "실행 루트는 절대 경로여야 합니다" }
         require(basePort in 1024..65528) { "연속 8개 포트가 필요합니다" }
         require(startupTimeoutMs in 1..60_000 && resultTimeoutMs in 1..60_000)
@@ -126,9 +131,14 @@ internal class DevelopmentFundingNode private constructor(
             TimeUnit.MILLISECONDS.toNanos(config.replyTimeoutMs),
             market = config.market,
             feePolicySnapshot = config.feePolicySnapshot,
+            observationCapacity = config.observationCapacity,
             onFatal = ::fail,
         )
     val observation: FundingObservation? get() = service.observation
+
+    /** 상태를 다시 읽지 않고 서비스가 이미 완성한 관찰만 꺼낸다. main 한 소비자가 소유한다. */
+    fun drainObservations(): List<FundingObservation> = service.drainObservations()
+
     internal val logStreamId: Int get() = requireNotNull(consensus).context().logStreamId()
 
     /** Aeron이 단일 노드의 MDC publication에 적용하는 실제 기본 채널 설정이다. 실행 설정은 바꾸지 않는다. */
@@ -191,7 +201,10 @@ internal class DevelopmentFundingNode private constructor(
                     .spiesSimulateConnection(true)
                     .threadingMode(ThreadingMode.SHARED)
                     .sharedIdleStrategy(SleepingMillisIdleStrategy(1))
-                    .errorHandler(errors),
+                    .errorHandler { error ->
+                        // Driver는 WARN도 오류 로그에 먼저 기록한다. 종료한 클라이언트의 DNS 재조회 경고로 노드를 닫지 않는다.
+                        if (error !is AeronException || error.category() != AeronException.Category.WARN) fail(error)
+                    },
             )
         archive =
             Archive.launch(
@@ -316,7 +329,7 @@ fun main(args: Array<String>) {
     require(structured || args.size in 1..2) { "사용법: 절대경로의새실행루트 [기준포트=19700] 또는 --cluster-env" }
     val config =
         if (structured) {
-            developmentClusterSettings()
+            developmentClusterSettings().copy(observationCapacity = 16)
         } else {
             DevelopmentFundingSettings(
                 Path.of(args[0]),
@@ -325,17 +338,31 @@ fun main(args: Array<String>) {
         }
     try {
         DevelopmentFundingNode.start(config).use { node ->
+            val observationsDrained = CountDownLatch(1)
+            val drainSucceeded = AtomicBoolean()
             val shutdown =
                 Thread({
                     node.close()
                     if (structured) {
+                        val drained = observationsDrained.await(5_000, TimeUnit.MILLISECONDS) && drainSucceeded.get()
+                        if (!drained) {
+                            fundingEvent(
+                                mapOf(
+                                    "kind" to "ERROR",
+                                    "runId" to config.runId,
+                                    "memberId" to config.memberId,
+                                    "failure" to "종료 시 남은 관찰 배출을 확인하지 못했습니다",
+                                ),
+                            )
+                        }
                         fundingEvent(
                             mapOf(
                                 "kind" to "STOPPED",
                                 "runId" to config.runId,
                                 "memberId" to config.memberId,
                                 "closed" to node.isClosed,
-                                "failure" to node.error?.toString(),
+                                "failure" to (node.error?.toString() ?: if (drained) null else "관찰 배출 미완료"),
+                                "observationDrained" to drained,
                             ),
                         )
                     }
@@ -350,19 +377,31 @@ fun main(args: Array<String>) {
                     )
                 }
                 var last: FundingObservation? = null
-                while (!node.awaitClosed(100)) {
-                    val observed = node.observation
-                    if (observed != null && observed !== last) {
-                        if (structured) fundingAppliedEvent(config, observed) else println("OBSERVATION $observed")
-                        last = observed
+                do {
+                    if (structured) {
+                        node.drainObservations().forEach { fundingAppliedEvent(config, it) }
+                    } else {
+                        val observed = node.observation
+                        if (observed != null && observed !== last) {
+                            println("OBSERVATION $observed")
+                            last = observed
+                        }
                     }
-                }
+                } while (!node.awaitClosed(100))
                 node.error?.let { throw IllegalStateException("개발 노드가 오류로 중단됐습니다", it) }
             } finally {
                 try {
-                    Runtime.getRuntime().removeShutdownHook(shutdown)
-                } catch (_: IllegalStateException) {
-                    // JVM 종료 중에는 hook 등록을 변경할 수 없다. 자원은 같은 close 경로로 닫힌다.
+                    node.close()
+                    check(node.awaitClosed(5_000)) { "관찰 생산자의 종료를 확인하지 못했습니다" }
+                    if (structured) node.drainObservations().forEach { fundingAppliedEvent(config, it) }
+                    drainSucceeded.set(true)
+                } finally {
+                    observationsDrained.countDown()
+                    try {
+                        Runtime.getRuntime().removeShutdownHook(shutdown)
+                    } catch (_: IllegalStateException) {
+                        // JVM 종료 중에도 main만 최종 관찰을 소비하고 hook은 완료를 기다린다.
+                    }
                 }
             }
         }

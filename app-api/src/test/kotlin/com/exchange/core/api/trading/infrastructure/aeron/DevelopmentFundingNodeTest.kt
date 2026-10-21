@@ -9,7 +9,11 @@ import com.exchange.core.common.UserId
 import com.exchange.core.ledger.OpeningBalance
 import io.aeron.Aeron
 import io.aeron.cluster.ClusterControl
+import io.aeron.driver.MediaDriver
+import io.aeron.exceptions.AeronEvent
+import io.aeron.exceptions.AeronException
 import org.agrona.concurrent.UnsafeBuffer
+import org.agrona.concurrent.errors.ErrorLogReader
 import java.net.DatagramSocket
 import java.nio.file.Files
 import java.nio.file.Path
@@ -23,10 +27,60 @@ import kotlin.test.assertFalse
 import kotlin.test.assertIs
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
+import kotlin.test.assertSame
 import kotlin.test.assertTrue
 
 /** 실제 MediaDriver·Archive·Consensus·서비스와 UDP 클라이언트. DB·MockMvc는 사용하지 않는다. */
 class DevelopmentFundingNodeTest {
+    @Test
+    fun `Driver 경고는 실제 오류 기록에 남기고 다음 자금 준비를 처리한다`() {
+        val config = config()
+        DevelopmentFundingNode.start(config).use { node ->
+            val driver = driver(node)
+            val warning = AeronEvent("could not re-resolve: endpoint=closed-client:19707")
+
+            driver.context().errorHandler().onError(warning)
+
+            assertNull(node.error)
+            assertFalse(node.isClosed)
+            val recorded = mutableListOf<String>()
+            ErrorLogReader.read(driver.context().errorLog().buffer()) { _, _, _, encoded -> recorded.add(encoded) }
+            assertTrue(recorded.any { it.contains("WARN - could not re-resolve: endpoint=closed-client:19707") })
+            DevelopmentFundingClient(config).use { client ->
+                val response = assertIs<FundingRequestOutcome.Confirmed>(client.request(command()))
+                assertEquals(
+                    1_000_000_000L,
+                    assertIs<DevelopmentBalanceResultPayload.Prepared>(response.result)
+                        .result.opening.amount.value,
+                )
+                assertEquals(
+                    1,
+                    node.observation!!
+                        .snapshot!!
+                        .preparations.size,
+                )
+            }
+            assertNull(node.error)
+        }
+    }
+
+    @Test
+    fun `Driver의 ERROR FATAL 일반 예외는 실제 노드를 중단한다`() {
+        listOf(
+            AeronEvent("테스트 ERROR", AeronException.Category.ERROR),
+            AeronEvent("테스트 FATAL", AeronException.Category.FATAL),
+            IllegalStateException("테스트 일반 예외"),
+        ).forEach { failure ->
+            DevelopmentFundingNode.start(config()).use { node ->
+                driver(node).context().errorHandler().onError(failure)
+
+                assertTrue(node.awaitClosed(5_000), "경고가 아닌 오류는 런타임을 닫아야 한다")
+                assertTrue(node.isClosed)
+                assertSame(failure, node.error)
+            }
+        }
+    }
+
     @Test
     fun `실제 통신으로 준비한 1000 USDT는 같은 요청을 다시 보내도 한 번만 지급된다`() {
         val config = config()
@@ -70,6 +124,27 @@ class DevelopmentFundingNodeTest {
                 assertTrue(recordings.all { it.archiveId == 97L && it.recordingId >= 0 })
             }
         }
+    }
+
+    @Test
+    fun `실제 노드를 닫아도 아직 출력하지 않은 두 적용이 남는다`() {
+        val config = config().copy(observationCapacity = 16)
+        val node = DevelopmentFundingNode.start(config)
+        node.use {
+            DevelopmentFundingClient(config).use { client ->
+                assertIs<FundingRequestOutcome.Confirmed>(client.request(command()))
+                assertIs<FundingRequestOutcome.Confirmed>(client.request(command("P2", "U2", "L2")))
+            }
+        }
+
+        assertTrue(node.isClosed)
+        val retained = node.drainObservations()
+        assertEquals(2, retained.size)
+        assertTrue(retained[0].position > 0 && retained[1].position > retained[0].position)
+        assertEquals(listOf("U1"), retained[0].snapshot!!.balances.map { it.userId.value })
+        assertEquals(listOf("U1", "U2"), retained[1].snapshot!!.balances.map { it.userId.value })
+        assertTrue(node.drainObservations().isEmpty())
+        assertNull(node.error)
     }
 
     @Test
@@ -320,6 +395,12 @@ class DevelopmentFundingNodeTest {
         }
         assertFailsWith<IllegalArgumentException> { DevelopmentFundingSettings(Path.of("relative")) }
         assertFailsWith<IllegalArgumentException> { config.copy(startupTimeoutMs = 0) }
+    }
+
+    /** 실제 Driver에 설치된 래핑 핸들러와 오류 로그를 확인한다. 제품에 테스트용 입구를 만들지 않는다. */
+    private fun driver(node: DevelopmentFundingNode): MediaDriver {
+        val field = DevelopmentFundingNode::class.java.getDeclaredField("driver").apply { isAccessible = true }
+        return field.get(node) as MediaDriver
     }
 
     private fun command(

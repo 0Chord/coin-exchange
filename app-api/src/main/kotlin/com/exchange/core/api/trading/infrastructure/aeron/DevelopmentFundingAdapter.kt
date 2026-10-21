@@ -32,6 +32,7 @@ import io.aeron.cluster.service.ClusteredService
 import io.aeron.logbuffer.Header
 import org.agrona.DirectBuffer
 import org.agrona.concurrent.AgentTerminationException
+import org.agrona.concurrent.OneToOneConcurrentArrayQueue
 import org.agrona.concurrent.UnsafeBuffer
 
 /** 서비스 스레드가 완성한 값만 외부에 공개한다. 영구 Aeron Snapshot과는 다르다. */
@@ -56,6 +57,7 @@ internal class DevelopmentFundingAdapter(
     private val market: MarketDefinition = MarketDefinition(MarketId("BTC-USDT"), AssetId("BTC"), AssetId("USDT"), 8),
     private val feePolicySnapshot: TradingFeePolicySnapshot =
         TradingFeePolicySnapshot(FeeProductType.SPOT, FeeTier.NORMAL, 1, MakerTakerFeeRates(FeeRate.ZERO, FeeRate.ZERO)),
+    private val observationCapacity: Int = 0,
     private val onFatal: (Throwable) -> Unit,
 ) : ClusteredService {
     private val commands = DevelopmentBalanceCommandCodec()
@@ -65,6 +67,17 @@ internal class DevelopmentFundingAdapter(
     private lateinit var cluster: Cluster
     private var malformedMessages = 0L
     private var fatalCause: Throwable? = null
+    private val retainedObservations =
+        run {
+            require(observationCapacity == 0 || (observationCapacity in 1..1024 && Integer.bitCount(observationCapacity) == 1)) {
+                "관찰 용량은 0 또는 1..1024 범위의 2의 거듭제곱이어야 합니다"
+            }
+            if (observationCapacity == 0) null else OneToOneConcurrentArrayQueue<FundingObservation>(observationCapacity)
+        }
+
+    @Volatile
+    private var terminalObservation: FundingObservation? = null
+    private var deliveredTerminal: FundingObservation? = null
 
     @Volatile
     var observation: FundingObservation? = null
@@ -77,6 +90,25 @@ internal class DevelopmentFundingAdapter(
     init {
         require(maxReplyAttempts > 0) { "응답 재시도 횟수는 양수여야 합니다" }
         require(replyTimeoutNs > 0) { "응답 재시도 기한은 양수여야 합니다" }
+    }
+
+    /** main 한 소비자만 호출한다. 큐가 가득 차도 종료 오류는 별도 슬롯에 남는다. */
+    fun drainObservations(): List<FundingObservation> =
+        buildList {
+            retainedObservations?.drainTo(this, observationCapacity)
+            terminalObservation?.let { terminal ->
+                if (terminal !== deliveredTerminal) {
+                    add(terminal)
+                    deliveredTerminal = terminal
+                }
+            }
+        }
+
+    private fun publishApplied(value: FundingObservation) {
+        observation = value
+        check(retainedObservations?.offer(value) != false) {
+            "개발 관찰 버퍼 초과: capacity=$observationCapacity, position=${value.position}; 이미 적용한 상태는 롤백하지 않습니다"
+        }
     }
 
     override fun onStart(
@@ -104,14 +136,15 @@ internal class DevelopmentFundingAdapter(
                     decode(buffer, offset, length)
                 } catch (error: AdmissionMessageException) {
                     malformedMessages++
-                    observation =
+                    publishApplied(
                         FundingObservation(
                             cluster.logPosition(),
                             snapshot = null,
                             result = null,
                             malformedMessages = malformedMessages,
                             replyStatus = "MALFORMED_OR_UNSUPPORTED: ${error.message}",
-                        )
+                        ),
+                    )
                     return
                 }
 
@@ -140,7 +173,7 @@ internal class DevelopmentFundingAdapter(
                     admissionResult = admissionResult,
                     appliedRole = cluster.role().name,
                 )
-            observation = applied
+            publishApplied(applied)
             observation = sendReply(session, reply, applied)
         } catch (error: Throwable) {
             fail(error)
@@ -261,7 +294,7 @@ internal class DevelopmentFundingAdapter(
     private fun fail(error: Throwable): Nothing {
         fatalCause = error
         started = false
-        observation =
+        val failed =
             FundingObservation(
                 position = if (this::cluster.isInitialized) cluster.logPosition() else 0,
                 snapshot = null,
@@ -270,6 +303,8 @@ internal class DevelopmentFundingAdapter(
                 malformedMessages = malformedMessages,
                 blocked = state.isBlocked,
             )
+        observation = failed
+        terminalObservation = failed
         try {
             onFatal(error)
         } catch (notificationError: Throwable) {
