@@ -309,7 +309,13 @@ class DevelopmentOrderClientTest {
     fun `선택 정책 버전은 로컬과 환경 주문에서 실제 접수 원본에 전달된다`() {
         listOf(false, true).forEach { structured ->
             val defaults = config()
-            val nodeConfig = defaults.copy(feePolicySnapshot = defaults.feePolicySnapshot.copy(scheduleVersion = 2))
+            val nodeConfig =
+                defaults.copy(
+                    markets =
+                        DevelopmentMarketRegistry(
+                            listOf(DevelopmentMarketContext(defaults.market, defaults.feePolicySnapshot.copy(scheduleVersion = 2))),
+                        ),
+                )
             DevelopmentFundingNode.start(nodeConfig).use { node ->
                 prepare(nodeConfig, 1_000_000_000)
                 val command = order()

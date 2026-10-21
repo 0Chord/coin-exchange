@@ -623,9 +623,14 @@ class DevelopmentOrderNodeTest {
     private fun nonzeroConfig(): DevelopmentFundingSettings {
         val config = config()
         return config.copy(
-            feePolicySnapshot =
-                config.feePolicySnapshot.copy(
-                    feeRates = MakerTakerFeeRates(FeeRate(1_000), FeeRate(2_000)),
+            markets =
+                DevelopmentMarketRegistry(
+                    listOf(
+                        DevelopmentMarketContext(
+                            config.market,
+                            config.feePolicySnapshot.copy(feeRates = MakerTakerFeeRates(FeeRate(1_000), FeeRate(2_000))),
+                        ),
+                    ),
                 ),
         )
     }

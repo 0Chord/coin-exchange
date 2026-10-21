@@ -1,12 +1,5 @@
 package com.exchange.core.api.trading.infrastructure.aeron
 
-import com.exchange.core.api.trading.infrastructure.codec.AdmissionMessageFormat
-import com.exchange.core.common.AssetId
-import com.exchange.core.common.MarketId
-import com.exchange.core.fee.FeeProductType
-import com.exchange.core.fee.FeeRate
-import com.exchange.core.fee.FeeTier
-import com.exchange.core.fee.MakerTakerFeeRates
 import com.exchange.core.fee.TradingFeePolicySnapshot
 import com.exchange.core.fee.TradingFeeReserveCalculator
 import com.exchange.core.order.BuyOrderFundingQuoteCalculator
@@ -46,9 +39,7 @@ internal data class DevelopmentFundingSettings(
     val resultTimeoutMs: Long = 5_000,
     val maxReplyAttempts: Int = 100,
     val replyTimeoutMs: Long = 100,
-    val market: MarketDefinition = MarketDefinition(MarketId("BTC-USDT"), AssetId("BTC"), AssetId("USDT"), 8),
-    val feePolicySnapshot: TradingFeePolicySnapshot =
-        TradingFeePolicySnapshot(FeeProductType.SPOT, FeeTier.NORMAL, 1, MakerTakerFeeRates(FeeRate.ZERO, FeeRate.ZERO)),
+    val markets: DevelopmentMarketRegistry = DevelopmentMarketRegistry(listOf(DevelopmentMarketContext.BTC_USDT)),
     val memberId: Int = 0,
     val advertisedHost: String = "127.0.0.1",
     val bindHost: String = advertisedHost,
@@ -60,7 +51,6 @@ internal data class DevelopmentFundingSettings(
         require(basePort in 1024..65528) { "연속 8개 포트가 필요합니다" }
         require(startupTimeoutMs in 1..60_000 && resultTimeoutMs in 1..60_000)
         require(maxReplyAttempts in 1..10_000 && replyTimeoutMs in 1..1_000)
-        require(feePolicySnapshot.productType == FeeProductType.SPOT) { "개발 접수에는 현물 수수료 정책이 필요합니다" }
         require(advertisedHost.isNotBlank() && advertisedHost != "0.0.0.0") { "도달 가능한 광고 주소가 필요합니다" }
         require(bindHost.isNotBlank())
         val configured = ClusterMember.parse(members)
@@ -68,12 +58,10 @@ internal data class DevelopmentFundingSettings(
         require(configured.map { it.id() }.distinct().size == configured.size)
         require(configured.any { it.id() == memberId }) { "멤버 목록에 자기 ID가 없습니다" }
         require(runId == null || runId.matches(Regex("[a-z0-9-]{1,64}")))
-        listOf(market.marketId.value, market.baseAssetId.value, market.quoteAssetId.value).forEach {
-            AdmissionMessageFormat.text(it)
-            require('\u0000' !in it && it.codePointCount(0, it.length) <= 64) { "개발 마켓 식별자가 잘못됐습니다" }
-        }
-        require(':' !in market.baseAssetId.value && ':' !in market.quoteAssetId.value) { "개발 자산 식별자에는 콜론을 쓸 수 없습니다" }
     }
+
+    val market: MarketDefinition get() = markets.single().market
+    val feePolicySnapshot: TradingFeePolicySnapshot get() = markets.single().feePolicySnapshot
 
     val driverDirectory: String get() = runRoot.resolve("driver").toString()
     val archiveDirectory: Path get() = runRoot.resolve("archive")
@@ -127,8 +115,7 @@ internal class DevelopmentFundingNode private constructor(
             ),
             config.maxReplyAttempts,
             TimeUnit.MILLISECONDS.toNanos(config.replyTimeoutMs),
-            market = config.market,
-            feePolicySnapshot = config.feePolicySnapshot,
+            markets = config.markets,
             onFatal = ::fail,
         )
     val observation: FundingObservation? get() = service.observation
