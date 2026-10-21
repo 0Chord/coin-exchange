@@ -57,122 +57,6 @@ class DevelopmentFundingAdapterTest {
     private val header = Header(0, 0)
 
     @Test
-    fun `소비가 늦어도 두 적용을 보존하고 앞 상태는 바뀌지 않는다`() {
-        val fixture = fixture(observationCapacity = 16)
-        `when`(fixture.cluster.logPosition()).thenReturn(256L, 512L)
-
-        send(fixture, command())
-        send(fixture, command("P2", "U2", "L2"))
-
-        val observations = fixture.service.drainObservations()
-        assertEquals(listOf(256L, 512L), observations.map { it.position })
-        val first = assertNotNull(observations[0].snapshot)
-        val second = assertNotNull(observations[1].snapshot)
-        assertEquals(listOf("U1"), first.balances.map { it.userId.value })
-        assertEquals(listOf("U1", "U2"), second.balances.map { it.userId.value })
-        assertEquals(1, first.preparations.size)
-        assertEquals(2, second.preparations.size)
-        assertTrue(fixture.service.drainObservations().isEmpty())
-    }
-
-    @Test
-    fun `응답 진단을 갱신해도 같은 적용은 관찰 버퍼에 한 번만 남긴다`() {
-        val fixture = fixture(observationCapacity = 16, offers = listOf(Publication.BACK_PRESSURED, Publication.ADMIN_ACTION, 99L))
-
-        send(fixture, command())
-
-        val applied = fixture.service.drainObservations().single()
-        assertEquals(256L, applied.position)
-        assertEquals("PENDING", applied.replyStatus)
-        assertEquals(0, applied.replyAttempts)
-        assertEquals("OFFERED", fixture.service.observation!!.replyStatus)
-        assertEquals(3, fixture.service.observation!!.replyAttempts)
-        assertSame(applied.snapshot, fixture.service.observation!!.snapshot)
-        assertTrue(fixture.service.drainObservations().isEmpty())
-    }
-
-    @Test
-    fun `잘못된 메시지도 다음 정상 적용에 덮이지 않는다`() {
-        val fixture = fixture(observationCapacity = 16)
-        `when`(fixture.cluster.logPosition()).thenReturn(128L, 256L)
-
-        sendBytes(fixture, ByteArray(7))
-        send(fixture, command())
-
-        val observations = fixture.service.drainObservations()
-        assertEquals(listOf(128L, 256L), observations.map { it.position })
-        assertEquals(1L, observations[0].malformedMessages)
-        assertTrue(observations[0].replyStatus!!.startsWith("MALFORMED_OR_UNSUPPORTED"))
-        assertNull(observations[0].snapshot)
-        assertNotNull(observations[1].snapshot)
-        assertTrue(fixture.failures.isEmpty())
-    }
-
-    @Test
-    fun `버퍼 초과는 큐 밖 오류로 남고 이미 적용한 자금을 되돌리지 않는다`() {
-        val fixture = fixture(observationCapacity = 1)
-        `when`(fixture.cluster.logPosition()).thenReturn(256L, 512L)
-        send(fixture, command())
-
-        val error = assertFailsWith<AgentTerminationException> { send(fixture, command("P2", "U2", "L2")) }
-
-        assertTrue(error.cause!!.message!!.contains("관찰 버퍼 초과"))
-        assertFalse(fixture.service.started)
-        assertFalse(fixture.state.isBlocked, "관찰 수집 실패는 이미 반영한 돈을 롤백하거나 도메인 차단 상태로 바꾸지 않는다")
-        assertEquals(
-            2,
-            fixture.state
-                .snapshot()
-                .preparations.size,
-        )
-        val retained = fixture.service.drainObservations()
-        assertEquals(listOf(256L, 512L), retained.map { it.position })
-        assertEquals(
-            1,
-            retained
-                .first()
-                .snapshot!!
-                .preparations.size,
-        )
-        val failed = retained.last()
-        assertTrue(failed.failure!!.contains("capacity=1"))
-        assertNull(failed.snapshot)
-        assertSame(failed, fixture.service.observation)
-        assertTrue(fixture.service.drainObservations().isEmpty())
-        assertFailsWith<AgentTerminationException> { send(fixture, command("P3", "U3", "L3")) }
-        assertSame(failed, fixture.service.observation, "소비 이후에도 오류를 정상 관찰로 덮지 않는다")
-        assertEquals(1, fixture.failures.size)
-        assertEquals(1, fixture.replies.size, "두 번째 지급은 반영됐어도 관찰 실패를 정상 응답으로 숨기지 않는다")
-    }
-
-    @Test
-    fun `버퍼가 차 있어도 코어 종료 오류를 배출할 수 있다`() {
-        val fixture = fixture(observationCapacity = 1)
-        send(fixture, command())
-
-        assertFailsWith<AgentTerminationException> { send(fixture, command("P2", "U2", "")) }
-
-        val observations = fixture.service.drainObservations()
-        assertEquals(2, observations.size)
-        assertNotNull(observations[0].snapshot)
-        assertTrue(observations[1].failure!!.contains("원장"))
-        assertNull(observations[1].snapshot)
-        assertEquals(
-            1,
-            fixture.state
-                .snapshot()
-                .preparations.size,
-        )
-    }
-
-    @Test
-    fun `관찰 용량은 메모리 할당 전에 제한한다`() {
-        listOf(-1, 3, 2048, Int.MAX_VALUE).forEach { capacity ->
-            assertFailsWith<IllegalArgumentException> { fixture(observationCapacity = capacity) }
-        }
-    }
-
-    @Test
     fun `비영점 구간만 복원하고 업무 시각과 불변 관찰을 보존한다`() {
         val fixture = fixture()
         val bytes = commands.encode(command())
@@ -687,7 +571,6 @@ class DevelopmentFundingAdapterTest {
         maxReplyAttempts: Int = 5,
         replyTimeoutNs: Long = 1_000_000_000,
         start: Boolean = true,
-        observationCapacity: Int = 0,
     ): Fixture {
         val state = spy(OrderAdmissionState(emptyList(), admissionCalculator()))
         val cluster = mock(Cluster::class.java)
@@ -707,8 +590,7 @@ class DevelopmentFundingAdapterTest {
             replyBuffers += buffer
             offers[(replies.size - 1).coerceAtMost(offers.lastIndex)]
         }.`when`(session).offer(any(DirectBuffer::class.java), anyInt(), anyInt())
-        val service =
-            DevelopmentFundingAdapter(state, maxReplyAttempts, replyTimeoutNs, observationCapacity = observationCapacity) { failures += it }
+        val service = DevelopmentFundingAdapter(state, maxReplyAttempts, replyTimeoutNs) { failures += it }
         if (start) service.onStart(cluster, null)
         return Fixture(state, cluster, session, idle, service, replies, replyBuffers, failures)
     }

@@ -231,7 +231,7 @@ internal class DockerFundingVerification(
                             "--name",
                             name,
                             "client-$suffix",
-                            "com.exchange.core.api.trading.infrastructure.aeron.DevelopmentOrderClientKt",
+                            "com.exchange.core.api.trading.infrastructure.aeron.ConcurrentOrderClientKt",
                             "--cluster-env",
                         ) +
                             arguments,

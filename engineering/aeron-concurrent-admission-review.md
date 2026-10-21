@@ -14,7 +14,18 @@
 - 브랜치: `test/aeron-concurrent-reservations/109`
 - 기준 통합 커밋: `33f4feca2d7cf02a6c9bfe595851076ae4b3100b`
 
-검증 범위: **로컬 구현·관련 검사·독립 재리뷰 완료**. 원격 CI와 사람의 최종 리뷰는 PR에서 별도로 확인한다.
+현재 상태: **실행 코드와 검증 코드 분리 후 로컬 검사 통과**. 현재 실행 근거는 아래 검증 결과에, 이전 실행의 실패와 수정 이력은 문서 끝의 접힌 기록에 구분했다.
+
+## 일반 실행과 이번 검증이 맡는 일
+
+| 위치 | 유지하는 책임 | 이번 동시 검사에서 쓰는 방식 |
+| --- | --- | --- |
+| `src/main` · `DevelopmentOrderClient` | 실제 Aeron 연결·주문 송수신, 일반 개발 CLI | 일반 CLI에는 GO 파일·`ORDER_START_GATE`·`ORDER_CLIENT_ID` 처리나 READY 대기가 없다. 기존 순차 주문 실행과 결과 이벤트를 유지한다. |
+| `src/main` · `DevelopmentFundingAdapter`·`DevelopmentFundingNode` | 기존 엔진 적용·응답, 최신 관찰값 한 칸, 노드 자원과 실제 업무 오류 처리 | 최신 관찰값을 유지한다. 수집 큐·용량·overflow·종료 배출 정책은 두지 않는다. |
+| `src/test` · `ConcurrentOrderClient`·`DevelopmentOrderStartGate` | 독립 클라이언트의 READY·GO·진행 정보 | 일반 클라이언트와 주문 파싱을 공유하고 실제 `DevelopmentOrderClient.request()`를 호출한다. GO 대기도 연결 소유 스레드에서 일반 `pollConnection()`으로 연결을 유지한다. |
+| `src/test` · `FundingVerificationNode`·`FundingVerificationCollector` | 적용별 관찰 큐·실패 보존·최종 배출 | 실제 어댑터를 감싼 래퍼가 callback 종료 뒤 관찰을 수집한다. overflow는 검증 실패로 보존하고 업무 예외로 전파하지 않는다. 검증 실행의 소유자가 실패를 읽고 노드를 정리한다. |
+
+Docker 검사 이미지는 main 실행 클래스와 test 전용 진입점을 함께 넣는다. 일반 개발 실행 배포에는 main 클래스만 들어간다. 세 검증 노드는 `FundingVerificationNodeKt`, 동시 주문 A/B는 `ConcurrentOrderClientKt`를 실행한다. 기존 자금 준비 클라이언트와 순차 주문 클라이언트는 일반 개발 진입점을 그대로 사용한다. 검증 래퍼는 업무 계산이나 전송을 흉내 내지 않는다.
 
 ## 먼저 이 흐름만 읽으면 된다
 
@@ -41,7 +52,7 @@
 
 동시에 출발해도 각 노드 안의 업무 처리는 한 건씩 진행한다. A가 먼저라면 B는 A가 600을 예약한 **뒤의 잔고 400**으로 판단한다. 세 노드는 주문을 하나씩 나눠 맡는 서버가 아니라 같은 자금·주문 상태를 각각 보관하는 사본이다.
 
-처음 읽을 코드는 [runConcurrentInputs()](../app-api/src/test/kotlin/com/exchange/core/api/trading/infrastructure/aeron/DockerFundingReplicationTest.kt), [awaitStartGate()](../app-api/src/main/kotlin/com/exchange/core/api/trading/infrastructure/aeron/DevelopmentOrderClient.kt), [compareConcurrentOrderReplication()](../app-api/src/test/kotlin/com/exchange/core/api/trading/infrastructure/aeron/ConcurrentOrderReplicationComparison.kt) 순서다. 아래 상세는 필요한 것만 펼쳐 읽으면 된다.
+처음 읽을 코드는 [runConcurrentInputs()](../app-api/src/test/kotlin/com/exchange/core/api/trading/infrastructure/aeron/DockerFundingReplicationTest.kt), [runConcurrentOrderClient()](../app-api/src/test/kotlin/com/exchange/core/api/trading/infrastructure/aeron/ConcurrentOrderClient.kt), [compareConcurrentOrderReplication()](../app-api/src/test/kotlin/com/exchange/core/api/trading/infrastructure/aeron/ConcurrentOrderReplicationComparison.kt) 순서다. 아래 상세는 필요한 것만 펼쳐 읽으면 된다.
 
 <details>
 <summary>어떤 JVM이 무엇을 하는가 · 준비부터 출발까지</summary>
@@ -52,9 +63,9 @@
 | --- | --- | --- |
 | 테스트 JVM | Gradle이 시작한 테스트 프로세스 | Docker 실행, READY 수집, GO 공개, 응답·상태 비교, 정리 |
 | 자금 준비 클라이언트 | 별도 개발 클라이언트 컨테이너 | P1으로 U1에게 USDT 1,000을 준비하고 종료 |
-| 주문 클라이언트 A | `client-a` 컨테이너의 JVM | RA/OA: 600 USDT가 필요한 주문 한 건 전송 |
-| 주문 클라이언트 B | `client-b` 컨테이너의 JVM | RB/OB: 500 USDT가 필요한 주문 한 건 전송 |
-| 거래 노드 0·1·2 | 각각 별도 컨테이너의 JVM | 각자 MediaDriver·Archive·엔진 상태를 가지고 같은 입력 순서 처리 |
+| 주문 클라이언트 A | `client-a` 컨테이너의 테스트 전용 `ConcurrentOrderClientKt` JVM | 실제 개발 클라이언트로 RA/OA: 600 USDT가 필요한 주문 한 건 전송 |
+| 주문 클라이언트 B | `client-b` 컨테이너의 테스트 전용 `ConcurrentOrderClientKt` JVM | 실제 개발 클라이언트로 RB/OB: 500 USDT가 필요한 주문 한 건 전송 |
+| 거래 노드 0·1·2 | 각각 별도 컨테이너의 테스트 전용 `FundingVerificationNodeKt` JVM | 실제 개발 노드의 MediaDriver·Archive·엔진으로 같은 입력 순서 처리, 테스트 수집기가 적용별 관찰 보존 |
 
 테스트 JVM은 주문을 승인하지 않는다. A/B는 주문을 전송하는 프로그램이고, 노드의 `DevelopmentFundingAdapter`가 받은 명령을 기존 `OrderAdmissionState.admit()`에 전달한다. 이번 실행에는 HTTP 요청을 받는 app-api 서버나 사용자 화면이 없다.
 
@@ -73,9 +84,9 @@
 
 A/B가 같은 출발 조건을 기다린다는 뜻이다. 실제 CPU 스케줄링 때문에 A의 응답이 B의 전송 시작보다 먼저 올 수도 있다. 중요한 것은 **B를 출발시키는 코드가 A의 응답을 기다리지 않는다는 점**이다. 서로 다른 JVM의 `nanoTime()`을 비교해 먼저 처리된 주문을 정하지 않는다.
 
-A/B는 GO를 기다리는 동안 자기 스레드에서 `pollEgress()`와 keepalive를 계속 처리한다. 연결을 만든 뒤 아무것도 하지 않고 기다려 세션이 끊기는 상황을 막기 위한 것이다. 이전 실행의 GO, 준비 전에 있던 GO, 잘못된 실행 ID는 출발 근거가 될 수 없다.
+테스트 전용 A/B 진입점은 GO를 기다리는 동안 연결을 소유한 자기 스레드에서 `DevelopmentOrderClient.pollConnection()`을 호출해 `pollEgress()`와 keepalive를 계속 처리한다. 연결을 만든 뒤 아무것도 하지 않고 기다려 세션이 끊기는 상황을 막기 위한 것이다. 이전 실행의 GO, 준비 전에 있던 GO, 잘못된 실행 ID는 출발 근거가 될 수 없다.
 
-코드: [Compose의 client-a/client-b](../app-api/src/test/docker/aeron-funding/compose.yml), [ConcurrentClientBarrier](../app-api/src/test/kotlin/com/exchange/core/api/trading/infrastructure/aeron/ConcurrentClientBarrier.kt), [DevelopmentOrderStartGate.await()](../app-api/src/main/kotlin/com/exchange/core/api/trading/infrastructure/aeron/DevelopmentOrderStartGate.kt).
+코드: [Compose의 client-a/client-b](../app-api/src/test/docker/aeron-funding/compose.yml), [ConcurrentClientBarrier](../app-api/src/test/kotlin/com/exchange/core/api/trading/infrastructure/aeron/ConcurrentClientBarrier.kt), [DevelopmentOrderStartGate.await()](../app-api/src/test/kotlin/com/exchange/core/api/trading/infrastructure/aeron/DevelopmentOrderStartGate.kt).
 
 </details>
 
@@ -125,15 +136,17 @@ B가 먼저면 같은 규칙으로 B가 500을 예약하고 A가 거절된다. B
 
 ### 마지막 상태만 남기면 첫 주문 검사를 놓친다
 
-기존 개발 관찰은 `observation` 한 칸에 마지막 값을 저장했다. main이 읽기 전에 A 다음 B가 처리되면 A의 상태가 덮일 수 있다. 요청 사이에 기다림을 넣으면 이번 동시 전송 검사의 목적을 잃는다.
+일반 개발 노드는 기존처럼 `observation` 한 칸에 최신 값을 저장한다. 출력 전에 A 다음 B가 처리되면 A의 상태를 놓칠 수 있으므로, 이번 Docker 검사만 별도 테스트 수집기를 사용한다. 요청 사이에 기다림을 넣어 문제를 피하지 않는다.
 
-구조화된 개발 노드 실행은 용량 16의 관찰 큐를 사용한다. 서비스 스레드가 적용 순간 만든 불변 관찰을 넣고, main 스레드가 꺼내 JSON으로 출력한다. 업무 callback에서 파일을 쓰거나 큐가 빌 때까지 기다리지 않는다. 기존 latest 관찰 조회도 유지한다.
+`FundingVerificationCollector.decorate()`는 실제 `DevelopmentFundingAdapter`에 모든 서비스 동작을 위임한다. 서비스 스레드에서 한 `onSessionMessage()`가 끝나면 새로 완성된 불변 관찰을 용량 16의 큐에 한 번 넣는다. 응답 재시도가 있으면 그 callback의 최종 응답 진단을 수집하며, 같은 적용의 PENDING·OFFERED를 별도 주문으로 늘리지 않는다. `FundingVerificationNode`의 테스트 main 한 소비자가 큐를 꺼내 JSON으로 출력한다. 업무 callback은 파일을 쓰거나 큐가 빌 때까지 기다리지 않는다.
 
-한 입력이 적용된 관찰은 한 번만 넣는다. 같은 위치의 응답 상태가 PENDING에서 OFFERED로 바뀌어도 새 주문 적용을 뜻하지 않는다. 여기서 관찰에 담은 snapshot은 **검사용 상태 복사본**이다. 디스크에 복구용 스냅샷을 저장하는 기능을 추가한 것은 아니다.
+여기서 관찰에 담은 snapshot은 **검사용 상태 복사본**이다. 디스크에 복구용 스냅샷을 저장하는 기능을 추가한 것은 아니다. 일반 개발 어댑터의 최신 관찰값도 그대로 유지한다.
 
-관찰 큐가 가득 차면 조용히 버리지 않는다. 큐 밖에 오류를 남기고 개발 노드의 실행을 중단한다. 이미 계산·반영된 돈이 되돌아갔다고 말하지 않는다. 잘못된 메시지나 코어 오류도 뒤의 정상 관찰에 가려지지 않게 보존한다.
+큐가 가득 차면 `verificationFailure`에 검증 실패를 남긴다. **overflow를 업무 서비스로 던지거나 `onFatal`을 호출하지 않는다.** 이미 적용한 자금과 현재 응답은 유지되고, 테스트 소유자가 정리하기 전에는 다음 정상 업무도 처리할 수 있다. 배출 뒤 후속 정상 관찰이 들어와도 실패 표시는 지우지 않는다. 검증 main이 이 실패를 읽으면 검사를 실패시키고, 자신이 소유한 노드를 닫아 생산자 종료를 확인한 뒤 남은 관찰을 배출한다.
 
-코드: [DevelopmentFundingAdapter.publishApplied()/drainObservations()](../app-api/src/main/kotlin/com/exchange/core/api/trading/infrastructure/aeron/DevelopmentFundingAdapter.kt), [DevelopmentFundingNode.main()](../app-api/src/main/kotlin/com/exchange/core/api/trading/infrastructure/aeron/DevelopmentFundingNode.kt), [fundingAppliedFields()](../app-api/src/main/kotlin/com/exchange/core/api/trading/infrastructure/aeron/DevelopmentFundingEvents.kt).
+실제 코어 오류는 기존 서비스의 치명 오류 경로와 원래 예외를 유지한다. 수집 래퍼는 `finally`에서 그 오류 관찰을 별도 슬롯에 보존하므로 큐가 가득 찼어도 원인을 잃지 않는다. 잘못된 메시지 관찰도 다음 정상 관찰과 함께 보존한다.
+
+코드: [FundingVerificationCollector.decorate()/drainObservations()와 테스트 노드 main](../app-api/src/test/kotlin/com/exchange/core/api/trading/infrastructure/aeron/FundingVerificationNode.kt), [일반 어댑터의 최신 observation](../app-api/src/main/kotlin/com/exchange/core/api/trading/infrastructure/aeron/DevelopmentFundingAdapter.kt), [일반 노드 실행](../app-api/src/main/kotlin/com/exchange/core/api/trading/infrastructure/aeron/DevelopmentFundingNode.kt).
 
 ### 실패를 처리한 척하고 통과시키지 않는다
 
@@ -141,6 +154,7 @@ B가 먼저면 같은 규칙으로 B가 500을 예약하고 A가 거절된다. B
 | --- | --- |
 | A/B 연결 준비 실패, 이전 GO, 주소·세션 공유 | SETUP. 출발하지 않고 시작한 자원을 정리 |
 | GO 뒤 응답·관찰 누락 또는 기한 초과 | UNVERIFIABLE. 실제 돈이 반영됐을 수 있으므로 미접수나 취소로 단정하지 않음 |
+| 테스트 관찰 큐 overflow | 검증 실패를 보존하고 테스트 실행 소유자가 정리. 업무 거절·업무 치명 오류로 바꾸지 않음 |
 | 두 승인, 틀린 잔고·예약·원장·응답 대응 | MISMATCH. 어느 요청·노드·위치·필드가 다른지 기록 |
 | 추가 로그 수집 실패 | COLLECTION 추가. 앞서 확인한 MISMATCH는 유지 |
 | 클라이언트·노드 종료 또는 기록 보존 실패 | CLEANUP/COLLECTION 추가. 전체 실행 실패 |
@@ -153,7 +167,7 @@ MediaDriver가 종료한 클라이언트의 주소를 다시 찾다가 내는 `C
 
 `VerificationCommands.start()`는 프로세스를 시작하기 전에 고유 로그 경로와 핸들을 등록한다. 두 프로세스를 먼저 시작해도 같은 출력 파일을 덮지 않으며, B 기동이 실패해도 먼저 띄운 A를 정리할 수 있다.
 
-Docker 명령 프로세스가 끝났다고 컨테이너 JVM도 끝났다고 가정하지 않는다. `preserveAndClose()`는 실제 클라이언트 컨테이너를 조회해 종료를 확인하고, 노드 종료·남은 관찰 배출·Archive와 cluster 디렉터리 복사를 진행한다. 마지막에는 컨테이너와 네트워크를 정리하되 기록 볼륨은 보존한다.
+Docker 명령 프로세스가 끝났다고 컨테이너 JVM도 끝났다고 가정하지 않는다. `preserveAndClose()`는 실제 클라이언트 컨테이너를 조회해 종료를 확인하고, 검증 노드 종료·Archive와 cluster 디렉터리 복사를 진행한다. 검증 노드 안의 테스트 main이 생산자를 닫은 뒤 남은 관찰을 배출하고, 종료 hook은 그 완료를 확인한다. 일반 개발 main에는 이 큐 배출 계약이 없다. 마지막에는 컨테이너와 네트워크를 정리하되 기록 볼륨은 보존한다.
 
 연결 대기·GO 대기·응답·관찰·종료에는 각각 상한이 있다. 두 READY 수집은 90초, GO 이후 두 응답 회수는 함께 20초, 두 위치의 관찰은 15초다. 각 클라이언트의 실제 GO 대기 상한도 READY에서 읽어 보고서에 남긴다(현재 60초). 단계별 실제 소요 시간은 실패해도 남긴다. A의 최종 로그 파일을 저장하지 못해도 COLLECTION 오류를 기록하고 B 로그·노드 종료·정리·보고서 작성을 계속한다. 출발 뒤 문제가 생겼다고 새 요청 ID를 만들어 자동으로 다시 보내지는 않는다.
 
@@ -178,18 +192,23 @@ Docker 명령 프로세스가 끝났다고 컨테이너 JVM도 끝났다고 가�
 
 ### 앞 적용의 관찰을 잃지 않는가
 
-[DevelopmentFundingAdapterTest](../app-api/src/test/kotlin/com/exchange/core/api/trading/infrastructure/aeron/DevelopmentFundingAdapterTest.kt)는 실제 도메인 상태와 통제한 Cluster·응답 API를 사용한다. 네트워크 복제 자체는 위 Docker 실행이 확인한다.
+[FundingVerificationCollectorTest](../app-api/src/test/kotlin/com/exchange/core/api/trading/infrastructure/aeron/FundingVerificationCollectorTest.kt)는 테스트 수집기로 감싼 실제 어댑터·도메인 상태와 통제한 Cluster·응답 API를 사용한다. 네트워크 복제 자체는 위 Docker 실행이 확인한다. 기존 [DevelopmentFundingAdapterTest](../app-api/src/test/kotlin/com/exchange/core/api/trading/infrastructure/aeron/DevelopmentFundingAdapterTest.kt)는 일반 어댑터의 업무 처리와 최신 관찰값을 계속 검사한다.
 
 | 테스트 이름 | 준비 → 실행 → 실제 확인 |
 | --- | --- |
 | 소비가 늦어도 두 적용을 보존하고 앞 상태는 바뀌지 않는다 | U1/U2의 자금 준비를 소비 없이 연속 적용 → 한 번 배출 → 두 위치가 순서대로 남고, 첫 상태에는 U1만·둘째에는 U1/U2가 있음 |
-| 응답 진단을 갱신해도 같은 적용은 관찰 버퍼에 한 번만 남긴다 | 응답 전송을 BACK_PRESSURED→ADMIN_ACTION→성공으로 통제 → 한 명령 적용 → 큐에는 적용 한 건, latest에는 최종 응답 진단과 같은 snapshot |
+| 응답 재시도가 끝난 한 callback의 최종 관찰만 한 번 수집한다 | 응답 전송을 BACK_PRESSURED→ADMIN_ACTION→성공으로 통제 → 한 명령 적용 → 관찰 한 건의 상태는 OFFERED, 시도는 3회이며 실제 어댑터의 최신 관찰과 같은 객체 |
 | 잘못된 메시지도 다음 정상 적용에 덮이지 않는다 | 잘린 바이트 다음 정상 자금 준비 → 배출 → 잘못된 메시지 관찰과 정상 상태가 각각 남음 |
-| 버퍼 초과는 큐 밖 오류로 남고 이미 적용한 자금을 되돌리지 않는다 | 용량 1에 두 자금 준비 → 두 번째 적용 중 관찰 초과 → 종료 오류·첫 관찰이 남고, 실제 자금 준비는 둘 다 반영됨. 후속 호출도 정상 관찰로 오류를 덮지 못함 |
-| 버퍼가 차 있어도 코어 종료 오류를 배출할 수 있다 | 첫 관찰을 채운 뒤 잘못된 원장 ID 명령 → 종료 → 첫 상태와 별도 오류를 모두 읽을 수 있고 둘째 지급은 없음 |
-| 관찰 용량은 메모리 할당 전에 제한한다 | 음수·2의 거듭제곱이 아닌 값·상한 초과 용량 → 생성 → 잘못된 설정 거절 |
+| 버퍼 초과는 검증만 실패시키고 현재 응답과 다음 업무 처리를 유지한다 | 용량 1에 두 자금 준비 → overflow 확인·배출 뒤 세 번째 준비 → 세 응답과 세 지급 모두 정상, 서비스 시작 상태·코어 비차단·onFatal 미호출, 최초 검증 실패는 계속 남음 |
+| 버퍼가 차 있어도 실제 코어 종료 오류와 원래 예외를 보존한다 | 첫 관찰을 채운 뒤 잘못된 원장 ID 명령 → 실제 서비스 오류 → 첫 상태와 오류 관찰을 모두 배출, 원래 예외 원인·업무 종료 유지, 둘째 지급과 응답 없음 |
+| 관찰 용량은 메모리 할당 전에 제한한다 | 음수·0·2의 거듭제곱이 아닌 값·상한 초과 용량 → 테스트 수집기 생성 → 잘못된 설정 거절 |
 
-[DevelopmentFundingNodeTest](../app-api/src/test/kotlin/com/exchange/core/api/trading/infrastructure/aeron/DevelopmentFundingNodeTest.kt)의 `실제 노드를 닫아도 아직 출력하지 않은 두 적용이 남는다`: 실제 단일 노드에 두 자금 준비를 보낸 뒤 닫고, 닫힌 뒤에도 두 순서와 각 상태를 배출할 수 있는지 확인한다. 이후 배출은 빈 목록이어야 한다.
+[DevelopmentFundingNodeTest](../app-api/src/test/kotlin/com/exchange/core/api/trading/infrastructure/aeron/DevelopmentFundingNodeTest.kt)는 같은 수집 래퍼를 실제 단일 노드에 연결해 다음을 확인한다.
+
+| 테스트 이름 | 준비 → 실행 → 실제 확인 |
+| --- | --- |
+| 실제 노드를 닫아도 아직 출력하지 않은 두 적용이 남는다 | 실제 노드에 테스트 수집기를 연결하고 자금 준비 두 건 전송 → 노드 종료 뒤 배출 → 두 적용의 순서·각 상태 보존, 다음 배출은 빈 목록. 일반 READY에는 수집 용량이 없고 테스트 READY에만 16이 있음 |
+| 수집 버퍼 초과 뒤에도 실제 노드는 다음 자금 준비와 정상 응답을 유지한다 | 용량 1의 테스트 수집기로 실제 노드의 두 적용 후 overflow 확인 → 한 번 배출하고 세 번째 준비 전송 → 세 준비와 정상 응답, 최초 검증 실패 유지, 노드 오류 없음·노드가 계속 열려 있음 |
 
 같은 Node 테스트에 다음 오류 분류 사례도 추가했다.
 
@@ -209,14 +228,15 @@ Docker 명령 프로세스가 끝났다고 컨테이너 JVM도 끝났다고 가�
 | 준비 후에도 다른 실행의 GO나 손상된 신호로 주문을 보내지 않는다 | READY 뒤 이전 ID·빈 파일·추가 내용·과도한 길이 입력 → GO 확인 → READY만 남고 전송하지 않음 |
 | GO가 없으면 유한 대기 후 끝나고 출발하지 않는다 | GO 없이 제어 시각 사용 → 대기 기한 진행 → 기한 오류와 poll만 남고 출발 없음 |
 | 대기 중 연결 처리가 실패하면 GO 확인과 전송을 하지 않는다 | poll 오류를 주입 → 대기 → 원래 오류를 유지하고 GO·전송 없음 |
-| 실제 클라이언트 대기 루프는 같은 소유 스레드에서 egress와 keepalive를 진행하고 offer는 하지 않는다 | 전송 API 대역과 잠시 늦은 GO → 실제 클라이언트 대기 함수 → 같은 스레드의 poll·keepalive 호출, offer 호출 없음 |
+| 실제 클라이언트 대기 루프는 같은 소유 스레드에서 egress와 keepalive를 진행하고 offer는 하지 않는다 | 전송 API 대역과 잠시 늦은 GO → 테스트 gate가 실제 클라이언트의 일반 pollConnection 호출 → 같은 스레드의 poll·keepalive 호출, offer 호출 없음 |
 
-[DevelopmentOrderClientTest](../app-api/src/test/kotlin/com/exchange/core/api/trading/infrastructure/aeron/DevelopmentOrderClientTest.kt)에 추가한 두 사례:
+[DevelopmentOrderClientTest](../app-api/src/test/kotlin/com/exchange/core/api/trading/infrastructure/aeron/DevelopmentOrderClientTest.kt)에 있는 일반 실행과 검증 실행의 경계 사례:
 
 | 테스트 이름 | 준비 → 실행 → 실제 확인 |
 | --- | --- |
-| 공통 출발 주문은 실제 연결 READY 뒤 GO를 받고 한 번 전송한 결과와 연결 정보를 남긴다 | 실제 단일 노드에 자금 준비, READY 때 아직 주문이 없는지 확인하고 GO 작성 → 개발 main 실행 → 다섯 단계 이벤트·연결 정보·승인 한 건·Driver 종료 |
-| 남아 있던 GO 때문에 준비가 실패하면 미확인 전송으로 표시하지 않고 실제 offer 없이 Driver를 닫는다 | 연결 API 대역과 미리 있는 GO → 개발 main 실행 → SETUP_FAILED만 출력, offer 없음, 자기 Driver 종료 |
+| 일반 주문 CLI는 테스트 출발 환경변수를 무시하고 로컬과 환경 실행에서 바로 접수한다 | 실제 노드에 자금 준비, 로컬 실행에는 낡은 GO와 두 환경변수·환경 실행에는 잘못된 GO 경로만 또는 빈 client ID만 제공 → 일반 CLI 실행 → 주문 세 건 정상 접수, 테스트 READY·식별 필드 없음, 낡은 GO 파일 그대로 |
+| 테스트 전용 공통 출발 주문은 실제 연결 READY 뒤 GO를 받고 한 번 전송한 결과와 연결 정보를 남긴다 | 실제 단일 노드에 자금 준비, READY 때 아직 주문이 없는지 확인하고 GO 작성 → 테스트 전용 진입 함수 실행 → 다섯 단계 이벤트·연결 정보·승인 한 건·Driver 종료 |
+| 남아 있던 GO 때문에 준비가 실패하면 미확인 전송으로 표시하지 않고 실제 offer 없이 Driver를 닫는다 | 연결 API 대역과 미리 있는 GO → 테스트 전용 진입 함수 실행 → SETUP_FAILED만 출력, offer 없음, 자기 Driver 종료 |
 
 ### 테스트 제어자가 출발 조건과 프로세스를 제대로 관리하는가
 
@@ -273,7 +293,37 @@ Docker 명령 프로세스가 끝났다고 컨테이너 JVM도 끝났다고 가�
 
 ## 실제로 확인한 결과
 
-최종 실행에서는 **A가 먼저 승인되고 B가 거절됐다.** 세 노드에서 자금 준비 위치 `352`, A의 위치 `960`, B의 위치 `1152`가 같았다. 최종 돈은 사용 가능 **400 USDT**, 예약 **600 USDT**였고, 대기 주문·예약·RESERVE 원장은 각각 한 건이었다. A/B 최초 요청 기록은 두 건이고 승인 순번은 1이다. B의 부족액은 100 USDT다.
+2026-10-22(KST)에 분리한 코드로 다시 실행했다. 이번에는 **B가 먼저 승인되고 A가 거절됐다.** 세 노드 모두 P1 위치 `352` → B 위치 `960` → A 위치 `1152`를 확인했다. 최종 사용 가능 금액은 **500 USDT**, 예약은 **500 USDT**다. 대기 주문·예약·RESERVE는 각각 한 건, 최초 요청 기록은 두 건이며 A의 부족액은 100 USDT다.
+
+| 확인 범위 | 분리 후 결과 |
+| --- | --- |
+| app-api 관련 검사 | 중복 실행을 제외한 210건 통과, 실패·오류·생략 0. Docker JUnit 2건 포함 |
+| 실제 Docker | 자금 준비·기존 주문/재전송·동시 주문 총 8개 사례 통과. 모두 종료·기록 수집 성공 |
+| domain-trading | 변경 없는 코드의 유효한 100건 성공 결과 재사용(`UP-TO-DATE`) |
+| 구조 검사 | 375건 통과, 필수 운영 검사 실행 확인 통과 |
+| 공통 Kotlin 린트 | `ktlintCheck` 통과 |
+| 배포 경계 | 일반 JAR·Boot JAR·main 클래스·일반 개발 배포에 gate와 검증 수집기 없음. 테스트 배포에는 존재 |
+
+첫 검사 164건과 둘째 검사 63건 중 비교기 17건이 겹쳐, 고유 검사는 210건이다. Docker의 8개 사례는 JUnit 메서드 2개에서 실행한다. 이 숫자를 8개의 별도 JUnit 테스트로 더하지 않는다. 모든 사례가 현재 코드로 통과한 것이며, 전체 app-api 테스트를 실행했다는 뜻은 아니다.
+
+작성 대화를 받지 않은 독립 리뷰에서 추가 확정 결함은 없었다. 별도 checkout의 수집기·gate·비교기 등 39건도 실패·오류·생략 없이 통과했다. 독립 리뷰에서는 실제 Docker·Boot JAR를 다시 실행하지 않았으며, 위 결과는 구현 checkout에서 확인한 근거다. 실제 검사한 `app-api` 파일은 격리 리뷰 snapshot `8e080bfb81805204454580f87ef8fb282e66e7c8`과 바이트 단위로 같다. 통합 기준과 달라진 app-api 파일 24개의 경로·내용 SHA-256은 `22f8ade129bfd0e4122118b77e07ebb247aac569d07263ac446165f27af41e08`이다.
+
+아래는 실제 실행한 검사다. 첫 줄은 이 브랜치를 받은 저장소의 절대 경로로 바꾼다.
+
+```sh
+cd /absolute/path/to/exchange-core
+./gradlew :app-api:ktlintFormat :app-api:test --tests '*Development*' --tests '*FundingVerification*' --tests '*FundingReplication*' --tests '*ConcurrentOrder*' --tests '*DockerFundingReplicationTest' --console=plain
+./gradlew :app-api:test --tests '*ConcurrentClientBarrierTest' --tests '*VerificationCommandsTest' --tests '*DockerVerificationCleanupTest' --tests '*OrderReplicationComparisonTest' --tests '*DockerOrderReplicationTest' :domain-trading:test ktlintCheck :architecture-tests:test :architecture-tests:verifyArchitectureReport :app-api:jar :app-api:bootJar --console=plain
+```
+
+Docker 보고서는 `app-api/build/reports/aeron-funding/<runId>/result.json`에 있다. 이번 동시 사례의 runId는 `funding1792596369584e6d5ea18`이다. 일반 배포는 `stageDevelopmentFundingRuntime`, 검증 배포는 `stageFundingVerificationRuntime`으로 분리했다.
+
+이번 범위는 한 사용자·한 BTC-USDT 마켓의 동시 두 주문 접수다. 체결·정산, 여러 마켓, 장애 전환, 복구용 스냅샷, Kafka·DB 연결, 성능 목표를 입증하지 않는다. 전체 저장소 테스트와 원격 PR CI의 통과를 뜻하지 않으며, 기존 CI의 일반 테스트 경로에 포함되도록 연결했다. 이슈의 최종 완료 판단에는 이번 변경에 대한 원격 CI 실행과 보고서 업로드 확인이 남아 있다.
+
+<details>
+<summary>분리 전 2026-10-21 검증 기록 · 현재 변경의 결과가 아님</summary>
+
+분리 전 2026-10-21의 당시 최종 실행에서는 **A가 먼저 승인되고 B가 거절됐다.** 세 노드에서 자금 준비 위치 `352`, A의 위치 `960`, B의 위치 `1152`가 같았다. 최종 돈은 사용 가능 **400 USDT**, 예약 **600 USDT**였고, 대기 주문·예약·RESERVE 원장은 각각 한 건이었다. A/B 최초 요청 기록은 두 건이고 승인 순번은 1이다. B의 부족액은 100 USDT다.
 
 | 확인 범위 | 실제 결과 |
 | --- | --- |
@@ -287,7 +337,7 @@ Docker 명령 프로세스가 끝났다고 컨테이너 JVM도 끝났다고 가�
 <details>
 <summary>실행 근거·수정한 실패·독립 리뷰 범위</summary>
 
-검증 기준은 통합 커밋 `33f4feca2d7cf02a6c9bfe595851076ae4b3100b`이다. 변경된 `app-api` 파일 20개는 독립 리뷰에 제공한 격리 복사본 및 실제 검사한 코드와 바이트 단위로 동일함을 게시 전에 확인했다. 이 문서 끝의 소스 해시는 해당 파일 경로와 내용을 식별한다. 리뷰 이후 제품·테스트 코드 변경은 없다.
+아래 내용은 분리 전 검증 기록이다. 당시 기준 통합 커밋은 `33f4feca2d7cf02a6c9bfe595851076ae4b3100b`이다. 변경된 `app-api` 파일 20개는 독립 리뷰에 제공한 격리 복사본 및 실제 검사한 코드와 바이트 단위로 동일함을 게시 전에 확인했다. 이 문서 끝의 소스 해시는 해당 파일 경로와 내용을 식별한다. 당시 리뷰 뒤 코드가 같았다는 확인이며, 이후 이루어진 이번 main/test 분리는 이 기록의 검증 대상에 포함되지 않는다.
 
 Docker 보고서는 실행한 저장소의 `app-api/build/reports/aeron-funding/<runId>/result.json`에 생성된다. PR CI에서는 `test-reports` 산출물에 포함된다. 각 client의 READY·GO·전송·응답과 세 노드의 각 적용 위치, 최종 종료 상태, 기록 파일을 함께 보존했다. 단계 소요 시간은 실행 감독 근거이며, 주문 지연이나 처리량의 성능 측정값이 아니다.
 
@@ -304,16 +354,9 @@ Docker 보고서는 실행한 저장소의 `app-api/build/reports/aeron-funding/
 
 초기 전체 구현의 Red 시도는 컴파일 오류로 멈췄으므로 업무 동작의 Red 증거로 계산하지 않는다. 이후 경고 처리의 Red와 파일 오류 반례는 따로 확인했다.
 
-관련 검사 명령이다. 첫 줄은 이 브랜치를 받은 저장소의 실제 절대 경로로 바꾼다.
-
-```sh
-cd /absolute/path/to/exchange-core
-./gradlew :app-api:test --tests '*Concurrent*Test' --tests '*VerificationCommandsTest' --tests '*DevelopmentOrderStartGateTest' --tests '*DevelopmentOrderClientTest' --tests '*DevelopmentFundingAdapterTest' --tests '*DevelopmentFundingNodeTest' --tests '*DevelopmentFundingEventsTest' --tests '*OrderReplicationComparisonTest' --tests '*DockerVerificationCleanupTest' --tests '*DevelopmentOrderNodeTest' --tests '*FundingReplicationComparisonTest' --console=plain
-./gradlew :app-api:test --tests '*DockerFundingReplicationTest' --tests '*DockerOrderReplicationTest' :domain-trading:test ktlintCheck :architecture-tests:test :architecture-tests:verifyArchitectureReport --console=plain
-```
 
 </details>
 
-이번 범위는 한 사용자·한 BTC-USDT 마켓의 동시 두 주문 접수다. 체결·정산, 여러 마켓, 장애 전환, 복구용 스냅샷, Kafka·DB 연결, 성능 목표를 입증하지 않는다. 전체 저장소 테스트와 원격 PR CI의 통과를 뜻하지 않으며, 기존 CI의 일반 테스트 경로에 포함되도록 연결했다. 이슈의 최종 완료 판단에는 이번 변경에 대한 원격 CI 실행과 보고서 업로드 확인이 남아 있다.
+분리 전 검증일: 2026-10-21 (KST). 변경된 `app-api` 파일 20개의 경로와 내용을 정렬해 묶은 SHA-256은 `893ecc82b610f7a089ae3b8e3dd992f8d43b8a0c49c218130ea2c12a8ead906e`이다. 실행 로그·XML·8개 보고서 색인·독립 재현은 로컬 검증 자료로 보존했다. 이 자료는 저장소에 포함하지 않으며, 원격 검토에서는 PR CI의 별도 실행 결과와 산출물을 확인해야 한다.
 
-검증일: 2026-10-21 (KST). 변경된 `app-api` 파일 20개의 경로와 내용을 정렬해 묶은 SHA-256은 `893ecc82b610f7a089ae3b8e3dd992f8d43b8a0c49c218130ea2c12a8ead906e`이다. 실행 로그·XML·8개 보고서 색인·독립 재현은 로컬 검증 자료로 보존했다. 이 자료는 저장소에 포함하지 않으며, 원격 검토에서는 PR CI의 별도 실행 결과와 산출물을 확인해야 한다.
+</details>

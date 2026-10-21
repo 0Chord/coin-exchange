@@ -143,7 +143,7 @@ class DevelopmentOrderStartGateTest {
         mockStatic(AeronCluster::class.java).use { factory ->
             factory.`when`<AeronCluster> { AeronCluster.connect(any(AeronCluster.Context::class.java)) }.thenReturn(connection)
             DevelopmentOrderClient(DevelopmentFundingSettings(directory.resolve("client"))).use { client ->
-                client.awaitStartGate(gate, { start = System.nanoTime() }, {})
+                gate.await(client::pollConnection, { start = System.nanoTime() }, {})
             }
         }
 

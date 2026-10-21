@@ -187,7 +187,51 @@ class DevelopmentOrderClientTest {
     }
 
     @Test
-    fun `공통 출발 주문은 실제 연결 READY 뒤 GO를 받고 한 번 전송한 결과와 연결 정보를 남긴다`() {
+    fun `일반 주문 CLI는 테스트 출발 환경변수를 무시하고 로컬과 환경 실행에서 바로 접수한다`() {
+        val nodeConfig = config()
+        val gatePath = nodeConfig.runRoot.parent.resolve("go")
+        Files.writeString(gatePath, "stale-run")
+        val cases =
+            listOf(
+                false to mapOf("ORDER_START_GATE" to gatePath.toString(), "ORDER_CLIENT_ID" to "A"),
+                true to mapOf("ORDER_START_GATE" to "not-an-absolute-path"),
+                true to mapOf("ORDER_CLIENT_ID" to ""),
+            )
+        DevelopmentFundingNode.start(nodeConfig).use { node ->
+            prepare(nodeConfig, 1_000_000_000)
+            cases.forEachIndexed { index, (structured, gateEnvironment) ->
+                val command = order("R-$index", "O-$index")
+                val clientConfig = if (structured) config() else nodeConfig
+                val arguments =
+                    if (structured) {
+                        clusterArguments(command)
+                    } else {
+                        arrayOf(nodeConfig.runRoot.toString(), nodeConfig.basePort.toString()) + clusterArguments(command).drop(1)
+                    }
+
+                val events =
+                    captureEvents {
+                        runDevelopmentOrderClient(arguments, clientEnvironment(clientConfig, nodeConfig.members) + gateEnvironment)
+                    }
+
+                assertEquals(
+                    if (structured) listOf("TRANSPORT_ACCEPTED", "RESULT_RECEIVED") else emptyList(),
+                    events.map { it.path("kind").asString() },
+                )
+                events.forEach { event ->
+                    assertFalse(event.has("clientId"))
+                    assertFalse(event.has("gatePath"))
+                }
+                assertEquals(expected(command, index + 1L), node.observation?.admissionResult)
+            }
+            assertEquals(3, assertNotNull(node.observation?.snapshot).pendingOrders.size)
+            assertEquals("stale-run", Files.readString(gatePath))
+            assertNull(node.error)
+        }
+    }
+
+    @Test
+    fun `테스트 전용 공통 출발 주문은 실제 연결 READY 뒤 GO를 받고 한 번 전송한 결과와 연결 정보를 남긴다`() {
         val nodeConfig = config()
         val clientConfig = config()
         val gatePath = clientConfig.runRoot.parent.resolve("go")
@@ -205,7 +249,7 @@ class DevelopmentOrderClientTest {
                         Files.writeString(gatePath, "order-client-test")
                     }
                 }) {
-                    runDevelopmentOrderClient(clusterArguments(command), environment)
+                    runConcurrentOrderClient(clusterArguments(command), environment)
                 }
 
             assertEquals(
@@ -246,7 +290,7 @@ class DevelopmentOrderClientTest {
             val events =
                 captureEvents {
                     assertFailsWith<IllegalStateException> {
-                        runDevelopmentOrderClient(
+                        runConcurrentOrderClient(
                             clusterArguments(order()),
                             clientEnvironment(config) + mapOf("ORDER_START_GATE" to gatePath.toString(), "ORDER_CLIENT_ID" to "A"),
                         )

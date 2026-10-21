@@ -128,9 +128,18 @@ class DevelopmentFundingNodeTest {
 
     @Test
     fun `실제 노드를 닫아도 아직 출력하지 않은 두 적용이 남는다`() {
-        val config = config().copy(observationCapacity = 16)
-        val node = DevelopmentFundingNode.start(config)
+        val config = config()
+        val collector = FundingVerificationCollector()
+        val node =
+            DevelopmentFundingNode.start(config) { service ->
+                assertFalse(service.started)
+                collector.decorate(service)
+            }
         node.use {
+            val ready = fundingReadyFields(config, node)
+            assertFalse((ready.getValue("settings") as Map<*, *>).containsKey("observationCapacity"))
+            val testReady = fundingVerificationReadyFields(config, node, collector)
+            assertEquals(16, (testReady.getValue("settings") as Map<*, *>)["observationCapacity"])
             DevelopmentFundingClient(config).use { client ->
                 assertIs<FundingRequestOutcome.Confirmed>(client.request(command()))
                 assertIs<FundingRequestOutcome.Confirmed>(client.request(command("P2", "U2", "L2")))
@@ -138,13 +147,42 @@ class DevelopmentFundingNodeTest {
         }
 
         assertTrue(node.isClosed)
-        val retained = node.drainObservations()
+        val retained = collector.drainObservations()
         assertEquals(2, retained.size)
         assertTrue(retained[0].position > 0 && retained[1].position > retained[0].position)
         assertEquals(listOf("U1"), retained[0].snapshot!!.balances.map { it.userId.value })
         assertEquals(listOf("U1", "U2"), retained[1].snapshot!!.balances.map { it.userId.value })
-        assertTrue(node.drainObservations().isEmpty())
+        assertTrue(collector.drainObservations().isEmpty())
+        assertNull(collector.verificationFailure)
         assertNull(node.error)
+    }
+
+    @Test
+    fun `수집 버퍼 초과 뒤에도 실제 노드는 다음 자금 준비와 정상 응답을 유지한다`() {
+        val config = config()
+        val collector = FundingVerificationCollector(1)
+        DevelopmentFundingNode.start(config, collector::decorate).use { node ->
+            DevelopmentFundingClient(config).use { client ->
+                assertIs<FundingRequestOutcome.Confirmed>(client.request(command()))
+                assertIs<FundingRequestOutcome.Confirmed>(client.request(command("P2", "U2", "L2")))
+                eventually { collector.verificationFailure != null }
+                val failure = collector.verificationFailure
+                assertTrue(failure!!.contains("관찰 버퍼 초과"))
+                assertEquals(1, collector.drainObservations().size)
+
+                assertIs<FundingRequestOutcome.Confirmed>(client.request(command("P3", "U3", "L3")))
+
+                assertEquals(
+                    3,
+                    node.observation!!
+                        .snapshot!!
+                        .preparations.size,
+                )
+                assertSame(failure, collector.verificationFailure)
+                assertNull(node.error)
+                assertFalse(node.isClosed)
+            }
+        }
     }
 
     @Test
