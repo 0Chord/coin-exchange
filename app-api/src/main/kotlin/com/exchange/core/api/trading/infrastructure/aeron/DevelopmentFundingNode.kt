@@ -22,9 +22,11 @@ import io.aeron.cluster.ClusterMember
 import io.aeron.cluster.ConsensusModule
 import io.aeron.cluster.ElectionState
 import io.aeron.cluster.service.Cluster
+import io.aeron.cluster.service.ClusteredService
 import io.aeron.cluster.service.ClusteredServiceContainer
 import io.aeron.driver.MediaDriver
 import io.aeron.driver.ThreadingMode
+import io.aeron.exceptions.AeronException
 import org.agrona.ErrorHandler
 import org.agrona.concurrent.SleepingMillisIdleStrategy
 import java.net.DatagramSocket
@@ -107,6 +109,7 @@ internal data class FundingRecording(
 /** 개발 실행의 자원을 소유한다. 서비스 실패 시 닫으며 기록 파일은 지우지 않는다. */
 internal class DevelopmentFundingNode private constructor(
     val config: DevelopmentFundingSettings,
+    private val serviceDecorator: (DevelopmentFundingAdapter) -> ClusteredService,
 ) : AutoCloseable {
     private val failure = AtomicReference<Throwable?>()
     private val stopping = AtomicBoolean()
@@ -191,7 +194,10 @@ internal class DevelopmentFundingNode private constructor(
                     .spiesSimulateConnection(true)
                     .threadingMode(ThreadingMode.SHARED)
                     .sharedIdleStrategy(SleepingMillisIdleStrategy(1))
-                    .errorHandler(errors),
+                    .errorHandler { error ->
+                        // Driver는 WARN도 오류 로그에 먼저 기록한다. 종료한 클라이언트의 DNS 재조회 경고로 노드를 닫지 않는다.
+                        if (error !is AeronException || error.category() != AeronException.Category.WARN) fail(error)
+                    },
             )
         archive =
             Archive.launch(
@@ -242,7 +248,7 @@ internal class DevelopmentFundingNode private constructor(
                     .serviceId(config.serviceId)
                     .clusterDir(config.clusterDirectory.toFile())
                     .archiveContext(config.archiveClient())
-                    .clusteredService(service)
+                    .clusteredService(serviceDecorator(service))
                     .idleStrategySupplier { SleepingMillisIdleStrategy(1) }
                     .errorHandler(errors)
                     .terminationHook { fail(IllegalStateException("자금 준비 서비스가 종료됐습니다")) },
@@ -297,8 +303,11 @@ internal class DevelopmentFundingNode private constructor(
     }
 
     companion object {
-        fun start(config: DevelopmentFundingSettings): DevelopmentFundingNode =
-            DevelopmentFundingNode(config).also { node ->
+        fun start(
+            config: DevelopmentFundingSettings,
+            serviceDecorator: (DevelopmentFundingAdapter) -> ClusteredService = { it },
+        ): DevelopmentFundingNode =
+            DevelopmentFundingNode(config, serviceDecorator).also { node ->
                 try {
                     node.launch()
                 } catch (error: Throwable) {

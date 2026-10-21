@@ -187,6 +187,125 @@ class DevelopmentOrderClientTest {
     }
 
     @Test
+    fun `일반 주문 CLI는 테스트 출발 환경변수를 무시하고 로컬과 환경 실행에서 바로 접수한다`() {
+        val nodeConfig = config()
+        val gatePath = nodeConfig.runRoot.parent.resolve("go")
+        Files.writeString(gatePath, "stale-run")
+        val cases =
+            listOf(
+                false to mapOf("ORDER_START_GATE" to gatePath.toString(), "ORDER_CLIENT_ID" to "A"),
+                true to mapOf("ORDER_START_GATE" to "not-an-absolute-path"),
+                true to mapOf("ORDER_CLIENT_ID" to ""),
+            )
+        DevelopmentFundingNode.start(nodeConfig).use { node ->
+            prepare(nodeConfig, 1_000_000_000)
+            cases.forEachIndexed { index, (structured, gateEnvironment) ->
+                val command = order("R-$index", "O-$index")
+                val clientConfig = if (structured) config() else nodeConfig
+                val arguments =
+                    if (structured) {
+                        clusterArguments(command)
+                    } else {
+                        arrayOf(nodeConfig.runRoot.toString(), nodeConfig.basePort.toString()) + clusterArguments(command).drop(1)
+                    }
+
+                val events =
+                    captureEvents {
+                        runDevelopmentOrderClient(arguments, clientEnvironment(clientConfig, nodeConfig.members) + gateEnvironment)
+                    }
+
+                assertEquals(
+                    if (structured) listOf("TRANSPORT_ACCEPTED", "RESULT_RECEIVED") else emptyList(),
+                    events.map { it.path("kind").asString() },
+                )
+                events.forEach { event ->
+                    assertFalse(event.has("clientId"))
+                    assertFalse(event.has("gatePath"))
+                }
+                assertEquals(expected(command, index + 1L), node.observation?.admissionResult)
+            }
+            assertEquals(3, assertNotNull(node.observation?.snapshot).pendingOrders.size)
+            assertEquals("stale-run", Files.readString(gatePath))
+            assertNull(node.error)
+        }
+    }
+
+    @Test
+    fun `테스트 전용 공통 출발 주문은 실제 연결 READY 뒤 GO를 받고 한 번 전송한 결과와 연결 정보를 남긴다`() {
+        val nodeConfig = config()
+        val clientConfig = config()
+        val gatePath = clientConfig.runRoot.parent.resolve("go")
+        val command = order()
+        DevelopmentFundingNode.start(nodeConfig).use { node ->
+            prepare(nodeConfig, 1_000_000_000)
+            val environment =
+                clientEnvironment(clientConfig, nodeConfig.members) +
+                    mapOf("ORDER_START_GATE" to gatePath.toString(), "ORDER_CLIENT_ID" to "A")
+
+            val events =
+                captureEvents(onEvent = { event ->
+                    if (event.path("kind").asString() == "READY") {
+                        assertTrue(assertNotNull(node.observation?.snapshot).pendingOrders.isEmpty())
+                        Files.writeString(gatePath, "order-client-test")
+                    }
+                }) {
+                    runConcurrentOrderClient(clusterArguments(command), environment)
+                }
+
+            assertEquals(
+                listOf("READY", "GO_OBSERVED", "SEND_STARTED", "TRANSPORT_ACCEPTED", "RESULT_RECEIVED"),
+                events.map { it.path("kind").asString() },
+            )
+            val sessionId = events.first().path("sessionId").asLong()
+            assertTrue(sessionId > 0)
+            events.forEach { event ->
+                assertEquals("A", event.path("clientId").asString())
+                assertEquals("order-client-test", event.path("runId").asString())
+                assertEquals(command.requestId, event.path("requestId").asString())
+                assertEquals(sessionId, event.path("sessionId").asLong())
+                assertEquals(ProcessHandle.current().pid(), event.path("pid").asLong())
+                assertEquals(clientConfig.advertisedHost, event.path("advertisedHost").asString())
+                assertEquals(clientConfig.udp(7), event.path("egressChannel").asString())
+                assertEquals(clientConfig.driverDirectory, event.path("driverDirectory").asString())
+                assertEquals(clientConfig.runRoot.toString(), event.path("runRoot").asString())
+                assertEquals(120_000L, event.path("gateTimeoutMs").asLong())
+            }
+            assertEquals(expected(command, 1), node.observation?.admissionResult)
+            assertEquals(1, assertNotNull(node.observation?.snapshot).pendingOrders.size)
+            assertFalse(CommonContext.isDriverActive(Path.of(clientConfig.driverDirectory).toFile(), 1_000) {})
+            assertNull(node.error)
+        }
+    }
+
+    @Test
+    fun `남아 있던 GO 때문에 준비가 실패하면 미확인 전송으로 표시하지 않고 실제 offer 없이 Driver를 닫는다`() {
+        val config = config()
+        val gatePath = config.runRoot.parent.resolve("go")
+        Files.writeString(gatePath, "order-client-test")
+        val connection = mock(AeronCluster::class.java)
+        `when`(connection.context()).thenReturn(AeronCluster.Context())
+        `when`(connection.clusterSessionId()).thenReturn(123L)
+        mockStatic(AeronCluster::class.java).use { factory ->
+            factory.`when`<AeronCluster> { AeronCluster.connect(any(AeronCluster.Context::class.java)) }.thenReturn(connection)
+
+            val events =
+                captureEvents {
+                    assertFailsWith<IllegalStateException> {
+                        runConcurrentOrderClient(
+                            clusterArguments(order()),
+                            clientEnvironment(config) + mapOf("ORDER_START_GATE" to gatePath.toString(), "ORDER_CLIENT_ID" to "A"),
+                        )
+                    }
+                }
+
+            assertEquals(listOf("SETUP_FAILED"), events.map { it.path("kind").asString() })
+            assertFalse(events.single().path("transportAccepted").asBoolean())
+            verify(connection, never()).offer(any(DirectBuffer::class.java), anyInt(), anyInt())
+            assertFalse(CommonContext.isDriverActive(Path.of(config.driverDirectory).toFile(), 1_000) {})
+        }
+    }
+
+    @Test
     fun `선택 정책 버전은 로컬과 환경 주문에서 실제 접수 원본에 전달된다`() {
         listOf(false, true).forEach { structured ->
             val defaults = config()
@@ -566,11 +685,23 @@ class DevelopmentOrderClientTest {
             "FUNDING_BIND_HOST" to "0.0.0.0",
         )
 
-    private fun captureEvents(action: () -> Unit): List<JsonNode> {
+    private fun captureEvents(
+        onEvent: (JsonNode) -> Unit = {},
+        action: () -> Unit,
+    ): List<JsonNode> {
         val output = ByteArrayOutputStream()
         val original = System.out
         try {
-            System.setOut(PrintStream(output, true, Charsets.UTF_8))
+            System.setOut(
+                object : PrintStream(output, true, Charsets.UTF_8) {
+                    override fun println(value: Any?) {
+                        super.println(value)
+                        if (value is String && value.startsWith("FUNDING_EVENT ")) {
+                            onEvent(jacksonObjectMapper().readTree(value.removePrefix("FUNDING_EVENT ")))
+                        }
+                    }
+                },
+            )
             action()
         } finally {
             System.setOut(original)

@@ -38,43 +38,45 @@ internal fun fundingEvent(fields: Map<String, Any?>) {
 internal fun fundingReadyEvent(
     config: DevelopmentFundingSettings,
     node: DevelopmentFundingNode,
-) {
-    fundingEvent(
-        mapOf(
-            "kind" to "READY",
-            "runId" to config.runId,
-            "memberId" to config.memberId,
-            "pid" to ProcessHandle.current().pid(),
-            "role" to node.role.name,
-            "settings" to
-                mapOf(
-                    "clusterId" to config.clusterId,
-                    "serviceId" to config.serviceId,
-                    "members" to config.members,
-                    "runRoot" to config.runRoot.toString(),
-                    "driverDirectory" to config.driverDirectory,
-                    "archiveDirectory" to config.archiveDirectory.toString(),
-                    "clusterDirectory" to config.clusterDirectory.toString(),
-                    "storageLevels" to node.storageLevels,
-                    "market" to
-                        mapOf(
-                            "marketId" to config.market.marketId.value,
-                            "baseAssetId" to config.market.baseAssetId.value,
-                            "quoteAssetId" to config.market.quoteAssetId.value,
-                            "baseQuantityScale" to config.market.baseAssetScale,
-                        ),
-                    "feePolicy" to
-                        mapOf(
-                            "productType" to config.feePolicySnapshot.productType.name,
-                            "feeTier" to config.feePolicySnapshot.feeTier.name,
-                            "scheduleVersion" to config.feePolicySnapshot.scheduleVersion,
-                            "makerPartsPerMillion" to config.feePolicySnapshot.feeRates.makerFeeRate.partsPerMillion,
-                            "takerPartsPerMillion" to config.feePolicySnapshot.feeRates.takerFeeRate.partsPerMillion,
-                        ),
-                ),
-        ),
+) = fundingEvent(fundingReadyFields(config, node))
+
+internal fun fundingReadyFields(
+    config: DevelopmentFundingSettings,
+    node: DevelopmentFundingNode,
+): Map<String, Any?> =
+    mapOf(
+        "kind" to "READY",
+        "runId" to config.runId,
+        "memberId" to config.memberId,
+        "pid" to ProcessHandle.current().pid(),
+        "role" to node.role.name,
+        "settings" to
+            mapOf(
+                "clusterId" to config.clusterId,
+                "serviceId" to config.serviceId,
+                "members" to config.members,
+                "runRoot" to config.runRoot.toString(),
+                "driverDirectory" to config.driverDirectory,
+                "archiveDirectory" to config.archiveDirectory.toString(),
+                "clusterDirectory" to config.clusterDirectory.toString(),
+                "storageLevels" to node.storageLevels,
+                "market" to
+                    mapOf(
+                        "marketId" to config.market.marketId.value,
+                        "baseAssetId" to config.market.baseAssetId.value,
+                        "quoteAssetId" to config.market.quoteAssetId.value,
+                        "baseQuantityScale" to config.market.baseAssetScale,
+                    ),
+                "feePolicy" to
+                    mapOf(
+                        "productType" to config.feePolicySnapshot.productType.name,
+                        "feeTier" to config.feePolicySnapshot.feeTier.name,
+                        "scheduleVersion" to config.feePolicySnapshot.scheduleVersion,
+                        "makerPartsPerMillion" to config.feePolicySnapshot.feeRates.makerFeeRate.partsPerMillion,
+                        "takerPartsPerMillion" to config.feePolicySnapshot.feeRates.takerFeeRate.partsPerMillion,
+                    ),
+            ),
     )
-}
 
 internal fun fundingResultFields(payload: DevelopmentBalanceResultPayload): Map<String, Any?> =
     when (payload) {

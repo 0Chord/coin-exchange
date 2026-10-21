@@ -165,6 +165,13 @@ internal class DevelopmentOrderClient(
             unconfirmed(error)
         }
 
+    /** 요청 사이에도 연결 소유 스레드에서 호출해 egress와 keepalive를 처리한다. */
+    fun pollConnection() {
+        check(pending == null) { "보낸 주문의 결과를 먼저 기다리세요" }
+        check(transportFailure.get() == null && !connection.isClosed) { "연결이 종료됐습니다" }
+        poll()
+    }
+
     private fun unconfirmed(error: Throwable? = transportFailure.get()): OrderRequestOutcome.Unconfirmed {
         val reason =
             if (error != null) {
@@ -202,54 +209,8 @@ internal fun runDevelopmentOrderClient(
     args: Array<String>,
     environment: Map<String, String> = System.getenv(),
 ) {
-    val structured = args.firstOrNull() == "--cluster-env"
-    require((structured && args.size in 9..10) || (!structured && args.size in 10..11)) {
-        "사용법: 노드루트 기준포트 요청ID 사용자 주문ID BUY|SELL 가격최소단위 수량최소단위 원장ID 업무Instant [수수료정책버전] 또는 --cluster-env 요청ID 사용자 주문ID BUY|SELL 가격최소단위 수량최소단위 원장ID 업무Instant [수수료정책버전]"
-    }
-    val config = if (structured) developmentClusterSettings(environment) else DevelopmentFundingSettings(Path.of(args[0]), args[1].toInt())
-    val values = if (structured) args.drop(1) else args.drop(2)
-    val feePolicy =
-        if (values.size == 9) {
-            val version = values[8].toLongOrNull()
-            require(version != null && version > 0) { "수수료 정책 버전은 양수 Long이어야 합니다" }
-            config.feePolicySnapshot.copy(scheduleVersion = version)
-        } else {
-            config.feePolicySnapshot
-        }
-    val command =
-        AdmissionCommandPayload(
-            values[0],
-            OrderAdmissionInput(
-                config.market.marketId,
-                OrderId(values[2]),
-                UserId(values[1]),
-                Side.valueOf(values[3]),
-                OrderType.LIMIT,
-                TimeInForce.GTC,
-                Price(values[4].toLong()),
-                Quantity(values[5].toLong()),
-            ),
-            config.market,
-            feePolicy,
-            values[6],
-            Instant.parse(values[7]),
-        )
-    // 기존 로컬 실행은 노드 Driver에 연결한다. 별도 컨테이너에서는 자기 Driver를 소유한다.
-    val driver =
-        if (structured) {
-            Files.createDirectory(config.runRoot)
-            MediaDriver.launch(
-                MediaDriver
-                    .Context()
-                    .aeronDirectoryName(config.driverDirectory)
-                    .dirDeleteOnStart(false)
-                    .dirDeleteOnShutdown(false)
-                    .threadingMode(ThreadingMode.SHARED)
-                    .sharedIdleStrategy(SleepingMillisIdleStrategy(1)),
-            )
-        } else {
-            null
-        }
+    val (config, command, structured) = parseDevelopmentOrderInvocation(args, environment)
+    val driver = if (structured) launchDevelopmentOrderDriver(config) else null
     try {
         val client =
             try {
@@ -303,7 +264,66 @@ internal fun runDevelopmentOrderClient(
     }
 }
 
-private fun orderClientEvent(
+internal data class DevelopmentOrderInvocation(
+    val config: DevelopmentFundingSettings,
+    val command: AdmissionCommandPayload,
+    val structured: Boolean,
+)
+
+internal fun parseDevelopmentOrderInvocation(
+    args: Array<String>,
+    environment: Map<String, String>,
+): DevelopmentOrderInvocation {
+    val structured = args.firstOrNull() == "--cluster-env"
+    require((structured && args.size in 9..10) || (!structured && args.size in 10..11)) {
+        "사용법: 노드루트 기준포트 요청ID 사용자 주문ID BUY|SELL 가격최소단위 수량최소단위 원장ID 업무Instant [수수료정책버전] 또는 --cluster-env 요청ID 사용자 주문ID BUY|SELL 가격최소단위 수량최소단위 원장ID 업무Instant [수수료정책버전]"
+    }
+    val config = if (structured) developmentClusterSettings(environment) else DevelopmentFundingSettings(Path.of(args[0]), args[1].toInt())
+    val values = if (structured) args.drop(1) else args.drop(2)
+    val feePolicy =
+        if (values.size == 9) {
+            val version = values[8].toLongOrNull()
+            require(version != null && version > 0) { "수수료 정책 버전은 양수 Long이어야 합니다" }
+            config.feePolicySnapshot.copy(scheduleVersion = version)
+        } else {
+            config.feePolicySnapshot
+        }
+    val command =
+        AdmissionCommandPayload(
+            values[0],
+            OrderAdmissionInput(
+                config.market.marketId,
+                OrderId(values[2]),
+                UserId(values[1]),
+                Side.valueOf(values[3]),
+                OrderType.LIMIT,
+                TimeInForce.GTC,
+                Price(values[4].toLong()),
+                Quantity(values[5].toLong()),
+            ),
+            config.market,
+            feePolicy,
+            values[6],
+            Instant.parse(values[7]),
+        )
+    return DevelopmentOrderInvocation(config, command, structured)
+}
+
+/** 환경 기반 클라이언트는 노드와 별도로 자기 Driver를 소유한다. */
+internal fun launchDevelopmentOrderDriver(config: DevelopmentFundingSettings): MediaDriver {
+    Files.createDirectory(config.runRoot)
+    return MediaDriver.launch(
+        MediaDriver
+            .Context()
+            .aeronDirectoryName(config.driverDirectory)
+            .dirDeleteOnStart(false)
+            .dirDeleteOnShutdown(false)
+            .threadingMode(ThreadingMode.SHARED)
+            .sharedIdleStrategy(SleepingMillisIdleStrategy(1)),
+    )
+}
+
+internal fun orderClientEvent(
     config: DevelopmentFundingSettings,
     command: AdmissionCommandPayload,
     kind: String,

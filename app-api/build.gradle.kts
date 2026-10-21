@@ -1,3 +1,5 @@
+import java.io.File
+
 plugins {
     kotlin("jvm")
     kotlin("plugin.spring")
@@ -86,13 +88,33 @@ val stageDevelopmentFundingRuntime by tasks.registering(Sync::class) {
     }
 }
 
+val fundingVerificationDirectory = layout.buildDirectory.dir("aeron-verification")
+val stageFundingVerificationRuntime by tasks.registering(Sync::class) {
+    group = "verification"
+    description = "Docker 검사용 진입점은 test 출력에만 두고 실제 main 실행 코드와 함께 준비한다."
+    into(fundingVerificationDirectory)
+    from(sourceSets["main"].output) {
+        into("classes")
+    }
+    from(sourceSets["test"].output) {
+        into("test-classes")
+    }
+    from(configurations.runtimeClasspath) {
+        into("lib")
+    }
+}
+
 tasks.withType<Test> {
-    dependsOn(stageDevelopmentFundingRuntime)
+    dependsOn(stageDevelopmentFundingRuntime, stageFundingVerificationRuntime)
     useJUnitPlatform()
     jvmArgs("--add-opens=java.base/jdk.internal.misc=ALL-UNNAMED", "--add-opens=java.base/java.util.zip=ALL-UNNAMED")
     systemProperty("developmentFundingRuntimeClasspath", sourceSets["main"].runtimeClasspath.asPath)
+    systemProperty(
+        "fundingVerificationRuntimeClasspath",
+        sourceSets["test"].output.asPath + File.pathSeparator + sourceSets["main"].runtimeClasspath.asPath,
+    )
     systemProperty("fundingProjectDirectory", projectDir.absolutePath)
-    systemProperty("fundingDistributionDirectory", fundingDistributionDirectory.get().asFile.absolutePath)
+    systemProperty("fundingDistributionDirectory", fundingVerificationDirectory.get().asFile.absolutePath)
 }
 
 springBoot {

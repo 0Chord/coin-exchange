@@ -30,6 +30,17 @@ class DevelopmentFundingEventsTest {
     private val secondTime = Instant.parse("2026-10-21T00:00:02.123456789Z")
 
     @Test
+    fun `검증 진입점만 잘못된 메시지 개수를 출력한다`() {
+        val observation = FundingObservation(128, null, null, malformedMessages = 1, replyStatus = "MALFORMED_OR_UNSUPPORTED")
+        val development = fundingAppliedFields(config, observation)
+        val verification = fundingVerificationAppliedFields(config, observation)
+
+        assertFalse(development.containsKey("malformedMessages"))
+        assertEquals(development, verification - "malformedMessages")
+        assertEquals(1L, verification["malformedMessages"])
+    }
+
+    @Test
     fun `자금 관찰은 기존 필드와 OPENING의 전체 시각을 유지한다`() {
         val state = emptyState()
         val prepared =
