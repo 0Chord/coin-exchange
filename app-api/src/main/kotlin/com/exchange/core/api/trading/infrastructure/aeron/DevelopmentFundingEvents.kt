@@ -21,6 +21,7 @@ internal fun developmentClusterSettings(environment: Map<String, String> = Syste
     fun required(name: String): String = requireNotNull(environment[name]) { "$name 설정이 필요합니다" }
     return DevelopmentFundingSettings(
         runRoot = Path.of(required("FUNDING_RUN_ROOT")),
+        markets = readDevelopmentMarkets(environment),
         basePort = environment["FUNDING_BASE_PORT"]?.toInt() ?: 19700,
         startupTimeoutMs = 60_000,
         memberId = environment["FUNDING_MEMBER_ID"]?.toInt() ?: 0,
@@ -60,23 +61,14 @@ internal fun fundingReadyFields(
                 "archiveDirectory" to config.archiveDirectory.toString(),
                 "clusterDirectory" to config.clusterDirectory.toString(),
                 "storageLevels" to node.storageLevels,
-                "market" to
-                    mapOf(
-                        "marketId" to config.market.marketId.value,
-                        "baseAssetId" to config.market.baseAssetId.value,
-                        "quoteAssetId" to config.market.quoteAssetId.value,
-                        "baseQuantityScale" to config.market.baseAssetScale,
-                    ),
-                "feePolicy" to
-                    mapOf(
-                        "productType" to config.feePolicySnapshot.productType.name,
-                        "feeTier" to config.feePolicySnapshot.feeTier.name,
-                        "scheduleVersion" to config.feePolicySnapshot.scheduleVersion,
-                        "makerPartsPerMillion" to config.feePolicySnapshot.feeRates.makerFeeRate.partsPerMillion,
-                        "takerPartsPerMillion" to config.feePolicySnapshot.feeRates.takerFeeRate.partsPerMillion,
-                    ),
+                "markets" to fundingMarketFields(config.markets),
             ),
     )
+
+internal fun fundingMarketFields(markets: DevelopmentMarketRegistry): List<Map<String, Any?>> =
+    markets.all().map { context ->
+        marketFields(context.market) + ("feePolicy" to feePolicyFields(context.feePolicySnapshot))
+    }
 
 internal fun fundingResultFields(payload: DevelopmentBalanceResultPayload): Map<String, Any?> =
     when (payload) {

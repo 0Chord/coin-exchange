@@ -25,13 +25,14 @@ import com.exchange.core.order.TimeInForce
 import com.exchange.core.trading.OrderAdmissionInput
 import com.exchange.core.trading.OrderAdmissionResult
 import com.exchange.core.trading.OrderAdmissionState
+import tools.jackson.databind.JsonNode
+import tools.jackson.module.kotlin.jacksonObjectMapper
 import java.net.DatagramSocket
 import java.nio.file.Files
 import java.time.Instant
 import java.util.concurrent.TimeUnit
 import kotlin.test.Test
 import kotlin.test.assertEquals
-import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertIs
 import kotlin.test.assertNotEquals
@@ -45,7 +46,24 @@ class DevelopmentMultiMarketOrderNodeTest {
     fun `BTC 600 예약 뒤 SUI 500은 부족하고 SUI 400 승인 뒤에도 최초 부족값은 유지된다`() {
         val config = config()
         DevelopmentFundingNode.start(config).use { node ->
-            assertFailsWith<IllegalArgumentException> { fundingReadyFields(config, node) }
+            val ready = jacksonObjectMapper().valueToTree<JsonNode>(fundingReadyFields(config, node))
+            val expectedMarkets =
+                jacksonObjectMapper().readTree(
+                    """
+                    [
+                      {"marketId":"BTC-USDT","baseAssetId":"BTC","quoteAssetId":"USDT","baseQuantityScale":8,
+                       "feePolicy":{"productType":"SPOT","feeTier":"NORMAL","scheduleVersion":1,
+                                    "makerPartsPerMillion":0,"takerPartsPerMillion":0}},
+                      {"marketId":"SUI-USDT","baseAssetId":"SUI","quoteAssetId":"USDT","baseQuantityScale":9,
+                       "feePolicy":{"productType":"SPOT","feeTier":"NORMAL","scheduleVersion":2,
+                                    "makerPartsPerMillion":0,"takerPartsPerMillion":0}}
+                    ]
+                    """.trimIndent(),
+                )
+            val actualMarkets = jacksonObjectMapper().readTree(ready.at("/settings/markets").toString())
+            assertEquals(expectedMarkets, actualMarkets)
+            assertFalse(ready.path("settings").has("market"))
+            assertFalse(ready.path("settings").has("feePolicy"))
             val opening = prepare(node)
             assertBalance(opening, available = 1_000_000_000, hold = 0)
             assertEquals(0L, opening.lastSequence)

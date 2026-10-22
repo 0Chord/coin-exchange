@@ -204,7 +204,13 @@ fun main(args: Array<String>) {
     require((structured && args.size == 7) || (!structured && args.size == 8)) {
         "사용법: 노드루트 기준포트 준비ID 사용자 자산 금액최소단위 원장ID 업무Instant 또는 --cluster-env 준비ID 사용자 자산 금액최소단위 원장ID 업무Instant"
     }
-    val config = if (structured) developmentClusterSettings() else DevelopmentFundingSettings(Path.of(args[0]), args[1].toInt())
+    val environment = System.getenv()
+    val config =
+        if (structured) {
+            developmentClusterSettings(environment)
+        } else {
+            DevelopmentFundingSettings(Path.of(args[0]), args[1].toInt(), markets = readDevelopmentMarkets(environment))
+        }
     val values = if (structured) args.drop(1) else args.drop(2)
     val command =
         DevelopmentBalanceCommandPayload(

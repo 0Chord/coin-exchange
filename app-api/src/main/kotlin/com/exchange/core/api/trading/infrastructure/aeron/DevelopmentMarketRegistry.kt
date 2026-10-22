@@ -9,6 +9,7 @@ import com.exchange.core.fee.FeeTier
 import com.exchange.core.fee.MakerTakerFeeRates
 import com.exchange.core.fee.TradingFeePolicySnapshot
 import com.exchange.core.order.MarketDefinition
+import java.util.Collections
 
 /** 노드 시작 전에 고정하는 개발 마켓의 자산·수량 단위·정책. 자금 상태는 담지 않는다. */
 internal data class DevelopmentMarketContext(
@@ -45,9 +46,15 @@ internal class DevelopmentMarketRegistry(
             require(isNotEmpty()) { "개발 마켓을 하나 이상 등록해야 합니다" }
         }
 
+    private val orderedContexts: List<DevelopmentMarketContext> =
+        Collections.unmodifiableList(byMarket.values.sortedBy { it.market.marketId.value })
+
     operator fun get(marketId: MarketId): DevelopmentMarketContext? = byMarket[marketId]
 
-    /** 기존 단일 마켓 CLI·READY의 접근. 다중 등록에서 임의의 기본 마켓을 선택하지 않는다. */
+    /** 등록 순서나 locale에 영향받지 않는 전체 읽기다. 반환 목록도 변경할 수 없다. */
+    fun all(): List<DevelopmentMarketContext> = orderedContexts
+
+    /** 기존 단일 마켓 전용 접근. 다중 등록에서 임의의 기본 마켓을 선택하지 않는다. */
     fun single(): DevelopmentMarketContext {
         require(byMarket.size == 1) { "단일 마켓 실행에 여러 마켓을 사용할 수 없습니다" }
         return byMarket.values.single()

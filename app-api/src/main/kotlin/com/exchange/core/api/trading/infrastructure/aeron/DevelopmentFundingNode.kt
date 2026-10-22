@@ -308,15 +308,17 @@ internal class DevelopmentFundingNode private constructor(
 
 /** 기본 HTTP 실행과 독립된 개발 진입점. 자금은 클라이언트의 명시 요청으로만 준비한다. */
 fun main(args: Array<String>) {
+    val environment = System.getenv()
     val structured = args.contentEquals(arrayOf("--cluster-env"))
     require(structured || args.size in 1..2) { "사용법: 절대경로의새실행루트 [기준포트=19700] 또는 --cluster-env" }
     val config =
         if (structured) {
-            developmentClusterSettings()
+            developmentClusterSettings(environment)
         } else {
             DevelopmentFundingSettings(
                 Path.of(args[0]),
                 args.getOrNull(1)?.toInt() ?: 19700,
+                markets = readDevelopmentMarkets(environment),
             )
         }
     try {
@@ -342,7 +344,8 @@ fun main(args: Array<String>) {
                     fundingReadyEvent(config, node)
                 } else {
                     println(
-                        "READY root=${config.runRoot} members=${config.members} driver=${config.driverDirectory} sync=${node.storageLevels} market=${config.market} fee=${config.feePolicySnapshot}",
+                        "READY root=${config.runRoot} members=${config.members} driver=${config.driverDirectory} " +
+                            "sync=${node.storageLevels} markets=${fundingMarketFields(config.markets)}",
                     )
                 }
                 var last: FundingObservation? = null
