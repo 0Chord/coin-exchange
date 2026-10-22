@@ -182,8 +182,15 @@ class AeronRecordedInputTest {
         val basic = config()
         val config =
             basic.copy(
-                market = market,
-                feePolicySnapshot = basic.feePolicySnapshot.copy(feeRates = MakerTakerFeeRates(FeeRate(1_000), FeeRate(2_000))),
+                markets =
+                    DevelopmentMarketRegistry(
+                        listOf(
+                            DevelopmentMarketContext(
+                                market,
+                                basic.feePolicySnapshot.copy(feeRates = MakerTakerFeeRates(FeeRate(1_000), FeeRate(2_000))),
+                            ),
+                        ),
+                    ),
             )
         val user = UserId("사".repeat(64))
         DevelopmentFundingNode.start(config).use { node ->

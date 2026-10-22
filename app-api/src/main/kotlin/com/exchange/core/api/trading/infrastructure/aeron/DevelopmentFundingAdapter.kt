@@ -11,16 +11,8 @@ import com.exchange.core.api.trading.infrastructure.codec.DevelopmentBalanceComm
 import com.exchange.core.api.trading.infrastructure.codec.DevelopmentBalanceCommandPayload
 import com.exchange.core.api.trading.infrastructure.codec.DevelopmentBalanceResultCodec
 import com.exchange.core.api.trading.infrastructure.codec.DevelopmentBalanceResultPayload
-import com.exchange.core.common.AssetId
-import com.exchange.core.common.MarketId
-import com.exchange.core.fee.FeeProductType
-import com.exchange.core.fee.FeeRate
-import com.exchange.core.fee.FeeTier
-import com.exchange.core.fee.MakerTakerFeeRates
-import com.exchange.core.fee.TradingFeePolicySnapshot
 import com.exchange.core.ledger.OpeningBalanceConflictException
 import com.exchange.core.ledger.OpeningBalanceRequestConflictException
-import com.exchange.core.order.MarketDefinition
 import com.exchange.core.trading.OrderAdmissionState
 import io.aeron.ExclusivePublication
 import io.aeron.Image
@@ -53,9 +45,7 @@ internal class DevelopmentFundingAdapter(
     private val state: OrderAdmissionState,
     private val maxReplyAttempts: Int = 100,
     private val replyTimeoutNs: Long = 100_000_000,
-    private val market: MarketDefinition = MarketDefinition(MarketId("BTC-USDT"), AssetId("BTC"), AssetId("USDT"), 8),
-    private val feePolicySnapshot: TradingFeePolicySnapshot =
-        TradingFeePolicySnapshot(FeeProductType.SPOT, FeeTier.NORMAL, 1, MakerTakerFeeRates(FeeRate.ZERO, FeeRate.ZERO)),
+    private val markets: DevelopmentMarketRegistry = DevelopmentMarketRegistry(listOf(DevelopmentMarketContext.BTC_USDT)),
     private val onFatal: (Throwable) -> Unit,
 ) : ClusteredService {
     private val commands = DevelopmentBalanceCommandCodec()
@@ -179,16 +169,17 @@ internal class DevelopmentFundingAdapter(
     private fun admit(command: AdmissionCommandPayload): AdmissionResultPayload {
         // 기존 결과가 있으면 새 실행 문맥보다 코어의 최초 판단이 우선한다.
         val knownRequest = state.hasRequest(command.order.userId, command.requestId)
-        if (!knownRequest &&
-            (command.order.marketId != market.marketId || command.market != market || command.feePolicySnapshot != feePolicySnapshot)
-        ) {
-            return AdmissionResultPayload.Rejected(
-                command.order.userId.value,
-                command.requestId,
-                command.order.marketId.value,
-                command.order.orderId.value,
-                AdmissionResultPayload.Reason.EXECUTION_CONTEXT_MISMATCH,
-            )
+        if (!knownRequest) {
+            val context = markets[command.order.marketId]
+            if (context == null || command.market != context.market || command.feePolicySnapshot != context.feePolicySnapshot) {
+                return AdmissionResultPayload.Rejected(
+                    command.order.userId.value,
+                    command.requestId,
+                    command.order.marketId.value,
+                    command.order.orderId.value,
+                    AdmissionResultPayload.Reason.EXECUTION_CONTEXT_MISMATCH,
+                )
+            }
         }
         return AdmissionResultPayload.from(
             command,
