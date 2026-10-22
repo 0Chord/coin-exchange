@@ -158,7 +158,15 @@ class DevelopmentOrderClientTest {
                 assertEquals(jacksonObjectMapper().readTree(expectedResult), events.last().path("result"))
                 assertTrue(Files.exists(Path.of(clientConfig.driverDirectory).resolve("cnc.dat")))
                 assertFalse(CommonContext.isDriverActive(Path.of(clientConfig.driverDirectory).toFile(), 1_000) {})
-                assertTrue(CommonContext.isDriverActive(Path.of(nodeConfig.driverDirectory).toFile(), 1_000) {})
+                // 생존 신호의 갱신 순간 대신, 남아 있는 노드 Driver로 다시 연결해 실제 응답을 확인한다.
+                DevelopmentOrderClient(nodeConfig).use { nextClient ->
+                    val replay = assertIs<OrderRequestOutcome.Confirmed>(nextClient.request(command))
+                    val replayJson = jacksonObjectMapper().writeValueAsString(admissionResultFields(replay.result))
+                    assertEquals(
+                        jacksonObjectMapper().readTree(expectedResult),
+                        jacksonObjectMapper().readTree(replayJson),
+                    )
+                }
             }
             val snapshot = assertNotNull(node.observation?.snapshot)
             assertEquals(
