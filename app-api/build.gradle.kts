@@ -109,6 +109,7 @@ tasks.withType<Test> {
     useJUnitPlatform()
     jvmArgs("--add-opens=java.base/jdk.internal.misc=ALL-UNNAMED", "--add-opens=java.base/java.util.zip=ALL-UNNAMED")
     systemProperty("developmentFundingRuntimeClasspath", sourceSets["main"].runtimeClasspath.asPath)
+    systemProperty("marketConfigurationHttpTestClasspath", sourceSets["test"].runtimeClasspath.asPath)
     systemProperty(
         "fundingVerificationRuntimeClasspath",
         sourceSets["test"].output.asPath + File.pathSeparator + sourceSets["main"].runtimeClasspath.asPath,
@@ -139,4 +140,12 @@ tasks.register<JavaExec>("runDevelopmentOrderClient") {
     mainClass.set("com.exchange.core.api.trading.infrastructure.aeron.DevelopmentOrderClientKt")
     javaLauncher.set(javaToolchains.launcherFor(java.toolchain))
     jvmArgs("--add-opens=java.base/jdk.internal.misc=ALL-UNNAMED", "--add-opens=java.base/java.util.zip=ALL-UNNAMED")
+}
+
+tasks.register<JavaExec>("runDevelopmentMarketRegistration") {
+    group = "application"
+    description = "전체 마켓 설정 원문을 검사한 뒤 명시한 DB 버전에 등록하거나 같은 등록 결과를 확인한다."
+    classpath = sourceSets["main"].runtimeClasspath
+    mainClass.set("com.exchange.core.api.trading.infrastructure.aeron.DevelopmentMarketRegistrationKt")
+    javaLauncher.set(javaToolchains.launcherFor(java.toolchain))
 }

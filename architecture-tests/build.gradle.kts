@@ -45,6 +45,8 @@ dependencies {
     testRuntimeOnly("com.google.protobuf:protobuf-java:4.33.2")
     // 실제 Aeron 어댑터의 상위 타입도 읽는다. 운영 검사 대상을 제외하지 않는다.
     testRuntimeOnly("io.aeron:aeron-cluster:1.53.3")
+    // 관리자 인증 필터의 실제 상위 정의를 읽는다. 누락을 허용하거나 검사에서 제외하지 않는다.
+    testRuntimeOnly("jakarta.servlet:jakarta.servlet-api")
     testRuntimeOnly("org.junit.platform:junit-platform-launcher")
 }
 

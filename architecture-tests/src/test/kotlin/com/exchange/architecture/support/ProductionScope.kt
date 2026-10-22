@@ -33,6 +33,7 @@ object ProductionScope {
                     "com.exchange.core.ledger.LedgerReconciliationStore",
                     "com.exchange.core.api.matching.application.port.MatchingEventStore",
                     "com.exchange.core.api.matching.application.port.MatchingEventPublisher",
+                    "com.exchange.core.api.market.application.port.MarketConfigurationStore",
                 ),
             executors =
                 setOf(

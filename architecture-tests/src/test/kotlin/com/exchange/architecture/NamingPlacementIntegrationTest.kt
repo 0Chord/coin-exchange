@@ -25,7 +25,9 @@ class NamingPlacementIntegrationTest {
     private val type = "$packageName.SubmitOrderUseCase"
     private val folder = AllowedFolder("order-application", "app-api", "src/main/java", "com/example/order/application", "업무 진입점")
     private val ledgerFolder = AllowedFolder("ledger-application", "app-api", "src/main/java", "com/example/ledger/application", "개시 유즈케이스")
-    private val policy = LayoutPolicy(listOf(AllowedSourceRoot("app-api", "src/main/java")), listOf(folder, ledgerFolder))
+    private val marketFolder =
+        AllowedFolder("market-application", "app-api", "src/main/java", "com/example/market/application", "마켓 설정 유즈케이스")
+    private val policy = LayoutPolicy(listOf(AllowedSourceRoot("app-api", "src/main/java")), listOf(folder, ledgerFolder, marketFolder))
 
     private fun prepare(): Pair<ScopeImportResult, MainSourceSnapshot> {
         val source = root.resolve("src/main/java/com/example/order/application/SubmitOrderUseCase.java")
@@ -80,7 +82,13 @@ class NamingPlacementIntegrationTest {
         val (scope, sources) = prepare()
         val p =
             policy.copy(
-                folders = listOf(folder.copy(id = "file-folder"), folder.copy(folder = "com/example/order/other"), ledgerFolder),
+                folders =
+                    listOf(
+                        folder.copy(id = "file-folder"),
+                        folder.copy(folder = "com/example/order/other"),
+                        ledgerFolder,
+                        marketFolder,
+                    ),
             )
         val r = inspect(scope, sources, p)
         assertTrue(r.evaluated, r.problems.toString())

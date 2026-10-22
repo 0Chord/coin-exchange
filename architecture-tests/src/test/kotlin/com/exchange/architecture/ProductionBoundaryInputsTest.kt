@@ -6,6 +6,7 @@ import com.exchange.architecture.rules.HttpEntryBoundary
 import com.exchange.architecture.rules.MatchingStateBoundary
 import com.exchange.architecture.rules.NamingRules
 import com.exchange.architecture.rules.PortContractIndependence
+import com.exchange.architecture.support.HttpRole
 import com.exchange.architecture.support.MainSourceRoot
 import com.exchange.architecture.support.ProductionBoundaryInputs
 import com.exchange.architecture.support.ProductionScope
@@ -29,8 +30,15 @@ class ProductionBoundaryInputsTest {
     @TempDir lateinit var directory: Path
     private val app = "com.exchange.core.api.order.application"
     private val http = "com.exchange.core.api.order.api"
+    private val marketApp = "com.exchange.core.api.market.application"
+    private val marketHttp = "com.exchange.core.api.market.api"
+    private val marketStore = "$marketApp.port.MarketConfigurationStore"
+    private val marketPersistence = "com.exchange.core.api.market.infrastructure.persistence"
 
-    private fun scope(vararg sources: Pair<String, String>): ScopeImportResult {
+    private fun scope(
+        vararg sources: Pair<String, String>,
+        replacedTypes: Set<String> = emptySet(),
+    ): ScopeImportResult {
         val outputs = ProductionScope.outputs()
         val extra = directory.resolve("classes")
         Files.createDirectories(extra)
@@ -62,7 +70,32 @@ class ProductionBoundaryInputsTest {
         }
         return ProductionScopeImporter().load(
             outputs.map {
-                if (it.module == "app-api") it.copy(roots = it.roots + listOf(extra)) else it
+                if (it.module == "app-api") {
+                    val roots =
+                        if (replacedTypes.isEmpty()) {
+                            it.roots
+                        } else {
+                            it.roots.mapIndexed { index, original ->
+                                val replacement = directory.resolve("production-$index")
+                                Files.createDirectories(replacement)
+                                Files.walk(original).use { files ->
+                                    files.filter(Files::isRegularFile).forEach { file ->
+                                        val relative = original.relativize(file)
+                                        val type = relative.toString().removeSuffix(".class").replace(File.separatorChar, '.')
+                                        if (type !in replacedTypes) {
+                                            val target = replacement.resolve(relative)
+                                            Files.createDirectories(target.parent)
+                                            Files.copy(file, target)
+                                        }
+                                    }
+                                }
+                                replacement
+                            }
+                        }
+                    it.copy(roots = roots + listOf(extra))
+                } else {
+                    it
+                }
             },
             ProductionScope.expectations(),
             ProductionScope.nonProductionTargets(),
@@ -70,6 +103,143 @@ class ProductionBoundaryInputsTest {
     }
 
     private fun source(name: String) = directory.resolve("src/main/kotlin/${name.replace('.', '/')}.java")
+
+    @Test fun `마켓 HTTP는 유즈케이스와 공개 결과를 사용하고 유즈케이스는 저장 포트만 참조한다`() {
+        val input =
+            scope(
+                "$marketApp.InspectMarketUseCase" to
+                    """
+                    public class InspectMarketUseCase {
+                        private $marketStore store;
+                        public $marketApp.MarketConfigurationRelease find(long version) { return store.find(version); }
+                    }
+                    """.trimIndent(),
+                "$marketHttp.InspectMarketController" to
+                    """
+                    @org.springframework.web.bind.annotation.RestController
+                    public class InspectMarketController {
+                        private $marketApp.InspectMarketUseCase useCase;
+                        public String find(long version) { return useCase.find(version).getSha256(); }
+                    }
+                    """.trimIndent(),
+            )
+        val httpResult = HttpEntryBoundary.inspect(input, ProductionBoundaryInputs.http(input))
+        val application = ApplicationImplementationIndependence.inspect(input, ProductionBoundaryInputs.application(input))
+        val names = NamingRules.inspectTypes(input, ProjectLayoutPolicy.target, ProductionScope.requiredTypes.keys)
+        assertTrue(httpResult.evaluated, httpResult.problems.toString())
+        assertTrue(application.evaluated, application.problems.toString())
+        assertTrue(names.evaluated, names.problems.toString())
+        assertEquals(emptyList(), httpResult.violations)
+        assertEquals(emptyList(), application.violations)
+        assertEquals(emptyList(), names.violations)
+        assertTrue("$marketHttp.MarketConfigurationController" in httpResult.apiTypes)
+        assertTrue("$marketApp.MarketConfigurationUseCase" in application.applicationTypes)
+        assertTrue("$marketHttp.InspectMarketController" in httpResult.apiTypes)
+        assertTrue("$marketApp.InspectMarketUseCase" in application.applicationTypes)
+    }
+
+    @Test fun `마켓 HTTP의 저장 포트 구현 내부 업무 직접 참조는 거절한다`() {
+        val origin = "$marketHttp.BypassMarketController"
+        val targets =
+            setOf(marketStore, "$marketPersistence.PostgresMarketConfigurationStore", "$marketApp.InternalMarketWork")
+        val input =
+            scope(
+                "$marketApp.InternalMarketWork" to "public class InternalMarketWork {}",
+                origin to
+                    """
+                    @org.springframework.web.bind.annotation.RestController
+                    public class BypassMarketController {
+                        private $marketStore store;
+                        private $marketPersistence.PostgresMarketConfigurationStore implementation;
+                        private $marketApp.InternalMarketWork work;
+                    }
+                    """.trimIndent(),
+            )
+        val result = HttpEntryBoundary.inspect(input, ProductionBoundaryInputs.http(input))
+        assertTrue(result.evaluated, result.problems.toString())
+        assertEquals(
+            targets,
+            result.violations
+                .filter { it.originType == origin }
+                .map { it.targetType }
+                .toSet(),
+        )
+    }
+
+    @Test fun `마켓 유즈케이스의 JDBC와 저장 구현 직접 참조는 거절한다`() {
+        val origin = "$marketApp.DirectMarketUseCase"
+        val input =
+            scope(
+                origin to
+                    """
+                    public class DirectMarketUseCase {
+                        private java.sql.Connection connection;
+                        private $marketPersistence.PostgresMarketConfigurationStore implementation;
+                    }
+                    """.trimIndent(),
+            )
+        val result = ApplicationImplementationIndependence.inspect(input, ProductionBoundaryInputs.application(input))
+        assertTrue(result.evaluated, result.problems.toString())
+        assertEquals(
+            setOf("java.sql.Connection", "$marketPersistence.PostgresMarketConfigurationStore"),
+            result.violations
+                .filter { it.originType == origin }
+                .map { it.targetType }
+                .toSet(),
+        )
+    }
+
+    @Test fun `HTTP가 읽는 마켓 결과와 오류도 application 기술 의존 검사에서 빠지지 않는다`() {
+        val contracts =
+            setOf("Registration", "Release", "Summary", "Error", "Exception").map { "$marketApp.MarketConfiguration$it" }.toSet()
+        val input = scope()
+        val httpRegistration = ProductionBoundaryInputs.http(input)
+        val application = ApplicationImplementationIndependence.inspect(input, ProductionBoundaryInputs.application(input))
+        assertTrue(contracts.all { it in httpRegistration.types.getValue(HttpRole.DATA) })
+        assertTrue(application.evaluated, application.problems.toString())
+        assertTrue(contracts.all { it in application.applicationTypes })
+    }
+
+    @Test fun `HTTP 공개 마켓 결과 안에 숨긴 JDBC 의존을 실제 바이트코드로 거절한다`() {
+        val contract = "$marketApp.MarketConfigurationRegistration"
+        val input =
+            scope(
+                contract to
+                    """
+                    public class MarketConfigurationRegistration {
+                        private java.sql.Connection connection;
+                        public long getConfigVersion() { return 1L; }
+                        public String getSha256() { return "hash"; }
+                    }
+                    """.trimIndent(),
+                replacedTypes = setOf(contract),
+            )
+        val httpRegistration = ProductionBoundaryInputs.http(input)
+        assertTrue(contract in httpRegistration.types.getValue(HttpRole.DATA))
+        val result = ApplicationImplementationIndependence.inspect(input, ProductionBoundaryInputs.application(input))
+        assertTrue(result.evaluated, result.problems.toString())
+        assertTrue(contract in result.applicationTypes)
+        assertEquals(
+            setOf("java.sql.Connection"),
+            result.violations
+                .filter { it.originType == contract }
+                .map { it.targetType }
+                .toSet(),
+        )
+    }
+
+    @Test fun `마켓 저장 포트 공개 계약을 ARCH06으로 검사한다`() {
+        val result =
+            PortContractIndependence.inspect(
+                scope(),
+                ProductionScope.roles.externalPorts,
+                ProductionScope.persistenceTypes,
+                ProductionScope.expectations().projectPackagePrefixes,
+            )
+        assertTrue(result.evaluated, result.problems.toString())
+        assertTrue(marketStore in ProductionScope.roles.externalPorts)
+        assertEquals(emptyList(), result.violations)
+    }
 
     @Test fun `ledger UseCase를 실제 application과 명명 검사에 포함하고 기술 구현 직접 참조를 거절한다`() {
         val pkg = "com.exchange.core.api.ledger.application"
@@ -466,6 +636,7 @@ class ProductionBoundaryInputsTest {
             mapOf(
                 "com.exchange.core.api.matching.application.port.MatchingEventStore" to "MISSING_PORT",
                 "com.exchange.core.api.matching.application.port.MatchingEventPublisher" to "MISSING_PORT",
+                marketStore to "MISSING_PORT",
                 "com.exchange.core.api.matching.infrastructure.persistence.MatchingEventEntity" to "MISSING_PERSISTENCE_TYPE",
             )
         missingCases.forEach { (missing, code) ->
