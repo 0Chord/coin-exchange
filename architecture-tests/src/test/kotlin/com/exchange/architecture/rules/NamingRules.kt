@@ -227,7 +227,7 @@ object NamingRules {
                 condition("Controller 이름·어노테이션·HTTP 위치를 지킨다") { type ->
                     name(type, input, "controller", "Controller") +
                         shape(type, input, "controller", tagged(type, controllerAnnotations), "표준 Controller 또는 RestController") +
-                        position(type, input, "controller", listOf(area(policy, "order-http")))
+                        position(type, input, "controller", listOf("order-http", "market-http").map { area(policy, it) })
                 },
             ).allowEmptyShould(true)
 
@@ -256,7 +256,7 @@ object NamingRules {
     fun useCases(
         input: NamingPlacementInput,
         policy: LayoutPolicy,
-    ) = application(input, policy, "UseCase", "order-application", "ledger-application")
+    ) = application(input, policy, "UseCase", "order-application", "ledger-application", "market-application")
 
     fun services(
         input: NamingPlacementInput,
@@ -306,7 +306,7 @@ object NamingRules {
                             t,
                             input,
                             "store-port",
-                            listOf(area(policy, "domain-order"), area(policy, "domain-ledger"), area(policy, "matching-ports")),
+                            listOf("domain-order", "domain-ledger", "matching-ports", "market-ports").map { area(policy, it) },
                         )
                 },
             ).allowEmptyShould(true)
@@ -364,7 +364,13 @@ object NamingRules {
                                     it.id in policy.naming.storeTargets
                             }
                         if (positions.isEmpty()) {
-                            val allowedPort = listOf("domain-order", "domain-ledger", "matching-ports").map { area(policy, it) }
+                            val allowedPort =
+                                listOf(
+                                    "domain-order",
+                                    "domain-ledger",
+                                    "matching-ports",
+                                    "market-ports",
+                                ).map { area(policy, it) }
                             if (allowedPort.any { it.module == input.modules.getValue(port.name) && it.packageName == port.packageName }) {
                                 throw PolicyInputError(port.name, "필요한 Store 영역 매핑 누락")
                             }
@@ -535,7 +541,7 @@ object NamingRules {
             .should(
                 condition("Request·Response 이름·HTTP 위치를 지킨다") { t ->
                     name(t, input, "http-data", if (t.simpleName.endsWith("Request")) "Request" else "Response") +
-                        position(t, input, "http-data", listOf(area(policy, "order-http")))
+                        position(t, input, "http-data", listOf("order-http", "market-http").map { area(policy, it) })
                 },
             ).allowEmptyShould(true)
 

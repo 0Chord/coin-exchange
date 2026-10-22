@@ -3,6 +3,7 @@ package com.exchange.core.api.common
 import com.exchange.core.order.OrderReservationAlreadyExistsException
 import org.springframework.http.HttpStatus
 import org.springframework.http.ResponseEntity
+import org.springframework.web.HttpMediaTypeNotSupportedException
 import org.springframework.web.bind.annotation.ExceptionHandler
 import org.springframework.web.bind.annotation.RestControllerAdvice
 
@@ -23,6 +24,10 @@ data class ApiErrorResponse(
  */
 @RestControllerAdvice
 class ApiExceptionHandler {
+    /** 본문 형식 오류가 하위 IllegalArgumentException 처리에 잡혀 400으로 바뀌지 않게 한다. */
+    @ExceptionHandler(HttpMediaTypeNotSupportedException::class)
+    fun handleUnsupportedMediaType(): ResponseEntity<Void> = ResponseEntity.status(HttpStatus.UNSUPPORTED_MEDIA_TYPE).build()
+
     /** 중복 주문 예약은 서버 장애가 아니라 이미 접수된 주문을 다시 보낸 잘못된 요청이다. */
     @ExceptionHandler(OrderReservationAlreadyExistsException::class)
     fun handleOrderReservationAlreadyExists(error: OrderReservationAlreadyExistsException): ResponseEntity<ApiErrorResponse> =

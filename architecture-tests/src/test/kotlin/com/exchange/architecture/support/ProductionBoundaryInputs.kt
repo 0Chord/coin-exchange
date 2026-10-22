@@ -11,21 +11,30 @@ object ProductionBoundaryInputs {
     private const val BASE = "com.exchange.core"
     private const val ORDER_APPLICATION = "$BASE.api.order.application"
     private const val LEDGER_APPLICATION = "$BASE.api.ledger.application"
-    private val useCasePackages = setOf(ORDER_APPLICATION, LEDGER_APPLICATION)
+    private const val MARKET_APPLICATION = "$BASE.api.market.application"
+    private val useCasePackages = setOf(ORDER_APPLICATION, LEDGER_APPLICATION, MARKET_APPLICATION)
     private val applicationPackages = useCasePackages + "$BASE.api.matching.application"
-    private val apiPackages = setOf("$BASE.api.order.api", "$BASE.api.common")
+    private val apiPackages = setOf("$BASE.api.order.api", "$BASE.api.market.api", "$BASE.api.common")
     private const val CONFIGURATION_PACKAGE = "$BASE.api.config"
     private const val EXECUTOR_CONTRACT = "$BASE.matching.MarketCommandProcessor"
     private val httpContracts = setOf("$BASE.matching.MatchingCommand", "$BASE.matching.MatchingEvent")
     private val httpEnums = setOf("$BASE.order.Side", "$BASE.order.OrderType", "$BASE.order.TimeInForce")
 
+    // HTTP에서 읽는 마켓 결과·오류만 허용한다. 일반 application 작업 타입까지 DATA로 넓히지 않는다.
+    private val applicationHttpData =
+        setOf("Registration", "Release", "Summary", "Error", "Exception")
+            .map { "$MARKET_APPLICATION.MarketConfiguration$it" }
+            .toSet()
+
     // 기존 공개 진입점의 삭제를 잡는 최소 기대이며, 전체 검사 대상의 등록표가 아니다.
     val requiredTypes =
         setOf(
             "$BASE.api.order.api.OrderController",
+            "$BASE.api.market.api.MarketConfigurationController",
             "${ORDER_APPLICATION}.SubmitOrderUseCase",
             "${ORDER_APPLICATION}.CancelOrderUseCase",
             "${LEDGER_APPLICATION}.PrepareDevelopmentBalanceUseCase",
+            "${MARKET_APPLICATION}.MarketConfigurationUseCase",
             "$BASE.api.matching.application.MatchingCoordinator",
         )
 
@@ -56,7 +65,8 @@ object ProductionBoundaryInputs {
                         }
 
                         HttpRole.DATA -> {
-                            ApplicationRole.DOMAIN
+                            // HTTP 공개 결과도 application 내부의 기술·구현 참조 검사를 계속 받는다.
+                            if (applicationPackages.any { inPackage(name, it) }) ApplicationRole.APPLICATION else ApplicationRole.DOMAIN
                         }
 
                         HttpRole.PORT -> {
@@ -101,6 +111,10 @@ object ProductionBoundaryInputs {
                 if (!type.enclosingClass.isPresent && (selected.isEmpty() || (business && !type.isInterface))) {
                     selected +=
                         when {
+                            type.name in applicationHttpData -> {
+                                HttpRole.DATA
+                            }
+
                             business -> {
                                 if (type.packageName in useCasePackages &&
                                     concreteUseCase(type)
@@ -132,7 +146,7 @@ object ProductionBoundaryInputs {
             }
         }
         // 자동 선택과 별도로 핵심 타입의 존재를 확인하므로 삭제를 빈 검사 통과로 바꾸지 않는다.
-        groups.getOrPut(HttpRole.CONTROLLER) { linkedSetOf() }.add("$BASE.api.order.api.OrderController")
+        groups.getOrPut(HttpRole.CONTROLLER) { linkedSetOf() }.addAll(requiredTypes.filter { it.endsWith("Controller") })
         groups.getOrPut(HttpRole.USE_CASE) { linkedSetOf() }.addAll(requiredTypes.filter { it.endsWith("UseCase") })
         groups.getOrPut(HttpRole.COLLABORATOR) { linkedSetOf() }.add("$BASE.api.matching.application.MatchingCoordinator")
         return groups
