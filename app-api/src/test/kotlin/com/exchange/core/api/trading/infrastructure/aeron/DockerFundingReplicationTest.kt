@@ -26,8 +26,13 @@ class DockerFundingReplicationTest {
 internal class DockerFundingVerification(
     private val scenario: OrderReplicationScenario? = null,
     sharedImage: String? = null,
-    private val concurrentOrders: Boolean = false,
+    private val concurrentScenario: ConcurrentOrderReplicationScenario? = null,
 ) {
+    init {
+        require(scenario == null || concurrentScenario == null) { "순차·동시 사례를 함께 선택할 수 없습니다" }
+    }
+
+    private val concurrentOrders = concurrentScenario != null
     private val concurrentResponseTimeoutMs = 20_000L
     private val concurrentObservationTimeoutMs = 15_000L
     private val mapper = jacksonObjectMapper()
@@ -46,7 +51,9 @@ internal class DockerFundingVerification(
             "FUNDING_RUN_ID" to runId,
             "FUNDING_CONTROL_DIRECTORY" to controlDirectory.toString(),
         )
-    private val usesMarketDatabase = scenario == OrderReplicationScenario.MULTI_MARKET_SHARED_FUNDS
+    private val usesMarketDatabase =
+        scenario == OrderReplicationScenario.MULTI_MARKET_SHARED_FUNDS ||
+            concurrentScenario == ConcurrentOrderReplicationScenario.MULTI_MARKET_SHARED_FUNDS
     private val databasePassword = "issue116-${UUID.randomUUID()}"
     private var marketDatabase: MarketConfigurationDatabase? = null
     private var marketNetwork: String? = null
@@ -290,15 +297,16 @@ internal class DockerFundingVerification(
     }
 
     private fun runConcurrentInputs() {
-        runOrderInputs(listOf(ConcurrentOrderReplicationScenario.openingStep))
+        val selected = checkNotNull(concurrentScenario)
+        runOrderInputs(listOf(selected.openingStep))
         if (issues.isNotEmpty()) return
         openingPosition = checkNotNull(comparison.position)
         stage = "CONCURRENT/연결 준비"
         Files.createDirectory(controlDirectory)
         val running = linkedMapOf<String, RunningVerificationCommand>()
-        val barrier = ConcurrentClientBarrier(controlDirectory, runId)
+        val barrier = ConcurrentClientBarrier(controlDirectory, runId, selected)
         val readyDeadline = deadline(CONCURRENT_READY_TIMEOUT_MS)
-        for ((id, arguments) in ConcurrentOrderReplicationScenario.clientArguments) {
+        for ((id, arguments) in selected.clientArguments) {
             val suffix = id.lowercase()
             val name = "$runId-client-$suffix"
             clients.add(name)
@@ -326,7 +334,7 @@ internal class DockerFundingVerification(
                     val output = if (Files.exists(process.stdoutPath)) Files.readString(process.stdoutPath) else ""
                     pairClientEvents[id] = readFundingEvents(output.substringBeforeLast('\n', ""), issues)
                 }
-                val readiness = compareConcurrentClientReadiness(runId, pairClientEvents)
+                val readiness = compareConcurrentClientReadiness(runId, pairClientEvents, selected)
                 if (readiness.isEmpty()) break
                 check(running.values.all { it.isAlive }) { "GO 전 클라이언트 종료: $readiness" }
                 check(System.nanoTime() < readyDeadline) { "두 연결 준비 상한: $readiness" }
@@ -352,7 +360,7 @@ internal class DockerFundingVerification(
             }
         }
         clientEvents = clientEvents + pairClientEvents.values.flatten()
-        issues.addAll(compareConcurrentClientProgress(runId, pairClientEvents))
+        issues.addAll(compareConcurrentClientProgress(runId, pairClientEvents, checkNotNull(concurrentScenario)))
         stage = "CONCURRENT/두 위치의 세 사본"
         timed("concurrent-observations") {
             val observationDeadline = deadline(concurrentObservationTimeoutMs)
@@ -365,6 +373,7 @@ internal class DockerFundingVerification(
                         pairClientEvents,
                         checkNotNull(openingPosition),
                         pinnedPositions = pairPositions,
+                        scenario = checkNotNull(concurrentScenario),
                     )
                 if (pair.positions.size == 2 && pair.positions.values
                         .distinct()
@@ -381,7 +390,7 @@ internal class DockerFundingVerification(
                     issues.addAll(pair.issues)
                     stepReports.add(
                         mapOf(
-                            "step" to "CONCURRENT",
+                            "step" to "CONCURRENT_${selected.name}",
                             "openingPosition" to openingPosition,
                             "positions" to pair.positions,
                             "expectedSteps" to pair.orderedSteps,
@@ -434,7 +443,7 @@ internal class DockerFundingVerification(
 
     private fun recheckConcurrentInputs() {
         if (!pairAttempted) return
-        issues.addAll(compareConcurrentClientProgress(runId, pairClientEvents))
+        issues.addAll(compareConcurrentClientProgress(runId, pairClientEvents, checkNotNull(concurrentScenario)))
         val pair =
             compareConcurrentOrderReplication(
                 runId,
@@ -442,8 +451,19 @@ internal class DockerFundingVerification(
                 pairClientEvents,
                 checkNotNull(openingPosition),
                 pinnedPositions = pairPositions,
+                scenario = checkNotNull(concurrentScenario),
             )
         issues.addAll(pair.issues)
+        // P1만 검증하거나 A/B만 검증하면 계획 밖 입력을 놓칠 수 있으므로 최종 전체 기록을 대조한다.
+        val checkpoints =
+            listOf(checkNotNull(concurrentScenario).openingStep to openingPosition) +
+                pair.orderedSteps.map { it to pairPositions?.get(it.name) }
+        if (checkpoints.size != 3) {
+            issues.add(FundingVerificationIssue("UNVERIFIABLE", "P1과 두 동시 주문의 최종 checkpoint 미확인"))
+        }
+        val coverageIssues = compareOrderReplicationCoverage(runId, events, checkpoints)
+        issues.addAll(coverageIssues)
+        stepReports.add(mapOf("step" to "FINAL_COVERAGE", "checkpoints" to checkpoints, "issues" to coverageIssues))
         comparison = FundingReplicationComparison(pair.position, issues.distinct())
     }
 
@@ -746,7 +766,7 @@ internal class DockerFundingVerification(
         val report =
             linkedMapOf(
                 "runId" to runId,
-                "scenario" to (scenario?.name ?: if (concurrentOrders) "CONCURRENT" else "FUNDING"),
+                "scenario" to (scenario?.name ?: concurrentScenario?.let { "CONCURRENT_${it.name}" } ?: "FUNDING"),
                 "image" to image,
                 "imageBuilt" to buildImage,
                 "marketConfiguration" to expectedConfiguration,

@@ -9,11 +9,12 @@ import java.nio.file.StandardCopyOption
 internal class ConcurrentClientBarrier(
     private val directory: Path,
     private val runId: String,
+    private val scenario: ConcurrentOrderReplicationScenario = ConcurrentOrderReplicationScenario.BTC_SHARED_FUNDS,
 ) {
     val go: Path = directory.resolve("go")
 
     fun release(events: Map<String, List<JsonNode>>): List<FundingVerificationIssue> {
-        val issues = compareConcurrentClientReadiness(runId, events).toMutableList()
+        val issues = compareConcurrentClientReadiness(runId, events, scenario).toMutableList()
         if (Files.exists(go)) issues.add(FundingVerificationIssue("SETUP", "이미 존재하는 GO는 이번 출발에 사용할 수 없습니다"))
         if (issues.isNotEmpty()) return issues
         val pending = directory.resolve("go.pending")
@@ -26,6 +27,7 @@ internal class ConcurrentClientBarrier(
 internal fun compareConcurrentClientReadiness(
     runId: String,
     events: Map<String, List<JsonNode>>,
+    scenario: ConcurrentOrderReplicationScenario = ConcurrentOrderReplicationScenario.BTC_SHARED_FUNDS,
 ): List<FundingVerificationIssue> {
     val issues = mutableListOf<FundingVerificationIssue>()
     val ready = mutableListOf<JsonNode>()
@@ -44,7 +46,7 @@ internal fun compareConcurrentClientReadiness(
                 "requestId" to "R$id",
                 "orderId" to "O$id",
                 "userId" to "U1",
-                "marketId" to "BTC-USDT",
+                "marketId" to scenario.marketId(id),
                 "inputKind" to "ORDER",
                 "advertisedHost" to "client-${id.lowercase()}",
                 "runRoot" to "/tmp/$runId-client-${id.lowercase()}",
@@ -73,6 +75,7 @@ internal fun compareConcurrentClientReadiness(
 internal fun compareConcurrentClientProgress(
     runId: String,
     events: Map<String, List<JsonNode>>,
+    scenario: ConcurrentOrderReplicationScenario = ConcurrentOrderReplicationScenario.BTC_SHARED_FUNDS,
 ): List<FundingVerificationIssue> {
     val issues = mutableListOf<FundingVerificationIssue>()
     val kinds = listOf("READY", "GO_OBSERVED", "SEND_STARTED", "TRANSPORT_ACCEPTED", "RESULT_RECEIVED")
@@ -89,7 +92,7 @@ internal fun compareConcurrentClientProgress(
                     "requestId" to "R$id",
                     "orderId" to "O$id",
                     "userId" to "U1",
-                    "marketId" to "BTC-USDT",
+                    "marketId" to scenario.marketId(id),
                     "inputKind" to "ORDER",
                 )
             compareOrderFields("$id.${event.path("kind")}", event, expected, issues)

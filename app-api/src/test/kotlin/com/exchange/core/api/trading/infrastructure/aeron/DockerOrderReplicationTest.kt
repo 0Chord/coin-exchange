@@ -14,9 +14,11 @@ class DockerOrderReplicationTest {
             image = verification.image
             if (!result.succeeded) failures.add("$scenario: ${result.issues}\n보고서: ${verification.reportDirectory}")
         }
-        val concurrent = DockerFundingVerification(sharedImage = image, concurrentOrders = true)
-        val concurrentResult = concurrent.run()
-        if (!concurrentResult.succeeded) failures.add("CONCURRENT: ${concurrentResult.issues}\n보고서: ${concurrent.reportDirectory}")
+        for (scenario in ConcurrentOrderReplicationScenario.entries) {
+            val concurrent = DockerFundingVerification(sharedImage = image, concurrentScenario = scenario)
+            val result = concurrent.run()
+            if (!result.succeeded) failures.add("CONCURRENT_$scenario: ${result.issues}\n보고서: ${concurrent.reportDirectory}")
+        }
         assertTrue(failures.isEmpty(), failures.joinToString("\n"))
     }
 }
