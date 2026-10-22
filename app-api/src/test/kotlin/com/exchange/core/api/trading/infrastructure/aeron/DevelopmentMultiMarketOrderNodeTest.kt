@@ -25,13 +25,14 @@ import com.exchange.core.order.TimeInForce
 import com.exchange.core.trading.OrderAdmissionInput
 import com.exchange.core.trading.OrderAdmissionResult
 import com.exchange.core.trading.OrderAdmissionState
+import tools.jackson.databind.JsonNode
+import tools.jackson.module.kotlin.jacksonObjectMapper
 import java.net.DatagramSocket
 import java.nio.file.Files
 import java.time.Instant
 import java.util.concurrent.TimeUnit
 import kotlin.test.Test
 import kotlin.test.assertEquals
-import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertIs
 import kotlin.test.assertNotEquals
@@ -45,7 +46,24 @@ class DevelopmentMultiMarketOrderNodeTest {
     fun `BTC 600 예약 뒤 SUI 500은 부족하고 SUI 400 승인 뒤에도 최초 부족값은 유지된다`() {
         val config = config()
         DevelopmentFundingNode.start(config).use { node ->
-            assertFailsWith<IllegalArgumentException> { fundingReadyFields(config, node) }
+            val ready = jacksonObjectMapper().valueToTree<JsonNode>(fundingReadyFields(config, node))
+            val expectedMarkets =
+                jacksonObjectMapper().readTree(
+                    """
+                    [
+                      {"marketId":"BTC-USDT","baseAssetId":"BTC","quoteAssetId":"USDT","baseQuantityScale":8,
+                       "feePolicy":{"productType":"SPOT","feeTier":"NORMAL","scheduleVersion":1,
+                                    "makerPartsPerMillion":0,"takerPartsPerMillion":0}},
+                      {"marketId":"SUI-USDT","baseAssetId":"SUI","quoteAssetId":"USDT","baseQuantityScale":9,
+                       "feePolicy":{"productType":"SPOT","feeTier":"NORMAL","scheduleVersion":2,
+                                    "makerPartsPerMillion":0,"takerPartsPerMillion":0}}
+                    ]
+                    """.trimIndent(),
+                )
+            val actualMarkets = jacksonObjectMapper().readTree(ready.at("/settings/markets").toString())
+            assertEquals(expectedMarkets, actualMarkets)
+            assertFalse(ready.path("settings").has("market"))
+            assertFalse(ready.path("settings").has("feePolicy"))
             val opening = prepare(node)
             assertBalance(opening, available = 1_000_000_000, hold = 0)
             assertEquals(0L, opening.lastSequence)
@@ -365,6 +383,42 @@ class DevelopmentMultiMarketOrderNodeTest {
             assertNull(failed.snapshot)
             assertNull(failed.admissionResult)
             assertFalse(failed.blocked, "승인 후보 검사 오류이므로 반영 중 차단과 구분합니다")
+        }
+    }
+
+    @Test
+    fun `시작 때 읽은 설정은 DB가 중단돼도 이미 연결한 노드와 클라이언트에서 유지된다`() {
+        MarketConfigurationDatabase().use { database ->
+            val document =
+                """
+                [{"marketId":"BTC-USDT","baseAssetId":"BTC","quoteAssetId":"USDT","baseQuantityScale":8,
+                  "feePolicy":{"productType":"SPOT","feeTier":"NORMAL","scheduleVersion":1,"makerPartsPerMillion":0,"takerPartsPerMillion":0}},
+                 {"marketId":"SUI-USDT","baseAssetId":"SUI","quoteAssetId":"USDT","baseQuantityScale":9,
+                  "feePolicy":{"productType":"SPOT","feeTier":"NORMAL","scheduleVersion":2,"makerPartsPerMillion":0,"takerPartsPerMillion":0}}]
+                """.trimIndent()
+            val settings = config().copy(markets = readDevelopmentMarkets(database.register(document)))
+            DevelopmentFundingNode.start(settings).use { node ->
+                prepare(node)
+                DevelopmentOrderClient(settings).use { client ->
+                    database.close()
+                    val previousPosition = assertNotNull(node.observation).position
+                    val command = order(SUI, "R-AFTER-DB", "O-AFTER-DB", price = 20_000_000, quantity = 20_000_000_000)
+                    val response = assertIs<OrderRequestOutcome.Confirmed>(client.request(command)).result
+                    assertEquals(1L, assertIs<AdmissionResultPayload.Accepted>(response).sequence)
+                    val observed = applied(node, previousPosition)
+                    assertEquals(response, observed.admissionResult)
+                    val snapshot = assertNotNull(observed.snapshot)
+                    assertBalance(snapshot, available = 600_000_000, hold = 400_000_000)
+                    assertEquals(listOf("O-AFTER-DB"), pendingOrders(snapshot, SUI))
+                    assertEquals(
+                        2L,
+                        snapshot.pendingOrders
+                            .single()
+                            .candidate.feePolicySnapshot.scheduleVersion,
+                    )
+                    assertNull(node.error)
+                }
+            }
         }
     }
 

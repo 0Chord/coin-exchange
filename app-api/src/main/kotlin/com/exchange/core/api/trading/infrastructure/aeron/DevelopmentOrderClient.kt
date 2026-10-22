@@ -5,6 +5,7 @@ import com.exchange.core.api.trading.infrastructure.codec.AdmissionCommandPayloa
 import com.exchange.core.api.trading.infrastructure.codec.AdmissionMessageException
 import com.exchange.core.api.trading.infrastructure.codec.AdmissionResultCodec
 import com.exchange.core.api.trading.infrastructure.codec.AdmissionResultPayload
+import com.exchange.core.common.MarketId
 import com.exchange.core.common.OrderId
 import com.exchange.core.common.Price
 import com.exchange.core.common.Quantity
@@ -274,25 +275,41 @@ internal fun parseDevelopmentOrderInvocation(
     args: Array<String>,
     environment: Map<String, String>,
 ): DevelopmentOrderInvocation {
-    val structured = args.firstOrNull() == "--cluster-env"
-    require((structured && args.size in 9..10) || (!structured && args.size in 10..11)) {
-        "사용법: 노드루트 기준포트 요청ID 사용자 주문ID BUY|SELL 가격최소단위 수량최소단위 원장ID 업무Instant [수수료정책버전] 또는 --cluster-env 요청ID 사용자 주문ID BUY|SELL 가격최소단위 수량최소단위 원장ID 업무Instant [수수료정책버전]"
+    val marketOption = args.indexOf("--market")
+    val selectedMarket =
+        if (marketOption >= 0) {
+            require(marketOption == args.size - 2 && args.count { it == "--market" } == 1) { "--market 마켓ID는 맨 끝에 한 번만 지정합니다" }
+            args.last().also { require(it.isNotBlank() && !it.startsWith("--")) { "--market 뒤에 마켓 ID가 필요합니다" } }
+        } else {
+            "BTC-USDT"
+        }
+    val positional = if (marketOption >= 0) args.take(marketOption) else args.toList()
+    val structured = positional.firstOrNull() == "--cluster-env"
+    require((structured && positional.size in 9..10) || (!structured && positional.size in 10..11)) {
+        "사용법: 노드루트 기준포트 요청ID 사용자 주문ID BUY|SELL 가격최소단위 수량최소단위 원장ID 업무Instant [수수료정책버전] [--market 마켓ID] 또는 --cluster-env 요청ID 사용자 주문ID BUY|SELL 가격최소단위 수량최소단위 원장ID 업무Instant [수수료정책버전] [--market 마켓ID]"
     }
-    val config = if (structured) developmentClusterSettings(environment) else DevelopmentFundingSettings(Path.of(args[0]), args[1].toInt())
-    val values = if (structured) args.drop(1) else args.drop(2)
+    require(positional.drop(if (structured) 1 else 0).none { it.startsWith("--") }) { "지원하지 않는 옵션 또는 옵션 위치입니다" }
+    val config =
+        if (structured) {
+            developmentClusterSettings(environment)
+        } else {
+            DevelopmentFundingSettings(Path.of(positional[0]), positional[1].toInt(), markets = readDevelopmentMarkets(environment))
+        }
+    val context = requireNotNull(config.markets[MarketId(selectedMarket)]) { "등록되지 않은 마켓입니다: $selectedMarket. --market으로 등록된 마켓을 선택하세요" }
+    val values = positional.drop(if (structured) 1 else 2)
     val feePolicy =
         if (values.size == 9) {
             val version = values[8].toLongOrNull()
             require(version != null && version > 0) { "수수료 정책 버전은 양수 Long이어야 합니다" }
-            config.feePolicySnapshot.copy(scheduleVersion = version)
+            context.feePolicySnapshot.copy(scheduleVersion = version)
         } else {
-            config.feePolicySnapshot
+            context.feePolicySnapshot
         }
     val command =
         AdmissionCommandPayload(
             values[0],
             OrderAdmissionInput(
-                config.market.marketId,
+                context.market.marketId,
                 OrderId(values[2]),
                 UserId(values[1]),
                 Side.valueOf(values[3]),
@@ -301,7 +318,7 @@ internal fun parseDevelopmentOrderInvocation(
                 Price(values[4].toLong()),
                 Quantity(values[5].toLong()),
             ),
-            config.market,
+            context.market,
             feePolicy,
             values[6],
             Instant.parse(values[7]),

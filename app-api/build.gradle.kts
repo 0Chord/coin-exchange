@@ -124,7 +124,7 @@ springBoot {
 listOf("Node", "Client").forEach { entry ->
     tasks.register<JavaExec>("runDevelopmentFunding$entry") {
         group = "application"
-        description = "DB/Kafka 없이 개발용 자금 준비 ${if (entry == "Node") "노드" else "클라이언트"}를 실행한다."
+        description = "시작 설정을 준비한 뒤 개발용 자금 준비 ${if (entry == "Node") "노드" else "클라이언트"}를 실행한다."
         classpath = sourceSets["main"].runtimeClasspath
         mainClass.set("com.exchange.core.api.trading.infrastructure.aeron.DevelopmentFunding${entry}Kt")
         javaLauncher.set(javaToolchains.launcherFor(java.toolchain))

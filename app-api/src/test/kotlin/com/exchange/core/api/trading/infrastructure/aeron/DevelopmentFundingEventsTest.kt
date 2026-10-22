@@ -8,9 +8,11 @@ import com.exchange.core.api.trading.infrastructure.codec.admissionCommand
 import com.exchange.core.api.trading.infrastructure.codec.admit
 import com.exchange.core.common.Amount
 import com.exchange.core.common.AssetId
+import com.exchange.core.common.MarketId
 import com.exchange.core.common.Quantity
 import com.exchange.core.common.UserId
 import com.exchange.core.ledger.OpeningBalance
+import com.exchange.core.order.MarketDefinition
 import com.exchange.core.order.Side
 import com.exchange.core.trading.OrderAdmissionState
 import tools.jackson.databind.JsonNode
@@ -19,6 +21,7 @@ import java.nio.file.Path
 import java.time.Instant
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
@@ -28,6 +31,40 @@ class DevelopmentFundingEventsTest {
     private val openingTime = Instant.parse("2026-10-21T00:00:00.123456789Z")
     private val firstTime = Instant.parse("2026-10-21T00:00:01.123456789Z")
     private val secondTime = Instant.parse("2026-10-21T00:00:02.123456789Z")
+
+    @Test
+    fun `기본 READY 목록은 BTC 전체 정의와 정책 하나를 담는다`() {
+        assertEquals(tree(listOf(expectedMarket() + ("feePolicy" to expectedPolicy()))), tree(fundingMarketFields(config.markets)))
+    }
+
+    @Test
+    fun `READY 전체 목록은 입력 순서와 무관하게 정렬되고 등록 목록은 바꿀 수 없다`() {
+        val btc = DevelopmentMarketContext.BTC_USDT
+        val sui =
+            btc.copy(
+                market = MarketDefinition(MarketId("SUI-USDT"), AssetId("SUI"), AssetId("USDT"), 9),
+                feePolicySnapshot = btc.feePolicySnapshot.copy(scheduleVersion = 2),
+            )
+        val source = mutableListOf(sui, btc)
+        val markets = DevelopmentMarketRegistry(source)
+        source.clear()
+
+        assertEquals(listOf(btc, sui), markets.all())
+        assertFailsWith<UnsupportedOperationException> { (markets.all() as MutableList<DevelopmentMarketContext>).clear() }
+        val expectedSui =
+            mapOf(
+                "marketId" to "SUI-USDT",
+                "baseAssetId" to "SUI",
+                "quoteAssetId" to "USDT",
+                "baseQuantityScale" to 9,
+                "feePolicy" to (expectedPolicy() + ("scheduleVersion" to 2)),
+            )
+        assertEquals(
+            tree(listOf(expectedMarket() + ("feePolicy" to expectedPolicy()), expectedSui)),
+            tree(fundingMarketFields(markets)),
+        )
+        assertEquals(fundingMarketFields(DevelopmentMarketRegistry(listOf(btc, sui))), fundingMarketFields(markets))
+    }
 
     @Test
     fun `검증 진입점만 잘못된 메시지 개수를 출력한다`() {

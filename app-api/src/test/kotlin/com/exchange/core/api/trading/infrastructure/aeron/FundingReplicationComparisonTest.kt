@@ -9,6 +9,88 @@ import kotlin.test.assertTrue
 
 class FundingReplicationComparisonTest {
     @Test
+    fun `기본 READY는 BTC 하나의 전체 정의를 확인하고 두 마켓 기대도 전체 배열로 확인한다`() {
+        assertTrue(compareFundingReadiness("run", readinessReplicas()).isEmpty())
+        val expected = readyMarketsFixture(includeSui = true)
+        assertTrue(compareFundingReadiness("run", readinessReplicas(expected), expected).isEmpty())
+    }
+
+    @Test
+    fun `READY 목록의 누락 빈 값 추가 중복과 순서 변경은 모두 실패한다`() {
+        val expected = readyMarketsFixture(includeSui = true)
+        val invalid =
+            listOf(
+                emptyList(),
+                expected.take(1),
+                expected + expected.last(),
+                listOf(expected.first(), expected.first()),
+                expected.reversed(),
+            )
+        invalid.forEach { markets ->
+            val issues = compareFundingReadiness("run", readinessReplicas(markets), expected)
+            assertTrue(issues.count { it.message.contains("settings.markets expected=") } == 3, markets.toString())
+        }
+        val missing =
+            readinessReplicas(expected).mapValues { (_, events) ->
+                events.map { event -> event.apply { (path("settings") as ObjectNode).remove("markets") } }
+            }
+        assertTrue(compareFundingReadiness("run", missing, expected).any { it.message.contains("settings.markets") })
+
+        // 세 노드에 같은 추가 마켓이 있어도 BTC 기본 실행의 기대를 바꾸지 않는다.
+        assertTrue(compareFundingReadiness("run", readinessReplicas(expected)).any { it.message.contains("settings.markets") })
+    }
+
+    @Test
+    fun `세 READY가 같은 잘못된 SUI 필드를 출력해도 독립 기대값과 다르면 실패한다`() {
+        val expected = readyMarketsFixture(includeSui = true)
+        val incorrectFields =
+            mapOf(
+                "marketId" to "OTHER-USDT",
+                "baseAssetId" to "OTHER",
+                "quoteAssetId" to "OTHER",
+                "baseQuantityScale" to 8,
+                "productType" to "PERPETUAL_FUTURES",
+                "feeTier" to "WRONG",
+                "scheduleVersion" to 1,
+                "makerPartsPerMillion" to 1,
+                "takerPartsPerMillion" to 1,
+            )
+        incorrectFields.forEach { (field, value) ->
+            val changed =
+                readinessReplicas(expected).mapValues { (_, events) ->
+                    events.map { event ->
+                        event.apply {
+                            val market = at("/settings/markets/1") as ObjectNode
+                            val target = if (market.has(field)) market else market.path("feePolicy") as ObjectNode
+                            target.set(field, jacksonObjectMapper().valueToTree<JsonNode>(value))
+                        }
+                    }
+                }
+            val issues = compareFundingReadiness("run", changed, expected)
+            assertTrue(issues.count { it.message.contains("settings.markets expected=") } == 3, field)
+        }
+    }
+
+    @Test
+    fun `옛 단일 마켓 필드만 있는 READY를 기본 BTC로 보완하지 않는다`() {
+        val changed =
+            readinessReplicas().mapValues { (_, events) ->
+                events.map { event ->
+                    event.apply {
+                        val settings = path("settings") as ObjectNode
+                        val market = settings.path("markets").path(0)
+                        settings.set("market", market)
+                        settings.set("feePolicy", market.path("feePolicy"))
+                        settings.remove("markets")
+                    }
+                }
+            }
+        val issues = compareFundingReadiness("run", changed)
+        assertTrue(issues.any { it.message.contains("settings.markets") })
+        assertTrue(issues.any { it.message.contains("단일 마켓 필드") })
+    }
+
+    @Test
     fun `세 사본이 이번 입력의 같은 L에서 독립 잔고와 OPENING 기대값에 맞으면 통과한다`() {
         val events = replicas()
         // 같은 L의 응답 시도 이벤트가 추가되어도 돈을 다시 지급한 것으로 세지 않는다.
@@ -122,6 +204,68 @@ class FundingReplicationComparisonTest {
         assertTrue(result.issues.any { it.category == "MISMATCH" && it.message.contains("available") })
         assertTrue(result.issues.any { it.category == "COLLECTION" })
         assertTrue(result.issues.any { it.category == "UNVERIFIABLE" })
+    }
+
+    private fun readinessReplicas(markets: List<Map<String, Any>> = readyMarketsFixture()): Map<Int, List<ObjectNode>> =
+        (0..2).associateWith { member ->
+            listOf(
+                tree(
+                    mapOf(
+                        "kind" to "READY",
+                        "runId" to "run",
+                        "memberId" to member,
+                        "pid" to member + 1,
+                        "role" to if (member == 0) "LEADER" else "FOLLOWER",
+                        "settings" to
+                            mapOf(
+                                "clusterId" to 97,
+                                "serviceId" to 0,
+                                "members" to "0,node0:19700|1,node1:19700|2,node2:19700",
+                                "runRoot" to "/records/run",
+                                "driverDirectory" to "/records/run/node$member/driver",
+                                "archiveDirectory" to "/records/run/node$member/archive",
+                                "clusterDirectory" to "/records/run/node$member/cluster",
+                                "storageLevels" to listOf(2, 2, 2),
+                                "markets" to markets,
+                            ),
+                    ),
+                ),
+            )
+        }
+
+    private fun readyMarketsFixture(includeSui: Boolean = false): List<Map<String, Any>> {
+        val btc =
+            mapOf(
+                "marketId" to "BTC-USDT",
+                "baseAssetId" to "BTC",
+                "quoteAssetId" to "USDT",
+                "baseQuantityScale" to 8,
+                "feePolicy" to
+                    mapOf(
+                        "productType" to "SPOT",
+                        "feeTier" to "NORMAL",
+                        "scheduleVersion" to 1,
+                        "makerPartsPerMillion" to 0,
+                        "takerPartsPerMillion" to 0,
+                    ),
+            )
+        if (!includeSui) return listOf(btc)
+        val sui =
+            mapOf(
+                "marketId" to "SUI-USDT",
+                "baseAssetId" to "SUI",
+                "quoteAssetId" to "USDT",
+                "baseQuantityScale" to 9,
+                "feePolicy" to
+                    mapOf(
+                        "productType" to "SPOT",
+                        "feeTier" to "NORMAL",
+                        "scheduleVersion" to 2,
+                        "makerPartsPerMillion" to 0,
+                        "takerPartsPerMillion" to 0,
+                    ),
+            )
+        return listOf(btc, sui)
     }
 
     private fun replicas(): Map<Int, List<JsonNode>> = (0..2).associateWith { listOf(applied(it)) }

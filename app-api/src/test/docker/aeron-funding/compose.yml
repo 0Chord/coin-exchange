@@ -9,6 +9,14 @@ x-common-environment: &common-environment
   FUNDING_MEMBERS: "0,node0:19700,node0:19701,node0:19702,node0:19703,node0:19704|1,node1:19700,node1:19701,node1:19702,node1:19703,node1:19704|2,node2:19700,node2:19701,node2:19702,node2:19703,node2:19704"
   FUNDING_BIND_HOST: 0.0.0.0
   FUNDING_BASE_PORT: "19700"
+  # A bare value forwards a supplied value, including empty, and omits an unset variable.
+  FUNDING_MARKET_DB_URL:
+  FUNDING_MARKET_DB_USER:
+  FUNDING_MARKET_DB_PASSWORD:
+  FUNDING_MARKET_CONFIG_VERSION:
+  FUNDING_MARKET_CONFIG_SHA256:
+  # Obsolete input is forwarded only so startup can reject it explicitly.
+  FUNDING_MARKETS_JSON:
 
 services:
   node0:

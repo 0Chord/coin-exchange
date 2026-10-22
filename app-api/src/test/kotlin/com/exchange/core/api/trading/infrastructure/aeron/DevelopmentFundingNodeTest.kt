@@ -325,7 +325,11 @@ class DevelopmentFundingNodeTest {
                     "1000000000",
                     "",
                     command().occurredAt.toString(),
-                ).redirectErrorStream(true).redirectOutput(output.toFile()).start()
+                ).apply {
+                    DEVELOPMENT_MARKET_ENVIRONMENT_KEYS.forEach { environment().remove(it) }
+                }.redirectErrorStream(true)
+                    .redirectOutput(output.toFile())
+                    .start()
             try {
                 assertTrue(process.waitFor(15, TimeUnit.SECONDS), "별도 클라이언트가 대기 상한 안에 끝나야 한다")
                 val text = Files.readString(output)

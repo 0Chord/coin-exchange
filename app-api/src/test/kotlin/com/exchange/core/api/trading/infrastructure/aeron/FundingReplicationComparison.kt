@@ -107,8 +107,11 @@ internal fun compareFundingReplication(
 internal fun compareFundingReadiness(
     runId: String,
     eventsByMember: Map<Int, List<JsonNode>>,
+    expectedMarkets: List<Map<String, Any>> = expectedFundingMarkets(),
 ): List<FundingVerificationIssue> {
     val issues = mutableListOf<FundingVerificationIssue>()
+    val mapper = jacksonObjectMapper()
+    val wantedMarkets = mapper.readTree(mapper.writeValueAsString(expectedMarkets))
     val ready =
         (0..2).associateWith { member ->
             eventsByMember[member].orEmpty().lastOrNull { it.path("kind").asString() == "READY" && it.path("runId").asString() == runId }
@@ -133,31 +136,20 @@ internal fun compareFundingReadiness(
             issues,
             "SETUP",
         )
-        for (name in listOf("members", "market", "feePolicy")) {
+        for (name in listOf("members", "markets")) {
             if (settings.path(name).isMissingNode || settings.path(name) != firstSettings.path(name)) {
                 issues.add(FundingVerificationIssue("SETUP", "node$member.$name 공통 실행 설정 불일치"))
             }
         }
-        checkFields(
-            "node$member.settings.market",
-            settings.path("market"),
-            mapOf("marketId" to "BTC-USDT", "baseAssetId" to "BTC", "quoteAssetId" to "USDT", "baseQuantityScale" to 8),
-            issues,
-            "SETUP",
-        )
-        checkFields(
-            "node$member.settings.feePolicy",
-            settings.path("feePolicy"),
-            mapOf(
-                "productType" to "SPOT",
-                "feeTier" to "NORMAL",
-                "scheduleVersion" to 1,
-                "makerPartsPerMillion" to 0,
-                "takerPartsPerMillion" to 0,
-            ),
-            issues,
-            "SETUP",
-        )
+        val markets = settings.path("markets")
+        if (!markets.isArray || markets.isEmpty || markets != wantedMarkets) {
+            issues.add(FundingVerificationIssue("SETUP", "node$member.settings.markets expected=$wantedMarkets, actual=$markets"))
+        }
+        for (legacyField in listOf("market", "feePolicy")) {
+            if (settings.has(legacyField)) {
+                issues.add(FundingVerificationIssue("SETUP", "node$member.settings.$legacyField 단일 마켓 필드가 남아 있습니다"))
+            }
+        }
         val members = settings.path("members").asString()
         if (!(0..2).all { members.contains("$it,node$it:") } || members.contains("127.0.0.1") || members.contains("0.0.0.0")) {
             issues.add(FundingVerificationIssue("SETUP", "node$member 광고 멤버 주소가 세 컨테이너를 가리키지 않습니다: $members"))
@@ -170,6 +162,24 @@ internal fun compareFundingReadiness(
     }
     return issues
 }
+
+private fun expectedFundingMarkets(): List<Map<String, Any>> =
+    listOf(
+        mapOf(
+            "marketId" to "BTC-USDT",
+            "baseAssetId" to "BTC",
+            "quoteAssetId" to "USDT",
+            "baseQuantityScale" to 8,
+            "feePolicy" to
+                mapOf(
+                    "productType" to "SPOT",
+                    "feeTier" to "NORMAL",
+                    "scheduleVersion" to 1,
+                    "makerPartsPerMillion" to 0,
+                    "takerPartsPerMillion" to 0,
+                ),
+        ),
+    )
 
 private fun checkApplied(
     member: Int,
