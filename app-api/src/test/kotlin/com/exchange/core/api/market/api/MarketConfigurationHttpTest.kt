@@ -41,8 +41,8 @@ class MarketConfigurationHttpTest {
     }
 
     @Test
-    fun `실제 PUT 재실행은 같은 지문과 원문 시각을 보존하고 다른 원문은 충돌한다`() {
-        val created = server.put("100", DOCUMENT)
+    fun `실제 DTO 등록은 설정 내용이 같으면 최초 지문과 시각을 보존하고 실제 변경만 충돌한다`() {
+        val created = server.put("100", REQUEST)
         assertEquals(200, created.statusCode())
         assertFalse(created.headers().firstValue("Set-Cookie").isPresent)
         val expected = mapper.readTree("""{"configVersion":100,"sha256":"$DOCUMENT_SHA256"}""")
@@ -53,23 +53,34 @@ class MarketConfigurationHttpTest {
         assertEquals(DOCUMENT, json(detail).path("document").asString())
         assertEquals(DOCUMENT_SHA256, json(detail).path("sha256").asString())
         Instant.parse(json(detail).path("createdAt").asString())
-        assertEquals(expected, json(server.put("100", DOCUMENT)))
+        assertEquals(expected, json(server.put("100", REQUEST)))
         assertEquals(json(detail), json(server.get("/100")))
 
-        val conflict = server.put("100", "$DOCUMENT ")
+        val reformatted = mapper.writerWithDefaultPrettyPrinter().writeValueAsString(mapper.readTree(REQUEST))
+        assertEquals(expected, json(server.put("100", reformatted)))
+        val reordered =
+            REQUEST.replace(
+                "\"marketId\":\"BTC-USDT\",\"baseAssetId\":\"BTC\"",
+                "\"baseAssetId\":\"BTC\",\"marketId\":\"BTC-USDT\"",
+            )
+        assertEquals(expected, json(server.put("100", reordered)))
+        assertEquals(json(detail), json(server.get("/100")))
+
+        val changed = REQUEST.replace("\"baseQuantityScale\":8", "\"baseQuantityScale\":7")
+        val conflict = server.put("100", changed)
         assertEquals(409, conflict.statusCode())
         assertEquals("CONTENT_CONFLICT", json(conflict).path("code").asString())
         assertEquals(json(detail), json(server.get("/100")))
         assertEquals(1, rowCount(100))
-        assertEquals(200, server.put("101", "$DOCUMENT ").statusCode())
+        assertEquals(200, server.put("101", changed).statusCode())
         assertEquals(404, server.get("/999999").statusCode())
         assertEquals(405, server.request("DELETE", "/100").statusCode())
     }
 
     @Test
     fun `목록은 버전 역순이며 마지막 꽉 찬 페이지의 cursor 다음은 빈 페이지다`() {
-        assertEquals(200, server.put("10", DOCUMENT).statusCode())
-        assertEquals(200, server.put("20", DOCUMENT).statusCode())
+        assertEquals(200, server.put("10", REQUEST).statusCode())
+        assertEquals(200, server.put("20", REQUEST).statusCode())
         val first = json(server.get("?beforeVersion=21&limit=1"))
         assertEquals(setOf("items", "nextBeforeVersion"), first.properties().map { it.key }.toSet())
         assertEquals(
@@ -114,8 +125,8 @@ class MarketConfigurationHttpTest {
 
     @Test
     fun `정의하지 않은 조회 키는 무시하고 명시한 조회 조건만 사용한다`() {
-        assertEquals(200, server.put("700", DOCUMENT).statusCode())
-        assertEquals(200, server.put("701", DOCUMENT).statusCode())
+        assertEquals(200, server.put("700", REQUEST).statusCode())
+        assertEquals(200, server.put("701", REQUEST).statusCode())
         val defaultPage = json(server.get(""))
         val singleItemPage = json(server.get("?limit=1"))
         assertTrue(defaultPage.path("items").size() >= 2)
@@ -148,12 +159,12 @@ class MarketConfigurationHttpTest {
     @Test
     fun `JSON이 아닌 본문 형식은 Spring이 저장 전에 거절하며 JSON은 등록된다`() {
         listOf(null, "text/plain", "not-a-media-type", "application/*").forEach { contentType ->
-            val response = server.request("PUT", "/250", DOCUMENT.toByteArray(), contentType = contentType)
+            val response = server.request("PUT", "/250", REQUEST.toByteArray(), contentType = contentType)
             assertEquals(415, response.statusCode(), contentType)
             assertEquals(0, rowCount(250))
         }
         listOf("application/json", "application/json; charset=UTF-8").forEach { contentType ->
-            assertEquals(200, server.request("PUT", "/250", DOCUMENT.toByteArray(), contentType = contentType).statusCode())
+            assertEquals(200, server.request("PUT", "/250", REQUEST.toByteArray(), contentType = contentType).statusCode())
         }
         assertEquals(1, rowCount(250))
         assertEquals(DOCUMENT, json(server.get("/250")).path("document").asString())
@@ -171,12 +182,12 @@ class MarketConfigurationHttpTest {
                 "application/*;q=0, */*;q=1",
             )
         rejected.forEach { accept ->
-            assertEquals(406, server.request("PUT", "/260", DOCUMENT.toByteArray(), accept = accept).statusCode(), accept)
+            assertEquals(406, server.request("PUT", "/260", REQUEST.toByteArray(), accept = accept).statusCode(), accept)
             assertEquals(0, rowCount(260))
         }
         listOf("application/json", "application/json;q=0.5", "application/*", "*/*", "application/json;q=1, */*;q=0")
             .forEach { accept ->
-                assertEquals(200, server.request("PUT", "/260", DOCUMENT.toByteArray(), accept = accept).statusCode(), accept)
+                assertEquals(200, server.request("PUT", "/260", REQUEST.toByteArray(), accept = accept).statusCode(), accept)
             }
         rejected.forEach { accept ->
             assertEquals(406, server.request("GET", "/260", accept = accept).statusCode(), accept)
@@ -187,11 +198,12 @@ class MarketConfigurationHttpTest {
     }
 
     @Test
-    fun `최대 바이트는 그대로 보관하고 초과 손상 UTF8 잘못된 문서 버전은 저장하지 않는다`() {
-        val boundary = DOCUMENT + " ".repeat(65_536 - DOCUMENT.toByteArray().size)
+    fun `DTO 본문 최대 바이트는 허용하고 초과 손상 UTF8 잘못된 문서 버전은 저장하지 않는다`() {
+        val boundary = REQUEST + " ".repeat(65_536 - REQUEST.toByteArray().size)
         assertEquals(200, server.put("300", boundary).statusCode())
-        assertEquals(boundary, json(server.get("/300")).path("document").asString())
-        val invalid = listOf((boundary + " ").toByteArray(), byteArrayOf(0xC3.toByte(), 0x28), byteArrayOf(), "[]".toByteArray())
+        assertEquals(DOCUMENT, json(server.get("/300")).path("document").asString())
+        val invalid =
+            listOf((boundary + " ").toByteArray(), byteArrayOf(0xC3.toByte(), 0x28), byteArrayOf(), "{\"markets\":[]}".toByteArray())
         invalid.forEachIndexed { index, bytes ->
             val version = 301L + index
             val response = server.request("PUT", "/$version", bytes)
@@ -202,7 +214,7 @@ class MarketConfigurationHttpTest {
             assertSanitized(response.body())
         }
         listOf("0", "-1", "bad", "9223372036854775808").forEach {
-            assertEquals(400, server.put(it, DOCUMENT).statusCode())
+            assertEquals(400, server.put(it, REQUEST).statusCode())
             assertEquals(400, server.get("/$it").statusCode())
         }
     }
@@ -210,7 +222,7 @@ class MarketConfigurationHttpTest {
     @Test
     fun `숫자 변환과 Bean Validation 오류는 저장 전에 정제한 입력 오류로 반환한다`() {
         listOf("0", "-1", "bad", "9223372036854775808").forEach { version ->
-            listOf(server.put(version, DOCUMENT), server.get("/$version")).forEach { response ->
+            listOf(server.put(version, REQUEST), server.get("/$version")).forEach { response ->
                 assertEquals(400, response.statusCode(), version)
                 assertEquals("INVALID_INPUT", json(response).path("code").asString())
                 assertEquals("request", json(response).path("stage").asString())
@@ -225,6 +237,102 @@ class MarketConfigurationHttpTest {
                 assertEquals("request", json(response).path("stage").asString())
                 assertEquals(setOf("code", "stage", "configVersion"), json(response).properties().map { it.key }.toSet())
             }
+    }
+
+    @Test
+    fun `마켓과 수수료의 필드 제약은 중첩 DTO의 Bean Validation으로 저장 전에 거절한다`() {
+        val invalid =
+            listOf(
+                REQUEST.replace("\"marketId\":\"BTC-USDT\"", "\"marketId\":\" \""),
+                REQUEST.replace("\"baseAssetId\":\"BTC\"", "\"baseAssetId\":\"\""),
+                REQUEST.replace("\"quoteAssetId\":\"USDT\"", "\"quoteAssetId\":\" \""),
+                REQUEST.replace("\"baseQuantityScale\":8", "\"baseQuantityScale\":-1"),
+                REQUEST.replace("\"baseQuantityScale\":8", "\"baseQuantityScale\":19"),
+                REQUEST.replace("\"productType\":\"SPOT\"", "\"productType\":\"PERPETUAL_FUTURES\""),
+                REQUEST.replace("\"feeTier\":\"NORMAL\"", "\"feeTier\":\"UNKNOWN\""),
+                REQUEST.replace("\"scheduleVersion\":1", "\"scheduleVersion\":0"),
+                REQUEST.replace("\"makerPartsPerMillion\":0", "\"makerPartsPerMillion\":-1"),
+                REQUEST.replace("\"takerPartsPerMillion\":0", "\"takerPartsPerMillion\":1000001"),
+                "{\"markets\":[${List(33) { DOCUMENT.removePrefix("[").removeSuffix("]") }.joinToString(",")}]}",
+            )
+        invalid.forEachIndexed { index, body ->
+            assertInvalidRequest(5000L + index, body.toByteArray())
+        }
+    }
+
+    @Test
+    fun `잘못된 JSON 구조와 중복 필드 및 자동 형변환이 필요한 값은 저장 전에 거절한다`() {
+        val invalid =
+            listOf(
+                DOCUMENT,
+                "null",
+                "{}",
+                "{\"markets\":null}",
+                "{\"markets\":[null]}",
+                "{\"markets\":$DOCUMENT,\"markets\":$DOCUMENT}",
+                "{\"markets\":$DOCUMENT,\"extra\":true}",
+                REQUEST.replace("\"marketId\":", "\"extra\":true,\"marketId\":"),
+                REQUEST.replace("\"marketId\":\"BTC-USDT\"", "\"marketId\":\"BTC-USDT\",\"marketId\":\"SUI-USDT\""),
+                REQUEST.replace("\"feeTier\":\"NORMAL\"", "\"feeTier\":\"NORMAL\",\"feeTier\":\"VIP\""),
+                REQUEST.replace("\"baseQuantityScale\":8", "\"baseQuantityScale\":\"8\""),
+                REQUEST.replace("\"baseQuantityScale\":8", "\"baseQuantityScale\":8.0"),
+                REQUEST.replace("\"baseQuantityScale\":8", "\"baseQuantityScale\":true"),
+                REQUEST.replace("\"marketId\":\"BTC-USDT\"", "\"marketId\":1"),
+                REQUEST.replace("\"baseAssetId\":\"BTC\"", "\"baseAssetId\":false"),
+                REQUEST.replace("\"productType\":\"SPOT\"", "\"productType\":0"),
+                REQUEST.replace("\"marketId\":\"BTC-USDT\"", "\"marketId\":null"),
+                REQUEST.replace("\"scheduleVersion\":1", "\"scheduleVersion\":null"),
+                REQUEST.replace("\"scheduleVersion\":1", "\"scheduleVersion\":9223372036854775808"),
+                REQUEST.replace("\"baseQuantityScale\":8,", ""),
+                REQUEST.replace("\"makerPartsPerMillion\":0,", ""),
+                REQUEST.replace("\"feePolicy\":{", "\"feePolicy\":{\"extra\":1,"),
+                "$REQUEST {}",
+            )
+        invalid.forEachIndexed { index, body ->
+            assertInvalidRequest(5100L + index, body.toByteArray())
+        }
+    }
+
+    @Test
+    fun `DTO는 마켓 서른두 개와 수량 단위 및 수수료율의 허용 경계를 등록한다`() {
+        val markets =
+            List(32) { index ->
+                DOCUMENT
+                    .removePrefix("[")
+                    .removeSuffix("]")
+                    .replace("BTC-USDT", "ASSET$index-USDT")
+                    .replace("\"baseAssetId\":\"BTC\"", "\"baseAssetId\":\"ASSET$index\"")
+                    .replace("\"baseQuantityScale\":8", "\"baseQuantityScale\":${if (index == 0) 0 else 18}")
+                    .replace("\"makerPartsPerMillion\":0", "\"makerPartsPerMillion\":1000000")
+                    .replace("\"takerPartsPerMillion\":0", "\"takerPartsPerMillion\":1000000")
+            }
+        val response = server.put("5200", "{\"markets\":[${markets.joinToString(",")}]}")
+        assertEquals(200, response.statusCode())
+        val stored = mapper.readTree(json(server.get("/5200")).path("document").asString())
+        assertEquals(32, stored.size())
+        assertEquals(0, stored.first().path("baseQuantityScale").asInt())
+        assertEquals(18, stored.last().path("baseQuantityScale").asInt())
+        assertEquals(1, rowCount(5200))
+    }
+
+    @Test
+    fun `DTO 변환은 비ASCII 식별자를 보존하고 잘못된 유니코드 escape는 저장하지 않는다`() {
+        val unicode =
+            REQUEST
+                .replace("BTC-USDT", "비트코인-USDT")
+                .replace("\"baseAssetId\":\"BTC\"", "\"baseAssetId\":\"비트코인\"")
+        assertEquals(200, server.put("5300", unicode).statusCode())
+        val stored = mapper.readTree(json(server.get("/5300")).path("document").asString()).first()
+        assertEquals("비트코인-USDT", stored.path("marketId").asString())
+        assertEquals("비트코인", stored.path("baseAssetId").asString())
+        listOf("\\uD800", "\\uDC00").forEachIndexed { index, escape ->
+            val version = 5301L + index
+            val response = server.put(version.toString(), REQUEST.replace("BTC-USDT", escape))
+            assertEquals(400, response.statusCode())
+            assertEquals("INVALID_INPUT", json(response).path("code").asString())
+            assertEquals(0, rowCount(version))
+            assertSanitized(response.body())
+        }
     }
 
     @Test
@@ -249,7 +357,7 @@ class MarketConfigurationHttpTest {
             environment() + mapOf("FUNDING_MARKET_DB_USER" to "market_http_limited", "FUNDING_MARKET_DB_PASSWORD" to LIMITED_PASSWORD)
         MarketConfigurationHttpProcess(restricted).use { limited ->
             limited.awaitReady()
-            val registration = limited.put("400", DOCUMENT)
+            val registration = limited.put("400", REQUEST)
             assertEquals(503, registration.statusCode())
             assertEquals("REGISTRATION_FAILED", json(registration).path("code").asString())
             assertEquals("compare", json(registration).path("stage").asString())
@@ -282,7 +390,7 @@ class MarketConfigurationHttpTest {
             }
         }
         try {
-            val response = server.put("450", DOCUMENT)
+            val response = server.put("450", REQUEST)
             assertEquals(503, response.statusCode())
             assertEquals("RESULT_UNCONFIRMED", json(response).path("code").asString())
             assertEquals("insert", json(response).path("stage").asString())
@@ -297,7 +405,7 @@ class MarketConfigurationHttpTest {
         }
         // 이 장애는 INSERT 연결 단절이다. COMMIT 응답 유실을 재현했다는 뜻은 아니다.
         assertEquals(0, rowCount(450))
-        assertEquals(200, server.put("450", DOCUMENT).statusCode())
+        assertEquals(200, server.put("450", REQUEST).statusCode())
     }
 
     @Test
@@ -305,7 +413,7 @@ class MarketConfigurationHttpTest {
         MarketConfigurationHttpProcess(emptyMap()).use { disabled ->
             disabled.awaitReady()
             assertEquals(404, disabled.get("").statusCode())
-            assertEquals(404, disabled.put("500", DOCUMENT).statusCode())
+            assertEquals(404, disabled.put("500", REQUEST).statusCode())
             assertEquals(404, disabled.get("/500").statusCode())
             assertEquals(0, rowCount(500))
         }
@@ -326,6 +434,18 @@ class MarketConfigurationHttpTest {
 
     private fun json(response: HttpResponse<String>): JsonNode = mapper.readTree(response.body())
 
+    private fun assertInvalidRequest(
+        version: Long,
+        body: ByteArray,
+    ) {
+        val response = server.request("PUT", "/$version", body)
+        assertEquals(400, response.statusCode(), "version=$version")
+        assertEquals("INVALID_INPUT", json(response).path("code").asString())
+        assertEquals("request", json(response).path("stage").asString())
+        assertEquals(0, rowCount(version))
+        assertSanitized(response.body())
+    }
+
     private fun assertSanitized(output: String) {
         listOf(DATABASE_PASSWORD, LIMITED_PASSWORD, DOCUMENT, database.environment(1, DOCUMENT).getValue("FUNDING_MARKET_DB_URL"))
             .forEach { assertFalse(output.contains(it), "응답과 로그에 비밀·문서·DB 주소를 노출하면 안 됩니다") }
@@ -338,6 +458,7 @@ class MarketConfigurationHttpTest {
             "[{\"marketId\":\"BTC-USDT\",\"baseAssetId\":\"BTC\",\"quoteAssetId\":\"USDT\",\"baseQuantityScale\":8," +
                 "\"feePolicy\":{\"productType\":\"SPOT\",\"feeTier\":\"NORMAL\",\"scheduleVersion\":1," +
                 "\"makerPartsPerMillion\":0,\"takerPartsPerMillion\":0}}]"
+        private const val REQUEST = "{\"markets\":$DOCUMENT}"
         private const val DOCUMENT_SHA256 = "a01e6f92204d886b5f75f803484333d506ce1155045ef3efe54128e0c62bfcbe"
     }
 }

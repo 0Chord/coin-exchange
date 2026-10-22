@@ -9,6 +9,7 @@ import org.junit.jupiter.api.AfterAll
 import org.junit.jupiter.api.Assertions.assertTimeoutPreemptively
 import org.junit.jupiter.api.BeforeAll
 import org.junit.jupiter.api.TestInstance
+import java.security.MessageDigest
 import java.sql.Connection
 import java.time.Duration
 import java.util.concurrent.Callable
@@ -66,18 +67,43 @@ class PostgresMarketConfigurationStoreTest {
     }
 
     @Test
-    fun `같은 버전의 정책과 공백 변경은 충돌하고 새 버전의 정책 변경은 등록된다`() {
+    fun `공백과 객체 필드 순서와 마켓 배열 순서가 달라도 최초 원문과 등록 결과를 유지한다`() {
+        val version = versions.incrementAndGet()
+        val store = store()
+        val first = store.register(version, MULTI_MARKET_DOCUMENT.toByteArray())
+        val original = store.find(version)!!
+
+        listOf(
+            " \n$MULTI_MARKET_DOCUMENT\n",
+            REORDERED_FIELDS_DOCUMENT,
+            REORDERED_MARKETS_DOCUMENT,
+        ).forEach { equivalent ->
+            assertEquals(first, store.register(version, equivalent.toByteArray()))
+            assertEquals(original, store.find(version))
+        }
+
+        assertEquals(MULTI_MARKET_DOCUMENT, original.document)
+        assertEquals(sha256(MULTI_MARKET_DOCUMENT), first.sha256)
+        assertEquals(1, rowCount(version))
+        val loaded =
+            readDevelopmentMarkets(
+                database.environment(version, MULTI_MARKET_DOCUMENT) + ("FUNDING_MARKET_CONFIG_SHA256" to first.sha256),
+            )
+        assertEquals(listOf("BTC-USDT", "SUI-USDT"), loaded.all().map { it.market.marketId.value })
+        assertEquals(first.sha256, loaded.contentSha256)
+    }
+
+    @Test
+    fun `같은 버전의 실제 수수료 변경은 충돌하고 새 버전에는 등록된다`() {
         val version = versions.incrementAndGet()
         val nextVersion = versions.incrementAndGet()
         val store = store()
         store.register(version, DOCUMENT.toByteArray())
         val original = store.find(version)
 
-        listOf(CHANGED_DOCUMENT, " $DOCUMENT\n").forEach { changed ->
-            val error = assertFailsWith<MarketConfigurationException> { store.register(version, changed.toByteArray()) }
-            assertEquals(MarketConfigurationError.CONTENT_CONFLICT, error.code)
-            assertEquals(original, store.find(version))
-        }
+        val error = assertFailsWith<MarketConfigurationException> { store.register(version, CHANGED_DOCUMENT.toByteArray()) }
+        assertEquals(MarketConfigurationError.CONTENT_CONFLICT, error.code)
+        assertEquals(original, store.find(version))
 
         val changed = store.register(nextVersion, CHANGED_DOCUMENT.toByteArray())
         assertEquals(CHANGED_HASH, changed.sha256)
@@ -86,15 +112,22 @@ class PostgresMarketConfigurationStoreTest {
     }
 
     @Test
-    fun `같은 원문을 동시에 등록하면 두 호출이 같은 버전과 지문을 확인한다`() {
+    fun `동등한 설정의 다른 표현을 동시에 등록하면 두 호출이 최초 저장 한 행의 지문을 확인한다`() {
         val version = versions.incrementAndGet()
 
-        val results = concurrentRegistrations(version, listOf(DOCUMENT, DOCUMENT))
+        val documents = listOf(MULTI_MARKET_DOCUMENT, " \n$REORDERED_MARKETS_DOCUMENT\n")
+        val results = concurrentRegistrations(version, documents)
 
         assertTrue(results.all { it.isSuccess })
-        assertEquals(listOf(DOCUMENT_HASH, DOCUMENT_HASH), results.map { it.getOrThrow().sha256 })
+        val stored = store().find(version)!!
+        assertTrue(stored.document in documents)
+        assertEquals(sha256(stored.document), stored.sha256)
+        assertEquals(listOf(stored.sha256, stored.sha256), results.map { it.getOrThrow().sha256 })
+        assertTrue(results.all { it.getOrThrow().configVersion == version })
         assertEquals(1, rowCount(version))
-        assertEquals(DOCUMENT, store().find(version)!!.document)
+        val repeated = store().register(version, REORDERED_FIELDS_DOCUMENT.toByteArray())
+        assertEquals(stored.sha256, repeated.sha256)
+        assertEquals(stored, store().find(version))
     }
 
     @Test
@@ -117,6 +150,11 @@ class PostgresMarketConfigurationStoreTest {
     @Test
     fun `PK에서 실제 대기한 뒤 앞 등록이 커밋하면 새 snapshot으로 같은 원문을 확인한다`() {
         blockedRegistration(commitBlocker = true, requested = DOCUMENT)
+    }
+
+    @Test
+    fun `PK에서 실제 대기한 뒤 앞 등록이 커밋하면 동등한 설정은 최초 원문을 유지한다`() {
+        blockedRegistration(commitBlocker = true, requested = " \n$REORDERED_BTC_DOCUMENT\n", equivalentToOriginal = true)
     }
 
     @Test
@@ -303,6 +341,7 @@ class PostgresMarketConfigurationStoreTest {
     private fun blockedRegistration(
         commitBlocker: Boolean,
         requested: String,
+        equivalentToOriginal: Boolean = requested == DOCUMENT,
     ) {
         val version = versions.incrementAndGet()
         val applicationName = "market_registration_wait_$version"
@@ -320,13 +359,14 @@ class PostgresMarketConfigurationStoreTest {
                     assertFalse(waiting.isDone)
                     if (commitBlocker) blocker.commit() else blocker.rollback()
                     val result = waiting.get(8, TimeUnit.SECONDS)
-                    if (commitBlocker && requested != DOCUMENT) {
+                    if (commitBlocker && !equivalentToOriginal) {
                         val error = result.exceptionOrNull() as MarketConfigurationException
                         assertEquals(MarketConfigurationError.CONTENT_CONFLICT, error.code)
                         assertEquals(DOCUMENT, store().find(version)!!.document)
                     } else {
-                        assertEquals(if (requested == DOCUMENT) DOCUMENT_HASH else CHANGED_HASH, result.getOrThrow().sha256)
-                        assertEquals(requested, store().find(version)!!.document)
+                        val expectedDocument = if (commitBlocker) DOCUMENT else requested
+                        assertEquals(sha256(expectedDocument), result.getOrThrow().sha256)
+                        assertEquals(expectedDocument, store().find(version)!!.document)
                     }
                     assertEquals(1, rowCount(version))
                 } finally {
@@ -366,12 +406,30 @@ class PostgresMarketConfigurationStoreTest {
         }
     }
 
+    private fun sha256(document: String): String =
+        MessageDigest.getInstance("SHA-256").digest(document.toByteArray()).joinToString("") { "%02x".format(it) }
+
     companion object {
         private const val DOCUMENT =
             "[{\"marketId\":\"BTC-USDT\",\"baseAssetId\":\"BTC\",\"quoteAssetId\":\"USDT\",\"baseQuantityScale\":8," +
                 "\"feePolicy\":{\"productType\":\"SPOT\",\"feeTier\":\"NORMAL\",\"scheduleVersion\":1," +
                 "\"makerPartsPerMillion\":0,\"takerPartsPerMillion\":0}}]"
         private const val DOCUMENT_HASH = "a01e6f92204d886b5f75f803484333d506ce1155045ef3efe54128e0c62bfcbe"
+        private const val SUI_MARKET =
+            """{"marketId":"SUI-USDT","baseAssetId":"SUI","quoteAssetId":"USDT","baseQuantityScale":9,""" +
+                """"feePolicy":{"productType":"SPOT","feeTier":"NORMAL","scheduleVersion":2,""" +
+                """"makerPartsPerMillion":0,"takerPartsPerMillion":0}}"""
+        private const val REORDERED_BTC_DOCUMENT =
+            """[{"feePolicy":{"takerPartsPerMillion":0,"makerPartsPerMillion":0,"scheduleVersion":1,""" +
+                """"feeTier":"NORMAL","productType":"SPOT"},"baseQuantityScale":8,"quoteAssetId":"USDT",""" +
+                """"baseAssetId":"BTC","marketId":"BTC-USDT"}]"""
+        private const val REORDERED_SUI_MARKET =
+            """{"feePolicy":{"takerPartsPerMillion":0,"makerPartsPerMillion":0,"scheduleVersion":2,""" +
+                """"feeTier":"NORMAL","productType":"SPOT"},"baseQuantityScale":9,"quoteAssetId":"USDT",""" +
+                """"baseAssetId":"SUI","marketId":"SUI-USDT"}"""
+        private val MULTI_MARKET_DOCUMENT = DOCUMENT.dropLast(1) + ",$SUI_MARKET]"
+        private val REORDERED_FIELDS_DOCUMENT = REORDERED_BTC_DOCUMENT.dropLast(1) + ",$REORDERED_SUI_MARKET]"
+        private val REORDERED_MARKETS_DOCUMENT = "[$REORDERED_SUI_MARKET," + REORDERED_BTC_DOCUMENT.drop(1)
         private val CHANGED_DOCUMENT = DOCUMENT.replace("\"takerPartsPerMillion\":0", "\"takerPartsPerMillion\":1000")
         private const val CHANGED_HASH = "7f7f5276c32410158afe54c90c5d727f5b4d3561308da4fd69fbb818d57bfd0e"
     }

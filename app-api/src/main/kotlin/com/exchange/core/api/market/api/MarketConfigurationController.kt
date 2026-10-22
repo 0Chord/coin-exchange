@@ -20,13 +20,16 @@ import org.springframework.web.bind.annotation.RestController
 @RequestMapping("/api/admin/market-configurations", produces = ["application/json"])
 class MarketConfigurationController(
     private val marketConfigurationUseCase: MarketConfigurationUseCase,
+    private val marketConfigurationRequestConverter: MarketConfigurationRequestConverter,
 ) {
     @PutMapping("/{version}", consumes = ["application/json"])
     fun register(
         @PathVariable @Positive version: Long,
         @Valid @RequestBody request: MarketConfigurationRegistrationRequest,
     ): MarketConfigurationRegistrationResponse =
-        MarketConfigurationRegistrationResponse.from(marketConfigurationUseCase.register(version, request.document))
+        MarketConfigurationRegistrationResponse.from(
+            marketConfigurationUseCase.register(version, marketConfigurationRequestConverter.document(request)),
+        )
 
     @GetMapping("/{version}")
     fun find(

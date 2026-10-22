@@ -26,7 +26,8 @@ class PostgresMarketConfigurationStore(
         requireVersion(version)
         val bytes = document.copyOf()
         val raw = validateDocument(bytes, MarketConfigurationError.INVALID_INPUT, "document", version)
-        val registration = MarketConfigurationRegistration(version, sha256(bytes))
+        val requestedMarkets = parseDevelopmentMarketsDocument(raw).all()
+        var registration = MarketConfigurationRegistration(version, sha256(bytes))
         var connection: Connection? = null
         var writeAttempted = false
         var commitAttempted = false
@@ -58,9 +59,14 @@ class PostgresMarketConfigurationStore(
                     if (!rows.next()) {
                         throw MarketConfigurationException(MarketConfigurationError.REGISTRATION_FAILED, stage, version)
                     }
-                    if (!rows.getString(1).toByteArray(Charsets.UTF_8).contentEquals(bytes)) {
+                    val storedBytes = rows.getString(1).toByteArray(Charsets.UTF_8)
+                    val stored = validateDocument(storedBytes, MarketConfigurationError.REGISTRATION_FAILED, stage, version)
+                    // 노드가 실제 사용하는 마켓 정의와 정책을 비교한다. 원문의 공백과 나열 순서는 설정 변경이 아니다.
+                    if (parseDevelopmentMarketsDocument(stored).all() != requestedMarkets) {
                         throw MarketConfigurationException(MarketConfigurationError.CONTENT_CONFLICT, stage, version)
                     }
+                    // 기존 행을 다시 쓰지 않는다. 노드가 읽을 최초 저장 문서의 지문을 반환한다.
+                    registration = MarketConfigurationRegistration(version, sha256(storedBytes))
                 }
             }
             stage = "commit"

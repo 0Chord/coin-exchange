@@ -55,16 +55,27 @@ class DevelopmentMarketRegistrationMainTest {
     }
 
     @Test
-    fun `원문이 바뀐 같은 버전은 충돌하고 새 버전에는 등록할 수 있다`() {
-        assertEquals(0, run(7102, DOCUMENT.toByteArray()).exitCode)
+    fun `표현만 다른 재실행은 최초 결과를 반환하고 실제 수수료 변경은 새 버전으로 등록한다`() {
+        val first = run(7102, DOCUMENT.toByteArray())
+        assertEquals(0, first.exitCode)
         val original = row(7102)
-        val conflict = run(7102, (DOCUMENT + " ").toByteArray())
+
+        listOf(" \n$DOCUMENT\n", REORDERED_DOCUMENT).forEach { equivalent ->
+            val repeated = run(7102, equivalent.toByteArray())
+            assertEquals(0, repeated.exitCode, repeated.stderr)
+            assertEquals(first.stdout, repeated.stdout)
+            assertEquals("", repeated.stderr)
+            assertEquals(original, row(7102))
+        }
+
+        val changed = DOCUMENT.replaceFirst("\"takerPartsPerMillion\":0", "\"takerPartsPerMillion\":1000")
+        val conflict = run(7102, changed.toByteArray())
         assertEquals(2, conflict.exitCode)
         assertEquals("", conflict.stdout)
         assertTrue(conflict.stderr.contains("CONTENT_CONFLICT"), conflict.stderr)
         assertEquals(original, row(7102))
-        assertEquals(0, run(7103, (DOCUMENT + " ").toByteArray()).exitCode)
-        assertEquals(DOCUMENT + " ", row(7103).first)
+        assertEquals(0, run(7103, changed.toByteArray()).exitCode)
+        assertEquals(changed, row(7103).first)
     }
 
     @Test
@@ -206,5 +217,11 @@ class DevelopmentMarketRegistrationMainTest {
                 """"takerPartsPerMillion":0}},{"marketId":"SUI-USDT","baseAssetId":"SUI","quoteAssetId":"USDT",""" +
                 """"baseQuantityScale":9,"feePolicy":{"productType":"SPOT","feeTier":"NORMAL","scheduleVersion":2,""" +
                 """"makerPartsPerMillion":0,"takerPartsPerMillion":0}}]"""
+        private const val REORDERED_DOCUMENT =
+            """[{"feePolicy":{"takerPartsPerMillion":0,"makerPartsPerMillion":0,"scheduleVersion":2,""" +
+                """"feeTier":"NORMAL","productType":"SPOT"},"baseQuantityScale":9,"quoteAssetId":"USDT",""" +
+                """"baseAssetId":"SUI","marketId":"SUI-USDT"},{"feePolicy":{"takerPartsPerMillion":0,""" +
+                """"makerPartsPerMillion":0,"scheduleVersion":1,"feeTier":"NORMAL","productType":"SPOT"},""" +
+                """"baseQuantityScale":8,"quoteAssetId":"USDT","baseAssetId":"BTC","marketId":"BTC-USDT"}]"""
     }
 }
