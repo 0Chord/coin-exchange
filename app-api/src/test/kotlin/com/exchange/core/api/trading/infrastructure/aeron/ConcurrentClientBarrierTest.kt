@@ -24,6 +24,37 @@ class ConcurrentClientBarrierTest {
     }
 
     @Test
+    fun `다중 마켓은 BTC A와 SUI B가 준비되면 GO를 공개한다`() {
+        val barrier = ConcurrentClientBarrier(directory, runId, ConcurrentOrderReplicationScenario.MULTI_MARKET_SHARED_FUNDS)
+
+        assertTrue(barrier.release(ready(marketB = "SUI-USDT")).isEmpty())
+        assertEquals(runId, Files.readString(barrier.go))
+        assertFalse(Files.exists(directory.resolve("go.pending")))
+    }
+
+    @Test
+    fun `다중 마켓은 B의 잘못된 마켓이나 준비 누락과 조기 진행에 GO를 공개하지 않는다`() {
+        val expectedReady = ready(marketB = "SUI-USDT")
+        val samples =
+            listOf(
+                ready(),
+                expectedReady - "B",
+                expectedReady +
+                    ("B" to listOf(event("B", "READY", marketId = "SUI-USDT"), event("B", "SEND_STARTED", marketId = "SUI-USDT"))),
+            )
+
+        for (events in samples) {
+            val barrier = ConcurrentClientBarrier(directory, runId, ConcurrentOrderReplicationScenario.MULTI_MARKET_SHARED_FUNDS)
+            val issues = barrier.release(events)
+
+            assertTrue(issues.isNotEmpty())
+            assertTrue(issues.all { it.category == "SETUP" })
+            assertFalse(Files.exists(barrier.go))
+            assertFalse(Files.exists(directory.resolve("go.pending")))
+        }
+    }
+
+    @Test
     fun `한 연결 누락이나 이전 실행과 조기 전송은 GO를 만들지 않는다`() {
         val samples =
             listOf(
@@ -68,12 +99,34 @@ class ConcurrentClientBarrierTest {
         )
     }
 
-    private fun ready() = listOf("A", "B").associateWith { listOf(event(it, "READY")) }
+    @Test
+    fun `다중 마켓의 B는 READY부터 응답까지 SUI identity를 유지해야 한다`() {
+        val scenario = ConcurrentOrderReplicationScenario.MULTI_MARKET_SHARED_FUNDS
+        val kinds = listOf("READY", "GO_OBSERVED", "SEND_STARTED", "TRANSPORT_ACCEPTED", "RESULT_RECEIVED")
+        val normal =
+            mapOf(
+                "A" to kinds.map { event("A", it) },
+                "B" to kinds.map { event("B", it, marketId = "SUI-USDT") },
+            )
+
+        assertTrue(compareConcurrentClientProgress(runId, normal, scenario).isEmpty())
+
+        for (changedKind in kinds) {
+            val changedB = kinds.map { event("B", it, marketId = if (it == changedKind) "BTC-USDT" else "SUI-USDT") }
+            val issues = compareConcurrentClientProgress(runId, normal + ("B" to changedB), scenario)
+
+            assertTrue(issues.any { it.category == "MISMATCH" && "marketId" in it.message }, changedKind)
+        }
+    }
+
+    private fun ready(marketB: String = "BTC-USDT") =
+        mapOf("A" to listOf(event("A", "READY")), "B" to listOf(event("B", "READY", marketId = marketB)))
 
     private fun event(
         id: String,
         kind: String,
         sourceRunId: String = runId,
+        marketId: String = "BTC-USDT",
     ): JsonNode =
         mapper.valueToTree(
             mapOf(
@@ -83,7 +136,7 @@ class ConcurrentClientBarrierTest {
                 "requestId" to "R$id",
                 "orderId" to "O$id",
                 "userId" to "U1",
-                "marketId" to "BTC-USDT",
+                "marketId" to marketId,
                 "inputKind" to "ORDER",
                 "sessionId" to
                     if (id ==

@@ -280,12 +280,219 @@ class ConcurrentOrderReplicationComparisonTest {
         assertTrue(fixture.compare(events = fixture.events() + (2 to (old + fixture.events().getValue(2)))).succeeded)
     }
 
+    @Test
+    fun `BTC와 SUI 두 순서의 고정 관찰은 독립 정답과 일치한다`() {
+        for (first in listOf("A", "B")) {
+            val fixture = Fixture(first, ConcurrentOrderReplicationScenario.MULTI_MARKET_SHARED_FUNDS)
+            val result =
+                fixture.compare(
+                    events =
+                        fixture
+                            .events()
+                            .mapValues { (_, rows) -> rows.reversed() }
+                            .entries
+                            .reversed()
+                            .associate { it.toPair() },
+                    clients =
+                        fixture
+                            .clients()
+                            .entries
+                            .reversed()
+                            .associate { it.toPair() },
+                )
+
+            assertTrue(result.succeeded, result.issues.toString())
+            assertEquals(first, result.orderedSteps.first().name)
+            assertEquals(fixture.positions, result.positions)
+            assertEquals(listOf("BTC-USDT", "SUI-USDT"), result.orderedSteps.sortedBy { it.name }.map { it.marketId })
+        }
+    }
+
+    @Test
+    fun `동시 SUI 입력은 수량 250억과 예약 금액 5억을 분리하고 마켓을 명시한다`() {
+        val scenario = ConcurrentOrderReplicationScenario.MULTI_MARKET_SHARED_FUNDS
+        assertEquals(
+            listOf(
+                "RB",
+                "U1",
+                "OB",
+                "BUY",
+                "20000000",
+                "25000000000",
+                "L-RESERVE-B",
+                "2026-10-21T00:00:02.123456789Z",
+                "--market",
+                "SUI-USDT",
+            ),
+            scenario.clientArguments.getValue("B"),
+        )
+        assertEquals(listOf("--market", "BTC-USDT"), scenario.clientArguments.getValue("A").takeLast(2))
+        assertEquals("SUI-USDT", scenario.marketId("B"))
+        val accepted = tree(scenario.orderedSteps("B").first().expectedState)
+        assertEquals(25_000_000_000L, accepted.at("/pendingOrders/0/candidate/reservation/initialQuantity").asLong())
+        assertEquals(500_000_000L, accepted.at("/pendingOrders/0/candidate/reservation/reservedAmount").asLong())
+        assertEquals(2, accepted.at("/requests/0/feePolicy/scheduleVersion").asInt())
+        assertEquals(
+            "RESERVE:v1:da01faa1fcc3da26f22206344f4d0ca2ffdd865c446e4e5777c6a9dbd997a47f",
+            accepted.at("/transactions/1/sourceEventId").asString(),
+        )
+    }
+
+    @Test
+    fun `세 노드의 같은 SUI 단위 정책 예약 및 원장 오답도 통과하지 않는다`() {
+        val fixture = Fixture("B", ConcurrentOrderReplicationScenario.MULTI_MARKET_SHARED_FUNDS)
+        val mutations =
+            listOf(
+                "/marketId" to "BTC-USDT",
+                "/state/pendingOrders/0/candidate/order/quantity" to 500_000_000L,
+                "/state/pendingOrders/0/candidate/market/baseQuantityScale" to 8L,
+                "/state/pendingOrders/0/candidate/feePolicy/scheduleVersion" to 1L,
+                "/state/pendingOrders/0/candidate/reservation/initialQuantity" to 500_000_000L,
+                "/state/pendingOrders/0/candidate/reservation/remainingQuantity" to 500_000_000L,
+                "/state/pendingOrders/0/candidate/reservation/reservedAmount" to 25_000_000_000L,
+                "/state/pendingOrders/0/candidate/reservation/remainingAmount" to 25_000_000_000L,
+                "/state/pendingOrders/0/candidate/reservation/feePolicy/scheduleVersion" to 1L,
+                "/state/requests/0/order/price" to 100_000_000L,
+                "/state/requests/0/feePolicy/scheduleVersion" to 1L,
+                "/state/requests/0/result/record/sequence" to 2L,
+                "/state/transactions/1/sourceEventId" to "RESERVE:v1:2a1bde88d4f4a215c4be6ab51451a0d0164860b6d7d3c35ed44993d2f2545cae",
+                "/state/transactions/1/postings/0/amount" to 25_000_000_000L,
+                "/state/transactions/1/postings/1/accountId" to "USER:U1:SUI:HOLD",
+                "/state/transactions/1/transactionId" to "L-RESERVE-A",
+                "/state/transactions/1/occurredAtEpochSecond" to 1_792_540_801L,
+                "/state/transactions/1/occurredAtNano" to 123_456_788L,
+                "/state/balances/0/hold" to 25_000_000_000L,
+                "/result/sequence" to 2L,
+            )
+        for ((path, value) in mutations) {
+            val events =
+                fixture.events().mapValues { (_, rows) ->
+                    rows.map { row ->
+                        (row.deepCopy() as ObjectNode).apply { if (this.path("requestId").asString() == "RB") change(path, value) }
+                    }
+                }
+            val result = fixture.compare(events = events)
+            for (member in 0..2) assertIssue(result, "MISMATCH", reportPath("B.node$member", path))
+        }
+    }
+
+    @Test
+    fun `다중 마켓의 자금과 승인 거절 흔적 변조는 실패한다`() {
+        for (first in listOf("A", "B")) {
+            val fixture = Fixture(first, ConcurrentOrderReplicationScenario.MULTI_MARKET_SHARED_FUNDS)
+            val second = if (first == "A") "B" else "A"
+            for ((id, outcome) in listOf(first to "REJECTED", second to "ACCEPTED")) {
+                val changed = fixture.applied(id, 2).change("/result/outcome", outcome)
+                val events =
+                    fixture.events() + (
+                        2 to
+                            fixture.events().getValue(2).map {
+                                if (it.path("requestId").asString() == "R$id") changed else it
+                            }
+                    )
+                assertIssue(fixture.compare(events = events), "MISMATCH", "$id.node2.result.outcome")
+            }
+            val mutations =
+                listOf<Pair<String, (ObjectNode) -> Unit>>(
+                    "balances count" to { (it.at("/state/balances") as ArrayNode).add(it.at("/state/balances/0").deepCopy()) },
+                    "requests count" to { (it.at("/state/requests") as ArrayNode).remove(1) },
+                    "transactions count" to { (it.at("/state/transactions") as ArrayNode).add(it.at("/state/transactions/1").deepCopy()) },
+                    "pendingOrders count" to
+                        { (it.at("/state/pendingOrders") as ArrayNode).add(it.at("/state/pendingOrders/0").deepCopy()) },
+                    "lastSequence" to { it.change("/state/lastSequence", 2L) },
+                )
+            for ((path, mutate) in mutations) {
+                val bad = fixture.applied(second, 2).apply(mutate)
+                val result = fixture.compare(events = fixture.events() + (2 to listOf(fixture.applied(first, 2), bad)))
+                assertIssue(result, "MISMATCH", "$second.node2.state.$path")
+            }
+            val badShortage = fixture.applied(second, 2).change("/result/insufficientBalance/shortfall", 0L)
+            assertIssue(
+                fixture.compare(events = fixture.events() + (2 to listOf(fixture.applied(first, 2), badShortage))),
+                "MISMATCH",
+                "$second.node2.result.insufficientBalance.shortfall",
+            )
+        }
+    }
+
+    @Test
+    fun `다중 마켓 위치는 양수 Long만 허용하고 P1 이전 중복 위치와 멤버 누락을 거절한다`() {
+        val fixture = Fixture("B", ConcurrentOrderReplicationScenario.MULTI_MARKET_SHARED_FUNDS)
+        val invalid = listOf("0", "-1", "128", "127", "9223372036854775808", "18446744073709552064", "448.0", "\"448\"")
+        for (raw in invalid) {
+            val bad = fixture.applied("B", 2).apply { set("position", jacksonObjectMapper().readTree(raw)) }
+            val result = fixture.compare(events = fixture.events() + (2 to (fixture.events().getValue(2) + listOf(bad))))
+            assertIssue(result, "UNVERIFIABLE")
+        }
+        assertIssue(fixture.compare(events = fixture.events().minus(2)), "UNVERIFIABLE", "node2")
+        val same = fixture.events().mapValues { (_, rows) -> rows.map { (it.deepCopy() as ObjectNode).apply { put("position", 448L) } } }
+        assertIssue(fixture.compare(events = same), "UNVERIFIABLE", "서로 다른 적용 위치")
+        val missingFirst = fixture.events().mapValues { (_, rows) -> rows.filter { it.path("requestId").asString() == "RA" } }
+        assertIssue(fixture.compare(events = missingFirst), "UNVERIFIABLE", "B 새 리더 적용 위치")
+    }
+
+    @Test
+    fun `다중 마켓 최종 세 checkpoint는 진단 갱신만 허용하고 계획 밖 입력 위치와 업무 변경을 잡는다`() {
+        for (first in listOf("A", "B")) {
+            val fixture = Fixture(first, ConcurrentOrderReplicationScenario.MULTI_MARKET_SHARED_FUNDS)
+            val pair = fixture.compare()
+            val opening = ConcurrentOrderReplicationScenario.MULTI_MARKET_SHARED_FUNDS.openingStep
+            val checkpoints = listOf(opening to fixture.openingPosition) + pair.orderedSteps.map { it to pair.positions[it.name] }
+            val events =
+                fixture.events().mapValues { (member, rows) ->
+                    listOf(
+                        tree(
+                            opening.identity +
+                                mapOf(
+                                    "kind" to "APPLIED",
+                                    "runId" to fixture.runId,
+                                    "memberId" to member,
+                                    "role" to if (member == 0) "LEADER" else "FOLLOWER",
+                                    "position" to fixture.openingPosition,
+                                    "inputKind" to "FUNDING",
+                                    "result" to opening.expectedResult,
+                                    "state" to opening.expectedState,
+                                ),
+                        ),
+                    ) + rows
+                }
+            val diagnostic =
+                fixture.applied(first, 2).apply {
+                    put("replyStatus", "NOT_LEADER")
+                    put("responseAttempts", 2)
+                }
+            val updated = events + (2 to (events.getValue(2) + listOf(diagnostic)))
+            assertTrue(compareOrderReplicationCoverage(fixture.runId, updated, checkpoints).isEmpty())
+            val mutations =
+                listOf<Pair<String, ObjectNode>>(
+                    "계획 밖 입력" to
+                        fixture.applied(first, 2).apply {
+                            put("requestId", "RC")
+                            put("orderId", "OC")
+                        },
+                    "계획 밖 적용 위치" to fixture.applied(first, 2).apply { put("position", 2_048L) },
+                    "state.balances[0].hold" to fixture.applied(first, 2).change("/state/balances/0/hold", 1L),
+                    "requestId" to fixture.applied(first, 2).apply { put("position", pair.positions.values.max()) },
+                )
+            for ((fragment, bad) in mutations) {
+                val issues = compareOrderReplicationCoverage(fixture.runId, events + (2 to (events.getValue(2) + listOf(bad))), checkpoints)
+                assertTrue(issues.any { fragment in it.message }, issues.toString())
+            }
+        }
+    }
+
     private inner class Fixture(
         first: String = "A",
+        val scenario: ConcurrentOrderReplicationScenario = ConcurrentOrderReplicationScenario.BTC_SHARED_FUNDS,
     ) {
         val runId = "concurrent-109"
         val openingPosition = 128L
-        val steps = ConcurrentOrderReplicationScenario.orderedSteps(first)
+        val steps =
+            if (scenario == ConcurrentOrderReplicationScenario.MULTI_MARKET_SHARED_FUNDS) {
+                independentConcurrentMultiMarketSteps(first)
+            } else {
+                scenario.orderedSteps(first)
+            }
         val positions = mapOf(steps[0].name to 448L, steps[1].name to 1_504L)
 
         fun applied(
@@ -332,7 +539,7 @@ class ConcurrentOrderReplicationComparisonTest {
             clients: Map<String, List<JsonNode>> = clients(),
             pinned: Map<String, Long>? = null,
             collectionIssues: List<FundingVerificationIssue> = emptyList(),
-        ) = compareConcurrentOrderReplication(runId, events, clients, openingPosition, collectionIssues, pinned)
+        ) = compareConcurrentOrderReplication(runId, events, clients, openingPosition, collectionIssues, pinned, scenario)
     }
 
     private fun tree(value: Any): ObjectNode = jacksonObjectMapper().valueToTree(value)

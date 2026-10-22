@@ -1,14 +1,24 @@
 package com.exchange.core.api.trading.infrastructure.aeron
 
-/** #109의 사전 작성한 두 정답. 실제 승인 응답이나 도메인 계산으로 승자를 정하지 않는다. */
-internal object ConcurrentOrderReplicationScenario {
+/** #109와 #117의 사전 작성한 두 정답. 실제 승인 응답이나 도메인 계산으로 승자를 정하지 않는다. */
+internal enum class ConcurrentOrderReplicationScenario {
+    BTC_SHARED_FUNDS,
+    MULTI_MARKET_SHARED_FUNDS,
+    ;
+
     val openingStep: OrderReplicationStep = OrderReplicationScenario.BUY_SEQUENCE.steps().first()
 
-    val clientArguments: Map<String, List<String>> =
-        mapOf(
-            "A" to listOf("RA", "U1", "OA", "BUY", "100000000", "600000000", "L-RESERVE-A", time("A")),
-            "B" to listOf("RB", "U1", "OB", "BUY", "100000000", "500000000", "L-RESERVE-B", time("B")),
-        )
+    val clientArguments: Map<String, List<String>>
+        get() =
+            listOf("A", "B").associateWith { id ->
+                listOf("R$id", "U1", "O$id", "BUY", price(id).toString(), quantity(id).toString(), "L-RESERVE-$id", time(id)) +
+                    if (this == MULTI_MARKET_SHARED_FUNDS) listOf("--market", marketId(id)) else emptyList()
+            }
+
+    fun marketId(clientId: String): String {
+        require(clientId == "A" || clientId == "B") { "알 수 없는 동시 클라이언트: $clientId" }
+        return if (isSui(clientId)) "SUI-USDT" else "BTC-USDT"
+    }
 
     fun orderedSteps(firstClientId: String): List<OrderReplicationStep> {
         require(firstClientId in clientArguments) { "알 수 없는 동시 클라이언트: $firstClientId" }
@@ -20,7 +30,7 @@ internal object ConcurrentOrderReplicationScenario {
                 clientArguments.getValue(firstClientId),
                 accepted(firstClientId),
                 state(firstClientId, false),
-                marketId = "BTC-USDT",
+                marketId = marketId(firstClientId),
             ),
             OrderReplicationStep(
                 second,
@@ -28,7 +38,7 @@ internal object ConcurrentOrderReplicationScenario {
                 clientArguments.getValue(second),
                 rejected(firstClientId, second),
                 state(firstClientId, true),
-                marketId = "BTC-USDT",
+                marketId = marketId(second),
             ),
         )
     }
@@ -39,7 +49,7 @@ internal object ConcurrentOrderReplicationScenario {
     ): Map<String, Any?> {
         val second = if (first == "A") "B" else "A"
         return mapOf(
-            "balances" to listOf(balance(available(first), quantity(first))),
+            "balances" to listOf(balance(available(first), reserve(first))),
             "preparationCount" to 1,
             "pendingOrderCount" to 1,
             "requestRecordCount" to if (hasRejection) 2 else 1,
@@ -57,23 +67,23 @@ internal object ConcurrentOrderReplicationScenario {
             "candidate" to
                 mapOf(
                     "order" to order(first),
-                    "market" to market(),
-                    "feePolicy" to policy(),
+                    "market" to market(first),
+                    "feePolicy" to policy(first),
                     "previousBalance" to balance(1_000_000_000L, 0L),
-                    "nextBalance" to balance(available(first), quantity(first)),
+                    "nextBalance" to balance(available(first), reserve(first)),
                     "reservation" to
                         mapOf(
-                            "marketId" to "BTC-USDT",
+                            "marketId" to marketId(first),
                             "orderId" to "O$first",
                             "userId" to "U1",
                             "side" to "BUY",
                             "assetId" to "USDT",
-                            "limitPrice" to 100_000_000L,
+                            "limitPrice" to price(first),
                             "initialQuantity" to quantity(first),
                             "remainingQuantity" to quantity(first),
-                            "reservedAmount" to quantity(first),
-                            "remainingAmount" to quantity(first),
-                            "feePolicy" to policy(),
+                            "reservedAmount" to reserve(first),
+                            "remainingAmount" to reserve(first),
+                            "feePolicy" to policy(first),
                             "initialFeeReserveAmount" to 0L,
                             "remainingFeeReserveAmount" to 0L,
                             "status" to "ACTIVE",
@@ -91,8 +101,8 @@ internal object ConcurrentOrderReplicationScenario {
         mapOf(
             "requestId" to "R$id",
             "order" to order(id),
-            "market" to market(),
-            "feePolicy" to policy(),
+            "market" to market(id),
+            "feePolicy" to policy(id),
             "ledgerTransactionId" to "L-RESERVE-$id",
             "occurredAt" to time(id),
             "occurredAtEpochSecond" to epochSecond(id),
@@ -105,7 +115,7 @@ internal object ConcurrentOrderReplicationScenario {
                 },
         )
 
-    private fun identifiers(id: String) = mapOf("userId" to "U1", "requestId" to "R$id", "marketId" to "BTC-USDT", "orderId" to "O$id")
+    private fun identifiers(id: String) = mapOf("userId" to "U1", "requestId" to "R$id", "marketId" to marketId(id), "orderId" to "O$id")
 
     private fun accepted(id: String): Map<String, Any?> = identifiers(id) + mapOf("outcome" to "ACCEPTED", "sequence" to 1L)
 
@@ -118,17 +128,17 @@ internal object ConcurrentOrderReplicationScenario {
     private fun shortage(
         first: String,
         id: String,
-    ) = mapOf("assetId" to "USDT", "available" to available(first), "required" to quantity(id), "shortfall" to 100_000_000L)
+    ) = mapOf("assetId" to "USDT", "available" to available(first), "required" to reserve(id), "shortfall" to 100_000_000L)
 
     private fun order(id: String) =
         mapOf(
-            "marketId" to "BTC-USDT",
+            "marketId" to marketId(id),
             "orderId" to "O$id",
             "userId" to "U1",
             "side" to "BUY",
             "orderType" to "LIMIT",
             "timeInForce" to "GTC",
-            "price" to 100_000_000L,
+            "price" to price(id),
             "quantity" to quantity(id),
         )
 
@@ -144,8 +154,8 @@ internal object ConcurrentOrderReplicationScenario {
             "occurredAtNano" to 123_456_789,
             "postings" to
                 listOf(
-                    mapOf("accountId" to "USER:U1:USDT:AVAILABLE", "assetId" to "USDT", "side" to "DEBIT", "amount" to quantity(id)),
-                    mapOf("accountId" to "USER:U1:USDT:HOLD", "assetId" to "USDT", "side" to "CREDIT", "amount" to quantity(id)),
+                    mapOf("accountId" to "USER:U1:USDT:AVAILABLE", "assetId" to "USDT", "side" to "DEBIT", "amount" to reserve(id)),
+                    mapOf("accountId" to "USER:U1:USDT:HOLD", "assetId" to "USDT", "side" to "CREDIT", "amount" to reserve(id)),
                 ),
         )
 
@@ -154,7 +164,20 @@ internal object ConcurrentOrderReplicationScenario {
         hold: Long,
     ) = mapOf("userId" to "U1", "assetId" to "USDT", "available" to available, "hold" to hold)
 
-    private fun quantity(id: String) = if (id == "A") 600_000_000L else 500_000_000L
+    private fun isSui(id: String) = this == MULTI_MARKET_SHARED_FUNDS && id == "B"
+
+    private fun price(id: String) = if (isSui(id)) 20_000_000L else 100_000_000L
+
+    private fun quantity(id: String) =
+        if (isSui(id)) {
+            25_000_000_000L
+        } else if (id == "A") {
+            600_000_000L
+        } else {
+            500_000_000L
+        }
+
+    private fun reserve(id: String) = if (id == "A") 600_000_000L else 500_000_000L
 
     private fun available(first: String) = if (first == "A") 400_000_000L else 500_000_000L
 
@@ -162,22 +185,37 @@ internal object ConcurrentOrderReplicationScenario {
 
     private fun epochSecond(id: String) = if (id == "A") 1_792_540_801L else 1_792_540_802L
 
-    // SHA-256 of 00000008 + UTF-8 BTC-USDT + 00000002 + UTF-8 OA/OB, integers are big endian.
+    // SHA-256 of length-prefixed market and order UTF-8 bytes; lengths are 4-byte big-endian integers.
     private fun source(id: String) =
         if (id == "A") {
             "RESERVE:v1:01d419be6389624da4f0b52f8e172faaaa17cd2d5f4f221506483c403c288dd7"
+        } else if (isSui(id)) {
+            "RESERVE:v1:da01faa1fcc3da26f22206344f4d0ca2ffdd865c446e4e5777c6a9dbd997a47f"
         } else {
             "RESERVE:v1:2a1bde88d4f4a215c4be6ab51451a0d0164860b6d7d3c35ed44993d2f2545cae"
         }
 
-    private fun market() = mapOf("marketId" to "BTC-USDT", "baseAssetId" to "BTC", "quoteAssetId" to "USDT", "baseQuantityScale" to 8)
+    private fun market(id: String) =
+        mapOf(
+            "marketId" to marketId(id),
+            "baseAssetId" to if (isSui(id)) "SUI" else "BTC",
+            "quoteAssetId" to "USDT",
+            "baseQuantityScale" to if (isSui(id)) 9 else 8,
+        )
 
-    private fun policy() =
+    private fun policy(id: String) =
         mapOf(
             "productType" to "SPOT",
             "feeTier" to "NORMAL",
-            "scheduleVersion" to 1,
+            "scheduleVersion" to if (isSui(id)) 2 else 1,
             "makerPartsPerMillion" to 0,
             "takerPartsPerMillion" to 0,
         )
+
+    companion object {
+        val openingStep: OrderReplicationStep get() = BTC_SHARED_FUNDS.openingStep
+        val clientArguments: Map<String, List<String>> get() = BTC_SHARED_FUNDS.clientArguments
+
+        fun orderedSteps(firstClientId: String): List<OrderReplicationStep> = BTC_SHARED_FUNDS.orderedSteps(firstClientId)
+    }
 }

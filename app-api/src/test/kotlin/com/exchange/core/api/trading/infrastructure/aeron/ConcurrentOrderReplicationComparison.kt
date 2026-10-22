@@ -19,6 +19,7 @@ internal fun compareConcurrentOrderReplication(
     openingPosition: Long,
     collectionIssues: List<FundingVerificationIssue> = emptyList(),
     pinnedPositions: Map<String, Long>? = null,
+    scenario: ConcurrentOrderReplicationScenario = ConcurrentOrderReplicationScenario.BTC_SHARED_FUNDS,
 ): ConcurrentOrderReplicationComparison {
     val issues = collectionIssues.toMutableList()
     val clientIds = setOf("A", "B")
@@ -53,12 +54,12 @@ internal fun compareConcurrentOrderReplication(
     }
     for (id in clientIds) {
         val applied = current.filter { it.path("kind").asString() == "APPLIED" && it.path("requestId").asString() == "R$id" }
-        applied.filter { !it.path("position").isIntegralNumber }.forEach {
-            issues.add(FundingVerificationIssue("UNVERIFIABLE", "$id 정수 적용 위치가 아닙니다: ${it.path("position")}"))
+        applied.filter { observedApplicationPosition(it) == null }.forEach {
+            issues.add(FundingVerificationIssue("UNVERIFIABLE", "$id 양수 Long 정수 적용 위치가 아닙니다: ${it.path("position")}"))
         }
-        val fresh = applied.filter { it.path("position").isIntegralNumber && it.path("position").asLong() > openingPosition }
-        val leaderPositions = fresh.filter { it.path("role").asString() == "LEADER" }.map { it.path("position").asLong() }.distinct()
-        val allPositions = fresh.map { it.path("position").asLong() }.distinct()
+        val fresh = applied.filter { (observedApplicationPosition(it) ?: 0L) > openingPosition }
+        val leaderPositions = fresh.filter { it.path("role").asString() == "LEADER" }.mapNotNull(::observedApplicationPosition).distinct()
+        val allPositions = applied.mapNotNull(::observedApplicationPosition).distinct()
         val selected = pinnedPositions?.get(id) ?: leaderPositions.singleOrNull()
         if (leaderPositions.size != 1 || selected == null || selected <= openingPosition || selected !in leaderPositions) {
             issues.add(FundingVerificationIssue("UNVERIFIABLE", "$id 새 리더 적용 위치 미확인: previous=$openingPosition, actual=$leaderPositions"))
@@ -79,7 +80,7 @@ internal fun compareConcurrentOrderReplication(
         return ConcurrentOrderReplicationComparison(positions.toMap(), emptyList(), issues.distinct())
     }
     val first = positions.minBy { it.value }.key
-    val steps = ConcurrentOrderReplicationScenario.orderedSteps(first)
+    val steps = scenario.orderedSteps(first)
     var previous = openingPosition
     for (step in steps) {
         val compared =

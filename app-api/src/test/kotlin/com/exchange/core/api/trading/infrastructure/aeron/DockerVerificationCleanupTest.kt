@@ -100,7 +100,10 @@ class DockerVerificationCleanupTest {
 
     private fun verification(): DockerFundingVerification {
         val runner =
-            DockerFundingVerification(sharedImage = "exchange-cleanup-missing-${UUID.randomUUID()}:unused", concurrentOrders = true)
+            DockerFundingVerification(
+                sharedImage = "exchange-cleanup-missing-${UUID.randomUUID()}:unused",
+                concurrentScenario = ConcurrentOrderReplicationScenario.BTC_SHARED_FUNDS,
+            )
         val project = field<Path>(runner, "projectDirectory")
         val runId = field<String>(runner, "runId")
         val distribution = Files.createDirectories(directory.resolve("distribution"))
