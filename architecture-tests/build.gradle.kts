@@ -45,6 +45,8 @@ dependencies {
     testRuntimeOnly("com.google.protobuf:protobuf-java:4.33.2")
     // 실제 Aeron 어댑터의 상위 타입도 읽는다. 운영 검사 대상을 제외하지 않는다.
     testRuntimeOnly("io.aeron:aeron-cluster:1.53.3")
+    // 요청 본문 Advice의 실제 상위 정의도 읽는다. 운영 검사 대상을 제외하지 않는다.
+    testRuntimeOnly("org.springframework:spring-webmvc")
     testRuntimeOnly("org.junit.platform:junit-platform-launcher")
 }
 

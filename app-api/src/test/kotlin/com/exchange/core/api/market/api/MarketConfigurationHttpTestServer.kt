@@ -1,5 +1,7 @@
 package com.exchange.core.api.market.api
 
+import com.exchange.core.api.common.ApiExceptionHandler
+import com.exchange.core.api.common.MarketConfigurationHttpExceptionHandler
 import com.exchange.core.api.config.MarketConfigurationAdminConfig
 import org.springframework.boot.autoconfigure.EnableAutoConfiguration
 import org.springframework.boot.builder.SpringApplicationBuilder
@@ -30,5 +32,10 @@ fun main(args: Array<String>) {
         "org.springframework.boot.flyway.autoconfigure.FlywayAutoConfiguration",
     ],
 )
-@Import(MarketConfigurationAdminConfig::class, MarketConfigurationController::class)
+@Import(
+    MarketConfigurationAdminConfig::class,
+    MarketConfigurationController::class,
+    MarketConfigurationHttpExceptionHandler::class,
+    ApiExceptionHandler::class,
+)
 class MarketConfigurationHttpTestApplication

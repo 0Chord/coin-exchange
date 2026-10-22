@@ -6,6 +6,7 @@ import org.junit.jupiter.api.BeforeAll
 import org.junit.jupiter.api.TestInstance
 import tools.jackson.databind.JsonNode
 import tools.jackson.module.kotlin.jacksonObjectMapper
+import java.net.Socket
 import java.net.URI
 import java.net.http.HttpClient
 import java.net.http.HttpRequest
@@ -94,19 +95,17 @@ class MarketConfigurationHttpTest {
         assertTrue(last.path("nextBeforeVersion").isNull)
         assertEquals(200, server.get("?limit=100").statusCode())
         assertEquals(200, server.get("").statusCode())
+        assertEquals(200, server.get("?limit=").statusCode())
+        assertEquals(200, server.get("?beforeVersion=").statusCode())
         listOf("?limit=0", "?limit=101", "?limit=bad", "?beforeVersion=0", "?beforeVersion=9223372036854775808")
             .forEach { assertEquals(400, server.get(it).statusCode(), it) }
     }
 
     @Test
-    fun `본문 형식 누락과 잘못된 형식도 정제한 입력 오류이며 JSON은 등록된다`() {
+    fun `JSON이 아닌 본문 형식은 Spring이 저장 전에 거절하며 JSON은 등록된다`() {
         listOf(null, "text/plain", "not-a-media-type", "application/*").forEach { contentType ->
             val response = server.request("PUT", "/250", DOCUMENT.toByteArray(), contentType = contentType)
-            assertEquals(400, response.statusCode(), contentType)
-            assertEquals("INVALID_INPUT", json(response).path("code").asString())
-            assertEquals("content-type", json(response).path("stage").asString())
-            assertEquals(250L, json(response).path("configVersion").asLong())
-            assertEquals(setOf("code", "stage", "configVersion"), json(response).properties().map { it.key }.toSet())
+            assertEquals(415, response.statusCode(), contentType)
             assertEquals(0, rowCount(250))
         }
         listOf("application/json", "application/json; charset=UTF-8").forEach { contentType ->
@@ -154,12 +153,39 @@ class MarketConfigurationHttpTest {
             val response = server.request("PUT", "/$version", bytes)
             assertEquals(400, response.statusCode())
             assertEquals("INVALID_INPUT", json(response).path("code").asString())
+            if (index == 0 || index == 2) assertEquals("request", json(response).path("stage").asString())
             assertEquals(0, rowCount(version))
             assertSanitized(response.body())
         }
         listOf("0", "-1", "bad", "9223372036854775808").forEach {
             assertEquals(400, server.put(it, DOCUMENT).statusCode())
             assertEquals(400, server.get("/$it").statusCode())
+        }
+    }
+
+    @Test
+    fun `숫자 변환과 Bean Validation 오류는 저장 전에 정제한 입력 오류로 반환한다`() {
+        listOf("0", "-1", "bad", "9223372036854775808").forEach { version ->
+            listOf(server.put(version, DOCUMENT), server.get("/$version")).forEach { response ->
+                assertEquals(400, response.statusCode(), version)
+                assertEquals("INVALID_INPUT", json(response).path("code").asString())
+                assertEquals("request", json(response).path("stage").asString())
+            }
+        }
+        listOf("?beforeVersion=0", "?beforeVersion=-1", "?beforeVersion=bad", "?limit=0", "?limit=101", "?limit=bad")
+            .forEach { suffix ->
+                val response = server.get(suffix)
+                assertEquals(400, response.statusCode(), suffix)
+                assertEquals("INVALID_INPUT", json(response).path("code").asString())
+                assertEquals("request", json(response).path("stage").asString())
+            }
+    }
+
+    @Test
+    fun `본문 전체가 도착하지 않아도 상한 초과를 거절하고 저장하지 않는다`() {
+        listOf(false, true).forEach { chunked ->
+            server.sendIncompleteOversizedBody(chunked)
+            assertEquals(0, rowCount(350))
         }
     }
 
@@ -322,6 +348,27 @@ private class MarketConfigurationHttpProcess(
         contentType?.let { request.header("Content-Type", it) }
         accept?.let { request.header("Accept", it) }
         return client.send(request.build(), HttpResponse.BodyHandlers.ofString(Charsets.UTF_8))
+    }
+
+    fun sendIncompleteOversizedBody(chunked: Boolean) {
+        Socket("127.0.0.1", port).use { socket ->
+            socket.soTimeout = 5_000
+            val framing = if (chunked) "Transfer-Encoding: chunked" else "Content-Length: 10000000"
+            val output = socket.getOutputStream()
+            output.write(
+                (
+                    "PUT /api/admin/market-configurations/350 HTTP/1.1\r\n" +
+                        "Host: 127.0.0.1\r\nContent-Type: application/json\r\n$framing\r\n\r\n"
+                ).toByteArray(Charsets.US_ASCII),
+            )
+            if (chunked) output.write("10001\r\n".toByteArray(Charsets.US_ASCII))
+            output.write(ByteArray(65_537) { ' '.code.toByte() })
+            if (chunked) output.write("\r\n".toByteArray(Charsets.US_ASCII))
+            output.flush()
+            // 나머지 본문과 chunked 종료 표식을 보내지 않아도, 읽기 상한에서 응답해야 한다.
+            val status = socket.getInputStream().bufferedReader(Charsets.US_ASCII).readLine()
+            assertTrue(status.contains("400"), status)
+        }
     }
 
     fun output(): String = Files.readString(log)
