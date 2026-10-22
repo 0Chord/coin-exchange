@@ -9,6 +9,109 @@ import kotlin.test.assertTrue
 
 class FundingReplicationComparisonTest {
     @Test
+    fun `자금 금액과 순번이 Long 범위를 벗어나도 예외 대신 불일치로 남긴다`() {
+        val outsideLong = listOf(java.math.BigInteger("9223372036854775808"), java.math.BigInteger("-9223372036854775809"))
+        for (value in outsideLong) {
+            for ((parent, field) in listOf("/state/balances/0" to "available", "/state" to "lastSequence")) {
+                val changed = applied(2).apply { (at(parent) as ObjectNode).set(field, jacksonObjectMapper().valueToTree<JsonNode>(value)) }
+                val result = compareFundingReplication("run", replicas() + (2 to listOf(changed)), client())
+
+                assertTrue(
+                    result.issues.any {
+                        it.category == "MISMATCH" && it.message.contains("$field expected=") &&
+                            it.message.contains("actual=$value")
+                    },
+                    result.issues.toString(),
+                )
+            }
+        }
+    }
+
+    @Test
+    fun `READY 숫자 비교는 Long 최댓값을 허용하고 이를 넘는 버전은 SETUP으로 남긴다`() {
+        val expected = ExpectedMarketConfiguration(Long.MAX_VALUE, "a".repeat(64))
+        val markets = readyMarketsFixture(includeSui = true)
+        assertTrue(compareFundingReadiness("run", readinessReplicas(markets, expected), markets, expected).isEmpty())
+        val changed =
+            readinessReplicas(markets, expected).mapValues { (_, events) ->
+                events.map { event ->
+                    event.apply {
+                        (path("settings") as ObjectNode).put("marketConfigVersion", java.math.BigInteger("9223372036854775808"))
+                    }
+                }
+            }
+
+        val issues = compareFundingReadiness("run", changed, markets, expected)
+
+        assertTrue(issues.count { it.category == "SETUP" && it.message.contains("marketConfigVersion") } == 3, issues.toString())
+    }
+
+    @Test
+    fun `자금 준비 관찰의 손상된 적용 위치도 예외 대신 검증 불가로 남긴다`() {
+        val malformedPositions = listOf(null, "unreadable", "128", 128.5, 0L, -1L, java.math.BigInteger("9223372036854775808"))
+        val malformed =
+            malformedPositions.map { position ->
+                applied(0).apply { set("position", jacksonObjectMapper().valueToTree<JsonNode>(position)) }
+            } + listOf(applied(0).apply { remove("position") })
+        for (event in malformed) {
+            val result = compareFundingReplication("run", replicas() + (0 to listOf(event)), client())
+            assertTrue(result.issues.any { it.category == "UNVERIFIABLE" && it.message.contains("적용 위치") }, result.issues.toString())
+        }
+    }
+
+    @Test
+    fun `RDB READY는 사전에 지정한 버전과 원문 해시를 세 노드 각각에서 확인한다`() {
+        val expected = ExpectedMarketConfiguration(7, "a".repeat(64))
+        val markets = readyMarketsFixture(includeSui = true)
+
+        assertTrue(compareFundingReadiness("run", readinessReplicas(markets, expected), markets, expected).isEmpty())
+    }
+
+    @Test
+    fun `RDB READY의 버전과 해시가 누락 null 오류이면 세 노드 모두 같아도 실패한다`() {
+        val expected = ExpectedMarketConfiguration(7, "a".repeat(64))
+        val markets = readyMarketsFixture(includeSui = true)
+        for (field in listOf("marketConfigVersion", "marketConfigSha256")) {
+            for (invalid in listOf("missing", "null", "wrong")) {
+                val changed =
+                    readinessReplicas(markets, expected).mapValues { (_, events) ->
+                        events.map { event ->
+                            event.apply {
+                                val settings = path("settings") as ObjectNode
+                                when (invalid) {
+                                    "missing" -> {
+                                        settings.remove(field)
+                                    }
+
+                                    "null" -> {
+                                        settings.putNull(field)
+                                    }
+
+                                    else -> {
+                                        if (field ==
+                                            "marketConfigVersion"
+                                        ) {
+                                            settings.put(field, 8L)
+                                        } else {
+                                            settings.put(field, "b".repeat(64))
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                val issues = compareFundingReadiness("run", changed, markets, expected)
+
+                assertTrue(
+                    issues.count { it.category == "SETUP" && it.message.contains("settings.$field") } == 3,
+                    "$field/$invalid: $issues",
+                )
+            }
+        }
+    }
+
+    @Test
     fun `기본 READY는 BTC 하나의 전체 정의를 확인하고 두 마켓 기대도 전체 배열로 확인한다`() {
         assertTrue(compareFundingReadiness("run", readinessReplicas()).isEmpty())
         val expected = readyMarketsFixture(includeSui = true)
@@ -94,7 +197,7 @@ class FundingReplicationComparisonTest {
     fun `세 사본이 이번 입력의 같은 L에서 독립 잔고와 OPENING 기대값에 맞으면 통과한다`() {
         val events = replicas()
         // 같은 L의 응답 시도 이벤트가 추가되어도 돈을 다시 지급한 것으로 세지 않는다.
-        val withReply = events + (0 to (events.getValue(0) + applied(0)))
+        val withReply = events + (0 to (events.getValue(0) + listOf(applied(0))))
         assertTrue(compareFundingReplication("run", withReply, client()).succeeded)
     }
 
@@ -206,7 +309,10 @@ class FundingReplicationComparisonTest {
         assertTrue(result.issues.any { it.category == "UNVERIFIABLE" })
     }
 
-    private fun readinessReplicas(markets: List<Map<String, Any>> = readyMarketsFixture()): Map<Int, List<ObjectNode>> =
+    private fun readinessReplicas(
+        markets: List<Map<String, Any>> = readyMarketsFixture(),
+        configuration: ExpectedMarketConfiguration? = null,
+    ): Map<Int, List<ObjectNode>> =
         (0..2).associateWith { member ->
             listOf(
                 tree(
@@ -227,6 +333,8 @@ class FundingReplicationComparisonTest {
                                 "clusterDirectory" to "/records/run/node$member/cluster",
                                 "storageLevels" to listOf(2, 2, 2),
                                 "markets" to markets,
+                                "marketConfigVersion" to configuration?.version,
+                                "marketConfigSha256" to configuration?.sha256,
                             ),
                     ),
                 ),

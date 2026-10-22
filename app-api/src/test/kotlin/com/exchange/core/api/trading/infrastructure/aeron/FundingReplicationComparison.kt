@@ -10,11 +10,22 @@ internal data class FundingVerificationIssue(
     val message: String,
 )
 
+internal data class ExpectedMarketConfiguration(
+    val version: Long,
+    val sha256: String,
+)
+
 internal data class FundingReplicationComparison(
     val position: Long?,
     val issues: List<FundingVerificationIssue>,
 ) {
     val succeeded: Boolean get() = issues.isEmpty()
+}
+
+internal fun observedApplicationPosition(event: JsonNode): Long? {
+    val value = event.path("position")
+    if (!value.isIntegralNumber || !value.canConvertToLong()) return null
+    return value.longValue().takeIf { it > 0 }
 }
 
 /** stdout의 개발 이벤트를 읽을 뿐, State나 자금 준비 함수를 다시 실행하지 않는다. */
@@ -50,7 +61,7 @@ internal fun compareFundingReplication(
                 it.path("preparationId").asString() == "P1"
         }
     val leaderPositions =
-        candidates.filter { it.path("role").asString() == "LEADER" }.map { it.path("position").asLong() }.distinct()
+        candidates.filter { it.path("role").asString() == "LEADER" }.mapNotNull(::observedApplicationPosition).distinct()
     val position = leaderPositions.singleOrNull()
     if (position == null || position <= previousPosition) {
         issues.add(
@@ -67,16 +78,19 @@ internal fun compareFundingReplication(
         }
         val applied = events.filter { it.path("kind").asString() == "APPLIED" && it.path("preparationId").asString() == "P1" }
         // 같은 L의 응답 시도 관찰은 중복 업무 적용으로 세지 않는다.
-        val atPosition = applied.filter { it.path("position").asLong() == position }
+        val atPosition = applied.filter { observedApplicationPosition(it) == position }
+        applied.filter { observedApplicationPosition(it) == null }.forEach {
+            issues.add(FundingVerificationIssue("UNVERIFIABLE", "node$member 유효한 적용 위치 없음: actual=${it.path("position")}"))
+        }
         if (atPosition.isEmpty() || position == null || position <= previousPosition) {
             issues.add(
                 FundingVerificationIssue(
                     "UNVERIFIABLE",
-                    "node$member 새 P1 관찰 부족: expectedPosition=$position, actual=${applied.map { it.path("position").asLong() }}",
+                    "node$member 새 P1 관찰 부족: expectedPosition=$position, actual=${applied.map { it.path("position") }}",
                 ),
             )
         }
-        if (position != null && applied.any { it.path("position").asLong() != position }) {
+        if (position != null && applied.any { observedApplicationPosition(it) != position }) {
             issues.add(
                 FundingVerificationIssue(
                     "UNVERIFIABLE",
@@ -84,7 +98,7 @@ internal fun compareFundingReplication(
                         it
                             .path(
                                 "position",
-                            ).asLong()
+                            )
                     }.distinct()}",
                 ),
             )
@@ -108,6 +122,7 @@ internal fun compareFundingReadiness(
     runId: String,
     eventsByMember: Map<Int, List<JsonNode>>,
     expectedMarkets: List<Map<String, Any>> = expectedFundingMarkets(),
+    expectedConfiguration: ExpectedMarketConfiguration? = null,
 ): List<FundingVerificationIssue> {
     val issues = mutableListOf<FundingVerificationIssue>()
     val mapper = jacksonObjectMapper()
@@ -136,6 +151,15 @@ internal fun compareFundingReadiness(
             issues,
             "SETUP",
         )
+        expectedConfiguration?.let { expected ->
+            checkFields(
+                "node$member.settings",
+                settings,
+                mapOf("marketConfigVersion" to expected.version, "marketConfigSha256" to expected.sha256),
+                issues,
+                "SETUP",
+            )
+        }
         for (name in listOf("members", "markets")) {
             if (settings.path(name).isMissingNode || settings.path(name) != firstSettings.path(name)) {
                 issues.add(FundingVerificationIssue("SETUP", "node$member.$name 공통 실행 설정 불일치"))
@@ -272,7 +296,12 @@ private fun checkFields(
     for ((field, value) in expected) {
         val wanted = mapper.valueToTree<JsonNode>(value)
         val found = actual.path(field)
-        val matches = if (value is Number) found.isIntegralNumber && found.asLong() == value.toLong() else found == wanted
+        val matches =
+            if (value is Number) {
+                found.isIntegralNumber && found.canConvertToLong() && found.longValue() == value.toLong()
+            } else {
+                found == wanted
+            }
         if (!matches) {
             issues.add(FundingVerificationIssue(category, "$prefix.$field expected=$wanted, actual=${actual.path(field)}"))
         }

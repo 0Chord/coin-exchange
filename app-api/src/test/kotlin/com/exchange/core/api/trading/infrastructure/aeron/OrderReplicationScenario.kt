@@ -11,6 +11,7 @@ internal enum class OrderReplicationScenario(
     ACCEPTED_REPLAY("USDT", 1_000_000_000),
     REJECTED_REPLAY("USDT", 1_000_000_000),
     CONTEXT_CORRECTION("USDT", 1_000_000_000),
+    MULTI_MARKET_SHARED_FUNDS("USDT", 1_000_000_000),
     ;
 
     fun steps(): List<OrderReplicationStep> {
@@ -18,16 +19,17 @@ internal enum class OrderReplicationScenario(
             ACCEPTED_REPLAY -> return acceptedReplaySteps()
             REJECTED_REPLAY -> return rejectedReplaySteps()
             CONTEXT_CORRECTION -> return contextCorrectionSteps()
+            MULTI_MARKET_SHARED_FUNDS -> return multiMarketSharedFundsSteps()
             else -> Unit
         }
-        val opening = OrderReplicationStep("P1", "FUNDING", fundingArguments(), fundingResult(), state(emptyList(), false))
-        val first = OrderReplicationStep("R1", "ORDER", orderArguments(1), accepted(1), state(listOf(1), false))
+        val opening = OrderReplicationStep("P1", "FUNDING", fundingArguments(), fundingResult(), state(emptyList(), false), marketId = null)
+        val first = OrderReplicationStep("R1", "ORDER", orderArguments(1), accepted(1), state(listOf(1), false), marketId = "BTC-USDT")
         return when (this) {
             BUY_SEQUENCE -> {
                 listOf(
                     opening,
                     first,
-                    OrderReplicationStep("R2", "ORDER", orderArguments(2), accepted(2), state(listOf(1, 2), false)),
+                    OrderReplicationStep("R2", "ORDER", orderArguments(2), accepted(2), state(listOf(1, 2), false), marketId = "BTC-USDT"),
                 )
             }
 
@@ -35,15 +37,15 @@ internal enum class OrderReplicationScenario(
                 listOf(opening, first)
             }
 
-            ACCEPTED_REPLAY, REJECTED_REPLAY, CONTEXT_CORRECTION -> {
-                error("재전송 사례는 위에서 구성한다")
+            ACCEPTED_REPLAY, REJECTED_REPLAY, CONTEXT_CORRECTION, MULTI_MARKET_SHARED_FUNDS -> {
+                error("별도 단계가 있는 사례는 위에서 구성한다")
             }
 
             INSUFFICIENT -> {
                 listOf(
                     opening,
                     first,
-                    OrderReplicationStep("R2", "ORDER", orderArguments(2), rejected(), state(listOf(1), true)),
+                    OrderReplicationStep("R2", "ORDER", orderArguments(2), rejected(), state(listOf(1), true), marketId = "BTC-USDT"),
                 )
             }
         }
@@ -266,12 +268,17 @@ internal data class OrderReplicationStep(
     val arguments: List<String>,
     val expectedResult: Map<String, Any?>,
     val expectedState: Map<String, Any?>,
+    val marketId: String?,
 ) {
+    init {
+        require(inputKind != "ORDER" || !marketId.isNullOrBlank()) { "ORDER 단계는 마켓 ID를 명시해야 합니다" }
+    }
+
     val identity: Map<String, Any?> get() =
         if (inputKind == "FUNDING") {
             mapOf("preparationId" to arguments[0])
         } else {
-            mapOf("userId" to arguments[1], "requestId" to arguments[0], "marketId" to "BTC-USDT", "orderId" to arguments[2])
+            mapOf("userId" to arguments[1], "requestId" to arguments[0], "marketId" to marketId, "orderId" to arguments[2])
         }
     val mainClass: String get() {
         val operation = if (inputKind == "FUNDING") "Funding" else "Order"

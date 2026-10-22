@@ -20,6 +20,7 @@ internal object ConcurrentOrderReplicationScenario {
                 clientArguments.getValue(firstClientId),
                 accepted(firstClientId),
                 state(firstClientId, false),
+                marketId = "BTC-USDT",
             ),
             OrderReplicationStep(
                 second,
@@ -27,6 +28,7 @@ internal object ConcurrentOrderReplicationScenario {
                 clientArguments.getValue(second),
                 rejected(firstClientId, second),
                 state(firstClientId, true),
+                marketId = "BTC-USDT",
             ),
         )
     }

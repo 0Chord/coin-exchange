@@ -5,7 +5,7 @@ import kotlin.test.assertTrue
 
 class DockerOrderReplicationTest {
     @Test
-    fun `기존 접수와 재전송 충돌 사례를 각각 빈 세 노드 클러스터에서 대조한다`() {
+    fun `접수와 재전송 충돌 및 RDB 다중 마켓 공유 자금을 각각 빈 세 노드 클러스터에서 대조한다`() {
         var image: String? = null
         val failures = mutableListOf<String>()
         for (scenario in OrderReplicationScenario.entries) {
