@@ -41,11 +41,16 @@ internal class DockerFundingVerification(
     private val buildImage = sharedImage == null
     private val controlDirectory = reportDirectory.resolve("control")
     private val environment =
-        mapOf(
+        mutableMapOf(
             "FUNDING_IMAGE" to image,
             "FUNDING_RUN_ID" to runId,
             "FUNDING_CONTROL_DIRECTORY" to controlDirectory.toString(),
         )
+    private val usesMarketDatabase = scenario == OrderReplicationScenario.MULTI_MARKET_SHARED_FUNDS
+    private val databasePassword = "issue116-${UUID.randomUUID()}"
+    private var marketDatabase: MarketConfigurationDatabase? = null
+    private var marketNetwork: String? = null
+    private var expectedConfiguration: ExpectedMarketConfiguration? = null
     private val issues = mutableListOf<FundingVerificationIssue>()
     private val commandProcesses = VerificationCommands(projectDirectory, reportDirectory, environment)
     private val timings = linkedMapOf<String, Long>()
@@ -92,15 +97,36 @@ internal class DockerFundingVerification(
                 }
                 must(command(listOf("docker", "image", "inspect", image), 15_000), "이미지 식별")
             }
+            if (usesMarketDatabase) {
+                timed("market-database") {
+                    stage = "설정 DB 준비"
+                    val database = MarketConfigurationDatabase(databasePassword)
+                    marketDatabase = database
+                    val settings = database.register(MULTI_MARKET_DOCUMENT)
+                    environment.putAll(settings)
+                    environment["FUNDING_MARKET_DB_URL"] = database.containerJdbcUrl
+                    expectedConfiguration =
+                        ExpectedMarketConfiguration(
+                            settings.getValue("FUNDING_MARKET_CONFIG_VERSION").toLong(),
+                            settings.getValue("FUNDING_MARKET_CONFIG_SHA256"),
+                        )
+                }
+            }
             timed("startup") {
                 stage = "기동"
                 val deadline = deadline(60_000)
                 composeAttempted = true
+                if (usesMarketDatabase) connectMarketDatabase(deadline)
                 must(compose(listOf("up", "-d", "node0", "node1", "node2"), remaining(deadline)), "세 노드 동시 기동")
                 findNodeIds(deadline)
                 while (true) {
                     collectNodes(deadline, requireRunning = true)
-                    val readiness = compareFundingReadiness(runId, events)
+                    val readiness =
+                        if (usesMarketDatabase) {
+                            compareFundingReadiness(runId, events, expectedMultiMarketSettings(), checkNotNull(expectedConfiguration))
+                        } else {
+                            compareFundingReadiness(runId, events)
+                        }
                     if (readiness.isEmpty()) break
                     check(System.nanoTime() < deadline) { readiness.joinToString("; ") { it.message } }
                     if (events.values.flatten().any { it.path("kind").asString() == "ERROR" }) error("노드 오류로 준비를 완료하지 못했습니다")
@@ -123,7 +149,11 @@ internal class DockerFundingVerification(
             )
         } finally {
             issues.addAll(commandProcesses.closeRunning())
-            preserveAndClose()
+            try {
+                preserveAndClose()
+            } finally {
+                closeMarketDatabase()
+            }
             recheckOrderInputs()
             recheckConcurrentInputs()
             // 이미 확인한 차이는 마지막 부분 수집이나 정리 실패로 덮어쓰지 않는다.
@@ -134,8 +164,58 @@ internal class DockerFundingVerification(
                     FundingReplicationComparison(comparison.position, issues.distinct())
                 }
             writeReport()
+            if (usesMarketDatabase) {
+                val leaked = credentialLeakFiles(reportDirectory, databasePassword)
+                check(leaked.isEmpty()) { "설정 DB 비밀번호가 보고서에 포함됐습니다: ${leaked.map(reportDirectory::relativize)}" }
+            }
         }
         return comparison
+    }
+
+    /** JVM을 시작하기 전에 외부 테스트 DB를 이번 실행의 전용 bridge에 연결한다. */
+    private fun connectMarketDatabase(deadline: Long) {
+        must(compose(listOf("create", "node0", "node1", "node2"), remaining(deadline)), "세 노드 생성")
+        findNodeIds(deadline)
+        val inspection = command(dockerContainerInspection(nodeIds.getValue(0)), remaining(deadline))
+        must(inspection, "설정 DB 연결용 네트워크 확인")
+        val networks =
+            mapper
+                .readTree(inspection.stdout)
+                .path(0)
+                .path("NetworkSettings")
+                .path("Networks")
+                .propertyNames()
+                .toList()
+        check(networks.size == 1) { "설정 DB를 연결할 전용 bridge가 하나가 아닙니다" }
+        val network = networks.single()
+        marketNetwork = network // 명령이 중간에 실패해도 정리 대상은 기억한다.
+        must(
+            command(
+                listOf("docker", "network", "connect", "--alias", "market-db", network, checkNotNull(marketDatabase).containerId),
+                remaining(deadline),
+            ),
+            "설정 DB 네트워크 연결",
+        )
+    }
+
+    private fun closeMarketDatabase() {
+        val database = marketDatabase ?: return
+        try {
+            marketNetwork?.let { network ->
+                val result = command(listOf("docker", "network", "disconnect", "--force", network, database.containerId), 10_000)
+                if (!result.succeeded) issues.add(FundingVerificationIssue("CLEANUP", "설정 DB 네트워크 분리 실패: ${result.failure()}"))
+            }
+        } catch (error: Exception) {
+            issues.add(FundingVerificationIssue("CLEANUP", "설정 DB 네트워크 정리 실패: ${error.javaClass.simpleName}"))
+        } finally {
+            try {
+                database.close()
+            } catch (error: Exception) {
+                issues.add(FundingVerificationIssue("CLEANUP", "설정 DB 종료 실패: ${error.javaClass.simpleName}"))
+            } finally {
+                marketDatabase = null
+            }
+        }
     }
 
     private fun runFundingInput() {
@@ -324,7 +404,7 @@ internal class DockerFundingVerification(
         val ids = mutableListOf<String>()
         for (clientId in listOf("A", "B")) {
             val name = "$runId-client-${clientId.lowercase()}"
-            val result = command(listOf("docker", "inspect", name), CONCURRENT_CLIENT_INSPECTION_TIMEOUT_MS)
+            val result = command(dockerContainerInspection(name), CONCURRENT_CLIENT_INSPECTION_TIMEOUT_MS)
             must(result, "$clientId 실제 클라이언트 식별")
             Files.writeString(reportDirectory.resolve("$name.ready.inspect.json"), result.stdout)
             val client = mapper.readTree(result.stdout).path(0)
@@ -397,6 +477,9 @@ internal class DockerFundingVerification(
                 compareOrderReplication(runId, step, events, responses, previousPosition, pinnedPosition = position).issues,
             )
         }
+        if (scenario != null) {
+            issues.addAll(compareOrderReplicationCoverage(runId, events, attemptedSteps.map { it.step to it.position }))
+        }
     }
 
     private fun hasOrderObservations(
@@ -408,7 +491,7 @@ internal class DockerFundingVerification(
             (0..2).all { member ->
                 events[member].orEmpty().any { event ->
                     event.path("kind").asString() == "APPLIED" && event.path("runId").asString() == runId &&
-                        event.path("position").asLong() == position &&
+                        observedApplicationPosition(event) == position &&
                         step.identity.all { (key, value) -> event.path(key).asString() == value }
                 }
             }
@@ -457,7 +540,7 @@ internal class DockerFundingVerification(
                 Files.writeString(reportDirectory.resolve("node$member.stderr.log"), logs.stderr)
                 val parsed = readFundingEvents(logs.stdout, issues)
                 events[member] = mergeFundingObservations(events[member].orEmpty(), parsed)
-                val inspected = command(listOf("docker", "inspect", id), remaining(deadline))
+                val inspected = command(dockerContainerInspection(id), remaining(deadline))
                 if (inspected.succeeded) {
                     val data = mapper.readTree(inspected.stdout).path(0)
                     inspections[member] = data
@@ -517,12 +600,12 @@ internal class DockerFundingVerification(
                 it.path("kind").asString() == "APPLIED" && it.path("role").asString() == "LEADER" &&
                     it.path("runId").asString() == runId
             }
-        val position = leader?.path("position")?.asLong() ?: return false
+        val position = leader?.let(::observedApplicationPosition) ?: return false
         return position > 0 &&
             (0..2).all { member ->
                 events[member].orEmpty().any {
                     it.path("kind").asString() == "APPLIED" && it.path("runId").asString() == runId &&
-                        it.path("preparationId").asString() == "P1" && it.path("position").asLong() == position
+                        it.path("preparationId").asString() == "P1" && observedApplicationPosition(it) == position
                 }
             }
     }
@@ -535,7 +618,7 @@ internal class DockerFundingVerification(
                 if (nodeIds.size < 3) findNodeIds(deadline, required = false)
                 collectNodes(deadline, requireRunning = inputAttempted)
                 for (name in clients) {
-                    val client = command(listOf("docker", "inspect", name), remaining(deadline))
+                    val client = command(dockerContainerInspection(name), remaining(deadline))
                     if (client.succeeded) {
                         Files.writeString(reportDirectory.resolve("$name.inspect.json"), client.stdout)
                         val data = mapper.readTree(client.stdout).path(0)
@@ -567,7 +650,7 @@ internal class DockerFundingVerification(
         // CLI 타임아웃이 컨테이너의 JVM을 취소하지는 않는다. 쓰기 주체를 먼저 닫는다.
         for (name in clients) {
             try {
-                val inspection = command(listOf("docker", "inspect", name), 5_000)
+                val inspection = command(dockerContainerInspection(name), 5_000)
                 must(inspection, "$name 종료 전 식별")
                 val before = mapper.readTree(inspection.stdout).path(0).path("State")
                 if (before.path("Running").asBoolean()) {
@@ -576,7 +659,7 @@ internal class DockerFundingVerification(
                 } else if (before.path("ExitCode").asInt() != 0 || before.path("OOMKilled").asBoolean()) {
                     issues.add(FundingVerificationIssue("UNVERIFIABLE", "$name client 비정상 종료: $before"))
                 }
-                val closed = command(listOf("docker", "inspect", name), 5_000)
+                val closed = command(dockerContainerInspection(name), 5_000)
                 must(closed, "$name 종료 확인")
                 Files.writeString(reportDirectory.resolve("$name.stopped.inspect.json"), closed.stdout)
                 check(
@@ -652,6 +735,7 @@ internal class DockerFundingVerification(
             issues.add(FundingVerificationIssue("COLLECTION", "기록 수집 실패: ${error.message}"))
         } finally {
             timed("cleanup") {
+                closeMarketDatabase()
                 val removed = compose(listOf("down", "--remove-orphans", "--timeout", "1"), 15_000)
                 if (!removed.succeeded) issues.add(FundingVerificationIssue("CLEANUP", "컨테이너·네트워크 정리 실패: ${removed.failure()}"))
             }
@@ -665,6 +749,9 @@ internal class DockerFundingVerification(
                 "scenario" to (scenario?.name ?: if (concurrentOrders) "CONCURRENT" else "FUNDING"),
                 "image" to image,
                 "imageBuilt" to buildImage,
+                "marketConfiguration" to expectedConfiguration,
+                "marketConfigurationFixture" to if (usesMarketDatabase) "MULTI_MARKET_DOCUMENT" else null,
+                "expectedMarkets" to if (usesMarketDatabase) expectedMultiMarketSettings() else null,
                 "steps" to stepReports,
                 "createdAt" to Instant.now().toString(),
                 "success" to comparison.succeeded,

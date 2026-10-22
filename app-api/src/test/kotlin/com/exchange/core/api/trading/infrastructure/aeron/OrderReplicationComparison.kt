@@ -3,6 +3,57 @@ package com.exchange.core.api.trading.infrastructure.aeron
 import tools.jackson.databind.JsonNode
 import tools.jackson.module.kotlin.jacksonObjectMapper
 
+/** 최종 수집한 이번 실행의 모든 업무 관찰을 전송 때 고정한 위치에 귀속시킨다. */
+internal fun compareOrderReplicationCoverage(
+    runId: String,
+    eventsByMember: Map<Int, List<JsonNode>>,
+    checkpoints: List<Pair<OrderReplicationStep, Long?>>,
+): List<FundingVerificationIssue> {
+    val issues = mutableListOf<FundingVerificationIssue>()
+    if (checkpoints.isEmpty()) issues.add(FundingVerificationIssue("UNVERIFIABLE", "이번 실행의 checkpoint가 없습니다"))
+    var previousPosition = 0L
+    for ((step, position) in checkpoints) {
+        if (position == null || position <= previousPosition) {
+            issues.add(
+                FundingVerificationIssue("UNVERIFIABLE", "${step.name} checkpoint 새 위치 미확인: previous=$previousPosition, actual=$position"),
+            )
+        }
+        if (position != null) {
+            issues.addAll(compareOrderAppliedObservations(runId, step, eventsByMember, previousPosition, position).issues)
+            previousPosition = maxOf(previousPosition, position)
+        }
+    }
+    val positions = checkpoints.mapNotNull { it.second }.toSet()
+    for ((member, events) in eventsByMember) {
+        for (event in events.filter { it.path("runId").asString() == runId }) {
+            if (event.path("kind").asString() == "ERROR") {
+                issues.add(FundingVerificationIssue("UNVERIFIABLE", "node$member 오류: ${event.path("failure")}"))
+            }
+            if (event.path("kind").asString() != "APPLIED") continue
+            val position = event.path("position")
+            if (observedApplicationPosition(event) !in positions) {
+                issues.add(FundingVerificationIssue("UNVERIFIABLE", "node$member 계획 밖 적용 위치: actual=$position, checkpoints=$positions"))
+            }
+            if (checkpoints.none { (step, _) ->
+                    step.inputKind == event.path("inputKind").asString() &&
+                        step.identity.all { (key, value) -> event.path(key).asString() == value }
+                }
+            ) {
+                issues.add(
+                    FundingVerificationIssue(
+                        "MISMATCH",
+                        "node$member 계획 밖 입력: position=$position, inputKind=${event.path("inputKind")}, " +
+                            "preparationId=${event.path("preparationId")}, requestId=${event.path("requestId")}, " +
+                            "marketId=${event.path("marketId")}, orderId=${event.path("orderId")}",
+                    ),
+                )
+            }
+            if (member !in 0..2) issues.add(FundingVerificationIssue("MISMATCH", "계획 밖 멤버 node$member 적용 관찰: position=$position"))
+        }
+    }
+    return issues.distinct()
+}
+
 /** 단계별 입력·새 적용 위치·응답·독립 정답을 함께 확인한다. 엔진 함수는 호출하지 않는다. */
 internal fun compareOrderReplication(
     runId: String,
@@ -13,7 +64,35 @@ internal fun compareOrderReplication(
     collectionIssues: List<FundingVerificationIssue> = emptyList(),
     pinnedPosition: Long? = null,
 ): FundingReplicationComparison {
-    val issues = collectionIssues.toMutableList()
+    val applied = compareOrderAppliedObservations(runId, step, eventsByMember, previousPosition, pinnedPosition)
+    val issues = (collectionIssues + applied.issues).toMutableList()
+    val client = clientEvents.filter { it.path("runId").asString() == runId }
+    val accepted = client.filter { it.path("kind").asString() == "TRANSPORT_ACCEPTED" }
+    if (accepted.size != 1) issues.add(FundingVerificationIssue("UNVERIFIABLE", "${step.name} 전송 수용 한 건 미확인: ${accepted.size}"))
+    val results = client.filter { it.path("kind").asString() == "RESULT_RECEIVED" }
+    if (results.size != 1) issues.add(FundingVerificationIssue("UNVERIFIABLE", "${step.name} 응답 한 건 미확인: ${results.size}"))
+    accepted.forEach { compareOrderFields("${step.name}.client", it, step.identity, issues) }
+    results.forEach {
+        compareOrderFields("${step.name}.client.result", it.path("result"), step.expectedResult, issues)
+        if (step.inputKind == "ORDER") compareOrderFields("${step.name}.client", it, step.identity + mapOf("inputKind" to "ORDER"), issues)
+    }
+    if (client.any {
+            it.path("kind").asString() == "UNCONFIRMED"
+        }
+    ) {
+        issues.add(FundingVerificationIssue("UNVERIFIABLE", "${step.name} 클라이언트 결과 미확인"))
+    }
+    return FundingReplicationComparison(applied.position, issues.distinct())
+}
+
+private fun compareOrderAppliedObservations(
+    runId: String,
+    step: OrderReplicationStep,
+    eventsByMember: Map<Int, List<JsonNode>>,
+    previousPosition: Long,
+    pinnedPosition: Long?,
+): FundingReplicationComparison {
+    val issues = mutableListOf<FundingVerificationIssue>()
 
     fun belongs(event: JsonNode): Boolean =
         event.path("runId").asString() == runId &&
@@ -29,7 +108,7 @@ internal fun compareOrderReplication(
         applied.values
             .flatten()
             .filter { it.path("role").asString() == "LEADER" }
-            .map { it.path("position").asLong() }
+            .mapNotNull(::observedApplicationPosition)
             .distinct()
     // 최초 수집에서는 직전 입력보다 새 위치를 고른다. 재검사에서는 그때 고정한 위치만 읽는다.
     val position = pinnedPosition ?: leaders.filter { it > previousPosition }.singleOrNull()
@@ -41,20 +120,25 @@ internal fun compareOrderReplication(
         source.filter { it.path("kind").asString() == "ERROR" }.forEach {
             issues.add(FundingVerificationIssue("UNVERIFIABLE", "node$member 오류: ${it.path("failure")}"))
         }
+        source.filter { it.path("kind").asString() == "APPLIED" && observedApplicationPosition(it) == null }.forEach {
+            issues.add(FundingVerificationIssue("UNVERIFIABLE", "node$member 유효한 적용 위치 없음: actual=${it.path("position")}"))
+        }
         val identified = applied.getValue(member)
         val observations =
             source.filter {
+                val observedPosition = observedApplicationPosition(it)
                 it.path("kind").asString() == "APPLIED" &&
+                    observedPosition != null &&
                     (
-                        it.path("position").asLong() == position ||
-                            (pinnedPosition == null && belongs(it) && it.path("position").asLong() > previousPosition)
+                        observedPosition == position ||
+                            (pinnedPosition == null && belongs(it) && observedPosition > previousPosition)
                     )
             }
-        if (position == null || position <= previousPosition || identified.none { it.path("position").asLong() == position }) {
+        if (position == null || position <= previousPosition || identified.none { observedApplicationPosition(it) == position }) {
             issues.add(FundingVerificationIssue("UNVERIFIABLE", "${step.name} node$member 새 동일 위치 관찰 누락: expected=$position"))
         }
-        if (observations.any { it.path("position").asLong() != position } ||
-            (position != null && identified.isNotEmpty() && identified.none { it.path("position").asLong() == position })
+        if (observations.any { observedApplicationPosition(it) != position } ||
+            (position != null && identified.isNotEmpty() && identified.none { observedApplicationPosition(it) == position })
         ) {
             issues.add(
                 FundingVerificationIssue("UNVERIFIABLE", "${step.name} node$member 적용 위치 불일치: ${identified.map { it.path("position") }}"),
@@ -77,22 +161,6 @@ internal fun compareOrderReplication(
                 issues.add(FundingVerificationIssue("UNVERIFIABLE", "node$member 실패 관찰: ${event.path("failure")}"))
             }
         }
-    }
-    val client = clientEvents.filter { it.path("runId").asString() == runId }
-    val accepted = client.filter { it.path("kind").asString() == "TRANSPORT_ACCEPTED" }
-    if (accepted.size != 1) issues.add(FundingVerificationIssue("UNVERIFIABLE", "${step.name} 전송 수용 한 건 미확인: ${accepted.size}"))
-    val results = client.filter { it.path("kind").asString() == "RESULT_RECEIVED" }
-    if (results.size != 1) issues.add(FundingVerificationIssue("UNVERIFIABLE", "${step.name} 응답 한 건 미확인: ${results.size}"))
-    accepted.forEach { compareOrderFields("${step.name}.client", it, step.identity, issues) }
-    results.forEach {
-        compareOrderFields("${step.name}.client.result", it.path("result"), step.expectedResult, issues)
-        if (step.inputKind == "ORDER") compareOrderFields("${step.name}.client", it, step.identity + mapOf("inputKind" to "ORDER"), issues)
-    }
-    if (client.any {
-            it.path("kind").asString() == "UNCONFIRMED"
-        }
-    ) {
-        issues.add(FundingVerificationIssue("UNVERIFIABLE", "${step.name} 클라이언트 결과 미확인"))
     }
     return FundingReplicationComparison(position, issues.distinct())
 }
@@ -124,7 +192,12 @@ internal fun compareOrderFields(
 
         else -> {
             val wanted = jacksonObjectMapper().valueToTree<JsonNode>(expected)
-            val matches = if (expected is Number) actual.isIntegralNumber && actual.asLong() == expected.toLong() else actual == wanted
+            val matches =
+                if (expected is Number) {
+                    actual.isIntegralNumber && actual.canConvertToLong() && actual.longValue() == expected.toLong()
+                } else {
+                    actual == wanted
+                }
             if (!matches) issues.add(FundingVerificationIssue("MISMATCH", "$path expected=$wanted, actual=$actual"))
         }
     }

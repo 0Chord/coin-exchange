@@ -11,6 +11,161 @@ import kotlin.test.assertTrue
 
 class OrderReplicationComparisonTest {
     @Test
+    fun `주문 관찰과 응답의 금액 순번이 Long 범위를 벗어나도 불일치로 남긴다`() {
+        val fixture = fixture(OrderReplicationScenario.MULTI_MARKET_SHARED_FUNDS, 4)
+        val outsideLong = listOf(java.math.BigInteger("9223372036854775808"), java.math.BigInteger("-9223372036854775809"))
+        for (value in outsideLong) {
+            for ((parent, field) in listOf("/state/balances/0" to "hold", "/state" to "lastSequence", "/result" to "sequence")) {
+                val changed =
+                    fixture.applied(2).apply { (at(parent) as ObjectNode).set(field, jacksonObjectMapper().valueToTree<JsonNode>(value)) }
+
+                assertIssue(
+                    fixture.compare(events = fixture.replicas() + (2 to listOf(changed))),
+                    "MISMATCH",
+                    "$field expected=",
+                    "actual=$value",
+                )
+            }
+            val response = fixture.client().last().apply { (path("result") as ObjectNode).put("sequence", value) }
+            assertIssue(
+                fixture.compare(client = fixture.client().take(1) + listOf(response)),
+                "MISMATCH",
+                "client.result.sequence",
+                "actual=$value",
+            )
+        }
+    }
+
+    @Test
+    fun `주문 의미 필드의 Long 최댓값은 정수 표현이 달라도 기대값과 같으면 통과한다`() {
+        val expected = mapOf("amount" to Long.MAX_VALUE, "sequence" to Long.MAX_VALUE)
+        val actual = tree(expected.mapValues { java.math.BigInteger(Long.MAX_VALUE.toString()) })
+        val issues = mutableListOf<FundingVerificationIssue>()
+
+        compareOrderFields("boundary", actual, expected, issues)
+
+        assertTrue(issues.isEmpty(), issues.toString())
+    }
+
+    @Test
+    fun `리더나 팔로워의 적용 위치가 손상되면 예외 대신 관찰 부족과 검증 불가를 남긴다`() {
+        val fixture = fixture()
+        val malformedPositions =
+            listOf(null, "unreadable", "448", 448.5, 0L, -1L, java.math.BigInteger("9223372036854775808"))
+        for (member in listOf(0, 2)) {
+            val malformed =
+                malformedPositions.map { position ->
+                    fixture.applied(member).apply { set("position", jacksonObjectMapper().valueToTree<JsonNode>(position)) }
+                } + listOf(fixture.applied(member).apply { remove("position") })
+            for (event in malformed) {
+                assertIssue(fixture.compare(events = fixture.replicas() + (member to listOf(event))), "UNVERIFIABLE", "적용 위치")
+            }
+        }
+    }
+
+    @Test
+    fun `SUI 단계의 마켓 identity를 BTC로 바꾸거나 누락하면 관찰과 클라이언트 모두 실패한다`() {
+        val fixture = fixture(OrderReplicationScenario.MULTI_MARKET_SHARED_FUNDS, 4)
+        for (missing in listOf(false, true)) {
+            fun changeMarket(event: ObjectNode): ObjectNode =
+                event.apply { if (missing) remove("marketId") else put("marketId", "BTC-USDT") }
+            val events = fixture.replicas() + (2 to listOf(changeMarket(fixture.applied(2))))
+            assertIssue(fixture.compare(events = events), "MISMATCH", "node2.marketId")
+            assertIssue(fixture.compare(client = fixture.client().map(::changeMarket)), "MISMATCH", "client.marketId")
+        }
+    }
+
+    @Test
+    fun `공유 USDT 잔고를 BTC와 SUI별 두 항목으로 나누면 합계가 맞아도 실패한다`() {
+        val fixture = fixture(OrderReplicationScenario.MULTI_MARKET_SHARED_FUNDS, 5)
+        val changed =
+            fixture.applied(2).apply {
+                val balances = at("/state/balances") as ArrayNode
+                (balances.path(0) as ObjectNode).put("hold", 600_000_000L).put("marketId", "BTC-USDT")
+                balances.add(
+                    tree(
+                        mapOf(
+                            "userId" to "U1",
+                            "assetId" to "USDT",
+                            "marketId" to "SUI-USDT",
+                            "available" to 0,
+                            "hold" to 400_000_000,
+                        ),
+                    ),
+                )
+            }
+
+        assertIssue(fixture.compare(events = fixture.replicas() + (2 to listOf(changed))), "MISMATCH", "balances count expected=1")
+    }
+
+    @Test
+    fun `최종 BTC SUI의 순번과 대기 순서 및 각 마켓의 예약 문맥은 독립 정답과 맞아야 한다`() {
+        val fixture = fixture(OrderReplicationScenario.MULTI_MARKET_SHARED_FUNDS, 5)
+        fixture.assertMutations(
+            listOf(
+                Mutation("/state/pendingOrders/1/sequence", 1L),
+                Mutation("/state/requests/2/result/record/sequence", 1L),
+                Mutation("/state/pendingOrders/1/candidate/order/marketId", "BTC-USDT"),
+                Mutation("/state/pendingOrders/1/candidate/order/quantity", 2_000_000_000L),
+                Mutation("/state/pendingOrders/1/candidate/market/baseQuantityScale", 8L),
+                Mutation("/state/pendingOrders/1/candidate/feePolicy/scheduleVersion", 1L),
+                Mutation("/state/pendingOrders/1/candidate/reservation/marketId", "BTC-USDT"),
+                Mutation("/state/pendingOrders/1/candidate/reservation/reservedAmount", 600_000_000L),
+                Mutation("/state/pendingOrders/1/candidate/reservation/feePolicy/scheduleVersion", 1L),
+                Mutation("/state/requests/1/market/baseQuantityScale", 8L),
+                Mutation("/state/requests/1/feePolicy/scheduleVersion", 1L),
+                Mutation("/state/requests/2/ledgerTransactionId", "ledger-R-SUI"),
+                Mutation("/state/transactions/2/sourceEventId", "RESERVE:OTHER"),
+            ),
+        )
+        val reversed =
+            fixture.applied(2).apply {
+                val pending = at("/state/pendingOrders") as ArrayNode
+                pending.add(pending.remove(0))
+            }
+        assertIssue(fixture.compare(events = fixture.replicas() + (2 to listOf(reversed))), "MISMATCH", "pendingOrders[0].sequence")
+    }
+
+    @Test
+    fun `최종 잔고가 0이어도 최초 SUI 부족값과 과거 BTC 후보는 갱신하지 않는다`() {
+        val fixture = fixture(OrderReplicationScenario.MULTI_MARKET_SHARED_FUNDS, 5)
+        fixture.assertMutations(
+            listOf(
+                Mutation("/result/insufficientBalance/available", 0L),
+                Mutation("/state/requests/1/result/insufficientBalance/available", 0L),
+                Mutation("/state/pendingOrders/0/candidate/previousBalance/available", 0L),
+                Mutation("/state/pendingOrders/0/candidate/nextBalance/available", 0L),
+                Mutation("/state/requests/0/result/record/candidate/previousBalance/available", 0L),
+                Mutation("/state/requests/0/result/record/candidate/nextBalance/hold", 1_000_000_000L),
+            ),
+        )
+        val wrong = (0..2).associateWith { member -> listOf(fixture.applied(member).change("/result/insufficientBalance/available", 0L)) }
+        val result = fixture.compare(events = wrong)
+        for (member in 0..2) {
+            assertIssue(
+                result,
+                "MISMATCH",
+                "node$member.result.insufficientBalance.available expected=400000000, actual=0",
+            )
+        }
+    }
+
+    @Test
+    fun `SUI 거절 이력 누락 또는 거절 주문의 예약과 전표 추가는 실패한다`() {
+        val fixture = fixture(OrderReplicationScenario.MULTI_MARKET_SHARED_FUNDS, 3)
+        val accepted = this.fixture(OrderReplicationScenario.MULTI_MARKET_SHARED_FUNDS, 4).applied(2)
+        val missing = fixture.applied(2).apply { (at("/state/requests") as ArrayNode).remove(1) }
+        assertIssue(fixture.compare(events = fixture.replicas() + (2 to listOf(missing))), "MISMATCH", "requests count expected=2")
+        for (field in listOf("pendingOrders", "transactions")) {
+            val changed =
+                fixture.applied(2).apply {
+                    (at("/state/$field") as ArrayNode).add(accepted.at("/state/$field").last())
+                }
+            assertIssue(fixture.compare(events = fixture.replicas() + (2 to listOf(changed))), "MISMATCH", "$field count expected=")
+        }
+    }
+
+    @Test
     fun `같은 R1의 과거 관찰이 있어도 이번 전송의 새 위치를 따로 확인한다`() {
         val first = fixture()
         val replay = Fixture(first.runId, first.step, 928L, first.position)

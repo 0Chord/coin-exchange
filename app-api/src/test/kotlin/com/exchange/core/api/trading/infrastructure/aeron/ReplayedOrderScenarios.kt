@@ -80,6 +80,7 @@ private fun replayOpening(
     listOf("P1", "U1", "USDT", "1000000000", "L-OPEN-1", replayTime(0)),
     replayFundingResult(),
     state,
+    marketId = null,
 )
 
 private fun replayOrder(
@@ -98,6 +99,7 @@ private fun replayOrder(
         if (policyVersion == null) emptyList() else listOf(policyVersion.toString()),
     result,
     state,
+    marketId = "BTC-USDT",
 )
 
 private fun replayState(
