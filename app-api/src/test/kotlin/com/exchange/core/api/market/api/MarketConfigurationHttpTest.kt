@@ -6,7 +6,6 @@ import org.junit.jupiter.api.BeforeAll
 import org.junit.jupiter.api.TestInstance
 import tools.jackson.databind.JsonNode
 import tools.jackson.module.kotlin.jacksonObjectMapper
-import java.net.Socket
 import java.net.URI
 import java.net.http.HttpClient
 import java.net.http.HttpRequest
@@ -97,32 +96,6 @@ class MarketConfigurationHttpTest {
         assertEquals(200, server.get("").statusCode())
         listOf("?limit=0", "?limit=101", "?limit=bad", "?beforeVersion=0", "?beforeVersion=9223372036854775808")
             .forEach { assertEquals(400, server.get(it).statusCode(), it) }
-    }
-
-    @Test
-    fun `빠진 틀린 중복 잘못된 인증과 쿠키는 본문 오류보다 먼저 거절하며 저장하지 않는다`() {
-        val cases =
-            listOf(
-                emptyList(),
-                listOf("Bearer ${"x".repeat(32)}"),
-                listOf("Basic $TOKEN"),
-                listOf("Bearer  $TOKEN"),
-                listOf("Bearer $TOKEN extra"),
-                listOf("Bearer $TOKEN", "Bearer $TOKEN"),
-                listOf("Bearer $TOKEN, Bearer $TOKEN"),
-            )
-        cases.forEach { headers ->
-            val response = server.request("PUT", "/200", "invalid-json".toByteArray(), headers)
-            assertEquals(401, response.statusCode(), headers.size.toString())
-            assertEquals("Bearer", response.headers().firstValue("WWW-Authenticate").orElseThrow())
-            assertFalse(response.headers().firstValue("Set-Cookie").isPresent)
-            assertEquals("UNAUTHORIZED", json(response).path("code").asString())
-            assertSanitized(response.body())
-        }
-        assertEquals(401, server.request("GET", "/200", authorization = emptyList()).statusCode())
-        server.unauthorizedHeadersWithoutBody()
-        assertEquals(0, rowCount(200))
-        assertEquals(200, server.request("PUT", "/200", DOCUMENT.toByteArray(), listOf("bearer $TOKEN")).statusCode())
     }
 
     @Test
@@ -256,7 +229,7 @@ class MarketConfigurationHttpTest {
     }
 
     @Test
-    fun `기본 비활성화는 자격정보 없이 시작되며 관리 경로는 404다`() {
+    fun `기본 비활성화는 DB 설정 없이 시작되며 관리 경로는 404다`() {
         MarketConfigurationHttpProcess(emptyMap()).use { disabled ->
             disabled.awaitReady()
             assertEquals(404, disabled.get("").statusCode())
@@ -266,21 +239,7 @@ class MarketConfigurationHttpTest {
         }
     }
 
-    @Test
-    fun `활성화 상태에서 토큰 누락 짧음 공백 비ASCII는 서버 시작을 거절한다`() {
-        listOf(null, "short", "x".repeat(31) + " ", "x".repeat(31) + "가").forEach { token ->
-            val settings = environment().toMutableMap()
-            if (token == null) settings.remove("EXCHANGE_MARKET_ADMIN_TOKEN") else settings["EXCHANGE_MARKET_ADMIN_TOKEN"] = token
-            MarketConfigurationHttpProcess(settings).use { invalid ->
-                invalid.awaitFailure()
-                assertTrue(invalid.output().contains("EXCHANGE_MARKET_ADMIN_TOKEN must contain"))
-                assertSanitized(invalid.output())
-            }
-        }
-    }
-
-    private fun environment(): Map<String, String> =
-        database.environment(1, DOCUMENT) + mapOf("EXCHANGE_MARKET_ADMIN_ENABLED" to "true", "EXCHANGE_MARKET_ADMIN_TOKEN" to TOKEN)
+    private fun environment(): Map<String, String> = database.environment(1, DOCUMENT) + mapOf("EXCHANGE_MARKET_ADMIN_ENABLED" to "true")
 
     private fun rowCount(version: Long): Int =
         database.connection().use { connection ->
@@ -296,12 +255,11 @@ class MarketConfigurationHttpTest {
     private fun json(response: HttpResponse<String>): JsonNode = mapper.readTree(response.body())
 
     private fun assertSanitized(output: String) {
-        listOf(TOKEN, DATABASE_PASSWORD, LIMITED_PASSWORD, DOCUMENT, database.environment(1, DOCUMENT).getValue("FUNDING_MARKET_DB_URL"))
+        listOf(DATABASE_PASSWORD, LIMITED_PASSWORD, DOCUMENT, database.environment(1, DOCUMENT).getValue("FUNDING_MARKET_DB_URL"))
             .forEach { assertFalse(output.contains(it), "응답과 로그에 비밀·문서·DB 주소를 노출하면 안 됩니다") }
     }
 
     companion object {
-        private const val TOKEN = "market-admin-http-token-secret-1234567890"
         private const val DATABASE_PASSWORD = "market-http-database-secret"
         private const val LIMITED_PASSWORD = "limited-http-database-secret"
         private const val DOCUMENT =
@@ -342,12 +300,6 @@ private class MarketConfigurationHttpProcess(
         port = Files.readString(ready).toInt()
     }
 
-    fun awaitFailure() {
-        assertTrue(process.waitFor(30, TimeUnit.SECONDS), "잘못된 인증 설정은 시작을 끝내야 합니다")
-        assertTrue(process.exitValue() != 0)
-        assertFalse(Files.exists(ready))
-    }
-
     fun put(
         version: String,
         document: String,
@@ -359,7 +311,6 @@ private class MarketConfigurationHttpProcess(
         method: String,
         suffix: String,
         body: ByteArray? = null,
-        authorization: List<String> = listOf("Bearer market-admin-http-token-secret-1234567890"),
         contentType: String? = "application/json",
         accept: String? = null,
     ): HttpResponse<String> {
@@ -367,33 +318,10 @@ private class MarketConfigurationHttpProcess(
             HttpRequest
                 .newBuilder(URI("http://127.0.0.1:$port/api/admin/market-configurations$suffix"))
                 .timeout(Duration.ofSeconds(15))
-                .header("Cookie", "EXCHANGE_MARKET_ADMIN_TOKEN=market-admin-http-token-secret-1234567890")
                 .method(method, body?.let(HttpRequest.BodyPublishers::ofByteArray) ?: HttpRequest.BodyPublishers.noBody())
         contentType?.let { request.header("Content-Type", it) }
         accept?.let { request.header("Accept", it) }
-        authorization.forEach { request.header("Authorization", it) }
         return client.send(request.build(), HttpResponse.BodyHandlers.ofString(Charsets.UTF_8))
-    }
-
-    fun unauthorizedHeadersWithoutBody() {
-        Socket("127.0.0.1", port).use { socket ->
-            socket.soTimeout = 2_000
-            socket.getOutputStream().write(
-                (
-                    "PUT /api/admin/market-configurations/200 HTTP/1.1\r\n" +
-                        "Host: 127.0.0.1\r\nContent-Type: application/json\r\nContent-Length: 65537\r\n\r\n"
-                ).toByteArray(Charsets.US_ASCII),
-            )
-            socket.getOutputStream().flush()
-            // 본문을 한 바이트도 보내지 않아도 인증 거절을 받아야 한다.
-            assertTrue(
-                socket
-                    .getInputStream()
-                    .bufferedReader(Charsets.US_ASCII)
-                    .readLine()
-                    .contains("401"),
-            )
-        }
     }
 
     fun output(): String = Files.readString(log)

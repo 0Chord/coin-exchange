@@ -16,7 +16,7 @@ CLI / 관리자 PUT → 원문 검사 → 지정 버전에 저장·대조 → �
 
 **등록과 노드 적용은 별개다.** 등록은 노드 시작·실행 중 설정 변경·잔고 변경을 하지 않는다. 기존 버전의 수정·삭제 API도 없다. 적용하려면 별도로 노드를 시작할 때 등록 결과의 버전과 SHA-256을 지정한다.
 
-**로컬 검증 완료:** 새 제품 테스트 28개를 포함한 전체 1,237개가 실패·건너뛰기 없이 통과했다. 린트·빌드·필수 구조 검사와 별도 컨텍스트의 독립 리뷰를 마쳤다. 원격 CI·게시 상태는 연결 PR의 Checks와 본문에서 확인한다. 실행 방법과 각 검사의 근거는 아래에서 펼쳐 볼 수 있다.
+**현재 범위:** 명시적으로 켠 API는 인증 없이 등록·상세·목록을 제공한다. 사용자 요청으로 이번 PR #123에서 인증을 제외했으며, 인증 설계와 구현은 후속 작업이다. 인증 제거 후 API 테스트와 구조 검사·린트를 확인했으며, 실행 근거는 아래에 정리했다.
 
 <details markdown="1">
 <summary>1. 실행 준비와 CLI 사용법</summary>
@@ -56,32 +56,29 @@ cd /Users/0chord/.codex/worktrees/issue118-market-registration/exchange-core
 </details>
 
 <details markdown="1">
-<summary>2. 관리자 HTTP API 사용법과 접근 조건</summary>
+<summary>2. 관리자 HTTP API 사용법과 명시적 활성화</summary>
 
-관리 API는 기본 비활성화되어 404를 반환한다. 기존 서버 실행에 필요한 설정을 준비한 뒤 `EXCHANGE_MARKET_ADMIN_ENABLED=true`로 명시적으로 켠다. 이때 환경변수 `EXCHANGE_MARKET_ADMIN_TOKEN`에는 **공백 없는 인쇄 가능한 ASCII 32자 이상**의 별도 토큰이 필요하다. 누락·짧음·공백·비ASCII는 서버 시작을 실패시킨다. 토큰은 설정 파일이나 프로그램 인자로 받지 않는다.
+관리 API는 기본 비활성화되어 404를 반환한다. 기존 서버 실행 설정과 DB 환경값을 준비한 뒤 `EXCHANGE_MARKET_ADMIN_ENABLED=true`로 명시적으로 켠다. **활성화되면 인증 없이 등록·상세·목록을 호출할 수 있다.** 이 토글은 기능 활성화 조건이며 사용자 인증이나 권한 검사가 아니다. 인증 설계·구현은 후속이며, 이번에는 인증 필터나 인터셉터를 두지 않는다.
 
 ```sh
 cd /Users/0chord/.codex/worktrees/issue118-market-registration/exchange-core
-# 기존 서버 설정, 위의 DB 환경값, 관리자 토큰을 미리 주입한 환경에서 실행
+# 기존 서버 설정과 위의 DB 환경값을 준비한 환경에서 실행
 EXCHANGE_MARKET_ADMIN_ENABLED=true ./gradlew :app-api:bootRun
 ```
 
-아래는 로컬 기본 포트 예시다. 서버가 다른 포트를 쓰면 주소를 바꾼다. 클라이언트 실행 환경에도 같은 토큰이 있어야 한다. 헤더는 표준 입력으로 전달하여 토큰 값을 예제와 curl 명령 인자에 직접 넣지 않는다.
+아래는 로컬 기본 포트 예시다. 서버가 다른 포트를 쓰면 주소를 바꾼다. 활성화된 API에는 인증 헤더 없이 요청한다.
 
 ```sh
 cd /Users/0chord/.codex/worktrees/issue118-market-registration/exchange-core
-printf 'Authorization: Bearer %s\n' "$EXCHANGE_MARKET_ADMIN_TOKEN" |
-  curl --fail-with-body --header @- --header 'Content-Type: application/json' \
-    --request PUT --data-binary @/absolute/config/markets.json \
-    http://127.0.0.1:8080/api/admin/market-configurations/7
+curl --fail-with-body --header 'Content-Type: application/json' \
+  --request PUT --data-binary @/absolute/config/markets.json \
+  http://127.0.0.1:8080/api/admin/market-configurations/7
 
-printf 'Authorization: Bearer %s\n' "$EXCHANGE_MARKET_ADMIN_TOKEN" |
-  curl --fail-with-body --header @- \
-    http://127.0.0.1:8080/api/admin/market-configurations/7
+curl --fail-with-body \
+  http://127.0.0.1:8080/api/admin/market-configurations/7
 
-printf 'Authorization: Bearer %s\n' "$EXCHANGE_MARKET_ADMIN_TOKEN" |
-  curl --fail-with-body --header @- \
-    'http://127.0.0.1:8080/api/admin/market-configurations?limit=20'
+curl --fail-with-body \
+  'http://127.0.0.1:8080/api/admin/market-configurations?limit=20'
 ```
 
 | 요청 | 응답 내용 |
@@ -98,9 +95,7 @@ PUT은 `Content-Type: application/json` 또는 `application/json; charset=UTF-8`
 
 `limit`은 기본 20, 허용 범위 1~100이다. 응답의 `nextBeforeVersion`을 다음 요청의 `beforeVersion`으로 전달한다. 페이지가 꽉 차면 마지막 버전을 반환하므로 **다음 페이지가 반드시 있다는 뜻은 아니다**. 다음 조회가 빈 목록일 수 있다. 전체 개수·활성 버전도 반환하지 않는다.
 
-관리 경로의 필터는 `Authorization: Bearer …` 헤더 하나를 검사한다. 누락·틀린 값·중복 헤더는 본문을 읽거나 DB에 접근하기 전에 401과 `WWW-Authenticate: Bearer`로 거절한다. 쿠키·쿼리·세션은 인증 수단이 아니다. 토큰의 SHA-256을 고정 길이로 비교하며 세션 쿠키를 만들지 않는다. 실제 운영망에는 HTTPS 경계를 통해 노출한다. 이 기능은 공유 토큰 기반 접근 제한이며, 개인 로그인·역할·행위자 식별이나 관리자 화면은 포함하지 않는다.
-
-근거: [Controller](../app-api/src/main/kotlin/com/exchange/core/api/market/api/MarketConfigurationController.kt#L28), [활성화·조립](../app-api/src/main/kotlin/com/exchange/core/api/config/MarketConfigurationAdminConfig.kt#L15), [인증 필터](../app-api/src/main/kotlin/com/exchange/core/api/config/MarketConfigurationAdminAuthentication.kt#L12), [기본 설정](../app-api/src/main/resources/application.yaml).
+근거: [Controller](../app-api/src/main/kotlin/com/exchange/core/api/market/api/MarketConfigurationController.kt#L28), [활성화·조립](../app-api/src/main/kotlin/com/exchange/core/api/config/MarketConfigurationAdminConfig.kt#L13), [기본 설정](../app-api/src/main/resources/application.yaml).
 
 </details>
 
@@ -109,7 +104,7 @@ PUT은 `Content-Type: application/json` 또는 `application/json; charset=UTF-8`
 
 ```text
 CLI: 옵션·DB 환경 검사 → 파일 바이트 읽기 ──────────┐
-HTTP: 활성화 → Bearer 인증 → 응답 형식 협상 → 입력 형식·버전·본문 검사 ─┤
+HTTP: 활성화 → 응답 형식 협상 → 입력 형식·버전·본문 검사 ─┤
                                                  ↓
 MarketConfigurationUseCase → MarketConfigurationStore 계약
                                                  ↓
@@ -129,7 +124,7 @@ PostgresMarketConfigurationStore
 | [PostgresMarketConfigurationStore.register](../app-api/src/main/kotlin/com/exchange/core/api/market/infrastructure/persistence/PostgresMarketConfigurationStore.kt#L22) | 실제 DB 등록·경합·원문 비교·커밋과 실패 분류를 맡는다. |
 | [validateDocument·release](../app-api/src/main/kotlin/com/exchange/core/api/market/infrastructure/persistence/PostgresMarketConfigurationStore.kt#L141) | 손상 UTF-8·BOM·NUL을 거절하고 기존 문서 파서를 재사용한다. DB에서 읽은 문서도 재검사해 손상 내용을 정상 설정으로 반환하지 않는다. |
 | [MarketConfigurationDatabaseSettings](../app-api/src/main/kotlin/com/exchange/core/api/market/infrastructure/persistence/MarketConfigurationDatabaseSettings.kt#L9) | 필수 환경과 기존 URL 규칙을 검사하고 유한한 연결·SQL 대기를 적용한다. |
-| [MarketConfigurationAdminConfig](../app-api/src/main/kotlin/com/exchange/core/api/config/MarketConfigurationAdminConfig.kt#L15) | 활성화 때 필터·UseCase·PostgreSQL 구현을 명시적으로 조립한다. |
+| [MarketConfigurationAdminConfig](../app-api/src/main/kotlin/com/exchange/core/api/config/MarketConfigurationAdminConfig.kt#L13) | 활성화 때 UseCase·PostgreSQL 구현을 명시적으로 조립한다. |
 
 저장 전 입력 바이트를 복사해 같은 내용으로 검사·지문 생성·저장을 수행한다. 중복 판정은 해시만 비교하지 않고 **원문 바이트 전체를 비교**한다. 같은 버전은 PK가 최종적으로 경합을 정한다. INSERT와 SELECT를 별도 문장으로 실행하므로 앞선 등록의 커밋 뒤 새 조회에서 그 행을 읽을 수 있다. 다른 원문이면 롤백하고 기존 행을 보존한다. V9는 UPDATE·DELETE·TRUNCATE도 금지한다.
 
@@ -162,19 +157,19 @@ JSON 응답을 지원하는 요청의 입력·업무 오류에는 `code`, `stage
 </details>
 
 <details markdown="1">
-<summary>5. 새 제품 테스트 28개 — 준비·실행·실제 검증문</summary>
+<summary>5. 제품 테스트 — 준비·실행·실제 검증문</summary>
 
-아래 수는 `@Test` 메서드 수다. 내부 반복 입력 하나하나를 별도 테스트로 더하지 않는다. 현재 코드에서 실제 DB 13개·별도 CLI JVM 5개·실제 HTTP 10개, 총 **28개 모두 통과**했다.
+아래는 등록·조회 기능을 확인하는 테스트의 준비·실행·검증문이다. 사용자 요청에 따라 인증 전용 테스트를 제거하고 모든 HTTP 요청을 인증 없는 호출로 바꿨다. 아래 26개는 인증 제거 후 실제 실행에서 모두 통과했다. HTTP 요청에는 인증 헤더를 보내지 않는다.
 
-HTTP 형식 오류의 회귀 테스트는 수정 전 기대 400/실제 415, 기대 DB 0행/실제 1행으로 실패함을 확인했다. 응답 형식을 먼저 확인하도록 수정했고, JSON을 명시적으로 거부하는 q=0·허용 wildcard·PUT/GET 대조까지 같은 테스트에 포함했다. 최종 전체 검사와 독립 리뷰의 HTTP 실행에서 통과했다.
+HTTP 형식 오류의 회귀 테스트는 수정 전 기대 400/실제 415, 기대 DB 0행/실제 1행으로 실패함을 확인한 사례다. 응답 형식의 q=0·허용 wildcard·PUT/GET 대조와 등록·조회 계약은 유지하며, 인증 제거 후 실행에서도 확인했다.
 
 | 묶음 | 종류·공통 준비 | 수 |
 | --- | --- | --- |
 | [PostgresMarketConfigurationStoreTest][db-tests] | Testcontainers의 실제 PostgreSQL 17 + Flyway. 제품 Store를 실제 연결로 실행 | 13 |
 | [DevelopmentMarketRegistrationMainTest][cli-tests] | 실제 DB + 임시 파일 + 별도 JVM의 제품 main. 종료 코드·stdout·stderr·DB를 관측 | 5 |
-| [MarketConfigurationHttpTest][http-tests] | 실제 DB + 별도 JVM의 Spring HTTP 서버 + Java HTTP 클라이언트·소켓 | 10 |
+| [MarketConfigurationHttpTest][http-tests] | 실제 DB + 별도 JVM의 Spring HTTP 서버 + Java HTTP 클라이언트 | 8 |
 
-HTTP 검증은 MockMvc가 아니다. [테스트 서버](../app-api/src/test/kotlin/com/exchange/core/api/market/api/MarketConfigurationHttpTestServer.kt#L14)가 제품 Controller·Config·Filter를 가져오고 임의 포트로 시작한다. DB 준비는 [MarketConfigurationDatabase](../app-api/src/test/kotlin/com/exchange/core/api/trading/infrastructure/aeron/MarketConfigurationDatabase.kt#L13)가 담당한다. 동시성은 서로 다른 실제 연결과 latch를 사용한다. PK 대기는 `pg_stat_activity.wait_event_type='Lock'`를 확인하므로 단순 sleep을 경합 증거로 삼지 않는다.
+HTTP 검증은 MockMvc가 아니다. [테스트 서버](../app-api/src/test/kotlin/com/exchange/core/api/market/api/MarketConfigurationHttpTestServer.kt#L14)가 제품 Controller·Config를 가져오고 임의 포트로 시작한다. DB 준비는 [MarketConfigurationDatabase](../app-api/src/test/kotlin/com/exchange/core/api/trading/infrastructure/aeron/MarketConfigurationDatabase.kt#L13)가 담당한다. 동시성은 서로 다른 실제 연결과 latch를 사용한다. PK 대기는 `pg_stat_activity.wait_event_type='Lock'`를 확인하므로 단순 sleep을 경합 증거로 삼지 않는다.
 
 #### 실제 PostgreSQL 13개
 
@@ -208,20 +203,18 @@ HTTP 검증은 MockMvc가 아니다. [테스트 서버](../app-api/src/test/kotl
 
 첫 사례는 첫 호출 결과를 다음 등록 입력에 사용하지 않는 재실행을 검증한다. 테스트 도구는 첫 stdout도 수집·비교한다. 실제 네트워크에서 COMMIT ACK를 잃게 만든 실험은 아니다.
 
-#### 실제 HTTP 10개
+#### 실제 HTTP 8개
 
 | 사례·코드 위치 | Given — 준비 | When — 실행 | Then — 실제 확인 |
 | --- | --- | --- | --- |
-| [PUT·재전송·충돌·상세][http-44] | 활성 서버·유효 토큰 | PUT→GET→동일 PUT→변경 PUT→새 버전, 없는 GET·DELETE | 200의 정확한 버전/고정 지문·원문/시각 유지·쿠키 없음·409/한 행·새 버전 200·404·405 |
-| [페이지·쿼리 한도][http-69] | 10·20번 등록 | limit 1로 다음 cursor 조회, 경계/잘못된 쿼리 | 정확한 버전 순서·원문 생략·마지막 cursor 뒤 빈 목록, 정상 200·오류 400 |
-| [인증이 본문보다 먼저][http-103] | 누락/오류/Basic/공백/중복/콤마 헤더, 인증 쿠키 | 잘못된 본문 PUT, GET, 본문 없이 헤더만 전송 | 401·Bearer 안내·쿠키 없음·정제 오류·0행, 소문자 bearer의 정상 요청은 200 |
-| [Content-Type 입력 오류][http-129] | 누락/text/plain/잘못된 형식/application/* 헤더와 유효 원문 | 각 PUT 후 JSON·JSON+UTF-8 형식 PUT | 오류 400·정확한 code/stage/version 및 세 필드만 존재·0행, 정상 200·최종 1행·원문 일치 |
-| [Accept 협상은 DB 처리 전][http-147] | 유효 원문·토큰, 거절 형식 6개(text/plain 1개·q=0 조합 5개), 허용 형식 5개 | 거절 형식별 PUT→허용 형식별 PUT→거절 형식별 상세·목록 GET | 거절 PUT마다 406·0행, 허용 PUT마다 200, 두 GET 각각 406, 최종 1행·상세 원문 일치 |
-| [바이트·버전 오류][http-174] | 최대 크기와 초과/손상/빈/잘못된 문서 | PUT·상세, 0/음수/문자/Long 초과 버전 | 최대 원문 일치, 오류 400·INVALID_INPUT·0행·정제 응답 |
-| [원문 조회 권한 실패][http-194] | 제한 DB 계정의 별도 서버 | PUT 후 GET | PUT 503 `REGISTRATION_FAILED/compare`·0행, GET 503 `LOOKUP_FAILED`, 응답·로그 비밀 비노출 |
-| [쓰기 연결 단절][http-220] | INSERT 뒤 해당 DB 연결을 끊는 테스트 trigger | PUT→trigger 제거→같은 PUT | 503 `RESULT_UNCONFIRMED/insert`, 정제 응답, 실제 0행, 복구 후 200 |
-| [기본 비활성화][http-259] | 관리자 환경값 없는 별도 서버 | 목록·PUT·상세 | 시작 성공, 모두 404·새 행 없음 |
-| [잘못된 활성화 토큰][http-270] | 누락/짧음/공백/비ASCII 4개 환경 | 각 서버 시작 | 비정상 종료·ready 파일 없음·설정 안내·비밀 비노출 |
+| [PUT·재전송·충돌·상세][http-43] | 명시적으로 활성화한 서버, 인증 헤더 없는 요청 | PUT→GET→동일 PUT→변경 PUT→새 버전, 없는 GET·DELETE | 200의 정확한 버전/고정 지문·원문/시각 유지·409/한 행·새 버전 200·404·405 |
+| [페이지·쿼리 한도][http-68] | 10·20번 등록 | limit 1로 다음 cursor 조회, 경계/잘못된 쿼리 | 정확한 버전 순서·원문 생략·마지막 cursor 뒤 빈 목록, 정상 200·오류 400 |
+| [Content-Type 입력 오류][http-102] | 누락/text/plain/잘못된 형식/application/* 헤더와 유효 원문 | 각 PUT 후 JSON·JSON+UTF-8 형식 PUT | 오류 400·정확한 code/stage/version 및 세 필드만 존재·0행, 정상 200·최종 1행·원문 일치 |
+| [Accept 협상은 DB 처리 전][http-120] | 유효 원문, 거절 형식 6개(text/plain 1개·q=0 조합 5개), 허용 형식 5개 | 거절 형식별 PUT→허용 형식별 PUT→거절 형식별 상세·목록 GET | 거절 PUT마다 406·0행, 허용 PUT마다 200, 두 GET 각각 406, 최종 1행·상세 원문 일치 |
+| [바이트·버전 오류][http-147] | 최대 크기와 초과/손상/빈/잘못된 문서 | PUT·상세, 0/음수/문자/Long 초과 버전 | 최대 원문 일치, 오류 400·INVALID_INPUT·0행·정제 응답 |
+| [원문 조회 권한 실패][http-167] | 제한 DB 계정의 별도 서버 | PUT 후 GET | PUT 503 `REGISTRATION_FAILED/compare`·0행, GET 503 `LOOKUP_FAILED`, 응답·로그 비밀 비노출 |
+| [쓰기 연결 단절][http-193] | INSERT 뒤 해당 DB 연결을 끊는 테스트 trigger | PUT→trigger 제거→같은 PUT | 503 `RESULT_UNCONFIRMED/insert`, 정제 응답, 실제 0행, 복구 후 200 |
+| [기본 비활성화][http-232] | 관리자 활성화·DB 환경값 없는 별도 서버 | 목록·PUT·상세 | 시작 성공, 모두 404·새 행 없음 |
 
 Accept 테스트의 거절 입력은 `text/plain`, `application/json;q=0`, `*/*;q=0`, `application/json;q=0, */*;q=1`, `application/json;q=0, text/plain;q=1`, `application/*;q=0, */*;q=1`이다. 각 입력으로 PUT을 보내 406과 DB 0행을 직접 확인한다. 허용 대조는 `application/json`, `application/json;q=0.5`, `application/*`, `*/*`, `application/json;q=1, */*;q=0`이며, 같은 버전·원문을 등록할 때마다 200을 확인한다. 이어 거절 입력 6개를 상세·목록 GET에도 보내 각각 406을 확인하고, 최종 한 행과 저장 원문을 대조한다. GET 검사는 HTTP 상태를 관측하며 DB 조회 호출 횟수까지 계측하지 않는다.
 
@@ -232,14 +225,14 @@ Accept 테스트의 거절 입력은 `text/plain`, `application/json;q=0`, `*/*;
 <details markdown="1">
 <summary>6. 구조 검사를 바꾼 이유와 검증 범위</summary>
 
-구조 검사 관련 변경은 10개 파일이다. 새 market 코드를 기존 검사 대상에 포함시켜, HTTP가 저장소를 바로 호출하거나 UseCase가 JDBC에 묶이는 우회를 계속 감지하려는 변경이다. 검사 규칙을 완화하지 않았다.
+새 market 코드를 기존 검사 대상에 포함시켜, HTTP가 저장소를 바로 호출하거나 UseCase가 JDBC에 묶이는 우회를 계속 감지하려는 변경이다. 검사 규칙을 완화하지 않았다.
 
 - [ProjectLayoutPolicy](../architecture-tests/src/test/kotlin/com/exchange/architecture/policy/ProjectLayoutPolicy.kt#L34)는 `market/api`, `market/application`, `market/application/port`, `market/infrastructure/persistence`의 정확한 위치·역할을 등록한다. [NamingRules](../architecture-tests/src/test/kotlin/com/exchange/architecture/rules/NamingRules.kt#L220)는 이 영역의 Controller·UseCase·Store·HTTP 데이터 이름과 위치를 검사한다.
 - [ProductionBoundaryInputs](../architecture-tests/src/test/kotlin/com/exchange/architecture/support/ProductionBoundaryInputs.kt#L24)는 Controller→UseCase와 공개 결과·오류 5개 타입을 연결한다. 공개 데이터도 application의 기술 의존 검사에 남겨, 결과 객체 안에 JDBC를 숨길 수 없게 한다. 일반 내부 업무 타입까지 HTTP 공개 데이터로 허용하지 않는다.
 - [ProductionScope](../architecture-tests/src/test/kotlin/com/exchange/architecture/support/ProductionScope.kt#L36)는 `MarketConfigurationStore`를 외부 포트로 등록한다. 핵심 타입이 사라지면 빈 검사 통과로 처리하지 않는다.
 - [NamingPlacementScopeTest](../architecture-tests/src/test/kotlin/com/exchange/architecture/NamingPlacementScopeTest.kt#L131)는 폴더 21개가 25개가 된 이유와 새 4개 경로·포트 구현 매핑을 검증한다. [NamingPlacementIntegrationTest](../architecture-tests/src/test/kotlin/com/exchange/architecture/NamingPlacementIntegrationTest.kt#L28)와 [NamingPlacementGradleScenario](../architecture-tests/src/test/kotlin/com/exchange/architecture/NamingPlacementGradleScenario.kt#L32)는 기존 검사기 예제의 준비 정책에도 새 UseCase 영역을 넣는다. 제품 동작 테스트를 추가한 변경은 아니다.
 
-최초 구조 검사 7개 실패에는 Jakarta Servlet `Filter` 상위 정의의 검사 런타임 누락, 축소된 테스트 fixture의 market 폴더 정책 누락, 허용 package 목록 기대값 누락이 있었다. [architecture-tests의 실행 의존성](../architecture-tests/build.gradle.kts#L48)에 Servlet API를 추가하고 위 fixture 정책을 보완했다. [NamingPlacementGradleAutomaticTest의 AUTO-26](../architecture-tests/src/test/kotlin/com/exchange/architecture/NamingPlacementGradleAutomaticTest.kt#L97)는 허용 package 기대값에 market 영역을 포함한다. 검사 제외나 위반 허용으로 실패를 숨긴 변경이 아니다.
+구조 검사 준비에서는 축소된 fixture의 market 폴더 정책과 허용 package 목록 기대값을 보완했다. [NamingPlacementGradleAutomaticTest의 AUTO-26](../architecture-tests/src/test/kotlin/com/exchange/architecture/NamingPlacementGradleAutomaticTest.kt#L97)는 허용 package 기대값에 market 영역을 포함한다. 검사 제외나 위반 허용으로 실패를 숨긴 변경이 아니다. 인증 관련 코드 제거 후 구조 검사도 다시 실행해 통과했다.
 
 [ProductionBoundaryInputsTest](../architecture-tests/src/test/kotlin/com/exchange/architecture/ProductionBoundaryInputsTest.kt#L107)의 새 메서드 6개는 다음을 검사한다.
 
@@ -264,34 +257,28 @@ cd /Users/0chord/.codex/worktrees/issue118-market-registration/exchange-core
   --tests '*MarketConfigurationHttpTest'
 ```
 
-전체 필수 검사 명령은 다음과 같다. 최종 실행은 **종료 코드 0, 6분 58초, BUILD SUCCESSFUL**이며, P01~P09 실행·성공까지 확인했다.
+인증 제거 후 다음 순서로 확인했다.
 
 ```sh
 cd /Users/0chord/.codex/worktrees/issue118-market-registration/exchange-core
 ./gradlew ktlintCheck build test :architecture-tests:verifyArchitectureReport
+# 테스트 보조 함수의 줄바꿈 린트 한 곳을 수정한 뒤 영향받은 검사를 다시 실행했다.
+./gradlew ktlintCheck :architecture-tests:test :architecture-tests:verifyArchitectureReport
 ```
 
-| 모듈 | 통과한 테스트 |
-| --- | ---: |
-| app-api | 553 |
-| architecture-tests | 381 |
-| domain-fee / domain-ledger | 37 / 39 |
-| domain-matching / domain-order / domain-trading | 74 / 53 / 100 |
-| 합계 | **1,237 — 실패·오류·건너뛰기 0** |
+첫 실행에서 제품 빌드와 app-api 테스트 **551개가 통과**했고, 테스트 보조 함수의 줄바꿈 린트 오류가 발견됐다. 동작 변경 없이 해당 식을 한 줄로 정리한 뒤 두 번째 명령이 **1분 19초에 성공**했다. 구조 테스트 **381개·필수 검사 P01~P09·전체 ktlint**가 통과했다. 변경 없는 도메인 테스트 303개의 이전 결과는 Gradle이 UP-TO-DATE로 재사용했다. 합산 결과는 **1,235개, 실패·오류·건너뛰기 0**이며, 모두 이번에 새로 실행했다는 뜻은 아니다.
 
-독립 리뷰는 작성 대화를 상속하지 않은 에이전트가 별도 checkout에서 수행했다. 기준은 `e04776a965c0d926487b46ac817ba299668f3da9`, 최종 소스 스냅샷은 `ddaece219d0b332d3f8661193febe53f7bc59d48`이다. 이 문서의 완료 상태·실행 결과 갱신 외에 검토 뒤 소스 변경은 없다. 리뷰에서 발견한 Servlet 검사 의존성·fixture 누락, Content-Type 오류 분류, Accept 거절 뒤 저장되는 문제를 수정했다. 마지막 리뷰는 HTTP 테스트 10개와 별도 실제 HTTP/DB 요청 46개로 정상·거절을 대조했으며, 검토한 범위에서 확인된 미해결 결함은 없다. 별도 요청 46개를 자동 테스트 수에 더하지 않았다.
+이 기능의 제품 테스트는 실제 DB 13개·CLI JVM 5개·HTTP 8개다. 작성 대화를 받지 않은 독립 검토자는 인증 제거 변경과 문서·코드 링크를 확인했고, 확인된 미해결 결함은 없었다. 검토 스냅샷은 `f2fb1a9a7d317bba1908582a465a4527b89a6daa`이며 이후 제품·테스트 변경은 위 줄바꿈 수정뿐이다.
 
-전체 검사 도중 기존 Aeron 노드 테스트가 UDP 포트를 확보할 때 한 차례 `Address already in use`로 실패했다. 업무 처리 전의 포트 바인딩 실패였고, 정확한 점유 주체는 확인하지 못했다. 해당 기존 소스·검사를 변경하거나 제외하지 않고 단독 재실행과 위 전체 재실행에서 통과한 것을 확인했다.
+실행 로그와 XML, 독립 검토는 로컬 `issue118-implementation` 근거 폴더의 `auth-removal-verification.log`, `auth-removal-followup-verification.log`, `auth-removal-test-results`, `auth-removal-independent-review.md`에 보관했다. 최신 게시 커밋의 원격 CI 상태는 PR #123에서 별도로 확인한다.
 
-원본 실행 로그·모듈별 XML·독립 리뷰 보고서는 로컬 `issue118-implementation` 근거 폴더에 보관했다. 구현 폴더는 `/Users/0chord/.codex/worktrees/issue118-market-registration/exchange-core`, 브랜치는 `feat/market-configuration-registration/118`이다. 이 문서는 로컬 검증 근거이며, 최신 게시 상태·원격 실행 결과는 연결 PR에서 확인한다. 설명·테스트·AI 리뷰를 사용자의 이해 확인이나 사람의 리뷰 승인으로 기록하지 않는다.
-
-설명한 범위는 새 제품 테스트 28개와 구조 검사 변경이다. 테스트 파일 내부 반복 입력도 모두 읽었다. 실제 COMMIT ACK 유실·commit 예외·CLI 출력 실패는 자동 재현하지 않았으며, 해당 분기는 코드 검토와 후속 장애 검증의 대상으로 남아 있다. 테스트 통과를 사용자 이해 완료·리뷰 승인·게시 승인으로 해석하지 않는다.
+실제 COMMIT ACK 유실·commit 예외·CLI 출력 실패는 자동 재현하지 않았다. 해당 분기는 코드 검토와 후속 장애 검증의 대상으로 남아 있다. 테스트·AI 리뷰를 사용자의 이해 확인이나 사람의 승인으로 해석하지 않는다.
 
 </details>
 
 [db-tests]: ../app-api/src/test/kotlin/com/exchange/core/api/market/infrastructure/persistence/PostgresMarketConfigurationStoreTest.kt#L27
 [cli-tests]: ../app-api/src/test/kotlin/com/exchange/core/api/trading/infrastructure/aeron/DevelopmentMarketRegistrationMainTest.kt#L18
-[http-tests]: ../app-api/src/test/kotlin/com/exchange/core/api/market/api/MarketConfigurationHttpTest.kt#L25
+[http-tests]: ../app-api/src/test/kotlin/com/exchange/core/api/market/api/MarketConfigurationHttpTest.kt#L24
 [db-42]: ../app-api/src/test/kotlin/com/exchange/core/api/market/infrastructure/persistence/PostgresMarketConfigurationStoreTest.kt#L42
 [db-69]: ../app-api/src/test/kotlin/com/exchange/core/api/market/infrastructure/persistence/PostgresMarketConfigurationStoreTest.kt#L69
 [db-89]: ../app-api/src/test/kotlin/com/exchange/core/api/market/infrastructure/persistence/PostgresMarketConfigurationStoreTest.kt#L89
@@ -310,14 +297,12 @@ cd /Users/0chord/.codex/worktrees/issue118-market-registration/exchange-core
 [cli-71]: ../app-api/src/test/kotlin/com/exchange/core/api/trading/infrastructure/aeron/DevelopmentMarketRegistrationMainTest.kt#L71
 [cli-99]: ../app-api/src/test/kotlin/com/exchange/core/api/trading/infrastructure/aeron/DevelopmentMarketRegistrationMainTest.kt#L99
 [cli-107]: ../app-api/src/test/kotlin/com/exchange/core/api/trading/infrastructure/aeron/DevelopmentMarketRegistrationMainTest.kt#L107
-[http-44]: ../app-api/src/test/kotlin/com/exchange/core/api/market/api/MarketConfigurationHttpTest.kt#L44
-[http-69]: ../app-api/src/test/kotlin/com/exchange/core/api/market/api/MarketConfigurationHttpTest.kt#L69
-[http-103]: ../app-api/src/test/kotlin/com/exchange/core/api/market/api/MarketConfigurationHttpTest.kt#L103
-[http-174]: ../app-api/src/test/kotlin/com/exchange/core/api/market/api/MarketConfigurationHttpTest.kt#L174
-[http-194]: ../app-api/src/test/kotlin/com/exchange/core/api/market/api/MarketConfigurationHttpTest.kt#L194
-[http-220]: ../app-api/src/test/kotlin/com/exchange/core/api/market/api/MarketConfigurationHttpTest.kt#L220
-[http-259]: ../app-api/src/test/kotlin/com/exchange/core/api/market/api/MarketConfigurationHttpTest.kt#L259
-[http-270]: ../app-api/src/test/kotlin/com/exchange/core/api/market/api/MarketConfigurationHttpTest.kt#L270
-
-[http-129]: ../app-api/src/test/kotlin/com/exchange/core/api/market/api/MarketConfigurationHttpTest.kt#L129
+[http-43]: ../app-api/src/test/kotlin/com/exchange/core/api/market/api/MarketConfigurationHttpTest.kt#L43
+[http-68]: ../app-api/src/test/kotlin/com/exchange/core/api/market/api/MarketConfigurationHttpTest.kt#L68
 [http-147]: ../app-api/src/test/kotlin/com/exchange/core/api/market/api/MarketConfigurationHttpTest.kt#L147
+[http-167]: ../app-api/src/test/kotlin/com/exchange/core/api/market/api/MarketConfigurationHttpTest.kt#L167
+[http-193]: ../app-api/src/test/kotlin/com/exchange/core/api/market/api/MarketConfigurationHttpTest.kt#L193
+[http-232]: ../app-api/src/test/kotlin/com/exchange/core/api/market/api/MarketConfigurationHttpTest.kt#L232
+
+[http-102]: ../app-api/src/test/kotlin/com/exchange/core/api/market/api/MarketConfigurationHttpTest.kt#L102
+[http-120]: ../app-api/src/test/kotlin/com/exchange/core/api/market/api/MarketConfigurationHttpTest.kt#L120

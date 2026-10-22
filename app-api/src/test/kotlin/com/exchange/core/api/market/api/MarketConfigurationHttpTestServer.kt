@@ -10,7 +10,7 @@ import java.nio.file.Files
 import java.nio.file.Path
 import java.util.concurrent.CountDownLatch
 
-/** 실제 환경변수와 제품 controller/config/filter를 사용하는 별도 JVM의 HTTP 테스트 서버다. */
+/** 실제 환경변수와 제품 controller/config를 사용하는 별도 JVM의 HTTP 테스트 서버다. */
 fun main(args: Array<String>) {
     val context =
         SpringApplicationBuilder(MarketConfigurationHttpTestApplication::class.java)
