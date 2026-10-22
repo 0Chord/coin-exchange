@@ -170,7 +170,12 @@ internal class DevelopmentFundingNode private constructor(
         } finally {
             ports.forEach { it.close() }
         }
-        val errors = ErrorHandler(::fail)
+        val errors =
+            ErrorHandler { error ->
+                // Aeron은 오류 로그·카운터에 기록한 WARN 뒤에도 선출 등 복구 절차를 이어간다.
+                // 업무 어댑터의 onFatal은 이 분류를 거치지 않고 계속 노드를 중단한다.
+                if (error !is AeronException || error.category() != AeronException.Category.WARN) fail(error)
+            }
         driver =
             MediaDriver.launch(
                 MediaDriver
@@ -181,10 +186,7 @@ internal class DevelopmentFundingNode private constructor(
                     .spiesSimulateConnection(true)
                     .threadingMode(ThreadingMode.SHARED)
                     .sharedIdleStrategy(SleepingMillisIdleStrategy(1))
-                    .errorHandler { error ->
-                        // Driver는 WARN도 오류 로그에 먼저 기록한다. 종료한 클라이언트의 DNS 재조회 경고로 노드를 닫지 않는다.
-                        if (error !is AeronException || error.category() != AeronException.Category.WARN) fail(error)
-                    },
+                    .errorHandler(errors),
             )
         archive =
             Archive.launch(
