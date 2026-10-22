@@ -53,7 +53,7 @@ internal class RunningVerificationCommand(
                     arguments,
                 ).directory(directory.toFile()).redirectOutput(stdoutPath.toFile()).redirectError(stderrPath.toFile())
             // Default-market checks must not inherit a caller's unrelated market configuration.
-            builder.environment().remove("FUNDING_MARKETS_JSON")
+            DEVELOPMENT_MARKET_ENVIRONMENT_KEYS.forEach { builder.environment().remove(it) }
             builder.environment().putAll(environment)
             process = builder.start()
         } catch (failure: Exception) {

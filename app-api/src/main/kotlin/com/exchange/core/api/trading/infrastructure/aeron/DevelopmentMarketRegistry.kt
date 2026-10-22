@@ -37,7 +37,16 @@ internal data class DevelopmentMarketContext(
 /** 입력 목록을 복사하고 변경 가능한 뷰를 노출하지 않는다. 같은 ID의 중복도 덮어쓰지 않는다. */
 internal class DevelopmentMarketRegistry(
     contexts: Collection<DevelopmentMarketContext>,
+    val configurationVersion: Long? = null,
+    val contentSha256: String? = null,
 ) {
+    init {
+        require(
+            (configurationVersion == null && contentSha256 == null) ||
+                (configurationVersion != null && configurationVersion > 0 && contentSha256?.matches(Regex("[0-9a-f]{64}")) == true),
+        ) { "설정 버전과 내용 SHA-256은 함께 지정해야 합니다" }
+    }
+
     private val byMarket: Map<MarketId, DevelopmentMarketContext> =
         buildMap {
             contexts.forEach { context ->

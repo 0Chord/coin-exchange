@@ -386,6 +386,42 @@ class DevelopmentMultiMarketOrderNodeTest {
         }
     }
 
+    @Test
+    fun `시작 때 읽은 설정은 DB가 중단돼도 이미 연결한 노드와 클라이언트에서 유지된다`() {
+        MarketConfigurationDatabase().use { database ->
+            val document =
+                """
+                [{"marketId":"BTC-USDT","baseAssetId":"BTC","quoteAssetId":"USDT","baseQuantityScale":8,
+                  "feePolicy":{"productType":"SPOT","feeTier":"NORMAL","scheduleVersion":1,"makerPartsPerMillion":0,"takerPartsPerMillion":0}},
+                 {"marketId":"SUI-USDT","baseAssetId":"SUI","quoteAssetId":"USDT","baseQuantityScale":9,
+                  "feePolicy":{"productType":"SPOT","feeTier":"NORMAL","scheduleVersion":2,"makerPartsPerMillion":0,"takerPartsPerMillion":0}}]
+                """.trimIndent()
+            val settings = config().copy(markets = readDevelopmentMarkets(database.register(document)))
+            DevelopmentFundingNode.start(settings).use { node ->
+                prepare(node)
+                DevelopmentOrderClient(settings).use { client ->
+                    database.close()
+                    val previousPosition = assertNotNull(node.observation).position
+                    val command = order(SUI, "R-AFTER-DB", "O-AFTER-DB", price = 20_000_000, quantity = 20_000_000_000)
+                    val response = assertIs<OrderRequestOutcome.Confirmed>(client.request(command)).result
+                    assertEquals(1L, assertIs<AdmissionResultPayload.Accepted>(response).sequence)
+                    val observed = applied(node, previousPosition)
+                    assertEquals(response, observed.admissionResult)
+                    val snapshot = assertNotNull(observed.snapshot)
+                    assertBalance(snapshot, available = 600_000_000, hold = 400_000_000)
+                    assertEquals(listOf("O-AFTER-DB"), pendingOrders(snapshot, SUI))
+                    assertEquals(
+                        2L,
+                        snapshot.pendingOrders
+                            .single()
+                            .candidate.feePolicySnapshot.scheduleVersion,
+                    )
+                    assertNull(node.error)
+                }
+            }
+        }
+    }
+
     private fun suiContextChanges(command: AdmissionCommandPayload): List<Pair<String, AdmissionCommandPayload>> =
         listOf(
             "미등록 주문 마켓" to command.copy(order = command.order.copy(marketId = MarketId("ETH-USDT"))),

@@ -1,8 +1,12 @@
 package com.exchange.core.api.trading.infrastructure.aeron
 
+import org.junit.jupiter.api.AfterAll
+import org.junit.jupiter.api.BeforeAll
+import org.junit.jupiter.api.TestInstance
 import tools.jackson.databind.JsonNode
 import tools.jackson.databind.json.JsonMapper
 import java.net.DatagramSocket
+import java.net.ServerSocket
 import java.nio.file.Files
 import java.nio.file.Path
 import java.time.Instant
@@ -14,12 +18,29 @@ import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
 
 /** Settings를 직접 주입하지 않고 세 제품 main에 실제 환경·인자를 전달한다. */
+@TestInstance(TestInstance.Lifecycle.PER_CLASS)
 class DevelopmentMarketMainTest {
+    private lateinit var database: MarketConfigurationDatabase
+
+    @BeforeAll
+    fun startDatabase() {
+        database = MarketConfigurationDatabase()
+    }
+
+    @AfterAll
+    fun stopDatabase() {
+        if (::database.isInitialized) database.close()
+    }
+
     @Test
     fun `환경 기반 세 main은 BTC와 SUI가 공유하는 잔고와 최초 결과를 단계마다 남긴다`() {
-        MainProcesses(structured = true, markets = MARKETS).use { run ->
+        val settings = database.register(MARKETS)
+        MainProcesses(structured = true, marketEnvironment = settings).use { run ->
             val node = run.node()
-            assertEquals(json(listOf(market("BTC"), market("SUI"))), run.ready(node).path("settings").path("markets"))
+            val readySettings = run.ready(node).path("settings")
+            assertEquals(json(listOf(market("BTC"), market("SUI"))), readySettings.path("markets"))
+            assertEquals(settings.getValue("FUNDING_MARKET_CONFIG_VERSION").toLong(), readySettings.path("marketConfigVersion").asLong())
+            assertEquals(settings.getValue("FUNDING_MARKET_CONFIG_SHA256"), readySettings.path("marketConfigSha256").asString())
             var position = 0L
 
             fun verify(
@@ -62,10 +83,13 @@ class DevelopmentMarketMainTest {
 
     @Test
     fun `로컬 세 main도 전체 READY와 BTC 승인 SUI 부족 SUI 승인을 순서대로 출력한다`() {
-        MainProcesses(structured = false, markets = MARKETS).use { run ->
+        val settings = database.register(MARKETS)
+        MainProcesses(structured = false, marketEnvironment = settings).use { run ->
             val node = run.node()
             val ready = run.localReady(node)
             assertTrue(ready.contains("markets=${listOf(market("BTC"), market("SUI"))}"), ready)
+            assertTrue(ready.contains("marketConfigVersion=${settings.getValue("FUNDING_MARKET_CONFIG_VERSION")}"), ready)
+            assertTrue(ready.contains("marketConfigSha256=${settings.getValue("FUNDING_MARKET_CONFIG_SHA256")}"), ready)
             val funding = run.fund().stdout
             assertLocalResult(funding, "Prepared(", "preparationId=P1", "1000000000")
             assertLocalAccepted(run.order(BTC, select = false).stdout, BTC)
@@ -84,10 +108,13 @@ class DevelopmentMarketMainTest {
     @Test
     fun `부모 환경의 마켓 설정을 제거하면 두 모드의 세 main 모두 기존 BTC 기본값으로 실행된다`() {
         listOf(false, true).forEach { structured ->
-            MainProcesses(structured, markets = null).use { run ->
+            MainProcesses(structured, marketEnvironment = emptyMap()).use { run ->
                 val node = run.node()
                 if (structured) {
-                    assertEquals(json(listOf(market("BTC"))), run.ready(node).path("settings").path("markets"))
+                    val readySettings = run.ready(node).path("settings")
+                    assertEquals(json(listOf(market("BTC"))), readySettings.path("markets"))
+                    assertTrue(readySettings.path("marketConfigVersion").isNull)
+                    assertTrue(readySettings.path("marketConfigSha256").isNull)
                     assertEquals(json(opening()), events(run.fund().stdout).last().path("result"))
                     val openingPosition = run.applied(node, opening(), 0).path("position").asLong()
                     assertEquals(json(accepted(BTC)), events(run.order(BTC, select = false).stdout).last().path("result"))
@@ -104,13 +131,63 @@ class DevelopmentMarketMainTest {
     }
 
     @Test
-    fun `잘못된 마켓 JSON은 세 main의 두 모드에서 자원 생성과 연결보다 먼저 실패한다`() {
-        listOf(false, true).forEach { structured ->
-            listOf(NODE, FUNDING, ORDER).forEach { entry ->
-                MainProcesses(structured, markets = "[]").use { run ->
-                    val (process, resourceRoot) = run.invalidStart(entry)
-                    assertInputFailure(process.await(10_000), "FUNDING_MARKETS_JSON")
-                    assertFalse(Files.exists(resourceRoot), "$entry structured=$structured 자원을 만들면 안 됩니다")
+    fun `DB 설정 실패는 세 main의 두 모드에서 자원 생성과 연결보다 먼저 실패한다`() {
+        val settings = database.register(MARKETS)
+        val unavailablePort = ServerSocket(0).use { it.localPort }
+        val failures =
+            listOf(
+                settings + ("FUNDING_MARKET_CONFIG_VERSION" to Long.MAX_VALUE.toString()) to "FUNDING_MARKET_CONFIG_VERSION",
+                settings + ("FUNDING_MARKET_CONFIG_SHA256" to "0".repeat(64)) to "FUNDING_MARKET_CONFIG_SHA256",
+                settings - "FUNDING_MARKET_DB_PASSWORD" to "FUNDING_MARKET_DB_PASSWORD",
+                settings + ("FUNDING_MARKET_DB_URL" to "jdbc:postgresql://127.0.0.1:$unavailablePort/unavailable") to
+                    "FUNDING_MARKET_DB_URL",
+                database.register("[]") to "마켓 배열",
+                settings + ("FUNDING_MARKETS_JSON" to MARKETS) to "FUNDING_MARKETS_JSON",
+            )
+        failures.forEach { (environment, diagnostic) ->
+            listOf(false, true).forEach { structured ->
+                listOf(NODE, FUNDING, ORDER).forEach { entry ->
+                    MainProcesses(structured, environment).use { run ->
+                        val (process, resourceRoot) = run.invalidStart(entry)
+                        assertInputFailure(process.await(10_000), diagnostic)
+                        assertFalse(Files.exists(resourceRoot), "$entry structured=$structured $diagnostic 자원을 만들면 안 됩니다")
+                    }
+                }
+            }
+        }
+    }
+
+    @Test
+    fun `잘못된 DB 주소도 세 main의 stdout과 stderr에 주소나 자격정보를 노출하지 않는다`() {
+        val settings = database.environment(1, MARKETS)
+        val secret = "market-url-secret"
+        val invalidUrls =
+            listOf(
+                "jdbc:postgresql://127.0.0.1:1?password=$secret",
+                "jdbc:postgresql://127.0.0.1:1/db/extra?password=$secret",
+                "jdbc:postgresql://127.0.0.1:not-a-port/db?password=$secret",
+                "jdbc:postgresql://127.0.0.1:1/db?sslmode=%ZZ&password=$secret",
+            )
+        invalidUrls.forEach { url ->
+            val environment =
+                settings +
+                    mapOf(
+                        "FUNDING_MARKET_DB_URL" to url,
+                        "FUNDING_MARKET_DB_USER" to "market-private-user",
+                        "FUNDING_MARKET_DB_PASSWORD" to "market-private-password",
+                    )
+            listOf(false, true).forEach { structured ->
+                listOf(NODE, FUNDING, ORDER).forEach { entry ->
+                    MainProcesses(structured, environment).use { run ->
+                        val (process, resourceRoot) = run.invalidStart(entry)
+                        val result = process.await(10_000)
+                        assertInputFailure(result, "FUNDING_MARKET_DB_URL")
+                        listOf("jdbc:postgresql", secret, "market-private-user", "market-private-password").forEach { value ->
+                            assertFalse(result.stdout.contains(value), result.stdout)
+                            assertFalse(result.stderr.contains(value), result.stderr)
+                        }
+                        assertFalse(Files.exists(resourceRoot))
+                    }
                 }
             }
         }
@@ -120,7 +197,7 @@ class DevelopmentMarketMainTest {
     fun `등록하지 않은 선택과 BTC 없는 기본 선택은 두 모드 모두 전송 전에 실패한다`() {
         listOf(false, true).forEach { structured ->
             listOf(MARKETS to listOf("--market", "DOGE-USDT"), SUI_ONLY to emptyList()).forEach { (markets, selection) ->
-                MainProcesses(structured, markets).use { run ->
+                MainProcesses(structured, database.register(markets)).use { run ->
                     val (process, resourceRoot) = run.invalidStart(ORDER, selection)
                     assertInputFailure(process.await(10_000), if (selection.isEmpty()) "BTC-USDT" else "DOGE-USDT")
                     assertFalse(Files.exists(resourceRoot), "잘못된 선택은 Driver를 만들면 안 됩니다")
@@ -164,7 +241,7 @@ class DevelopmentMarketMainTest {
     /** 프로세스와 출력의 수명만 소유한다. Node main의 최신 관찰을 다음 요청 전에 읽는다. */
     private class MainProcesses(
         private val structured: Boolean,
-        private val markets: String?,
+        private val marketEnvironment: Map<String, String>,
     ) : AutoCloseable {
         private val root = Files.createTempDirectory("market-main115-")
         private val nodeRoot = root.resolve("node")
@@ -251,7 +328,7 @@ class DevelopmentMarketMainTest {
                     "FUNDING_HOST" to "127.0.0.1",
                     "FUNDING_BIND_HOST" to "127.0.0.1",
                     "FUNDING_MEMBERS" to members,
-                ) + if (markets == null) emptyMap() else mapOf("FUNDING_MARKETS_JSON" to markets)
+                ) + marketEnvironment
             val reports = Files.createDirectory(root.resolve("logs-${commands.size}"))
             val runner = VerificationCommands(root, reports, environment)
             commands.add(runner)

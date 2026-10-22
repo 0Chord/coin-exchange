@@ -5,11 +5,13 @@ import com.exchange.core.fee.FeeTier
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
+import kotlin.test.assertFalse
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 class DevelopmentMarketSettingsTest {
     @Test
-    fun `미설정만 기존 BTC를 사용하고 외부 목록은 순서에 상관없이 원래 값을 보존한다`() {
+    fun `미설정만 기존 BTC를 사용하고 DB 문서는 순서에 상관없이 원래 값을 보존한다`() {
         assertEquals(DevelopmentMarketContext.BTC_USDT, readDevelopmentMarkets(emptyMap()).single())
         val btc = market()
         val sui = market("SUI-USDT", "SUI", 9, 2)
@@ -23,6 +25,66 @@ class DevelopmentMarketSettingsTest {
         assertEquals(2L, actual.feePolicySnapshot.scheduleVersion)
         assertEquals(0L, actual.feePolicySnapshot.feeRates.makerFeeRate.partsPerMillion)
         assertEquals(0L, actual.feePolicySnapshot.feeRates.takerFeeRate.partsPerMillion)
+    }
+
+    @Test
+    fun `명시한 PostgreSQL 주소와 DNS IPv4 IPv6 SSL 제한시간 옵션을 보존한다`() {
+        listOf(
+            "jdbc:postgresql://localhost/database",
+            "jdbc:postgresql://market-db:5432/exchange_core",
+            "jdbc:postgresql://db.example.com:6543/exchange",
+            "jdbc:postgresql://127.0.0.1:1/database",
+            "jdbc:postgresql://[::1]:5432/database",
+            "jdbc:postgresql://[2001:db8::1]/database",
+            "jdbc:postgresql://localhost/database?ssl=true&sslmode=verify-full&sslrootcert=%2Ftmp%2Froot.crt",
+            "jdbc:postgresql://localhost/database?connectTimeout=0&socketTimeout=0&loginTimeout=0&readOnlyMode=ignore",
+            "jdbc:postgresql://localhost/database?ApplicationName=market%20reader&currentSchema=public",
+        ).forEach(::validateDevelopmentMarketDatabaseUrl)
+    }
+
+    @Test
+    fun `잘못된 URL과 주소 자격정보 우회 옵션은 드라이버 호출 전에 원문과 cause 없이 거절한다`() {
+        val invalidUrls =
+            listOf(
+                "jdbc:postgresql://127.0.0.1:1?password=review-secret",
+                "jdbc:postgresql://127.0.0.1:1/db/extra?password=review-secret",
+                "jdbc:postgresql://localhost:review-secret/database",
+                "jdbc:postgresql://localhost:0/database",
+                "jdbc:postgresql://localhost:65536/database",
+                "jdbc:postgresql://localhost:/database",
+                "jdbc:postgresql://localhost/",
+                "jdbc:postgresql:///database",
+                "jdbc:postgresql:database",
+                "jdbc:postgresql://private-user:review-secret@localhost/database",
+                "jdbc:postgresql://localhost/database#review-secret",
+                "jdbc:postgresql://localhost/database?sslmode=%review-secret",
+                "jdbc:postgresql://localhost/database?%70assword=review-secret",
+                "jdbc:postgresql://[::1/database",
+                "jdbc:postgresql://localhost,other/database",
+            ) +
+                listOf("user", "password", "PASSWORD", "service", "host", "port", "dbname", "PGHOST", "PGPORT", "PGDBNAME").map {
+                    "jdbc:postgresql://localhost/database?$it=review-secret"
+                }
+        invalidUrls.forEach { url ->
+            val environment =
+                mapOf(
+                    "FUNDING_MARKET_DB_URL" to url,
+                    "FUNDING_MARKET_DB_USER" to "private-user",
+                    "FUNDING_MARKET_DB_PASSWORD" to "private-password",
+                    "FUNDING_MARKET_CONFIG_VERSION" to "1",
+                    "FUNDING_MARKET_CONFIG_SHA256" to "a".repeat(64),
+                )
+
+            val error = assertFailsWith<IllegalArgumentException> { readDevelopmentMarkets(environment) }
+
+            assertTrue(error.message.orEmpty().contains("FUNDING_MARKET_DB_URL"))
+            assertFalse(error.stackTraceToString().contains(url))
+            listOf("review-secret", "private-user", "private-password").forEach { secret ->
+                assertFalse(error.stackTraceToString().contains(secret))
+            }
+            assertNull(error.cause)
+            assertTrue(error.suppressed.isEmpty())
+        }
     }
 
     @Test
@@ -132,10 +194,10 @@ class DevelopmentMarketSettingsTest {
 
     private fun assertInvalid(json: String) {
         val error = assertFailsWith<IllegalArgumentException> { read(json) }
-        assertTrue(error.message.orEmpty().contains("FUNDING_MARKETS_JSON"), error.message)
+        assertTrue(error.message.orEmpty().contains("markets_document"), error.message)
     }
 
-    private fun read(json: String): DevelopmentMarketRegistry = readDevelopmentMarkets(mapOf("FUNDING_MARKETS_JSON" to json))
+    private fun read(json: String): DevelopmentMarketRegistry = parseDevelopmentMarketsDocument(json)
 
     private fun market(
         id: String = "BTC-USDT",

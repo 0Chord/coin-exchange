@@ -345,7 +345,8 @@ fun main(args: Array<String>) {
                 } else {
                     println(
                         "READY root=${config.runRoot} members=${config.members} driver=${config.driverDirectory} " +
-                            "sync=${node.storageLevels} markets=${fundingMarketFields(config.markets)}",
+                            "sync=${node.storageLevels} markets=${fundingMarketFields(config.markets)} " +
+                            "marketConfigVersion=${config.markets.configurationVersion} marketConfigSha256=${config.markets.contentSha256}",
                     )
                 }
                 var last: FundingObservation? = null

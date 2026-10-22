@@ -2,12 +2,34 @@ package com.exchange.core.api.trading.infrastructure.aeron
 
 import com.exchange.core.common.MarketId
 import com.exchange.core.order.Side
+import org.junit.jupiter.api.AfterAll
+import org.junit.jupiter.api.BeforeAll
+import org.junit.jupiter.api.TestInstance
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertTrue
 
+@TestInstance(TestInstance.Lifecycle.PER_CLASS)
 class DevelopmentMarketSelectionTest {
+    private lateinit var database: MarketConfigurationDatabase
+    private lateinit var environment: Map<String, String>
+    private lateinit var suiEnvironment: Map<String, String>
+    private lateinit var invalidEnvironment: Map<String, String>
+
+    @BeforeAll
+    fun startDatabase() {
+        database = MarketConfigurationDatabase()
+        environment = baseEnvironment + database.register("[$BTC_MARKET,$SUI_MARKET]")
+        suiEnvironment = baseEnvironment + database.register("[$SUI_MARKET]")
+        invalidEnvironment = baseEnvironment + database.register("[]")
+    }
+
+    @AfterAll
+    fun stopDatabase() {
+        if (::database.isInitialized) database.close()
+    }
+
     @Test
     fun `두 실행 모드에서 선택한 SUI의 정의 정책 수량을 함께 보낸다`() {
         listOf(false, true).forEach { structured ->
@@ -28,13 +50,13 @@ class DevelopmentMarketSelectionTest {
     }
 
     @Test
-    fun `잘못된 JSON은 로컬과 환경 입력 모두에서 기본 BTC로 대체하지 않는다`() {
+    fun `DB의 잘못된 마켓 설정은 로컬과 환경 모드 모두에서 기본 BTC로 대체하지 않는다`() {
         listOf(false, true).forEach { structured ->
             val error =
                 assertFailsWith<IllegalArgumentException> {
-                    parseDevelopmentOrderInvocation(arguments(structured), environment + ("FUNDING_MARKETS_JSON" to "[]"))
+                    parseDevelopmentOrderInvocation(arguments(structured), invalidEnvironment)
                 }
-            assertTrue(error.message.orEmpty().contains("FUNDING_MARKETS_JSON"))
+            assertTrue(error.message.orEmpty().contains("마켓 배열"), error.message)
         }
     }
 
@@ -48,11 +70,9 @@ class DevelopmentMarketSelectionTest {
             )
             assertEquals(
                 "BTC-USDT",
-                parseDevelopmentOrderInvocation(arguments(structured), environment - "FUNDING_MARKETS_JSON")
+                parseDevelopmentOrderInvocation(arguments(structured), baseEnvironment)
                     .command.order.marketId.value,
             )
-            val suiOnly = environment.getValue("FUNDING_MARKETS_JSON").substringAfter("},\n")
-            val suiEnvironment = environment + ("FUNDING_MARKETS_JSON" to "[$suiOnly")
             assertFailsWith<IllegalArgumentException> { parseDevelopmentOrderInvocation(arguments(structured), suiEnvironment) }
             assertEquals(
                 "SUI-USDT",
@@ -103,18 +123,24 @@ class DevelopmentMarketSelectionTest {
         (if (structured) arrayOf("--cluster-env") else arrayOf("/tmp/market-selection", "19700")) +
             arrayOf("R1", "U1", "O1", side, "20000000", "25000000000", "L1", "2026-10-22T00:00:00Z")
 
-    private val environment =
+    private val baseEnvironment =
         mapOf(
             "FUNDING_RUN_ROOT" to "/tmp/market-selection",
             "FUNDING_HOST" to "127.0.0.1",
             "FUNDING_MEMBERS" to "0,127.0.0.1:19700,127.0.0.1:19701,127.0.0.1:19702,127.0.0.1:19703,127.0.0.1:19704",
             "FUNDING_RUN_ID" to "selection",
-            "FUNDING_MARKETS_JSON" to
-                """
-                [{"marketId":"BTC-USDT","baseAssetId":"BTC","quoteAssetId":"USDT","baseQuantityScale":8,
-                  "feePolicy":{"productType":"SPOT","feeTier":"NORMAL","scheduleVersion":1,"makerPartsPerMillion":0,"takerPartsPerMillion":0}},
-                 {"marketId":"SUI-USDT","baseAssetId":"SUI","quoteAssetId":"USDT","baseQuantityScale":9,
-                  "feePolicy":{"productType":"SPOT","feeTier":"NORMAL","scheduleVersion":2,"makerPartsPerMillion":0,"takerPartsPerMillion":0}}]
-                """.trimIndent(),
         )
+
+    companion object {
+        private val BTC_MARKET =
+            """
+            {"marketId":"BTC-USDT","baseAssetId":"BTC","quoteAssetId":"USDT","baseQuantityScale":8,
+              "feePolicy":{"productType":"SPOT","feeTier":"NORMAL","scheduleVersion":1,"makerPartsPerMillion":0,"takerPartsPerMillion":0}}
+            """.trimIndent()
+        private val SUI_MARKET =
+            """
+            {"marketId":"SUI-USDT","baseAssetId":"SUI","quoteAssetId":"USDT","baseQuantityScale":9,
+              "feePolicy":{"productType":"SPOT","feeTier":"NORMAL","scheduleVersion":2,"makerPartsPerMillion":0,"takerPartsPerMillion":0}}
+            """.trimIndent()
+    }
 }

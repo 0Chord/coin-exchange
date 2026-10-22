@@ -326,7 +326,7 @@ class DevelopmentFundingNodeTest {
                     "",
                     command().occurredAt.toString(),
                 ).apply {
-                    environment().remove("FUNDING_MARKETS_JSON")
+                    DEVELOPMENT_MARKET_ENVIRONMENT_KEYS.forEach { environment().remove(it) }
                 }.redirectErrorStream(true)
                     .redirectOutput(output.toFile())
                     .start()

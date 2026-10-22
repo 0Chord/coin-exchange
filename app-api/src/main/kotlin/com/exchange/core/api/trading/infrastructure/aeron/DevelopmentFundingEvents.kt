@@ -62,6 +62,8 @@ internal fun fundingReadyFields(
                 "clusterDirectory" to config.clusterDirectory.toString(),
                 "storageLevels" to node.storageLevels,
                 "markets" to fundingMarketFields(config.markets),
+                "marketConfigVersion" to config.markets.configurationVersion,
+                "marketConfigSha256" to config.markets.contentSha256,
             ),
     )
 
