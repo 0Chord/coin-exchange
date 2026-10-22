@@ -1,5 +1,6 @@
 package com.exchange.core.api.config
 
+import com.exchange.core.api.market.api.MarketConfigurationRequestConverter
 import com.exchange.core.api.market.application.MarketConfigurationUseCase
 import com.exchange.core.api.market.infrastructure.persistence.MarketConfigurationDatabaseSettings
 import com.exchange.core.api.market.infrastructure.persistence.PostgresMarketConfigurationStore
@@ -14,4 +15,7 @@ class MarketConfigurationAdminConfig {
     @Bean
     fun marketConfigurationUseCase(): MarketConfigurationUseCase =
         MarketConfigurationUseCase(PostgresMarketConfigurationStore(MarketConfigurationDatabaseSettings.from(System.getenv())))
+
+    @Bean
+    fun marketConfigurationRequestConverter(): MarketConfigurationRequestConverter = MarketConfigurationRequestConverter()
 }

@@ -49,6 +49,7 @@ class MarketConfigurationHttpTest {
         assertEquals(expected, json(created))
         val detail = server.get("/100")
         assertEquals(200, detail.statusCode())
+        assertEquals(setOf("configVersion", "sha256", "document", "createdAt"), json(detail).properties().map { it.key }.toSet())
         assertEquals(DOCUMENT, json(detail).path("document").asString())
         assertEquals(DOCUMENT_SHA256, json(detail).path("sha256").asString())
         Instant.parse(json(detail).path("createdAt").asString())
@@ -70,6 +71,16 @@ class MarketConfigurationHttpTest {
         assertEquals(200, server.put("10", DOCUMENT).statusCode())
         assertEquals(200, server.put("20", DOCUMENT).statusCode())
         val first = json(server.get("?beforeVersion=21&limit=1"))
+        assertEquals(setOf("items", "nextBeforeVersion"), first.properties().map { it.key }.toSet())
+        assertEquals(
+            setOf("configVersion", "sha256", "createdAt"),
+            first
+                .path("items")
+                .first()
+                .properties()
+                .map { it.key }
+                .toSet(),
+        )
         assertEquals(
             listOf(20L),
             first
@@ -99,6 +110,39 @@ class MarketConfigurationHttpTest {
         assertEquals(200, server.get("?beforeVersion=").statusCode())
         listOf("?limit=0", "?limit=101", "?limit=bad", "?beforeVersion=0", "?beforeVersion=9223372036854775808")
             .forEach { assertEquals(400, server.get(it).statusCode(), it) }
+    }
+
+    @Test
+    fun `정의하지 않은 조회 키는 무시하고 명시한 조회 조건만 사용한다`() {
+        assertEquals(200, server.put("700", DOCUMENT).statusCode())
+        assertEquals(200, server.put("701", DOCUMENT).statusCode())
+        val defaultPage = json(server.get(""))
+        val singleItemPage = json(server.get("?limit=1"))
+        assertTrue(defaultPage.path("items").size() >= 2)
+        assertEquals(1, singleItemPage.path("items").size())
+
+        listOf(
+            "?limit%5B0%5D=1",
+            "?beforeVersion%5B0%5D=1",
+            "?limit.value=1",
+            "?beforeVersion.value=1",
+            "?pageLimit%5B0%5D=1",
+            "?pageLimit=1",
+            "?%21limit=1",
+            "?%21beforeVersion=1",
+            "?_limit=1",
+            "?_beforeVersion=1",
+        ).forEach { suffix ->
+            val response = server.get(suffix)
+            assertEquals(200, response.statusCode(), suffix)
+            assertEquals(defaultPage, json(response), suffix)
+        }
+        val explicitLimit = server.get("?limit=1&limit%5B0%5D=1")
+        assertEquals(200, explicitLimit.statusCode())
+        assertEquals(singleItemPage, json(explicitLimit))
+        val arrayLimit = server.get("?limit%5B%5D=1")
+        assertEquals(200, arrayLimit.statusCode())
+        assertEquals(singleItemPage, json(arrayLimit))
     }
 
     @Test
@@ -170,6 +214,7 @@ class MarketConfigurationHttpTest {
                 assertEquals(400, response.statusCode(), version)
                 assertEquals("INVALID_INPUT", json(response).path("code").asString())
                 assertEquals("request", json(response).path("stage").asString())
+                assertEquals(setOf("code", "stage", "configVersion"), json(response).properties().map { it.key }.toSet())
             }
         }
         listOf("?beforeVersion=0", "?beforeVersion=-1", "?beforeVersion=bad", "?limit=0", "?limit=101", "?limit=bad")
@@ -178,6 +223,7 @@ class MarketConfigurationHttpTest {
                 assertEquals(400, response.statusCode(), suffix)
                 assertEquals("INVALID_INPUT", json(response).path("code").asString())
                 assertEquals("request", json(response).path("stage").asString())
+                assertEquals(setOf("code", "stage", "configVersion"), json(response).properties().map { it.key }.toSet())
             }
     }
 

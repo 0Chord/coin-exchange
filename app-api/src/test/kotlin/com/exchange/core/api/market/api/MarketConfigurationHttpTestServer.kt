@@ -35,7 +35,7 @@ fun main(args: Array<String>) {
 @Import(
     MarketConfigurationAdminConfig::class,
     MarketConfigurationController::class,
-    MarketConfigurationHttpExceptionHandler::class,
     ApiExceptionHandler::class,
+    MarketConfigurationHttpExceptionHandler::class,
 )
 class MarketConfigurationHttpTestApplication

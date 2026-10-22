@@ -1,57 +1,55 @@
 package com.exchange.core.api.common
 
-import com.exchange.core.api.market.application.MarketConfigurationUseCase
+import com.exchange.core.api.market.api.MarketConfigurationFailureResponse
+import com.exchange.core.api.market.application.MarketConfigurationError
+import com.exchange.core.api.market.application.MarketConfigurationException
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty
-import org.springframework.core.MethodParameter
-import org.springframework.http.HttpHeaders
-import org.springframework.http.HttpInputMessage
+import org.springframework.core.Ordered
+import org.springframework.core.annotation.Order
+import org.springframework.http.HttpStatus
 import org.springframework.http.MediaType
-import org.springframework.http.converter.HttpMessageConverter
+import org.springframework.http.ResponseEntity
+import org.springframework.http.converter.HttpMessageNotReadableException
 import org.springframework.web.HttpMediaTypeNotAcceptableException
+import org.springframework.web.bind.MethodArgumentNotValidException
 import org.springframework.web.bind.annotation.ControllerAdvice
+import org.springframework.web.bind.annotation.ExceptionHandler
 import org.springframework.web.bind.annotation.ModelAttribute
 import org.springframework.web.bind.annotation.RequestHeader
-import org.springframework.web.servlet.mvc.method.annotation.RequestBodyAdviceAdapter
-import java.io.InputStream
-import java.lang.reflect.Type
+import org.springframework.web.method.annotation.HandlerMethodValidationException
+import org.springframework.web.method.annotation.MethodArgumentTypeMismatchException
 
-/** 마켓 설정 API에서 본문 읽기 상한과 저장 전 응답 형식을 확인한다. */
+/** 마켓 설정 API의 응답 형식과 오류 응답을 변환한다. */
 @ControllerAdvice(basePackages = ["com.exchange.core.api.market.api"])
+@Order(Ordered.HIGHEST_PRECEDENCE)
 @ConditionalOnProperty(name = ["exchange.market-admin.enabled"], havingValue = "true")
-class MarketConfigurationHttpExceptionHandler : RequestBodyAdviceAdapter() {
-    override fun supports(
-        methodParameter: MethodParameter,
-        targetType: Type,
-        converterType: Class<out HttpMessageConverter<*>>,
-    ): Boolean = targetType == ByteArray::class.java
+class MarketConfigurationHttpExceptionHandler {
+    @ExceptionHandler(
+        HandlerMethodValidationException::class,
+        MethodArgumentNotValidException::class,
+        MethodArgumentTypeMismatchException::class,
+        HttpMessageNotReadableException::class,
+    )
+    fun invalidRequest(): ResponseEntity<MarketConfigurationFailureResponse> =
+        failure(MarketConfigurationException(MarketConfigurationError.INVALID_INPUT, "request"))
 
-    override fun beforeBodyRead(
-        inputMessage: HttpInputMessage,
-        parameter: MethodParameter,
-        targetType: Type,
-        converterType: Class<out HttpMessageConverter<*>>,
-    ): HttpInputMessage {
-        // Bean Validation은 변환 후에 실행되므로, 변환기에 넘기기 전에도 읽기 크기를 제한한다.
-        val document = inputMessage.body.readNBytes(MarketConfigurationUseCase.MAX_DOCUMENT_BYTES + 1)
-        val headers =
-            HttpHeaders().apply {
-                putAll(inputMessage.headers)
-                contentLength = document.size.toLong()
+    @ExceptionHandler(MarketConfigurationException::class)
+    fun failure(error: MarketConfigurationException): ResponseEntity<MarketConfigurationFailureResponse> {
+        val status =
+            when (error.code) {
+                MarketConfigurationError.INVALID_INPUT -> HttpStatus.BAD_REQUEST
+
+                MarketConfigurationError.CONTENT_CONFLICT -> HttpStatus.CONFLICT
+
+                MarketConfigurationError.NOT_FOUND -> HttpStatus.NOT_FOUND
+
+                MarketConfigurationError.REGISTRATION_FAILED,
+                MarketConfigurationError.RESULT_UNCONFIRMED,
+                MarketConfigurationError.LOOKUP_FAILED,
+                -> HttpStatus.SERVICE_UNAVAILABLE
             }
-        return object : HttpInputMessage {
-            override fun getBody(): InputStream = document.inputStream()
-
-            override fun getHeaders() = headers
-        }
+        return ResponseEntity.status(status).body(MarketConfigurationFailureResponse.from(error))
     }
-
-    override fun handleEmptyBody(
-        body: Any?,
-        inputMessage: HttpInputMessage,
-        parameter: MethodParameter,
-        targetType: Type,
-        converterType: Class<out HttpMessageConverter<*>>,
-    ): Any = ByteArray(0)
 
     @ModelAttribute
     fun requireJsonResponse(
