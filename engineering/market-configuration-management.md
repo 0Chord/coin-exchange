@@ -16,7 +16,7 @@ CLI / 관리자 PUT → 원문 검사 → 지정 버전에 저장·대조 → �
 
 **등록과 노드 적용은 별개다.** 등록은 노드 시작·실행 중 설정 변경·잔고 변경을 하지 않는다. 기존 버전의 수정·삭제 API도 없다. 적용하려면 별도로 노드를 시작할 때 등록 결과의 버전과 SHA-256을 지정한다.
 
-**검증 완료:** 새 제품 테스트 28개를 포함한 전체 1,237개가 실패·건너뛰기 없이 통과했다. 린트·빌드·필수 구조 검사와 별도 컨텍스트의 독립 리뷰를 마쳤다. PR은 아직 게시하지 않았다. 실행 방법과 각 검사의 근거는 아래에서 펼쳐 볼 수 있다.
+**로컬 검증 완료:** 새 제품 테스트 28개를 포함한 전체 1,237개가 실패·건너뛰기 없이 통과했다. 린트·빌드·필수 구조 검사와 별도 컨텍스트의 독립 리뷰를 마쳤다. 원격 CI·게시 상태는 연결 PR의 Checks와 본문에서 확인한다. 실행 방법과 각 검사의 근거는 아래에서 펼쳐 볼 수 있다.
 
 <details markdown="1">
 <summary>1. 실행 준비와 CLI 사용법</summary>
@@ -37,7 +37,7 @@ UTF-8 PostgreSQL에 기존 [V9 마이그레이션](../app-api/src/main/resources
 [{"marketId":"BTC-USDT","baseAssetId":"BTC","quoteAssetId":"USDT","baseQuantityScale":8,"feePolicy":{"productType":"SPOT","feeTier":"NORMAL","scheduleVersion":1,"makerPartsPerMillion":0,"takerPartsPerMillion":0}}]
 ```
 
-실제 입력 파일의 절대 경로로 바꿔 실행한다.
+실제 입력 파일의 절대 경로로 바꿔 실행한다. 아래 명령은 구현 당시 작업 폴더 기준이며, 다른 체크아웃에서는 각 `cd` 경로를 그 저장소의 절대 경로로 바꾼다.
 
 ```sh
 cd /Users/0chord/.codex/worktrees/issue118-market-registration/exchange-core
@@ -216,7 +216,7 @@ HTTP 검증은 MockMvc가 아니다. [테스트 서버](../app-api/src/test/kotl
 | [페이지·쿼리 한도][http-69] | 10·20번 등록 | limit 1로 다음 cursor 조회, 경계/잘못된 쿼리 | 정확한 버전 순서·원문 생략·마지막 cursor 뒤 빈 목록, 정상 200·오류 400 |
 | [인증이 본문보다 먼저][http-103] | 누락/오류/Basic/공백/중복/콤마 헤더, 인증 쿠키 | 잘못된 본문 PUT, GET, 본문 없이 헤더만 전송 | 401·Bearer 안내·쿠키 없음·정제 오류·0행, 소문자 bearer의 정상 요청은 200 |
 | [Content-Type 입력 오류][http-129] | 누락/text/plain/잘못된 형식/application/* 헤더와 유효 원문 | 각 PUT 후 JSON·JSON+UTF-8 형식 PUT | 오류 400·정확한 code/stage/version 및 세 필드만 존재·0행, 정상 200·최종 1행·원문 일치 |
-| [Accept 협상은 DB 처리 전][http-147] | 유효 원문·토큰, text/plain 및 q=0 조합 5개, 허용 형식 5개 | 거절 형식별 PUT→허용 형식별 PUT→거절 형식별 상세·목록 GET | 거절 PUT마다 406·0행, 허용 PUT마다 200, 두 GET 각각 406, 최종 1행·상세 원문 일치 |
+| [Accept 협상은 DB 처리 전][http-147] | 유효 원문·토큰, 거절 형식 6개(text/plain 1개·q=0 조합 5개), 허용 형식 5개 | 거절 형식별 PUT→허용 형식별 PUT→거절 형식별 상세·목록 GET | 거절 PUT마다 406·0행, 허용 PUT마다 200, 두 GET 각각 406, 최종 1행·상세 원문 일치 |
 | [바이트·버전 오류][http-174] | 최대 크기와 초과/손상/빈/잘못된 문서 | PUT·상세, 0/음수/문자/Long 초과 버전 | 최대 원문 일치, 오류 400·INVALID_INPUT·0행·정제 응답 |
 | [원문 조회 권한 실패][http-194] | 제한 DB 계정의 별도 서버 | PUT 후 GET | PUT 503 `REGISTRATION_FAILED/compare`·0행, GET 503 `LOOKUP_FAILED`, 응답·로그 비밀 비노출 |
 | [쓰기 연결 단절][http-220] | INSERT 뒤 해당 DB 연결을 끊는 테스트 trigger | PUT→trigger 제거→같은 PUT | 503 `RESULT_UNCONFIRMED/insert`, 정제 응답, 실제 0행, 복구 후 200 |
@@ -283,7 +283,7 @@ cd /Users/0chord/.codex/worktrees/issue118-market-registration/exchange-core
 
 전체 검사 도중 기존 Aeron 노드 테스트가 UDP 포트를 확보할 때 한 차례 `Address already in use`로 실패했다. 업무 처리 전의 포트 바인딩 실패였고, 정확한 점유 주체는 확인하지 못했다. 해당 기존 소스·검사를 변경하거나 제외하지 않고 단독 재실행과 위 전체 재실행에서 통과한 것을 확인했다.
 
-원본 실행 로그·모듈별 XML·독립 리뷰 보고서는 로컬 `issue118-implementation` 근거 폴더에 보관했다. 구현 폴더는 `/Users/0chord/.codex/worktrees/issue118-market-registration/exchange-core`, 브랜치는 `feat/market-configuration-registration/118`이다. 로컬 검증과 원격 CI는 별개이며, PR·원격 CI·게시 전 사용자 이해 확인은 아직 진행하지 않았다.
+원본 실행 로그·모듈별 XML·독립 리뷰 보고서는 로컬 `issue118-implementation` 근거 폴더에 보관했다. 구현 폴더는 `/Users/0chord/.codex/worktrees/issue118-market-registration/exchange-core`, 브랜치는 `feat/market-configuration-registration/118`이다. 이 문서는 로컬 검증 근거이며, 최신 게시 상태·원격 실행 결과는 연결 PR에서 확인한다. 설명·테스트·AI 리뷰를 사용자의 이해 확인이나 사람의 리뷰 승인으로 기록하지 않는다.
 
 설명한 범위는 새 제품 테스트 28개와 구조 검사 변경이다. 테스트 파일 내부 반복 입력도 모두 읽었다. 실제 COMMIT ACK 유실·commit 예외·CLI 출력 실패는 자동 재현하지 않았으며, 해당 분기는 코드 검토와 후속 장애 검증의 대상으로 남아 있다. 테스트 통과를 사용자 이해 완료·리뷰 승인·게시 승인으로 해석하지 않는다.
 
