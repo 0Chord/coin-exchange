@@ -52,4 +52,16 @@ Aeron 1.53.3의 `ConsensusModuleAgent.enterElection()`은 리더 heartbeat가 �
 
 이번 결과는 로컬 후보 코드의 단일 리더 프로세스 종료 사례다. 통합 브랜치의 원본이 그대로 이 검사를 통과한 것도, 모든 성공 응답 유실 0·운영 고가용성·무중단이 입증된 것도 아니다.
 
+## PR에서 다시 실행할 검사와 로컬 실험의 차이
+
+아래는 위 58개 관련 검사와 381개 구조 검사, 전체 린트를 다시 실행하는 명령이다. PR 브랜치를 체크아웃한 저장소 루트에서 JDK 25로 실행한다. 기존 실행 이후 변경한 것은 이 문서뿐이며 제품·테스트·빌드 코드는 `d7b8713`과 같다. 전체 애플리케이션 빌드·테스트의 새 결과는 PR CI에서 별도로 확인한다.
+
+```bash
+./gradlew -p . :app-api:test --tests '*DevelopmentFundingNodeTest' --tests '*DevelopmentFundingAdapterTest' --tests '*DevelopmentFundingClientTest' --tests '*DevelopmentFundingEventsTest' --tests '*DevelopmentOrderClientTest' --no-daemon --console=plain
+./gradlew -p . :architecture-tests:test :architecture-tests:verifyArchitectureReport --no-daemon --console=plain
+./gradlew -p . ktlintCheck --no-daemon --console=plain --continue
+```
+
+실제 리더 종료 3회는 저장소 밖 별도 실험 진입점·감독기와 보존 원본을 사용한 로컬 추가 검증이다. 그 도구·원본은 이 PR에 포함하지 않으며 위 회귀 테스트나 PR CI가 같은 리더 종료 실험을 자동 재실행하는 것은 아니다. 이 문서의 수용 기준·실행 ID·조건은 그 실험의 범위를 설명한다. 이번 PR의 직접 재실행 가능한 회귀 근거는 실제 노드의 Consensus 오류 핸들러에 WARN·비WARN을 주입하는 테스트다.
+
 참고: [Aeron Cluster 오류의 심각도](https://aeron.io/docs/aeron-cluster/cluster-errors/), Aeron 1.53.3의 `ConsensusModuleAgent.java`, `ClusterEvent.java`, `ConsensusModule.Context`.
