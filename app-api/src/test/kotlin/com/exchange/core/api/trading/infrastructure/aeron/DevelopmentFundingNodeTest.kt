@@ -9,6 +9,8 @@ import com.exchange.core.common.UserId
 import com.exchange.core.ledger.OpeningBalance
 import io.aeron.Aeron
 import io.aeron.cluster.ClusterControl
+import io.aeron.cluster.ConsensusModule
+import io.aeron.cluster.client.ClusterEvent
 import io.aeron.driver.MediaDriver
 import io.aeron.exceptions.AeronEvent
 import io.aeron.exceptions.AeronException
@@ -75,6 +77,58 @@ class DevelopmentFundingNodeTest {
                 driver(node).context().errorHandler().onError(failure)
 
                 assertTrue(node.awaitClosed(5_000), "경고가 아닌 오류는 런타임을 닫아야 한다")
+                assertTrue(node.isClosed)
+                assertSame(failure, node.error)
+            }
+        }
+    }
+
+    @Test
+    fun `Consensus WARN은 실제 로그에 남기고 다음 새 자금 준비를 처리한다`() {
+        val config = config()
+        DevelopmentFundingNode.start(config).use { node ->
+            DevelopmentFundingClient(config).use { client ->
+                val first = assertIs<FundingRequestOutcome.Confirmed>(client.request(command()))
+                assertFalse(assertIs<DevelopmentBalanceResultPayload.Prepared>(first.result).result.alreadyPrepared)
+                assertEquals(1, assertNotNull(node.observation?.snapshot).preparations.size)
+                val context = consensus(node).context()
+                val warning = ClusterEvent("leader heartbeat timeout")
+
+                context.countedErrorHandler().onError(warning)
+
+                assertNull(node.error)
+                assertFalse(node.isClosed)
+                val recorded = mutableListOf<String>()
+                ErrorLogReader.read(context.errorLog().buffer()) { _, _, _, encoded -> recorded.add(encoded) }
+                assertTrue(recorded.any { it.contains("WARN - leader heartbeat timeout") })
+                val nextCommand = command("P2", "U2", "L2")
+                val next = assertIs<FundingRequestOutcome.Confirmed>(client.request(nextCommand))
+                val prepared = assertIs<DevelopmentBalanceResultPayload.Prepared>(next.result).result
+                assertFalse(prepared.alreadyPrepared)
+                assertEquals(nextCommand.opening, prepared.opening)
+                assertEquals("L2", prepared.ledgerTransactionId)
+                assertEquals(nextCommand.occurredAt, prepared.occurredAt)
+                val snapshot = assertNotNull(node.observation?.snapshot)
+                assertEquals(2, snapshot.preparations.size)
+                assertEquals(listOf("U1", "U2"), snapshot.balances.map { it.userId.value })
+                assertEquals(listOf(1_000_000_000L, 1_000_000_000L), snapshot.balances.map { it.available.value })
+                assertNull(node.error)
+                assertFalse(node.isClosed)
+            }
+        }
+    }
+
+    @Test
+    fun `Consensus ERROR FATAL 일반 예외는 실제 노드를 중단한다`() {
+        listOf(
+            ClusterEvent("테스트 ERROR", AeronException.Category.ERROR),
+            ClusterEvent("테스트 FATAL", AeronException.Category.FATAL),
+            IllegalStateException("WARN 문자열이 있어도 일반 예외는 중단해야 한다"),
+        ).forEach { failure ->
+            DevelopmentFundingNode.start(config()).use { node ->
+                consensus(node).context().countedErrorHandler().onError(failure)
+
+                assertTrue(node.awaitClosed(5_000), "Consensus 경고가 아닌 오류는 런타임을 닫아야 한다")
                 assertTrue(node.isClosed)
                 assertSame(failure, node.error)
             }
@@ -443,6 +497,12 @@ class DevelopmentFundingNodeTest {
     private fun driver(node: DevelopmentFundingNode): MediaDriver {
         val field = DevelopmentFundingNode::class.java.getDeclaredField("driver").apply { isAccessible = true }
         return field.get(node) as MediaDriver
+    }
+
+    /** 실제 Consensus에 설치된 counted 핸들러와 오류 로그만 조회한다. */
+    private fun consensus(node: DevelopmentFundingNode): ConsensusModule {
+        val field = DevelopmentFundingNode::class.java.getDeclaredField("consensus").apply { isAccessible = true }
+        return field.get(node) as ConsensusModule
     }
 
     private fun command(
