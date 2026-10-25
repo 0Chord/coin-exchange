@@ -2,9 +2,36 @@
 
 준비된 접수 명령과 작은 승인·거절 응답을 Protobuf 바이트로 바꿨다가 같은 값으로 읽는다.
 
+## #128 시장별 가격·수량 단위 전송
+
+`AdmissionCommand`에 `optional int64 price_tick = 22`, `optional int64 quantity_step = 23`을 추가한다. 새 송신자는 두 값을 항상 쓴다. 가격·수량의 정수 의미와 헤더의 schema 87/version 2, 기존 필드 1–21, 승인·거절 응답의 바이트 계약은 유지한다. 체결·정산을 실행하는 전송 명령은 추가하지 않는다.
+
+| 수신한 단위 필드 | 결과 |
+| --- | --- |
+| 둘 다 있음 | 두 값이 양수이고 `priceTick × quantityStep`이 `10^baseAssetScale`로 정확히 나누어지는 `MarketDefinition`으로 복원 |
+| 둘 다 없음 | 단위 추가 전 v2 명령으로 읽고 `priceTick=1`, `quantityStep=10^baseAssetScale`로 복원 |
+| 하나만 있음 | `AdmissionMessageException`, 접수 코어 진입 전 중단 |
+| 0·음수·서로 호환되지 않는 두 값 | 도메인 생성 불변식 위반을 변환 오류로 처리, 접수 코어 진입 전 중단 |
+
+곱의 호환성 검사는 도메인의 `BigInteger` 계산을 재사용하므로 두 양수 `Long`의 곱이 `Long` 범위를 넘는다는 이유로 유효한 단위를 잃지 않는다. 단위 자체가 유효해도 주문 가격·수량이 해당 단위의 배수가 아니면 접수 코어가 기존 `UNREPRESENTABLE_RESERVATION` 사유로 거절한다. 새 거절 사유와 정산 계산의 반올림 규칙은 추가하지 않는다. READY 목록·접수 후보·최초 요청 관찰과 기록 입력의 의미 비교에도 두 단위를 포함한다.
+
+이 변경의 읽기 호환성은 **새 수신자가 단위 필드 없는 이전 v2 명령을 읽는 범위**다. 이전 수신자는 필드 22·23을 미지 필드로 거절하므로 새 송신자와의 혼합 운영을 보장하지 않는다. 미지 필드를 무시하도록 검사를 약화하지 않으며, 모든 노드를 같은 빌드로 고정해 실행한다. 헤더 버전 2 유지와 Protobuf 필드 추가만으로 rolling deployment·롤백·로그 재생 호환성 전체를 보장하지 않는다.
+
+| 검증 입력 → 실행 → 실제 확인문 | 근거 |
+| --- | --- |
+| 이전 65바이트 고정 본문 → 새 디코더 → 기본 단위를 포함한 원본 명령과 같음 | `AdmissionCommandCodecTest`의 이전 고정 v2 명령 검사. 새 생성 코드로 이전 바이트를 재생성하지 않음 |
+| 단위를 명시한 71바이트 고정 본문 → 인코더·디코더 양방향 대조 → 바이트 전체와 명령 전체가 같음 | 같은 테스트의 독립 고정 바이트 검사. 태그 22=`b0 01`, 23=`b8 01` |
+| 이전·새 주문 golden과 자금 golden → 종류별 디코더 대조 → 다른 종류는 모두 거절, 이전 주문을 읽은 새 송신 결과는 단위를 명시한 79바이트 고정 프레임과 같음 | `DevelopmentBalanceCodecTest`의 종류 경계 검사. 이전 73바이트 주문 프레임과 새 79바이트 프레임을 각각 고정해 보존 |
+| 사용자 단위·scale 0/8/18의 이전 명령·큰 호환 단위 → 왕복 또는 읽기 → 값·presence·기본값이 같음 | `AdmissionCommandCodecTest`의 단위 보존·이전 기본값·큰 단위 검사 |
+| 단일 필드 누락·0·음수·큰 비호환 곱 → 디코더 → 변환 예외·코어 호출 0·기존 snapshot 동일 | `AdmissionMessageBoundaryTest`의 누락·숫자 경계 검사 |
+| 두 단위만 바뀐 문맥 → 실제 노드에 신규 요청 → 사유 9·자금과 요청 기록 유지, 고친 요청은 승인 | `DevelopmentOrderNodeTest`, `DevelopmentMultiMarketOrderNodeTest`의 설정 불일치 검사 |
+| 단위만 다른 READY·후보·최초 요청·기록 입력 → 독립 기대값 비교 → 불일치 검출 | `DevelopmentFundingEventsTest`, `FundingReplicationComparisonTest`, `OrderReplicationComparisonTest`, `RecordedInputComparisonTest` |
+
+위 표는 추가·수정한 검사의 의미다. 이 작업 단위에서는 병렬 변경 중인 빌드를 실행하지 않았으며, 실행 결과와 독립 완료 리뷰는 전체 변경을 모은 검증 기록에서 확인한다. 아래 #94 문서화와 최초 코덱 실행 기록은 당시 범위를 보존한 이력이다.
+
 <!-- compatibility87:start -->
 
-## #94 확정 범위 · 현재 변환기 마무리와 변경 규칙 문서화
+## #94 당시 확정 범위 · 변환기 마무리와 변경 규칙 문서화
 
 **확정:** 현재 Protobuf 변환기와 기존 검증을 기준으로 #94를 마무리한다. 앞으로 메시지를 바꾸는 절차를 문서에 남긴다. metadata·새 메시지 버전·구신 버전 호환 기능이나 테스트를 지금 추가하지 않는다.
 
@@ -21,7 +48,7 @@ SBE로 만들던 변환기를 Protobuf로 바꾼 작업이다. 이전 SBE 메시
 
 ### 현재 호환 범위를 정확히 기록한다
 
-문서가 따르는 제품 구현 기준은 `004e7765cfe333baac4e8940b2b5769371427894`다. 이 문서 보완에서는 제품 코드를 바꾸지 않는다. 현재 schema 87/version 2만 읽고, 명령·승인·거절·부족 상세의 미지 필드와 미지원 enum은 거절한다. `optional` 필드를 추가했다고 현재 수신자가 자동으로 허용하는 것은 아니다. [헤더 검사](../app-api/src/main/kotlin/com/exchange/core/api/trading/infrastructure/codec/AdmissionMessageFormat.kt#L110) · [미지 필드 검사](../app-api/src/main/kotlin/com/exchange/core/api/trading/infrastructure/codec/AdmissionMessageFormat.kt#L73)
+#94 문서화가 따랐던 제품 구현 기준은 `004e7765cfe333baac4e8940b2b5769371427894`다. 당시 문서 보완에서는 제품 코드를 바꾸지 않았다. schema 87/version 2만 읽고 명령·승인·거절·부족 상세의 미지 필드와 미지원 enum을 거절하는 규칙은 현재도 유지한다. `optional` 필드를 추가했다고 이전 수신자가 자동으로 허용하는 것은 아니다. #128의 구체적인 필드 추가·이전 명령 읽기 범위는 위 절을 따른다. [헤더 검사](../app-api/src/main/kotlin/com/exchange/core/api/trading/infrastructure/codec/AdmissionMessageFormat.kt#L110) · [미지 필드 검사](../app-api/src/main/kotlin/com/exchange/core/api/trading/infrastructure/codec/AdmissionMessageFormat.kt#L73)
 
 가격·수량·금액·순번은 기존 정수 의미를 유지한다. 누락한 필수값을 0이나 빈 문자열로 채우지 않는다. 명시한 수량 0은 현재 코어의 업무 거절 대상으로 보존하고, 수량 누락은 변환 오류로 구분한다.
 
@@ -105,7 +132,7 @@ Protobuf 변경 · 실행 검증 완료 · 독립 리뷰 완료 · 사람의 이
 
 | 본문 | 코덱에서 반드시 존재해야 하는 값 |
 | --- | --- |
-| AdmissionCommand | 필드 1–21 전부: side·orderType·timeInForce·price·quantity·scale·productType·feeTier·scheduleVersion·maker/taker ppm·초/나노초·식별자 8개 |
+| AdmissionCommand | 필드 1–21 전부: side·orderType·timeInForce·price·quantity·scale·productType·feeTier·scheduleVersion·maker/taker ppm·초/나노초·식별자 8개. 필드 22·23은 함께 존재하거나 이전 v2 명령에서 함께 생략 |
 | AdmissionAccepted | sequence와 requestId·userId·marketId·orderId 5개 |
 | AdmissionRejected | reason과 requestId·userId·marketId·orderId 5개 |
 | InsufficientBalance | 상세가 있다면 assetId·available·required·shortfall 4개 |
@@ -160,7 +187,7 @@ Protobuf 변경 · 실행 검증 완료 · 독립 리뷰 완료 · 사람의 이
 
 **스키마에서 독립적으로 정한 바이트와 양방향으로 대조한다** · [테스트](../app-api/src/test/kotlin/com/exchange/core/api/trading/infrastructure/codec/AdmissionCommandCodecTest.kt#L48)
 
-- **Given:** 직접 적은 73바이트 프레임: 본문65·명령1·스키마87·버전2, 명시한 scale0과 초·나노초가 있는 명령.
+- **Given:** 직접 적은 79바이트 프레임: 본문71·명령1·스키마87·버전2, 명시한 scale0·두 단위1과 초·나노초가 있는 명령. 이전 본문65 프레임은 별도 읽기 검사로 보존한다.
 - **When:** 예시 명령을 encode하고 고정 예시 바이트를 decode한다.
 - **Then:** 바이트 전체와 복원 명령 전체가 각각 예시와 일치한다.
 
@@ -337,8 +364,8 @@ Protobuf 변경 · 실행 검증 완료 · 독립 리뷰 완료 · 사람의 이
 
 **명령의 필수 필드 하나라도 누락하면 0이나 빈 문자열로 채우지 않는다** · [테스트](../app-api/src/test/kotlin/com/exchange/core/api/trading/infrastructure/codec/AdmissionMessageBoundaryTest.kt#L133)
 
-- **Given:** 필드 1–21을 모두 채운 명령과, 수량·scale·초·나노초 0 및 빈 요청·원장 ID를 명시한 명령.
-- **When:** 필드를 하나씩 지운 21개 프레임과 빈 본문을 읽고, 이어서 명시한 기본값이 있는 프레임을 읽는다.
+- **Given:** 필드 1–23을 모두 채운 명령과, 수량·scale·초·나노초 0 및 빈 요청·원장 ID를 명시한 명령.
+- **When:** 필드를 하나씩 지운 23개 프레임과 빈 본문을 읽고, 이어서 명시한 기본값이 있는 프레임을 읽는다. 단위 두 필드를 함께 지운 이전 명령은 별도 검사에서 읽는다.
 - **Then:** 누락과 빈 본문은 공통 실패 관측을 만족한다. 명시한 수량 0·scale 0·Instant.EPOCH·빈 요청/원장 ID는 그대로다.
 
 확인문: [assertEquals L135](../app-api/src/test/kotlin/com/exchange/core/api/trading/infrastructure/codec/AdmissionMessageBoundaryTest.kt#L135), [assertCommandRejected L138](../app-api/src/test/kotlin/com/exchange/core/api/trading/infrastructure/codec/AdmissionMessageBoundaryTest.kt#L138), [assertCommandRejected L140](../app-api/src/test/kotlin/com/exchange/core/api/trading/infrastructure/codec/AdmissionMessageBoundaryTest.kt#L140), [assertEquals L154](../app-api/src/test/kotlin/com/exchange/core/api/trading/infrastructure/codec/AdmissionMessageBoundaryTest.kt#L154), [assertEquals L155](../app-api/src/test/kotlin/com/exchange/core/api/trading/infrastructure/codec/AdmissionMessageBoundaryTest.kt#L155), [assertEquals L156](../app-api/src/test/kotlin/com/exchange/core/api/trading/infrastructure/codec/AdmissionMessageBoundaryTest.kt#L156), [assertEquals L157](../app-api/src/test/kotlin/com/exchange/core/api/trading/infrastructure/codec/AdmissionMessageBoundaryTest.kt#L157), [assertEquals L158](../app-api/src/test/kotlin/com/exchange/core/api/trading/infrastructure/codec/AdmissionMessageBoundaryTest.kt#L158)
@@ -378,8 +405,8 @@ Protobuf 변경 · 실행 검증 완료 · 독립 리뷰 완료 · 사람의 이
 **Long 최대 값과 Instant 양 끝 및 수치 상한은 손실이나 NULL 대체 없이 왕복한다** · [테스트](../app-api/src/test/kotlin/com/exchange/core/api/trading/infrastructure/codec/AdmissionMessageBoundaryTest.kt#L255)
 
 - **Given:** SELL 최대 가격/수량·버전Long.MAX_VALUE, scale0/18, ppm0/100만, Instant.MIN/MAX와 음수 초. BTC잔고도Long.MAX_VALUE다.
-- **When:** 시각 경계 명령들을 왕복하고, scale0·시각EPOCH의 복원 명령을 실제 코어에 적용한다.
-- **Then:** 각 명령 전체가 같고, 실제 SELL 승인의 주문·예약액Long.MAX_VALUE와 BTC사용 가능0/예약Long.MAX_VALUE 목록이 일치한다. USDT 항목은 없다.
+- **When:** 시각 경계와 scale0 명령을 왕복하고, scale0의 최대 가격·수량은 요청 ID 없는 내부 접수에 넣는다. 이어 가격1·최대 수량인 대조 명령을 왕복해 실제 코어에 넣는다.
+- **Then:** 각 명령 전체가 같다. 최대 가격×최대 수량의 quote 대금은 `UNREPRESENTABLE_RESERVATION`으로 거절되고 snapshot 전체가 유지된다. 가격1 대조 명령은 승인되며 주문·예약액Long.MAX_VALUE와 BTC사용 가능0/예약Long.MAX_VALUE 목록이 일치한다. USDT 항목은 없다.
 
 확인문: [assertEquals L270](../app-api/src/test/kotlin/com/exchange/core/api/trading/infrastructure/codec/AdmissionMessageBoundaryTest.kt#L270), [assertEquals L274](../app-api/src/test/kotlin/com/exchange/core/api/trading/infrastructure/codec/AdmissionMessageBoundaryTest.kt#L274), [assertIs L281](../app-api/src/test/kotlin/com/exchange/core/api/trading/infrastructure/codec/AdmissionMessageBoundaryTest.kt#L281), [assertEquals L282](../app-api/src/test/kotlin/com/exchange/core/api/trading/infrastructure/codec/AdmissionMessageBoundaryTest.kt#L282), [assertEquals L283](../app-api/src/test/kotlin/com/exchange/core/api/trading/infrastructure/codec/AdmissionMessageBoundaryTest.kt#L283), [assertEquals L284](../app-api/src/test/kotlin/com/exchange/core/api/trading/infrastructure/codec/AdmissionMessageBoundaryTest.kt#L284)
 

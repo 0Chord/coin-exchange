@@ -132,7 +132,7 @@ class AdmissionMessageBoundaryTest {
     @Test
     fun `명령의 필수 필드 하나라도 누락하면 0이나 빈 문자열로 채우지 않는다`() {
         val original = wireCommandBuilder().build()
-        assertEquals((1..21).toList(), original.descriptorForType.fields.map { it.number })
+        assertEquals((1..23).toList(), original.descriptorForType.fields.map { it.number })
         original.descriptorForType.fields.forEach { field ->
             val missing = original.toBuilder().clearField(field).build()
             assertCommandRejected("누락 ${field.name}", protobufFrame(1, missing.toByteArray()))
@@ -167,6 +167,13 @@ class AdmissionMessageBoundaryTest {
                 "수량 -1" to wireCommandBuilder().setQuantity(-1),
                 "scale 19" to wireCommandBuilder().setBaseAssetScale(19),
                 "scale -1" to wireCommandBuilder().setBaseAssetScale(-1),
+                "가격 단위 0" to wireCommandBuilder().setPriceTick(0),
+                "가격 단위 -1" to wireCommandBuilder().setPriceTick(-1),
+                "수량 단위 0" to wireCommandBuilder().setQuantityStep(0),
+                "수량 단위 -1" to wireCommandBuilder().setQuantityStep(-1),
+                "scale과 나누어떨어지지 않는 단위" to wireCommandBuilder().setPriceTick(3).setQuantityStep(2),
+                "Long 곱 범위를 넘지만 호환되지 않는 단위" to
+                    wireCommandBuilder().setBaseAssetScale(18).setPriceTick(Long.MAX_VALUE).setQuantityStep(Long.MAX_VALUE),
                 "정책 버전 0" to wireCommandBuilder().setScheduleVersion(0),
                 "정책 버전 -1" to wireCommandBuilder().setScheduleVersion(-1),
                 "maker -1ppm" to wireCommandBuilder().setMakerPpm(-1),
@@ -257,7 +264,7 @@ class AdmissionMessageBoundaryTest {
         val maximum =
             original.copy(
                 order = original.order.copy(side = Side.SELL, price = Price(Long.MAX_VALUE), quantity = Quantity(Long.MAX_VALUE)),
-                market = original.market.copy(baseAssetScale = 18),
+                market = original.market.copy(baseAssetScale = 18, quantityStep = 1_000_000_000_000_000_000L),
                 feePolicySnapshot =
                     original.feePolicySnapshot.copy(
                         scheduleVersion = Long.MAX_VALUE,
@@ -269,7 +276,7 @@ class AdmissionMessageBoundaryTest {
             val command = maximum.copy(occurredAt = time)
             assertEquals(command, commands.decode(commands.encode(command)), "시각 $time")
         }
-        val zeroScale = maximum.copy(market = maximum.market.copy(baseAssetScale = 0), occurredAt = Instant.EPOCH)
+        val zeroScale = maximum.copy(market = maximum.market.copy(baseAssetScale = 0, quantityStep = 1), occurredAt = Instant.EPOCH)
         val decoded = commands.decode(commands.encode(zeroScale))
         assertEquals(zeroScale, decoded)
 
@@ -278,13 +285,31 @@ class AdmissionMessageBoundaryTest {
                 listOf(Balance(UserId("user-1"), AssetId("BTC"), Amount(Long.MAX_VALUE), Amount.ZERO)),
                 admissionCalculator(),
             )
-        val accepted = assertIs<OrderAdmissionState.Result.Accepted>(admit(state, decoded))
-        assertEquals(zeroScale.order, accepted.record.candidate.order)
+        // 전송은 최대 정수를 보존하지만, quote 대금 MAX × MAX는 접수 시 표현할 수 없다.
+        // 요청 ID 없는 내부 접수 경계로 확인하므로 거절 요청 기록도 추가하지 않는다.
+        val before = state.snapshot()
+        val rejected =
+            assertIs<OrderAdmissionState.Result.Rejected>(
+                state.admit(
+                    decoded.order,
+                    decoded.market,
+                    decoded.feePolicySnapshot,
+                    decoded.ledgerTransactionId,
+                    decoded.occurredAt,
+                ),
+            )
+        assertEquals(OrderAdmissionResult.Reason.UNREPRESENTABLE_RESERVATION, rejected.reason)
+        assertEquals(before, state.snapshot())
+
+        // 가격 1이면 quote 대금도 MAX이므로 최대 base 수량의 예약을 승인할 수 있다.
+        val representable = zeroScale.copy(order = zeroScale.order.copy(price = Price(1)))
+        val accepted = assertIs<OrderAdmissionState.Result.Accepted>(admit(state, commands.decode(commands.encode(representable))))
+        assertEquals(representable.order, accepted.record.candidate.order)
         assertEquals(Amount(Long.MAX_VALUE), accepted.record.candidate.reservation.reservedAmount)
         assertEquals(
             listOf(Balance(UserId("user-1"), AssetId("BTC"), Amount.ZERO, Amount(Long.MAX_VALUE))),
             state.snapshot().balances,
-            "SELL은 최대 가격과 수량의 곱을 계산하지 않고 BTC 수량만 예약하며 USDT 항목을 만들지 않는다",
+            "전체 quote 대금이 표현 가능한 SELL은 최대 BTC 수량만 예약하며 USDT 항목을 만들지 않는다",
         )
     }
 

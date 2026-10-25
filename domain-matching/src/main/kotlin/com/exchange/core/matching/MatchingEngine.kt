@@ -7,6 +7,7 @@ import com.exchange.core.common.Quantity
 import com.exchange.core.order.OrderType
 import com.exchange.core.order.Side
 import com.exchange.core.order.TimeInForce
+import java.util.Collections
 
 /**
  * LIMIT/GTC 매칭 상태의 소유자. 한 실행자가 같은 마켓의 명령을 순차 호출해야 한다.
@@ -27,6 +28,31 @@ class MatchingEngine {
             is SubmitOrderCommand -> apply(prepareSubmit(command))
             is CancelOrderCommand -> processCancel(command)
         }
+
+    /** 매수 가격 우선·매도 가격 우선, 같은 가격 FIFO 순서의 현재 주문 값 복사본. */
+    fun restingOrders(marketId: MarketId): List<RestingOrderSnapshot> {
+        val book = orderBooks[marketId]
+        val orders =
+            if (book == null) {
+                emptyList()
+            } else {
+                (book.oppositeOrders(Side.SELL) + book.oppositeOrders(Side.BUY))
+                    .map { order ->
+                        RestingOrderSnapshot(
+                            order.orderId,
+                            order.userId,
+                            order.side,
+                            order.price,
+                            order.originalQuantity,
+                            order.remainingQuantity,
+                        )
+                    }.toList()
+            }
+        return Collections.unmodifiableList(orders)
+    }
+
+    /** 조회만으로 없는 마켓의 주문장이나 순번을 만들지 않는다. */
+    fun lastEngineSequence(marketId: MarketId): Long = lastSequence(marketId)
 
     /** 가격·FIFO 순으로 읽기만 한다. 후보를 버려도 별도 해제 작업이 필요 없다. */
     fun prepareSubmit(command: SubmitOrderCommand): SubmitOrderPlan {

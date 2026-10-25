@@ -85,6 +85,9 @@ class OrderFillSettlementCalculator(
         require(market.marketId == reservation.marketId) {
             "reservation market must match settlement market"
         }
+        market.requireOrderUnits(reservation.limitPrice, reservation.initialQuantity)
+        market.requireOrderUnits(reservation.limitPrice, reservation.remainingQuantity)
+        market.requireOrderUnits(executionPrice, filledQuantity)
 
         return when (reservation.side) {
             Side.BUY -> {

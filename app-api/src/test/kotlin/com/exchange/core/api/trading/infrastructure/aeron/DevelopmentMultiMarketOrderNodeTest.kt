@@ -52,9 +52,11 @@ class DevelopmentMultiMarketOrderNodeTest {
                     """
                     [
                       {"marketId":"BTC-USDT","baseAssetId":"BTC","quoteAssetId":"USDT","baseQuantityScale":8,
+                       "priceTick":1,"quantityStep":100000000,
                        "feePolicy":{"productType":"SPOT","feeTier":"NORMAL","scheduleVersion":1,
                                     "makerPartsPerMillion":0,"takerPartsPerMillion":0}},
                       {"marketId":"SUI-USDT","baseAssetId":"SUI","quoteAssetId":"USDT","baseQuantityScale":9,
+                       "priceTick":1,"quantityStep":1000000000,
                        "feePolicy":{"productType":"SPOT","feeTier":"NORMAL","scheduleVersion":2,
                                     "makerPartsPerMillion":0,"takerPartsPerMillion":0}}
                     ]
@@ -130,12 +132,12 @@ class DevelopmentMultiMarketOrderNodeTest {
     }
 
     @Test
-    fun `신규 SUI 문맥 열 필드의 불일치는 기록 없이 거절하고 고친 같은 요청을 접수한다`() {
+    fun `신규 SUI 문맥의 불일치는 기록 없이 거절하고 고친 같은 요청을 접수한다`() {
         DevelopmentFundingNode.start(config()).use { node ->
             prepare(node)
             val prototype = order(SUI, "R-SUI", "O-SUI", price = 20_000_000, quantity = 1_000_000_000)
             val mismatches = suiContextChanges(prototype)
-            assertEquals(10, mismatches.size)
+            assertEquals(12, mismatches.size)
 
             mismatches.forEachIndexed { index, (field, mismatch) ->
                 assertNotEquals(prototype, mismatch, "$field 변형은 SUI 정상값과 달라야 합니다")
@@ -429,6 +431,8 @@ class DevelopmentMultiMarketOrderNodeTest {
             "기준 자산" to command.copy(market = command.market.copy(baseAssetId = AssetId("BTC"))),
             "표시 자산" to command.copy(market = command.market.copy(quoteAssetId = AssetId("KRW"))),
             "수량 스케일" to command.copy(market = command.market.copy(baseAssetScale = 8)),
+            "가격 단위" to command.copy(market = command.market.copy(priceTick = 2)),
+            "수량 단위" to command.copy(market = command.market.copy(quantityStep = 2_000_000_000)),
             "상품" to command.copy(feePolicySnapshot = command.feePolicySnapshot.copy(productType = FeeProductType.PERPETUAL_FUTURES)),
             "수수료 등급" to command.copy(feePolicySnapshot = command.feePolicySnapshot.copy(feeTier = FeeTier.VIP)),
             "수수료 버전" to command.copy(feePolicySnapshot = command.feePolicySnapshot.copy(scheduleVersion = 1)),

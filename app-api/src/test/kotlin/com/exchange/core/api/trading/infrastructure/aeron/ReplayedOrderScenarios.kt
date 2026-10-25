@@ -239,7 +239,14 @@ private fun replayOrderFields(): Map<String, Any?> =
     )
 
 private fun replayMarket(): Map<String, Any?> =
-    mapOf("marketId" to "BTC-USDT", "baseAssetId" to "BTC", "quoteAssetId" to "USDT", "baseQuantityScale" to 8)
+    mapOf(
+        "marketId" to "BTC-USDT",
+        "baseAssetId" to "BTC",
+        "quoteAssetId" to "USDT",
+        "baseQuantityScale" to 8,
+        "priceTick" to 1L,
+        "quantityStep" to 100_000_000L,
+    )
 
 private fun replayPolicy(): Map<String, Any?> =
     mapOf("productType" to "SPOT", "feeTier" to "NORMAL", "scheduleVersion" to 1, "makerPartsPerMillion" to 0, "takerPartsPerMillion" to 0)

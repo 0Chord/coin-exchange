@@ -182,7 +182,7 @@ class OrderSettlementCalculator(
         }
     }
 
-    private fun validateReservation(
+    internal fun validateReservation(
         market: MarketDefinition,
         reservation: OrderReservation,
     ) {

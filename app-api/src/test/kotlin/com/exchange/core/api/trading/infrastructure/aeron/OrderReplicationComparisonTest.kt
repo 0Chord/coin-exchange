@@ -785,6 +785,8 @@ class OrderReplicationComparisonTest {
             Mutation("$root/baseAssetId", "ETH"),
             Mutation("$root/quoteAssetId", "KRW"),
             Mutation("$root/baseQuantityScale", 6L),
+            Mutation("$root/priceTick", 2L),
+            Mutation("$root/quantityStep", 200_000_000L),
         )
 
     private fun policyMutations(root: String): List<Mutation> =

@@ -57,6 +57,8 @@ class DevelopmentFundingEventsTest {
                 "baseAssetId" to "SUI",
                 "quoteAssetId" to "USDT",
                 "baseQuantityScale" to 9,
+                "priceTick" to 1L,
+                "quantityStep" to 1_000_000_000L,
                 "feePolicy" to (expectedPolicy() + ("scheduleVersion" to 2)),
             )
         assertEquals(
@@ -64,6 +66,22 @@ class DevelopmentFundingEventsTest {
             tree(fundingMarketFields(markets)),
         )
         assertEquals(fundingMarketFields(DevelopmentMarketRegistry(listOf(btc, sui))), fundingMarketFields(markets))
+    }
+
+    @Test
+    fun `시장별 단위는 READY와 접수 후보 및 원본 요청의 전체 관찰에 남는다`() {
+        val market = DevelopmentMarketContext.BTC_USDT.market.copy(priceTick = 100, quantityStep = 1_000_000)
+        val context = DevelopmentMarketContext.BTC_USDT.copy(market = market)
+        val expected = expectedMarket() + mapOf("priceTick" to 100L, "quantityStep" to 1_000_000L)
+
+        assertEquals(
+            tree(listOf(expected + ("feePolicy" to expectedPolicy()))),
+            tree(fundingMarketFields(DevelopmentMarketRegistry(listOf(context)))),
+        )
+        val event = applyOrder(preparedState(), command().copy(market = market), 256)
+
+        assertEquals(tree(expected), event.at("/state/pendingOrders/0/candidate/market"))
+        assertEquals(tree(expected), event.at("/state/requests/0/market"))
     }
 
     @Test
@@ -278,7 +296,14 @@ class DevelopmentFundingEventsTest {
     ): Map<String, Any> = mapOf("userId" to "U1", "assetId" to asset, "available" to available, "hold" to hold)
 
     private fun expectedMarket(): Map<String, Any> =
-        mapOf("marketId" to "BTC-USDT", "baseAssetId" to "BTC", "quoteAssetId" to "USDT", "baseQuantityScale" to 8)
+        mapOf(
+            "marketId" to "BTC-USDT",
+            "baseAssetId" to "BTC",
+            "quoteAssetId" to "USDT",
+            "baseQuantityScale" to 8,
+            "priceTick" to 1L,
+            "quantityStep" to 100_000_000L,
+        )
 
     private fun expectedPolicy(): Map<String, Any> =
         mapOf(

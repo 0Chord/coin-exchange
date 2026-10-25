@@ -26,7 +26,12 @@ class OrderAdmissionCandidate internal constructor(
     val reserveTransaction: LedgerTransaction,
 ) {
     init {
+        validate()
+    }
+
+    internal fun validate() {
         require(order.orderType == OrderType.LIMIT && order.timeInForce == TimeInForce.GTC)
+        market.requireOrderUnits(order.price, order.quantity)
         val expectedAssetId =
             when (order.side) {
                 Side.BUY -> market.quoteAssetId

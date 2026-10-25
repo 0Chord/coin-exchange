@@ -234,6 +234,8 @@ private fun marketFields(market: MarketDefinition): Map<String, Any?> =
         "baseAssetId" to market.baseAssetId.value,
         "quoteAssetId" to market.quoteAssetId.value,
         "baseQuantityScale" to market.baseAssetScale,
+        "priceTick" to market.priceTick,
+        "quantityStep" to market.quantityStep,
     )
 
 private fun feePolicyFields(policy: TradingFeePolicySnapshot): Map<String, Any?> =

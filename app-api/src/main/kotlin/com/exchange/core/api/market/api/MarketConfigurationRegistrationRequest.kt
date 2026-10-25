@@ -1,5 +1,6 @@
 package com.exchange.core.api.market.api
 
+import com.fasterxml.jackson.annotation.JsonInclude
 import jakarta.validation.Valid
 import jakarta.validation.constraints.Max
 import jakarta.validation.constraints.Min
@@ -21,7 +22,13 @@ data class MarketConfigurationMarketRequest(
     @field:NotBlank val quoteAssetId: String,
     @field:Min(0) @field:Max(18) val baseQuantityScale: Int,
     @field:Valid val feePolicy: MarketConfigurationFeePolicyRequest,
-)
+    @field:Positive @get:JsonInclude(JsonInclude.Include.NON_NULL) val priceTick: Long? = null,
+    @field:Positive @get:JsonInclude(JsonInclude.Include.NON_NULL) val quantityStep: Long? = null,
+) {
+    init {
+        require((priceTick == null) == (quantityStep == null)) { "가격·수량 단위는 함께 지정해야 합니다" }
+    }
+}
 
 data class MarketConfigurationFeePolicyRequest(
     @field:Pattern(regexp = "SPOT") val productType: String,

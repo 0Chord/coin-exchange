@@ -217,54 +217,60 @@ class OrderAdmissionCalculatorTest {
     }
 
     @Test
-    fun `SELL은 quote 대금 표현과 무관하게 base 최소 수량과 Long 최대 수량을 예약한다`() {
+    fun `SELL도 수량 단위 위반과 quote 대금 초과는 예약 후보를 만들지 않는다`() {
         val maximumFee = policy.copy(feeRates = MakerTakerFeeRates(FeeRate(1_000_000), FeeRate(1_000_000)))
         listOf(
-            Triple(order.copy(side = Side.SELL, price = Price(1), quantity = Quantity(1)), btcBalance(1), btcBalance(0, 1)),
-            Triple(
+            Pair(order.copy(side = Side.SELL, price = Price(1), quantity = Quantity(1)), btcBalance(1)),
+            Pair(
                 order.copy(side = Side.SELL, price = Price(Long.MAX_VALUE), quantity = Quantity(200_000_000)),
                 btcBalance(300_000_000),
-                btcBalance(100_000_000, 200_000_000),
             ),
-            Triple(
+            Pair(
                 order.copy(side = Side.SELL, price = Price(Long.MAX_VALUE), quantity = Quantity(Long.MAX_VALUE)),
                 btcBalance(Long.MAX_VALUE),
-                btcBalance(0, Long.MAX_VALUE),
             ),
-        ).forEach { (sell, original, expected) ->
+        ).forEach { (sell, original) ->
             val preserved = original.copy()
-            val candidate =
-                assertIs<OrderAdmissionResult.Calculated>(
-                    calculate(order = sell, balance = original, feePolicy = maximumFee),
-                ).candidate
-            assertCandidate(
-                candidate,
-                original,
-                expected,
-                expectedOrder = sell,
-                expectedPolicy = maximumFee,
-                expectedAsset = btc,
-                reservedAmount = sell.quantity.value,
+            assertEquals(
+                OrderAdmissionResult.Rejected(Reason.UNREPRESENTABLE_RESERVATION),
+                calculate(order = sell, balance = original, feePolicy = maximumFee),
             )
             assertEquals(preserved, original)
         }
+
+        // 최소 수량까지 허용하는 설정에서는 최대 수량도 대금 범위 안이면 여전히 허용한다.
+        val fine = market.copy(priceTick = 100_000_000, quantityStep = 1)
+        val maximum = order.copy(side = Side.SELL, quantity = Quantity(Long.MAX_VALUE))
+        val original = btcBalance(Long.MAX_VALUE)
+        val candidate = assertIs<OrderAdmissionResult.Calculated>(calculate(order = maximum, market = fine, balance = original)).candidate
+        assertCandidate(
+            candidate,
+            original,
+            btcBalance(0, Long.MAX_VALUE),
+            expectedOrder = maximum,
+            expectedMarket = fine,
+            expectedAsset = btc,
+            reservedAmount = Long.MAX_VALUE,
+        )
     }
 
     @Test
     fun `SELL도 hold 합산 초과만 중단하고 원본 총합에 새 상한을 만들지 않는다`() {
         val sell = order.copy(side = Side.SELL, quantity = Quantity(1))
+        val fine = market.copy(priceTick = 100_000_000, quantityStep = 1)
         val overflowing = btcBalance(1, Long.MAX_VALUE)
 
-        assertFailsWith<ArithmeticException> { calculate(order = sell, balance = overflowing) }
+        assertFailsWith<ArithmeticException> { calculate(order = sell, market = fine, balance = overflowing) }
         assertEquals(btcBalance(1, Long.MAX_VALUE), overflowing)
 
         val original = btcBalance(Long.MAX_VALUE, 1)
-        val candidate = assertIs<OrderAdmissionResult.Calculated>(calculate(order = sell, balance = original)).candidate
+        val candidate = assertIs<OrderAdmissionResult.Calculated>(calculate(order = sell, market = fine, balance = original)).candidate
         assertCandidate(
             candidate,
             original,
             btcBalance(Long.MAX_VALUE - 1, 2),
             expectedOrder = sell,
+            expectedMarket = fine,
             expectedAsset = btc,
             reservedAmount = 1,
         )
@@ -709,13 +715,14 @@ class OrderAdmissionCalculatorTest {
         previous: Balance,
         next: Balance,
         expectedOrder: OrderAdmissionInput = order,
+        expectedMarket: MarketDefinition = market,
         expectedPolicy: TradingFeePolicySnapshot = policy,
         expectedAsset: AssetId = usdt,
         reservedAmount: Long = 300_000_000,
         feeAmount: Long = 0,
     ) {
         assertEquals(expectedOrder, candidate.order)
-        assertEquals(market, candidate.market)
+        assertEquals(expectedMarket, candidate.market)
         assertEquals(expectedPolicy, candidate.feePolicySnapshot)
         assertEquals(previous, candidate.previousBalance)
         assertEquals(next, candidate.nextBalance)

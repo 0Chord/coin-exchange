@@ -102,6 +102,8 @@ class OrderReservationCalculatorTest {
                 baseAssetId = AssetId("BTC"),
                 quoteAssetId = AssetId("KRW"),
                 baseAssetScale = 8,
+                priceTick = 2,
+                quantityStep = 50_000_000,
             )
 
         val requirement =
@@ -124,7 +126,7 @@ class OrderReservationCalculatorTest {
     }
 
     @Test
-    fun `BUY 동결 금액이 최소 단위로 정확히 나눠지지 않으면 거부한다`() {
+    fun `BUY 주문 수량이 마켓 단위와 맞지 않으면 거부한다`() {
         val market =
             MarketDefinition(
                 marketId = MarketId("BTC-KRW"),
@@ -145,13 +147,13 @@ class OrderReservationCalculatorTest {
             }
 
         assertEquals(
-            "reservation amount must align with base asset scale",
+            "order quantity must align with market quantity step",
             error.message,
         )
     }
 
     @Test
-    fun `BUY 동결 금액이 Long 범위를 넘으면 거부한다`() {
+    fun `BUY SELL 전체 quote 대금이 Long 범위를 넘으면 예약 전에 거부한다`() {
         val market =
             MarketDefinition(
                 marketId = MarketId("BTC-KRW"),
@@ -160,20 +162,19 @@ class OrderReservationCalculatorTest {
                 baseAssetScale = 0,
             )
 
-        val error =
-            assertFailsWith<IllegalArgumentException> {
-                calculator.calculate(
-                    market = market,
-                    side = Side.BUY,
-                    price = Price(Long.MAX_VALUE),
-                    quantity = Quantity(2),
-                    feePolicySnapshot = feePolicySnapshot,
-                )
-            }
+        Side.entries.forEach { side ->
+            val error =
+                assertFailsWith<IllegalArgumentException> {
+                    calculator.calculate(
+                        market = market,
+                        side = side,
+                        price = Price(Long.MAX_VALUE),
+                        quantity = Quantity(2),
+                        feePolicySnapshot = feePolicySnapshot,
+                    )
+                }
 
-        assertEquals(
-            "reservation amount overflow",
-            error.message,
-        )
+            assertEquals("reservation amount overflow", error.message)
+        }
     }
 }

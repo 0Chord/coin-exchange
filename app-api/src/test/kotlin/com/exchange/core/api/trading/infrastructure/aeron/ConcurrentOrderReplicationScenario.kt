@@ -201,6 +201,8 @@ internal enum class ConcurrentOrderReplicationScenario {
             "baseAssetId" to if (isSui(id)) "SUI" else "BTC",
             "quoteAssetId" to "USDT",
             "baseQuantityScale" to if (isSui(id)) 9 else 8,
+            "priceTick" to 1L,
+            "quantityStep" to if (isSui(id)) 1_000_000_000L else 100_000_000L,
         )
 
     private fun policy(id: String) =

@@ -152,6 +152,8 @@ class FundingReplicationComparisonTest {
                 "baseAssetId" to "OTHER",
                 "quoteAssetId" to "OTHER",
                 "baseQuantityScale" to 8,
+                "priceTick" to 2L,
+                "quantityStep" to 2_000_000_000L,
                 "productType" to "PERPETUAL_FUTURES",
                 "feeTier" to "WRONG",
                 "scheduleVersion" to 1,
@@ -348,6 +350,8 @@ class FundingReplicationComparisonTest {
                 "baseAssetId" to "BTC",
                 "quoteAssetId" to "USDT",
                 "baseQuantityScale" to 8,
+                "priceTick" to 1L,
+                "quantityStep" to 100_000_000L,
                 "feePolicy" to
                     mapOf(
                         "productType" to "SPOT",
@@ -364,6 +368,8 @@ class FundingReplicationComparisonTest {
                 "baseAssetId" to "SUI",
                 "quoteAssetId" to "USDT",
                 "baseQuantityScale" to 9,
+                "priceTick" to 1L,
+                "quantityStep" to 1_000_000_000L,
                 "feePolicy" to
                     mapOf(
                         "productType" to "SPOT",
@@ -430,7 +436,8 @@ class FundingReplicationComparisonTest {
             ),
         )
 
-    private fun tree(value: Any): ObjectNode = jacksonObjectMapper().valueToTree(value)
+    // 실제 stdout 이벤트와 같이 JSON으로 쓴 뒤 읽어 숫자 노드의 표현까지 같은 경계를 거친다.
+    private fun tree(value: Any): ObjectNode = jacksonObjectMapper().let { it.readTree(it.writeValueAsString(value)) as ObjectNode }
 
     private fun resultFixture(): Map<String, Any> =
         mapOf(

@@ -26,6 +26,28 @@ class PostgresDevelopmentMarketSettingsTest {
     }
 
     @Test
+    fun `DB에 저장한 가격 수량 단위와 원문 지문을 시작 설정까지 보존한다`() {
+        val document = BTC_DOCUMENT.replace("\"feePolicy\":", "\"priceTick\":25,\"quantityStep\":4000000,\"feePolicy\":")
+        val environment = database.register(document)
+
+        val markets = readDevelopmentMarkets(environment)
+
+        assertEquals(25L, markets.single().market.priceTick)
+        assertEquals(4_000_000L, markets.single().market.quantityStep)
+        assertEquals(environment.getValue("FUNDING_MARKET_CONFIG_SHA256"), markets.contentSha256)
+        database.connection().use { connection ->
+            val sql = "select markets_document from market_configuration_release where config_version = ?"
+            connection.prepareStatement(sql).use { statement ->
+                statement.setLong(1, markets.configurationVersion!!)
+                statement.executeQuery().use { rows ->
+                    assertTrue(rows.next())
+                    assertEquals(document, rows.getString(1))
+                }
+            }
+        }
+    }
+
+    @Test
     fun `새 버전이 있어도 지정한 원문 한 버전과 실제 계산한 지문을 읽는다`() {
         val original = database.register(BTC_DOCUMENT)
         database.register(BTC_DOCUMENT.replace("\"baseQuantityScale\":8", "\"baseQuantityScale\":9"))
@@ -81,6 +103,9 @@ class PostgresDevelopmentMarketSettingsTest {
                 BTC_DOCUMENT.replace("\"baseQuantityScale\":8", "\"baseQuantityScale\":19"),
                 BTC_DOCUMENT.replace("\"scheduleVersion\":1", "\"scheduleVersion\":0"),
                 BTC_DOCUMENT.replace("\"baseAssetId\":\"BTC\"", "\"baseAssetId\":\"BTC:INVALID\""),
+                BTC_DOCUMENT.replace("\"feePolicy\":", "\"priceTick\":25,\"feePolicy\":"),
+                BTC_DOCUMENT.replace("\"feePolicy\":", "\"priceTick\":2,\"quantityStep\":30000000,\"feePolicy\":"),
+                BTC_DOCUMENT.replace("\"feePolicy\":", "\"priceTick\":null,\"quantityStep\":null,\"feePolicy\":"),
             )
         invalidDocuments.forEach { document ->
             val environment = database.register(document)

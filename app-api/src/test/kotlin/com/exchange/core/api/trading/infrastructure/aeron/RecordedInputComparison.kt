@@ -111,6 +111,8 @@ internal fun orderValues(command: AdmissionCommandPayload): Map<String, Any> =
         "market.baseAssetId" to command.market.baseAssetId.value,
         "market.quoteAssetId" to command.market.quoteAssetId.value,
         "market.baseAssetScale" to command.market.baseAssetScale,
+        "market.priceTick" to command.market.priceTick,
+        "market.quantityStep" to command.market.quantityStep,
         "fee.productType" to command.feePolicySnapshot.productType,
         "fee.feeTier" to command.feePolicySnapshot.feeTier,
         "fee.scheduleVersion" to command.feePolicySnapshot.scheduleVersion,

@@ -40,6 +40,71 @@ class PostgresMarketConfigurationStoreTest {
     }
 
     @Test
+    fun `기본 단위를 명시한 재등록도 예전 원문과 지문을 다시 쓰지 않는다`() {
+        val version = versions.incrementAndGet()
+        val store = store()
+        val first = store.register(version, DOCUMENT.toByteArray())
+        val original = store.find(version)!!
+        val explicitDefaults = DOCUMENT.replace("\"feePolicy\":", "\"priceTick\":1,\"quantityStep\":100000000,\"feePolicy\":")
+
+        assertEquals(first, store.register(version, explicitDefaults.toByteArray()))
+        assertEquals(original, store.find(version))
+        assertEquals(DOCUMENT, store.find(version)!!.document)
+        assertEquals(DOCUMENT_HASH, store.find(version)!!.sha256)
+        assertEquals(1, rowCount(version))
+    }
+
+    @Test
+    fun `가격 수량 단위는 저장 조회와 노드 읽기에서 보존하고 다른 단위는 같은 버전에서 충돌한다`() {
+        val version = versions.incrementAndGet()
+        val store = store()
+        val document = DOCUMENT.replace("\"feePolicy\":", "\"priceTick\":25,\"quantityStep\":4000000,\"feePolicy\":")
+
+        val registration = store.register(version, document.toByteArray())
+        val release = store.find(version)!!
+        val market = readDevelopmentMarkets(database.environment(version, document)).single().market
+
+        assertEquals(document, release.document)
+        assertEquals(sha256(document), registration.sha256)
+        assertEquals(registration.sha256, release.sha256)
+        assertEquals(25L, market.priceTick)
+        assertEquals(4_000_000L, market.quantityStep)
+        val changed = document.replace("\"quantityStep\":4000000", "\"quantityStep\":8000000")
+        val error = assertFailsWith<MarketConfigurationException> { store.register(version, changed.toByteArray()) }
+        assertEquals(MarketConfigurationError.CONTENT_CONFLICT, error.code)
+        assertEquals(release, store.find(version))
+        assertEquals(1, rowCount(version))
+    }
+
+    @Test
+    fun `가격 수량 단위의 누락 null 잘못된 형식과 정산 불가능한 조합은 DB에 등록하지 않는다`() {
+        val store = store()
+        val invalidUnits =
+            listOf(
+                "\"priceTick\":25,",
+                "\"quantityStep\":4000000,",
+                "\"priceTick\":null,\"quantityStep\":null,",
+                "\"priceTick\":25,\"quantityStep\":null,",
+                "\"priceTick\":0,\"quantityStep\":4000000,",
+                "\"priceTick\":25,\"quantityStep\":-1,",
+                "\"priceTick\":\"25\",\"quantityStep\":4000000,",
+                "\"priceTick\":25,\"quantityStep\":4000000.0,",
+                "\"priceTick\":9223372036854775808,\"quantityStep\":4000000,",
+                "\"priceTick\":2,\"quantityStep\":30000000,",
+            )
+        invalidUnits.forEach { units ->
+            val version = versions.incrementAndGet()
+            val document = DOCUMENT.replace("\"feePolicy\":", "$units\"feePolicy\":")
+
+            val error = assertFailsWith<MarketConfigurationException> { store.register(version, document.toByteArray()) }
+
+            assertEquals(MarketConfigurationError.INVALID_INPUT, error.code)
+            assertEquals("document", error.stage)
+            assertEquals(0, rowCount(version))
+        }
+    }
+
+    @Test
     fun `원문을 등록하고 같은 입력을 재실행하면 한 행과 등록 시각을 보존한다`() {
         val store = PostgresMarketConfigurationStore(MarketConfigurationDatabaseSettings.from(database.environment(7, DOCUMENT)))
 

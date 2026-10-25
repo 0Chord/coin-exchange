@@ -41,6 +41,7 @@ private val marketJson =
         .enable(DeserializationFeature.FAIL_ON_TRAILING_TOKENS)
         .build()
 private val marketKeys = setOf("marketId", "baseAssetId", "quoteAssetId", "baseQuantityScale", "feePolicy")
+private val marketUnitKeys = setOf("priceTick", "quantityStep")
 private val policyKeys = setOf("productType", "feeTier", "scheduleVersion", "makerPartsPerMillion", "takerPartsPerMillion")
 private val separateDatabaseOptions = setOf("user", "password", "service", "host", "port", "dbname", "pghost", "pgport", "pgdbname")
 
@@ -148,20 +149,35 @@ private fun readMarket(
     node: JsonNode,
     location: String,
 ): DevelopmentMarketContext {
-    requireFields(node, marketKeys, location)
+    require(node.isObject) { "$location: 객체가 필요합니다" }
+    val hasMarketUnits = marketUnitKeys.any(node::has)
+    requireFields(node, if (hasMarketUnits) marketKeys + marketUnitKeys else marketKeys, location)
     val policy = node.path("feePolicy")
     val policyLocation = "$location.feePolicy"
     requireFields(policy, policyKeys, policyLocation)
     val scale = integer(node, "baseQuantityScale", location)
     require(scale in 0..18) { "$location.baseQuantityScale: 0~18 정수가 필요합니다" }
     try {
+        val market =
+            if (hasMarketUnits) {
+                MarketDefinition(
+                    MarketId(text(node, "marketId", location)),
+                    AssetId(text(node, "baseAssetId", location)),
+                    AssetId(text(node, "quoteAssetId", location)),
+                    scale.toInt(),
+                    priceTick = integer(node, "priceTick", location),
+                    quantityStep = integer(node, "quantityStep", location),
+                )
+            } else {
+                MarketDefinition(
+                    MarketId(text(node, "marketId", location)),
+                    AssetId(text(node, "baseAssetId", location)),
+                    AssetId(text(node, "quoteAssetId", location)),
+                    scale.toInt(),
+                )
+            }
         return DevelopmentMarketContext(
-            MarketDefinition(
-                MarketId(text(node, "marketId", location)),
-                AssetId(text(node, "baseAssetId", location)),
-                AssetId(text(node, "quoteAssetId", location)),
-                scale.toInt(),
-            ),
+            market,
             TradingFeePolicySnapshot(
                 FeeProductType.valueOf(text(policy, "productType", policyLocation)),
                 FeeTier.valueOf(text(policy, "feeTier", policyLocation)),

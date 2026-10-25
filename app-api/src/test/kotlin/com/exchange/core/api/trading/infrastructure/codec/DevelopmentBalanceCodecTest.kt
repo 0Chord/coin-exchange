@@ -225,6 +225,7 @@ class DevelopmentBalanceCodecTest {
         val orderResults = AdmissionResultCodec()
         val fixtures =
             listOf(
+                1 to previousOrderCommandGolden,
                 1 to orderCommandGolden,
                 2 to orderAcceptedGolden,
                 3 to orderRejectedGolden,
@@ -244,7 +245,13 @@ class DevelopmentBalanceCodecTest {
                 assertFailsWith<AdmissionMessageException>("${decoder.name}에 kind $kind 전달") { decoder.read(bytes) }
             }
         }
-        assertContentEquals(orderCommandGolden, orderCommands.encode(orderCommands.decode(orderCommandGolden)))
+        val previousOrder = orderCommands.decode(previousOrderCommandGolden)
+        assertEquals(1L, previousOrder.market.priceTick)
+        assertEquals(1L, previousOrder.market.quantityStep)
+        assertEquals(73, previousOrderCommandGolden.size)
+        assertEquals(79, orderCommandGolden.size)
+        assertEquals(previousOrder, orderCommands.decode(orderCommandGolden))
+        assertContentEquals(orderCommandGolden, orderCommands.encode(previousOrder))
         assertEquals(AdmissionResultPayload.Accepted("u", "r", "m", "o", 1), orderResults.decode(orderAcceptedGolden))
         assertEquals(
             AdmissionResultPayload.Rejected(
@@ -376,10 +383,19 @@ class DevelopmentBalanceCodecTest {
     private val replayGolden = "1e000500570002000a0250311201751a015120e8072a024c3130d285d8cc0438959aef3a4001".hexToByteArray()
     private val conflictGolden = "0f000600570002000a0250311201751a015120e8072801".hexToByteArray()
     private val usedAccountGolden = "0f000600570002000a0250311201751a015120e8072802".hexToByteArray()
-    private val orderCommandGolden =
+
+    // 단위 필드가 없던 이전 v2 프레임 73바이트를 그대로 보존한다.
+    private val previousOrderCommandGolden =
         (
             "4100010057000200080110011801206428033000380140014807500a581460d285d8cc0468959aef3a" +
                 "720252317a01758201016d8a01016f9201016d9a010142a2010151aa01024c31"
+        ).hexToByteArray()
+
+    // 새 프레임은 본문 길이 71(47 00), 단위 태그 22·23과 명시한 값 1을 독립적으로 적는다.
+    private val orderCommandGolden =
+        (
+            "4700010057000200080110011801206428033000380140014807500a581460d285d8cc0468959aef3a" +
+                "720252317a01758201016d8a01016f9201016d9a010142a2010151aa01024c31b00101b80101"
         ).hexToByteArray()
     private val orderAcceptedGolden = "0e0002005700020008011201721a017522016d2a016f".hexToByteArray()
     private val orderRejectedGolden = "1b000300570002000805120b0a015110c80118ac0220641a01722201752a016d32016f".hexToByteArray()

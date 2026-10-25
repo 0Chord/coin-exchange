@@ -21,7 +21,7 @@ class SubmitOrderPlan internal constructor(
     internal val restingQuantity: Quantity,
     events: List<MatchingEvent>,
 ) {
-    internal val fills: List<MakerFill> = Collections.unmodifiableList(fills.toList())
+    val fills: List<MakerFill> = Collections.unmodifiableList(fills.toList())
     val events: List<MatchingEvent> = Collections.unmodifiableList(events.toList())
     val firstEngineSequence: Long get() = events.first().engineSequence
     val lastEngineSequence: Long get() = events.last().engineSequence
@@ -30,7 +30,8 @@ class SubmitOrderPlan internal constructor(
 }
 
 /** 실제 BookOrder를 대신해 후보가 보존하는 maker의 변경 전 값과 체결량. */
-internal data class MakerFill(
+@ConsistentCopyVisibility
+data class MakerFill internal constructor(
     val orderId: OrderId,
     val userId: UserId,
     val side: Side,
@@ -39,7 +40,7 @@ internal data class MakerFill(
     val remainingQuantity: Quantity,
     val filledQuantity: Quantity,
 ) {
-    fun matches(order: BookOrder): Boolean =
+    internal fun matches(order: BookOrder): Boolean =
         orderId == order.orderId && userId == order.userId && side == order.side &&
             price == order.price && originalQuantity == order.originalQuantity &&
             remainingQuantity == order.remainingQuantity

@@ -1,7 +1,9 @@
 package com.exchange.core.api.trading.infrastructure.aeron
 
+import com.exchange.core.api.trading.infrastructure.codec.AdmissionCommandCodec
 import com.exchange.core.api.trading.infrastructure.codec.DevelopmentBalanceCommandCodec
 import com.exchange.core.api.trading.infrastructure.codec.DevelopmentBalanceCommandPayload
+import com.exchange.core.api.trading.infrastructure.codec.admissionCommand
 import com.exchange.core.common.Amount
 import com.exchange.core.common.AssetId
 import com.exchange.core.common.UserId
@@ -12,6 +14,37 @@ import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 
 class RecordedInputComparisonTest {
+    @Test
+    fun `기록 바이트가 같아도 가격 단위와 수량 단위의 의미가 다르면 검출한다`() {
+        val command = admissionCommand().let { it.copy(market = it.market.copy(priceTick = 100, quantityStep = 1_000_000)) }
+        val wanted = orderValues(command) + mapOf("market.priceTick" to 100L, "market.quantityStep" to 1_000_000L)
+        val codec = AdmissionCommandCodec()
+        val originalBytes = codec.encode(command)
+        val expected = ExpectedRecordedInput(originalBytes, 256, wanted, 1)
+        val read =
+            fixture().second.copy(
+                limitPosition = 256,
+                consumedPosition = 256,
+                inputs = listOf(RecordedApplicationFrame(originalBytes.copyOf(), 256, 0, 1, 0)),
+            )
+        assertEquals(RecordingComparisonStatus.MATCH, compareRecordedInputs(listOf(expected), read).status)
+
+        listOf(
+            "market.priceTick" to command.market.copy(priceTick = 200),
+            "market.quantityStep" to command.market.copy(quantityStep = 2_000_000),
+        ).forEach { (field, market) ->
+            val bytes = codec.encode(command.copy(market = market))
+            val changedExpected = expected.copy(bytes = bytes.copyOf())
+            val changedRead = read.copy(inputs = listOf(read.inputs.single().copy(bytes = bytes)))
+
+            val comparison = compareRecordedInputs(listOf(changedExpected), changedRead)
+
+            assertEquals(RecordingComparisonStatus.MISMATCH, comparison.status, field)
+            assertEquals(1, comparison.reasons.size, field)
+            assertTrue(comparison.reasons.single().startsWith("입력 1 $field:"), field)
+        }
+    }
+
     @Test
     fun `업무 해석 실패 앞뒤의 불일치를 모두 보존한다`() {
         val (expected, read) = fixture()
