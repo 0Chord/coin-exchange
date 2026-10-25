@@ -63,6 +63,9 @@ internal class PriceLevel(
      */
     fun firstOrder(): BookOrder? = orders.values.firstOrNull()
 
+    /** 후보 계산 중 실제 상태를 바꾸지 않고 FIFO 순서대로 읽는다. */
+    fun ordersInOrder(): Sequence<BookOrder> = orders.values.asSequence()
+
     /**
      * 이 가격 레벨에 남은 주문이 없는지 확인한다.
      *
