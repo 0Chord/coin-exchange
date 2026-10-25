@@ -21,6 +21,7 @@
 | --- | --- |
 | 이전 65바이트 고정 본문 → 새 디코더 → 기본 단위를 포함한 원본 명령과 같음 | `AdmissionCommandCodecTest`의 이전 고정 v2 명령 검사. 새 생성 코드로 이전 바이트를 재생성하지 않음 |
 | 단위를 명시한 71바이트 고정 본문 → 인코더·디코더 양방향 대조 → 바이트 전체와 명령 전체가 같음 | 같은 테스트의 독립 고정 바이트 검사. 태그 22=`b0 01`, 23=`b8 01` |
+| 이전·새 주문 golden과 자금 golden → 종류별 디코더 대조 → 다른 종류는 모두 거절, 이전 주문을 읽은 새 송신 결과는 단위를 명시한 79바이트 고정 프레임과 같음 | `DevelopmentBalanceCodecTest`의 종류 경계 검사. 이전 73바이트 주문 프레임과 새 79바이트 프레임을 각각 고정해 보존 |
 | 사용자 단위·scale 0/8/18의 이전 명령·큰 호환 단위 → 왕복 또는 읽기 → 값·presence·기본값이 같음 | `AdmissionCommandCodecTest`의 단위 보존·이전 기본값·큰 단위 검사 |
 | 단일 필드 누락·0·음수·큰 비호환 곱 → 디코더 → 변환 예외·코어 호출 0·기존 snapshot 동일 | `AdmissionMessageBoundaryTest`의 누락·숫자 경계 검사 |
 | 두 단위만 바뀐 문맥 → 실제 노드에 신규 요청 → 사유 9·자금과 요청 기록 유지, 고친 요청은 승인 | `DevelopmentOrderNodeTest`, `DevelopmentMultiMarketOrderNodeTest`의 설정 불일치 검사 |
