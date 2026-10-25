@@ -20,6 +20,7 @@ dependencies {
     api(project(":domain-fee"))
     api(project(":domain-order"))
     api(project(":domain-ledger"))
+    api(project(":domain-matching"))
 
     testImplementation(kotlin("test-junit5"))
     testRuntimeOnly("org.junit.platform:junit-platform-launcher")

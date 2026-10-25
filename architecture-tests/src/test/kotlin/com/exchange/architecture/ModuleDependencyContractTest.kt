@@ -111,6 +111,7 @@ class ModuleDependencyContractTest {
                 "domain-trading" to "domain-fee",
                 "domain-trading" to "domain-order",
                 "domain-trading" to "domain-ledger",
+                "domain-trading" to "domain-matching",
                 "app-api" to "domain-common",
                 "app-api" to "domain-fee",
                 "app-api" to "domain-order",

@@ -12,6 +12,7 @@ import com.exchange.core.ledger.OpeningBalance
 import com.exchange.core.ledger.OpeningBalanceRequestConflictException
 import com.exchange.core.ledger.OpeningBalanceResult
 import com.exchange.core.order.MarketDefinition
+import com.exchange.core.order.OrderReservation
 import com.exchange.core.order.Side
 import java.time.Instant
 import java.util.Collections
@@ -41,11 +42,15 @@ class OrderAdmissionState(
 
     private val balances: MutableMap<BalanceKey, Balance> = linkedMapOf()
     private val records: MutableMap<OrderKey, Record> = linkedMapOf()
+    private val recordsBySequence: MutableMap<Long, Record> = linkedMapOf()
+    private val pendingByMarket: MutableMap<MarketId, ArrayDeque<Record>> = linkedMapOf()
+    private val currentReservations: MutableMap<OrderKey, OrderReservation> = linkedMapOf()
+    private val ledgerTransactions: MutableList<LedgerTransaction> = mutableListOf()
     private val transactionIds = mutableSetOf<String>()
     private val sourceEventIds = mutableSetOf<String>()
     private val requestRecords: MutableMap<RequestKey, RequestRecord> = linkedMapOf()
     private val preparations: MutableMap<String, PreparationRecord> = linkedMapOf()
-    private val initiallyUsedBalances =
+    private val usedBalances =
         initialBalances
             .filter { it.available != Amount.ZERO }
             .map {
@@ -53,7 +58,7 @@ class OrderAdmissionState(
                     it.userId,
                     it.assetId,
                 )
-            }.toSet()
+            }.toMutableSet()
     private var lastSequence = 0L
 
     /** 차단 여부만 진단할 수 있다. 부분 반영 가능성이 있는 잔고를 정상 조회로 내보내지 않는다. */
@@ -129,7 +134,7 @@ class OrderAdmissionState(
         val key = BalanceKey(opening.userId, opening.assetId)
         val current = balances[key] ?: Balance(opening.userId, opening.assetId, Amount.ZERO, Amount.ZERO)
         val hasHistory =
-            key in initiallyUsedBalances ||
+            key in usedBalances ||
                 preparations.values.any { it.result.opening.userId == opening.userId && it.result.opening.assetId == opening.assetId } ||
                 records.values.any { it.candidate.order.userId == opening.userId && it.candidate.reservation.assetId == opening.assetId }
         opening.requireUnused(current, hasHistory)
@@ -146,6 +151,8 @@ class OrderAdmissionState(
         preparations[opening.preparationId] = record
         transactionIds.add(transaction.ledgerTransactionId)
         sourceEventIds.add(transaction.sourceEventId)
+        ledgerTransactions.add(transaction)
+        usedBalances.add(key)
         isBlocked = false
         return result
     }
@@ -212,7 +219,7 @@ class OrderAdmissionState(
         checkUsable()
         return Snapshot(
             immutableList(balances.values),
-            immutableList(records.values),
+            immutableList(pendingByMarket.values.flatMap { it }.sortedBy { it.sequence }),
             lastSequence,
             immutableList(requestRecords.values),
             immutableList(preparations.values),
@@ -221,7 +228,7 @@ class OrderAdmissionState(
 
     fun pendingOrders(marketId: MarketId): List<Record> {
         checkUsable()
-        return immutableList(records.values.filter { it.candidate.order.marketId == marketId })
+        return immutableList(pendingByMarket[marketId].orEmpty())
     }
 
     private fun prepare(
@@ -261,6 +268,11 @@ class OrderAdmissionState(
         isBlocked = true
         balances[balanceKey] = candidate.nextBalance
         records[orderKey] = record
+        recordsBySequence[record.sequence] = record
+        pendingByMarket.getOrPut(candidate.order.marketId) { ArrayDeque() }.addLast(record)
+        currentReservations[orderKey] = candidate.reservation
+        ledgerTransactions.add(candidate.reserveTransaction)
+        usedBalances.add(balanceKey)
         transactionIds.add(candidate.reserveTransaction.ledgerTransactionId)
         sourceEventIds.add(candidate.reserveTransaction.sourceEventId)
         lastSequence = record.sequence
@@ -276,6 +288,98 @@ class OrderAdmissionState(
         isBlocked = true
         requestRecords[key] = request
         isBlocked = false
+    }
+
+    // 공통 소유자만 사용하는 참여 계약. 최초 기록을 현재 예약으로 덮어쓰지 않는다.
+    internal fun accepted(sequence: Long): Record? {
+        checkUsable()
+        return recordsBySequence[sequence]
+    }
+
+    internal fun accepted(
+        marketId: MarketId,
+        orderId: OrderId,
+    ): Record {
+        checkUsable()
+        return checkNotNull(records[OrderKey(marketId, orderId)]) { "승인 원본이 없습니다" }
+    }
+
+    internal fun firstPending(marketId: MarketId): Record? {
+        checkUsable()
+        return pendingByMarket[marketId]?.firstOrNull()
+    }
+
+    internal fun currentReservation(
+        marketId: MarketId,
+        orderId: OrderId,
+    ): OrderReservation {
+        checkUsable()
+        return checkNotNull(currentReservations[OrderKey(marketId, orderId)]) { "현재 예약이 없습니다" }
+    }
+
+    internal fun currentBalance(
+        userId: UserId,
+        assetId: AssetId,
+    ): Balance {
+        checkUsable()
+        return balances[BalanceKey(userId, assetId)] ?: Balance(userId, assetId, Amount.ZERO, Amount.ZERO)
+    }
+
+    internal fun reservations(): List<OrderReservation> {
+        checkUsable()
+        return immutableList(currentReservations.values)
+    }
+
+    internal fun transactions(): List<LedgerTransaction> {
+        checkUsable()
+        return immutableList(ledgerTransactions)
+    }
+
+    internal fun validateSettlement(candidate: OrderSettlementCandidate) {
+        checkUsable()
+        candidate.balanceChanges.forEach {
+            check(currentBalance(it.previous.userId, it.previous.assetId) == it.previous) { "정산 기준 잔고가 다릅니다" }
+            check(it.next.userId == it.previous.userId && it.next.assetId == it.previous.assetId)
+        }
+        candidate.reservationChanges.forEach {
+            check(currentReservation(it.previous.marketId, it.previous.orderId) == it.previous) { "정산 기준 예약이 다릅니다" }
+            check(it.next.marketId == it.previous.marketId && it.next.orderId == it.previous.orderId)
+        }
+        val batchTransactions = hashSetOf<String>()
+        val batchEvents = hashSetOf<String>()
+        candidate.settlements.forEach {
+            checkUnusedTransaction(it.transaction)
+            check(batchTransactions.add(it.transaction.ledgerTransactionId)) { "정산 묶음의 거래 ID가 중복됐습니다" }
+            check(batchEvents.add(it.transaction.sourceEventId)) { "정산 묶음의 사건 ID가 중복됐습니다" }
+        }
+    }
+
+    internal fun applySettlement(candidate: OrderSettlementCandidate) {
+        validateSettlement(candidate)
+        isBlocked = true
+        candidate.balanceChanges.forEach {
+            val key = BalanceKey(it.next.userId, it.next.assetId)
+            balances[key] = it.next
+            usedBalances.add(key)
+        }
+        candidate.reservationChanges.forEach { currentReservations[OrderKey(it.next.marketId, it.next.orderId)] = it.next }
+        candidate.settlements.forEach {
+            transactionIds.add(it.transaction.ledgerTransactionId)
+            sourceEventIds.add(it.transaction.sourceEventId)
+            ledgerTransactions.add(it.transaction)
+        }
+        isBlocked = false
+    }
+
+    internal fun completePending(record: Record) {
+        checkUsable()
+        val pending = checkNotNull(pendingByMarket[record.candidate.order.marketId])
+        check(pending.first() === record) { "처리할 접수 순서가 다릅니다" }
+        pending.removeFirst()
+    }
+
+    internal fun block() {
+        isBlocked = true
     }
 
     private fun checkUsable() = check(!isBlocked) { "반영 중 오류로 접수 상태가 차단됐습니다" }

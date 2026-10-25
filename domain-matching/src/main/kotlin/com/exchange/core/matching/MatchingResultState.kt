@@ -33,8 +33,8 @@ class MatchingResultState {
         val lastEngineSequences: Map<MarketId, Long>,
     )
 
-    /** 전체 검증 뒤 등록하며, 같은 키의 재전송은 현재의 다음 순번보다 먼저 대조한다. */
-    fun register(
+    /** 실제 쓰기 전의 전체 조건을 검사한다. 동일 결과의 재전송은 최초 등록 값을 반환한다. */
+    fun validateRegistration(
         commandId: String,
         command: MatchingCommand,
         expectedEventCount: Int,
@@ -61,6 +61,22 @@ class MatchingResultState {
         if (orderKey != null && orderKey in submittedOrders) {
             throw MatchingResultException(MatchingResultException.Reason.DUPLICATE_SUBMIT, "이미 결과를 등록한 제출 주문입니다")
         }
+        return candidate
+    }
+
+    /** 전체 검증 뒤 등록하며, 같은 키의 재전송은 현재의 다음 순번보다 먼저 대조한다. */
+    fun register(
+        commandId: String,
+        command: MatchingCommand,
+        expectedEventCount: Int,
+        firstEngineSequence: Long,
+        lastEngineSequence: Long,
+        events: List<MatchingEvent>,
+    ): MatchingCommandResult {
+        val candidate = validateRegistration(commandId, command, expectedEventCount, firstEngineSequence, lastEngineSequence, events)
+        val key = CommandKey(command.marketId, commandId)
+        if (key in records) return candidate
+        val orderKey = (command as? SubmitOrderCommand)?.let { OrderKey(it.marketId, it.orderId) }
 
         // SQL 롤백 대신, 어느 쓰기에서든 실패하면 차단 상태를 남긴다.
         isBlocked = true
@@ -77,6 +93,12 @@ class MatchingResultState {
     ): MatchingCommandResult? {
         checkUsable()
         return records[CommandKey(marketId, commandId)]
+    }
+
+    /** 전체 이력을 복사하지 않고 해당 마켓의 마지막 등록 순번만 읽는다. */
+    fun lastEngineSequence(marketId: MarketId): Long {
+        checkUsable()
+        return lastSequences[marketId] ?: 0L
     }
 
     fun snapshot(): Snapshot {
