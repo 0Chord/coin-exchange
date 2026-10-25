@@ -383,12 +383,14 @@ class DevelopmentBalanceCodecTest {
     private val replayGolden = "1e000500570002000a0250311201751a015120e8072a024c3130d285d8cc0438959aef3a4001".hexToByteArray()
     private val conflictGolden = "0f000600570002000a0250311201751a015120e8072801".hexToByteArray()
     private val usedAccountGolden = "0f000600570002000a0250311201751a015120e8072802".hexToByteArray()
+
     // 단위 필드가 없던 이전 v2 프레임 73바이트를 그대로 보존한다.
     private val previousOrderCommandGolden =
         (
             "4100010057000200080110011801206428033000380140014807500a581460d285d8cc0468959aef3a" +
                 "720252317a01758201016d8a01016f9201016d9a010142a2010151aa01024c31"
         ).hexToByteArray()
+
     // 새 프레임은 본문 길이 71(47 00), 단위 태그 22·23과 명시한 값 1을 독립적으로 적는다.
     private val orderCommandGolden =
         (
