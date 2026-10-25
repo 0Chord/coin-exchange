@@ -404,8 +404,8 @@ Protobuf 변경 · 실행 검증 완료 · 독립 리뷰 완료 · 사람의 이
 **Long 최대 값과 Instant 양 끝 및 수치 상한은 손실이나 NULL 대체 없이 왕복한다** · [테스트](../app-api/src/test/kotlin/com/exchange/core/api/trading/infrastructure/codec/AdmissionMessageBoundaryTest.kt#L255)
 
 - **Given:** SELL 최대 가격/수량·버전Long.MAX_VALUE, scale0/18, ppm0/100만, Instant.MIN/MAX와 음수 초. BTC잔고도Long.MAX_VALUE다.
-- **When:** 시각 경계 명령들을 왕복하고, scale0·시각EPOCH의 복원 명령을 실제 코어에 적용한다.
-- **Then:** 각 명령 전체가 같고, 실제 SELL 승인의 주문·예약액Long.MAX_VALUE와 BTC사용 가능0/예약Long.MAX_VALUE 목록이 일치한다. USDT 항목은 없다.
+- **When:** 시각 경계와 scale0 명령을 왕복하고, scale0의 최대 가격·수량은 요청 ID 없는 내부 접수에 넣는다. 이어 가격1·최대 수량인 대조 명령을 왕복해 실제 코어에 넣는다.
+- **Then:** 각 명령 전체가 같다. 최대 가격×최대 수량의 quote 대금은 `UNREPRESENTABLE_RESERVATION`으로 거절되고 snapshot 전체가 유지된다. 가격1 대조 명령은 승인되며 주문·예약액Long.MAX_VALUE와 BTC사용 가능0/예약Long.MAX_VALUE 목록이 일치한다. USDT 항목은 없다.
 
 확인문: [assertEquals L270](../app-api/src/test/kotlin/com/exchange/core/api/trading/infrastructure/codec/AdmissionMessageBoundaryTest.kt#L270), [assertEquals L274](../app-api/src/test/kotlin/com/exchange/core/api/trading/infrastructure/codec/AdmissionMessageBoundaryTest.kt#L274), [assertIs L281](../app-api/src/test/kotlin/com/exchange/core/api/trading/infrastructure/codec/AdmissionMessageBoundaryTest.kt#L281), [assertEquals L282](../app-api/src/test/kotlin/com/exchange/core/api/trading/infrastructure/codec/AdmissionMessageBoundaryTest.kt#L282), [assertEquals L283](../app-api/src/test/kotlin/com/exchange/core/api/trading/infrastructure/codec/AdmissionMessageBoundaryTest.kt#L283), [assertEquals L284](../app-api/src/test/kotlin/com/exchange/core/api/trading/infrastructure/codec/AdmissionMessageBoundaryTest.kt#L284)
 

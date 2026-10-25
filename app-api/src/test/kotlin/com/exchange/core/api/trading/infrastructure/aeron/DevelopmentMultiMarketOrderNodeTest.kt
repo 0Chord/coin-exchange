@@ -52,9 +52,11 @@ class DevelopmentMultiMarketOrderNodeTest {
                     """
                     [
                       {"marketId":"BTC-USDT","baseAssetId":"BTC","quoteAssetId":"USDT","baseQuantityScale":8,
+                       "priceTick":1,"quantityStep":100000000,
                        "feePolicy":{"productType":"SPOT","feeTier":"NORMAL","scheduleVersion":1,
                                     "makerPartsPerMillion":0,"takerPartsPerMillion":0}},
                       {"marketId":"SUI-USDT","baseAssetId":"SUI","quoteAssetId":"USDT","baseQuantityScale":9,
+                       "priceTick":1,"quantityStep":1000000000,
                        "feePolicy":{"productType":"SPOT","feeTier":"NORMAL","scheduleVersion":2,
                                     "makerPartsPerMillion":0,"takerPartsPerMillion":0}}
                     ]

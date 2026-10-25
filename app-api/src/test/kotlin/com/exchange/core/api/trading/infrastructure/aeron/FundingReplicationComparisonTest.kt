@@ -436,7 +436,9 @@ class FundingReplicationComparisonTest {
             ),
         )
 
-    private fun tree(value: Any): ObjectNode = jacksonObjectMapper().valueToTree(value)
+    // 실제 stdout 이벤트와 같이 JSON으로 쓴 뒤 읽어 숫자 노드의 표현까지 같은 경계를 거친다.
+    private fun tree(value: Any): ObjectNode =
+        jacksonObjectMapper().let { it.readTree(it.writeValueAsString(value)) as ObjectNode }
 
     private fun resultFixture(): Map<String, Any> =
         mapOf(

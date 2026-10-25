@@ -285,13 +285,31 @@ class AdmissionMessageBoundaryTest {
                 listOf(Balance(UserId("user-1"), AssetId("BTC"), Amount(Long.MAX_VALUE), Amount.ZERO)),
                 admissionCalculator(),
             )
-        val accepted = assertIs<OrderAdmissionState.Result.Accepted>(admit(state, decoded))
-        assertEquals(zeroScale.order, accepted.record.candidate.order)
+        // 전송은 최대 정수를 보존하지만, quote 대금 MAX × MAX는 접수 시 표현할 수 없다.
+        // 요청 ID 없는 내부 접수 경계로 확인하므로 거절 요청 기록도 추가하지 않는다.
+        val before = state.snapshot()
+        val rejected =
+            assertIs<OrderAdmissionState.Result.Rejected>(
+                state.admit(
+                    decoded.order,
+                    decoded.market,
+                    decoded.feePolicySnapshot,
+                    decoded.ledgerTransactionId,
+                    decoded.occurredAt,
+                ),
+            )
+        assertEquals(OrderAdmissionResult.Reason.UNREPRESENTABLE_RESERVATION, rejected.reason)
+        assertEquals(before, state.snapshot())
+
+        // 가격 1이면 quote 대금도 MAX이므로 최대 base 수량의 예약을 승인할 수 있다.
+        val representable = zeroScale.copy(order = zeroScale.order.copy(price = Price(1)))
+        val accepted = assertIs<OrderAdmissionState.Result.Accepted>(admit(state, commands.decode(commands.encode(representable))))
+        assertEquals(representable.order, accepted.record.candidate.order)
         assertEquals(Amount(Long.MAX_VALUE), accepted.record.candidate.reservation.reservedAmount)
         assertEquals(
             listOf(Balance(UserId("user-1"), AssetId("BTC"), Amount.ZERO, Amount(Long.MAX_VALUE))),
             state.snapshot().balances,
-            "SELL은 최대 가격과 수량의 곱을 계산하지 않고 BTC 수량만 예약하며 USDT 항목을 만들지 않는다",
+            "전체 quote 대금이 표현 가능한 SELL은 최대 BTC 수량만 예약하며 USDT 항목을 만들지 않는다",
         )
     }
 

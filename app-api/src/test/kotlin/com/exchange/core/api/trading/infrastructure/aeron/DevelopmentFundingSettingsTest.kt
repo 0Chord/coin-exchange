@@ -126,9 +126,9 @@ class DevelopmentFundingSettingsTest {
     @Test
     fun `전송 한계 안의 64개 유니코드 코드포인트와 스케일 경계를 허용한다`() {
         val identifier = "\uD83D\uDE80".repeat(64)
-        listOf(0, 18).forEach { scale ->
+        listOf(0 to 1L, 18 to 1_000_000_000_000_000_000L).forEach { (scale, step) ->
             val context =
-                sui.copy(market = sui.market.copy(marketId = MarketId(identifier), baseAssetScale = scale))
+                sui.copy(market = sui.market.copy(marketId = MarketId(identifier), baseAssetScale = scale, quantityStep = step))
             assertEquals(context, DevelopmentMarketRegistry(listOf(context)).single())
         }
     }
