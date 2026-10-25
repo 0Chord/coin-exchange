@@ -20,6 +20,7 @@ import com.exchange.core.order.BuyOrderFundingQuoteCalculator
 import com.exchange.core.order.OrderFillSettlementCalculator
 import com.exchange.core.order.OrderReservationCalculator
 import com.exchange.core.order.OrderReservationStore
+import com.exchange.core.trading.SettlementLedgerTransactions
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty
 import org.springframework.context.annotation.Bean
 import org.springframework.context.annotation.Configuration
@@ -126,6 +127,7 @@ class LedgerPersistenceConfig {
                     tradingFeeCalculator = TradingFeeCalculator(),
                     tradingFeeReserveCalculator = TradingFeeReserveCalculator(),
                 ),
+            settlementLedgerTransactions = SettlementLedgerTransactions(),
             balanceStore = balanceStore,
             reservationStore = orderReservationStore,
             ledgerTransactionStore = ledgerTransactionStore,

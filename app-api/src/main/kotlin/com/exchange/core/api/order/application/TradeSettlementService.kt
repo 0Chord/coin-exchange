@@ -5,11 +5,7 @@ import com.exchange.core.fee.LiquidityRole
 import com.exchange.core.ledger.BalanceNotFoundException
 import com.exchange.core.ledger.BalanceStore
 import com.exchange.core.ledger.InsufficientHoldException
-import com.exchange.core.ledger.LedgerPosting
-import com.exchange.core.ledger.LedgerPostingSide
-import com.exchange.core.ledger.LedgerTransaction
 import com.exchange.core.ledger.LedgerTransactionStore
-import com.exchange.core.ledger.LedgerTransactionType
 import com.exchange.core.matching.TradeExecuted
 import com.exchange.core.order.MarketDefinition
 import com.exchange.core.order.OrderFillSettlementCalculator
@@ -17,6 +13,7 @@ import com.exchange.core.order.OrderFillSettlementPlan
 import com.exchange.core.order.OrderReservation
 import com.exchange.core.order.OrderReservationNotFoundException
 import com.exchange.core.order.OrderReservationStore
+import com.exchange.core.trading.SettlementLedgerTransactions
 import org.springframework.transaction.annotation.Transactional
 import java.time.Instant
 import java.util.UUID
@@ -32,6 +29,7 @@ import java.util.UUID
  */
 open class TradeSettlementService(
     private val calculator: OrderFillSettlementCalculator,
+    private val settlementLedgerTransactions: SettlementLedgerTransactions,
     private val balanceStore: BalanceStore,
     private val reservationStore: OrderReservationStore,
     private val ledgerTransactionStore: LedgerTransactionStore,
@@ -107,25 +105,16 @@ open class TradeSettlementService(
                 liquidityRole = LiquidityRole.TAKER,
             )
 
-        val makerPostings =
-            createSettlementPostings(
-                reservation = makerReservation,
-                plan = makerPlan,
-            )
-
-        val takerPostings =
-            createSettlementPostings(
-                reservation = takerReservation,
-                plan = takerPlan,
-            )
-
         val ledgerTransaction =
-            LedgerTransaction(
+            settlementLedgerTransactions.create(
+                market = market,
+                engineSequence = trade.engineSequence,
+                makerReservation = makerReservation,
+                makerPlan = makerPlan,
+                takerReservation = takerReservation,
+                takerPlan = takerPlan,
                 ledgerTransactionId = UUID.randomUUID().toString(),
-                sourceEventId = "MATCHING:${trade.marketId.value}:${trade.engineSequence}",
-                transactionType = LedgerTransactionType.SETTLEMENT,
                 occurredAt = Instant.now(),
-                postings = makerPostings + takerPostings,
             )
 
         ledgerTransactionStore.append(ledgerTransaction)
@@ -196,80 +185,5 @@ open class TradeSettlementService(
             assetId = plan.creditAssetId,
             amount = plan.creditAmount,
         )
-    }
-
-    /**
-     * 정산 계획을 사용자·수수료 수익 계정의 분개로 변환하며 잔고를 추가 변경하지 않는다.
-     *
-     * 금액이 0인 분개는 제외한다. 자산별 균형은 양쪽 주문의 분개를 합친 [LedgerTransaction]에서
-     * 검증하며, 한 주문의 분개만으로 균형이 맞는 것은 아니다.
-     *
-     * @param reservation 사용자 ID와 예약 자산을 담은 체결 전 주문 예약
-     * @param plan hold 소비액·반환액, 지급 자산·금액과 실제 수수료를 담은 정산 계획
-     * @return DB 저장이나 잔고 변경 없이 생성한 해당 주문의 분개 목록
-     */
-    private fun createSettlementPostings(
-        reservation: OrderReservation,
-        plan: OrderFillSettlementPlan,
-    ): List<LedgerPosting> {
-        val postings = mutableListOf<LedgerPosting>()
-        val userId = reservation.userId.value
-        val reservedAssetId = reservation.assetId
-        val holdAccountId = "USER:$userId:${reservedAssetId.value}:HOLD"
-
-        if (!plan.holdAmountToConsume.isZero()) {
-            postings.add(
-                LedgerPosting(
-                    accountId = holdAccountId,
-                    assetId = reservedAssetId,
-                    side = LedgerPostingSide.DEBIT,
-                    amount = plan.holdAmountToConsume,
-                ),
-            )
-        }
-
-        if (!plan.holdAmountToRelease.isZero()) {
-            postings.add(
-                LedgerPosting(
-                    accountId = holdAccountId,
-                    assetId = reservedAssetId,
-                    side = LedgerPostingSide.DEBIT,
-                    amount = plan.holdAmountToRelease,
-                ),
-            )
-
-            postings.add(
-                LedgerPosting(
-                    accountId = "USER:$userId:${reservedAssetId.value}:AVAILABLE",
-                    assetId = reservedAssetId,
-                    side = LedgerPostingSide.CREDIT,
-                    amount = plan.holdAmountToRelease,
-                ),
-            )
-        }
-
-        if (!plan.creditAmount.isZero()) {
-            postings.add(
-                LedgerPosting(
-                    accountId = "USER:$userId:${plan.creditAssetId.value}:AVAILABLE",
-                    assetId = plan.creditAssetId,
-                    side = LedgerPostingSide.CREDIT,
-                    amount = plan.creditAmount,
-                ),
-            )
-        }
-
-        if (!plan.actualFeeAmount.isZero()) {
-            postings.add(
-                LedgerPosting(
-                    accountId = "SYSTEM:${plan.feeAssetId.value}:FEE_REVENUE",
-                    assetId = plan.feeAssetId,
-                    side = LedgerPostingSide.CREDIT,
-                    amount = plan.actualFeeAmount,
-                ),
-            )
-        }
-
-        return postings
     }
 }
