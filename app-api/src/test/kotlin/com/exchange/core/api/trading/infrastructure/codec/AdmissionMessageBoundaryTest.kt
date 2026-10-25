@@ -132,7 +132,7 @@ class AdmissionMessageBoundaryTest {
     @Test
     fun `명령의 필수 필드 하나라도 누락하면 0이나 빈 문자열로 채우지 않는다`() {
         val original = wireCommandBuilder().build()
-        assertEquals((1..21).toList(), original.descriptorForType.fields.map { it.number })
+        assertEquals((1..23).toList(), original.descriptorForType.fields.map { it.number })
         original.descriptorForType.fields.forEach { field ->
             val missing = original.toBuilder().clearField(field).build()
             assertCommandRejected("누락 ${field.name}", protobufFrame(1, missing.toByteArray()))
@@ -167,6 +167,13 @@ class AdmissionMessageBoundaryTest {
                 "수량 -1" to wireCommandBuilder().setQuantity(-1),
                 "scale 19" to wireCommandBuilder().setBaseAssetScale(19),
                 "scale -1" to wireCommandBuilder().setBaseAssetScale(-1),
+                "가격 단위 0" to wireCommandBuilder().setPriceTick(0),
+                "가격 단위 -1" to wireCommandBuilder().setPriceTick(-1),
+                "수량 단위 0" to wireCommandBuilder().setQuantityStep(0),
+                "수량 단위 -1" to wireCommandBuilder().setQuantityStep(-1),
+                "scale과 나누어떨어지지 않는 단위" to wireCommandBuilder().setPriceTick(3).setQuantityStep(2),
+                "Long 곱 범위를 넘지만 호환되지 않는 단위" to
+                    wireCommandBuilder().setBaseAssetScale(18).setPriceTick(Long.MAX_VALUE).setQuantityStep(Long.MAX_VALUE),
                 "정책 버전 0" to wireCommandBuilder().setScheduleVersion(0),
                 "정책 버전 -1" to wireCommandBuilder().setScheduleVersion(-1),
                 "maker -1ppm" to wireCommandBuilder().setMakerPpm(-1),
@@ -257,7 +264,7 @@ class AdmissionMessageBoundaryTest {
         val maximum =
             original.copy(
                 order = original.order.copy(side = Side.SELL, price = Price(Long.MAX_VALUE), quantity = Quantity(Long.MAX_VALUE)),
-                market = original.market.copy(baseAssetScale = 18),
+                market = original.market.copy(baseAssetScale = 18, quantityStep = 1_000_000_000_000_000_000L),
                 feePolicySnapshot =
                     original.feePolicySnapshot.copy(
                         scheduleVersion = Long.MAX_VALUE,
@@ -269,7 +276,7 @@ class AdmissionMessageBoundaryTest {
             val command = maximum.copy(occurredAt = time)
             assertEquals(command, commands.decode(commands.encode(command)), "시각 $time")
         }
-        val zeroScale = maximum.copy(market = maximum.market.copy(baseAssetScale = 0), occurredAt = Instant.EPOCH)
+        val zeroScale = maximum.copy(market = maximum.market.copy(baseAssetScale = 0, quantityStep = 1), occurredAt = Instant.EPOCH)
         val decoded = commands.decode(commands.encode(zeroScale))
         assertEquals(zeroScale, decoded)
 

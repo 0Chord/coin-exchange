@@ -1,6 +1,7 @@
 package com.exchange.core.api.market.api
 
 import com.exchange.core.api.trading.infrastructure.aeron.MarketConfigurationDatabase
+import com.exchange.core.api.trading.infrastructure.aeron.readDevelopmentMarkets
 import org.junit.jupiter.api.AfterAll
 import org.junit.jupiter.api.BeforeAll
 import org.junit.jupiter.api.TestInstance
@@ -38,6 +39,71 @@ class MarketConfigurationHttpTest {
     fun stop() {
         if (::server.isInitialized) server.close()
         if (::database.isInitialized) database.close()
+    }
+
+    @Test
+    fun `관리 DTO의 가격 수량 단위는 DB와 노드에서 그대로 읽고 예전 문서의 기본 단위 재등록은 원문을 유지한다`() {
+        val configured = REQUEST.replace("\"feePolicy\":", "\"priceTick\":25,\"quantityStep\":4000000,\"feePolicy\":")
+        val created = server.put("5400", configured)
+        assertEquals(200, created.statusCode())
+        val detail = json(server.get("/5400"))
+        val document = detail.path("document").asString()
+        val stored = mapper.readTree(document).first()
+        assertEquals(25L, stored.path("priceTick").asLong())
+        assertEquals(4_000_000L, stored.path("quantityStep").asLong())
+        val market = readDevelopmentMarkets(database.environment(5400, document)).single().market
+        assertEquals(25L, market.priceTick)
+        assertEquals(4_000_000L, market.quantityStep)
+        assertEquals(json(created).path("sha256"), detail.path("sha256"))
+        assertEquals(1, rowCount(5400))
+
+        assertEquals(200, server.put("5401", REQUEST).statusCode())
+        val legacy = json(server.get("/5401"))
+        val explicitDefaults = REQUEST.replace("\"feePolicy\":", "\"priceTick\":1,\"quantityStep\":100000000,\"feePolicy\":")
+        assertEquals(200, server.put("5401", explicitDefaults).statusCode())
+        assertEquals(legacy, json(server.get("/5401")))
+        assertEquals(DOCUMENT, legacy.path("document").asString())
+        assertEquals(DOCUMENT_SHA256, legacy.path("sha256").asString())
+
+        val changed = configured.replace("\"quantityStep\":4000000", "\"quantityStep\":8000000")
+        val conflict = server.put("5400", changed)
+        assertEquals(409, conflict.statusCode())
+        assertEquals("CONTENT_CONFLICT", json(conflict).path("code").asString())
+        assertEquals(detail, json(server.get("/5400")))
+    }
+
+    @Test
+    fun `관리 DTO는 단위 한쪽 누락 null 비정수와 양수 범위 오류를 등록 전에 거절한다`() {
+        val invalidUnits =
+            listOf(
+                "\"priceTick\":25,",
+                "\"quantityStep\":4000000,",
+                "\"priceTick\":null,\"quantityStep\":null,",
+                "\"priceTick\":null,\"quantityStep\":4000000,",
+                "\"priceTick\":25,\"quantityStep\":null,",
+                "\"priceTick\":0,\"quantityStep\":4000000,",
+                "\"priceTick\":25,\"quantityStep\":0,",
+                "\"priceTick\":-1,\"quantityStep\":4000000,",
+                "\"priceTick\":25,\"quantityStep\":-1,",
+                "\"priceTick\":\"25\",\"quantityStep\":4000000,",
+                "\"priceTick\":25,\"quantityStep\":\"4000000\",",
+                "\"priceTick\":25.0,\"quantityStep\":4000000,",
+                "\"priceTick\":25,\"quantityStep\":4000000e0,",
+                "\"priceTick\":true,\"quantityStep\":4000000,",
+                "\"priceTick\":25,\"quantityStep\":false,",
+                "\"priceTick\":9223372036854775808,\"quantityStep\":4000000,",
+                "\"priceTick\":25,\"quantityStep\":9223372036854775808,",
+            )
+        invalidUnits.forEachIndexed { index, units ->
+            val request = REQUEST.replace("\"feePolicy\":", "$units\"feePolicy\":")
+            assertInvalidRequest(5500L + index, request.toByteArray())
+        }
+        val incompatible = REQUEST.replace("\"feePolicy\":", "\"priceTick\":2,\"quantityStep\":30000000,\"feePolicy\":")
+        val response = server.put("5600", incompatible)
+        assertEquals(400, response.statusCode())
+        assertEquals("INVALID_INPUT", json(response).path("code").asString())
+        assertEquals(0, rowCount(5600))
+        assertSanitized(response.body())
     }
 
     @Test

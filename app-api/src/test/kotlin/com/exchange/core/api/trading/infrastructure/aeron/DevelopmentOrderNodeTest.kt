@@ -157,16 +157,16 @@ class DevelopmentOrderNodeTest {
     }
 
     @Test
-    fun `신규 주문의 설정 열 필드는 각각 사유 9이고 고친 같은 요청은 처음 접수된다`() {
+    fun `신규 주문의 설정 불일치는 각각 사유 9이고 고친 같은 요청은 처음 접수된다`() {
         val config = config()
         DevelopmentFundingNode.start(config).use { node ->
-            prepare(config)
+            prepare(config, amount = 2_000_000_000)
             val prototype = order().let { it.copy(order = it.order.copy(quantity = Quantity(100_000_000))) }
             val mismatches =
                 listOf("주문 marketId" to prototype.copy(order = prototype.order.copy(marketId = MarketId("ETH-USDT")))) +
                     contextChanges(prototype)
 
-            assertEquals(10, mismatches.size)
+            assertEquals(12, mismatches.size)
             mismatches.forEachIndexed { index, (field, mismatch) ->
                 val correct =
                     prototype.copy(
@@ -194,7 +194,7 @@ class DevelopmentOrderNodeTest {
                 val accepted = assertIs<AdmissionResultPayload.Accepted>(request(config, correct), field)
                 assertEquals(index + 1L, accepted.sequence, field)
                 val current = snapshot(node)
-                assertBalance(current, available = 900_000_000L - index * 100_000_000L, hold = (index + 1L) * 100_000_000L)
+                assertBalance(current, available = 1_900_000_000L - index * 100_000_000L, hold = (index + 1L) * 100_000_000L)
                 assertEquals(index + 1, current.pendingOrders.size, field)
                 assertEquals(index + 1, current.requests.size, field)
                 assertNull(node.error, field)
@@ -539,6 +539,8 @@ class DevelopmentOrderNodeTest {
             "기준 자산" to command.copy(market = command.market.copy(baseAssetId = AssetId("ETH"))),
             "표시 자산" to command.copy(market = command.market.copy(quoteAssetId = AssetId("KRW"))),
             "수량 scale" to command.copy(market = command.market.copy(baseAssetScale = 7)),
+            "가격 단위" to command.copy(market = command.market.copy(priceTick = 2)),
+            "수량 단위" to command.copy(market = command.market.copy(quantityStep = 200_000_000)),
             "상품" to command.copy(feePolicySnapshot = command.feePolicySnapshot.copy(productType = FeeProductType.PERPETUAL_FUTURES)),
             "수수료 등급" to command.copy(feePolicySnapshot = command.feePolicySnapshot.copy(feeTier = FeeTier.VIP)),
             "수수료 버전" to command.copy(feePolicySnapshot = command.feePolicySnapshot.copy(scheduleVersion = 2)),

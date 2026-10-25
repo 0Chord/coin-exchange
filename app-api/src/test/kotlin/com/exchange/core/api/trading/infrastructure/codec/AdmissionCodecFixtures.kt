@@ -102,6 +102,8 @@ internal fun wireCommandBuilder(): WireAdmissionCommand.Builder =
         .setBaseAssetId("BTC")
         .setQuoteAssetId("USDT")
         .setLedgerTransactionId("ledger-O1")
+        .setPriceTick(1)
+        .setQuantityStep(100_000_000)
 
 /** 명세의 8바이트 헤더를 테스트가 독립적으로 붙인다. */
 internal fun protobufFrame(

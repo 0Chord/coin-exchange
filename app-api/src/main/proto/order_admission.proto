@@ -30,6 +30,9 @@ message AdmissionCommand {
   optional string base_asset_id = 19;
   optional string quote_asset_id = 20;
   optional string ledger_transaction_id = 21;
+  // 함께 존재하거나 함께 생략한다. 생략한 이전 v2 명령은 tick=1, step=10^scale이다.
+  optional int64 price_tick = 22;
+  optional int64 quantity_step = 23;
 }
 
 message AdmissionAccepted {

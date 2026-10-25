@@ -134,6 +134,8 @@ private fun fixtureMarket(order: FixedObservedOrder) =
         "baseAssetId" to order.base,
         "quoteAssetId" to "USDT",
         "baseQuantityScale" to order.scale,
+        "priceTick" to 1L,
+        "quantityStep" to if (order.scale == 8) 100_000_000L else 1_000_000_000L,
     )
 
 private fun fixturePolicy(order: FixedObservedOrder) =

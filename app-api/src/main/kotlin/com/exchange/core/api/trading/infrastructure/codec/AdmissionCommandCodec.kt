@@ -55,6 +55,8 @@ class AdmissionCommandCodec {
                 .setBaseAssetId(AdmissionMessageFormat.text(command.market.baseAssetId.value))
                 .setQuoteAssetId(AdmissionMessageFormat.text(command.market.quoteAssetId.value))
                 .setLedgerTransactionId(AdmissionMessageFormat.text(command.ledgerTransactionId))
+                .setPriceTick(command.market.priceTick)
+                .setQuantityStep(command.market.quantityStep)
                 .build()
         return AdmissionMessageFormat.encode(AdmissionMessageFormat.COMMAND, message)
     }
@@ -79,6 +81,10 @@ class AdmissionCommandCodec {
                     message.hasBaseAssetId() && message.hasQuoteAssetId() && message.hasLedgerTransactionId(),
                 "명령의 필수 필드가 누락됐습니다",
             )
+            AdmissionMessageFormat.verify(
+                message.hasPriceTick() == message.hasQuantityStep(),
+                "가격·수량 단위는 함께 존재하거나 함께 생략해야 합니다",
+            )
             AdmissionMessageFormat.verify(message.occurredAtNano in 0..999_999_999, "나노초 범위가 잘못됐습니다")
             AdmissionCommandPayload(
                 AdmissionMessageFormat.text(message.requestId),
@@ -92,12 +98,7 @@ class AdmissionCommandCodec {
                     Price(message.price),
                     Quantity(message.quantity),
                 ),
-                MarketDefinition(
-                    MarketId(AdmissionMessageFormat.text(message.definitionMarketId)),
-                    AssetId(AdmissionMessageFormat.text(message.baseAssetId)),
-                    AssetId(AdmissionMessageFormat.text(message.quoteAssetId)),
-                    message.baseAssetScale,
-                ),
+                marketDefinition(message),
                 TradingFeePolicySnapshot(
                     FeeProductType.valueOf(message.productType.name),
                     FeeTier.valueOf(message.feeTier.name),
@@ -108,4 +109,20 @@ class AdmissionCommandCodec {
                 Instant.ofEpochSecond(message.occurredAtEpochSecond, message.occurredAtNano.toLong()),
             )
         }
+
+    private fun marketDefinition(message: AdmissionCommand): MarketDefinition {
+        // 이전 v2 명령은 생성자의 기본 단위로 복원한다. 새 단위도 같은 도메인 불변식으로 검사한다.
+        val market =
+            MarketDefinition(
+                MarketId(AdmissionMessageFormat.text(message.definitionMarketId)),
+                AssetId(AdmissionMessageFormat.text(message.baseAssetId)),
+                AssetId(AdmissionMessageFormat.text(message.quoteAssetId)),
+                message.baseAssetScale,
+            )
+        return if (message.hasPriceTick()) {
+            market.copy(priceTick = message.priceTick, quantityStep = message.quantityStep)
+        } else {
+            market
+        }
+    }
 }

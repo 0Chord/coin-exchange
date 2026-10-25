@@ -474,7 +474,7 @@ class OrderSettlementContractTest {
 
     @Test
     fun `소수 대금을 정수로 정확히 표현할 수 없으면 반올림하지 않는다`() {
-        val fractionalMarket = market.copy(baseAssetScale = 2)
+        val fractionalMarket = market.copy(baseAssetScale = 2, priceTick = 100)
         val buyer = reservation("buy", "buyer", Side.BUY, 200, 2).copy(reservedAmount = Amount(4), remainingAmount = Amount(4))
         val seller = reservation("sell-1", "seller", Side.SELL, 150, 1)
         val f =

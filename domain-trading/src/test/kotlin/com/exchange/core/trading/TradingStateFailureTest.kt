@@ -124,7 +124,7 @@ class TradingStateFailureTest {
                 "최초 수량" to { write(it, "order", it.order.copy(quantity = Quantity(2))) },
                 "최초 소유자" to { write(it, "order", it.order.copy(userId = UserId("wrong-original-owner"))) },
                 "최초 지정가" to { write(it, "order", it.order.copy(price = Price(89))) },
-                "마켓 scale" to { write(it, "market", market.copy(baseAssetScale = 1)) },
+                "마켓 scale" to { write(it, "market", market.copy(baseAssetScale = 1, quantityStep = 10)) },
                 "마켓 자산" to { write(it, "market", market.copy(baseAssetId = AssetId("OTHER"))) },
                 "정책 snapshot" to { write(it, "feePolicySnapshot", zeroPolicy.copy(scheduleVersion = 2)) },
             )

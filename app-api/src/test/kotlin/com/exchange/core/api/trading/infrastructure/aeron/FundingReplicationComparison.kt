@@ -194,6 +194,8 @@ private fun expectedFundingMarkets(): List<Map<String, Any>> =
             "baseAssetId" to "BTC",
             "quoteAssetId" to "USDT",
             "baseQuantityScale" to 8,
+            "priceTick" to 1L,
+            "quantityStep" to 100_000_000L,
             "feePolicy" to
                 mapOf(
                     "productType" to "SPOT",

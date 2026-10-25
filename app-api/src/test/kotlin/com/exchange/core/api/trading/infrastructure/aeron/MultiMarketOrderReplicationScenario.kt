@@ -182,6 +182,8 @@ private fun multiMarket(asset: String): Map<String, Any> =
         "baseAssetId" to asset,
         "quoteAssetId" to "USDT",
         "baseQuantityScale" to if (asset == "BTC") 8 else 9,
+        "priceTick" to 1L,
+        "quantityStep" to if (asset == "BTC") 100_000_000L else 1_000_000_000L,
         "feePolicy" to multiPolicy(asset),
     )
 

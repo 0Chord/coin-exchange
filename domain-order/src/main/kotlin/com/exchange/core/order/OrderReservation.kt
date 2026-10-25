@@ -9,6 +9,7 @@ import com.exchange.core.common.Quantity
 import com.exchange.core.common.UserId
 import com.exchange.core.fee.FeeRemainder
 import com.exchange.core.fee.TradingFeePolicySnapshot
+import java.math.BigInteger
 
 /**
  * 하나의 market을 구성하는 자산 정보.
@@ -22,12 +23,17 @@ import com.exchange.core.fee.TradingFeePolicySnapshot
  * @property quoteAssetId 가격과 대금을 표현하는 자산. 예: KRW
  * @property baseAssetScale base 자산 수량을 최소 단위로 표현할 때 사용하는 소수점 자릿수.
  * 예를 들어 BTC가 8이면 1 BTC는 100,000,000 최소 단위다
+ * @property priceTick 허용 가격의 간격. 가격은 이 값의 배수여야 한다
+ * @property quantityStep 허용 수량의 간격. 최소 체결 수량도 이 값의 배수여야 한다.
+ * 생략하면 base 자산 1단위로 제한한다. 소수 수량을 허용하려면 가격 간격과 함께 명시한다
  */
 data class MarketDefinition(
     val marketId: MarketId,
     val baseAssetId: AssetId,
     val quoteAssetId: AssetId,
     val baseAssetScale: Int,
+    val priceTick: Long = 1,
+    val quantityStep: Long = defaultQuantityStep(baseAssetScale),
 ) {
     init {
         require(baseAssetId != quoteAssetId) {
@@ -37,7 +43,30 @@ data class MarketDefinition(
         require(baseAssetScale in 0..18) {
             "baseAssetScale must be between 0 and 18"
         }
+
+        require(priceTick > 0) { "priceTick must be positive" }
+        require(quantityStep > 0) { "quantityStep must be positive" }
+
+        // 모든 허용 가격과 부분 체결 수량의 곱이 quote 최소 단위로 정확히 나뉘어야 한다.
+        val minimumQuoteNumerator = BigInteger.valueOf(priceTick).multiply(BigInteger.valueOf(quantityStep))
+        require(minimumQuoteNumerator.mod(BigInteger.TEN.pow(baseAssetScale)) == BigInteger.ZERO) {
+            "priceTick and quantityStep must produce an exact quote amount"
+        }
     }
+
+    /** 주문·체결·잔량이 같은 마켓 단위를 지키는지 확인한다. 완료 뒤 잔량 0도 허용한다. */
+    fun requireOrderUnits(
+        price: Price,
+        quantity: Quantity,
+    ) {
+        require(price.value % priceTick == 0L) { "order price must align with market price tick" }
+        require(quantity.value % quantityStep == 0L) { "order quantity must align with market quantity step" }
+    }
+}
+
+private fun defaultQuantityStep(baseAssetScale: Int): Long {
+    require(baseAssetScale in 0..18) { "baseAssetScale must be between 0 and 18" }
+    return BigInteger.TEN.pow(baseAssetScale).longValueExact()
 }
 
 /**
@@ -416,8 +445,8 @@ class OrderReservationCalculator(
      * @param quantity 주문할 base 자산 수량
      * @param feePolicySnapshot 주문 접수 시점에 확정한 maker/taker 수수료 정책
      * @return Balance에서 hold로 이동해야 할 자산과 금액
-     * @throws IllegalArgumentException 주문 수량이 0이거나 quote 금액을 정확히 표현할 수
-     * 없는 경우
+     * @throws IllegalArgumentException 주문 수량이 0이거나 가격·수량이 마켓 단위에 맞지
+     * 않거나, BUY·SELL의 전체 quote 대금을 Long으로 정확히 표현할 수 없는 경우
      */
     fun calculate(
         market: MarketDefinition,
@@ -429,20 +458,17 @@ class OrderReservationCalculator(
         require(quantity.value > 0) {
             "reservation quantity must be positive"
         }
+        market.requireOrderUnits(price, quantity)
+
+        // SELL도 이후 정산할 전체 quote 대금의 범위를 먼저 확인하되 base 수량만 예약한다.
+        val quoteAmount = calculateQuoteAmount(price, quantity, market.baseAssetScale)
 
         return when (side) {
             Side.BUY -> {
-                val tradeReserveAmount =
-                    calculateQuoteAmount(
-                        price = price,
-                        quantity = quantity,
-                        baseAssetScale = market.baseAssetScale,
-                    )
-
                 val fundingQuote =
                     buyOrderFundingQuoteCalculator.calculate(
                         market = market,
-                        tradeBudgetAmount = tradeReserveAmount,
+                        tradeBudgetAmount = quoteAmount,
                         feePolicySnapshot = feePolicySnapshot,
                     )
 

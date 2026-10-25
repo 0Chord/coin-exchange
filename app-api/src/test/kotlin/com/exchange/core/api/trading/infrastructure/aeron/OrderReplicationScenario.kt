@@ -250,7 +250,15 @@ internal enum class OrderReplicationScenario(
             "RESERVE:v1:21ba2bc56891bdbbb61c40228d7fcf95d515c4090f0a6f48d07ee83763a50a8b"
         }
 
-    private fun market() = mapOf("marketId" to "BTC-USDT", "baseAssetId" to "BTC", "quoteAssetId" to "USDT", "baseQuantityScale" to 8)
+    private fun market() =
+        mapOf(
+            "marketId" to "BTC-USDT",
+            "baseAssetId" to "BTC",
+            "quoteAssetId" to "USDT",
+            "baseQuantityScale" to 8,
+            "priceTick" to 1L,
+            "quantityStep" to 100_000_000L,
+        )
 
     private fun policy() =
         mapOf(

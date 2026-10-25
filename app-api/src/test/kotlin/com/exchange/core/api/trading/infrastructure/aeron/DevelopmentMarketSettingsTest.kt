@@ -22,9 +22,45 @@ class DevelopmentMarketSettingsTest {
         assertEquals("SUI", actual.market.baseAssetId.value)
         assertEquals("USDT", actual.market.quoteAssetId.value)
         assertEquals(9, actual.market.baseAssetScale)
+        assertEquals(1L, actual.market.priceTick)
+        assertEquals(1_000_000_000L, actual.market.quantityStep)
         assertEquals(2L, actual.feePolicySnapshot.scheduleVersion)
         assertEquals(0L, actual.feePolicySnapshot.feeRates.makerFeeRate.partsPerMillion)
         assertEquals(0L, actual.feePolicySnapshot.feeRates.takerFeeRate.partsPerMillion)
+    }
+
+    @Test
+    fun `가격 수량 단위를 함께 읽고 Long 곱셈 범위를 넘는 호환 단위도 허용한다`() {
+        val configured = read("[${withUnits("25", "4000000")}]").single().market
+        assertEquals(25L, configured.priceTick)
+        assertEquals(4_000_000L, configured.quantityStep)
+
+        val large =
+            read("[${withUnits("5000000000", "5000000000", market(scale = 18))}]").single().market
+        assertEquals(5_000_000_000L, large.priceTick)
+        assertEquals(5_000_000_000L, large.quantityStep)
+        listOf(0 to 1L, 18 to 1_000_000_000_000_000_000L).forEach { (scale, defaultStep) ->
+            val legacy = read("[${market(scale = scale)}]").single().market
+            assertEquals(1L, legacy.priceTick)
+            assertEquals(defaultStep, legacy.quantityStep)
+        }
+    }
+
+    @Test
+    fun `가격 수량 단위의 한쪽 누락 null 비정수 음수와 정산할 수 없는 조합을 거절한다`() {
+        listOf(
+            market().replace("\"feePolicy\":", "\"priceTick\":25,\"feePolicy\":"),
+            market().replace("\"feePolicy\":", "\"quantityStep\":4000000,\"feePolicy\":"),
+            withUnits("null", "null"),
+            withUnits("null", "4000000"),
+            withUnits("25", "null"),
+            withUnits("2", "30000000"),
+        ).forEach { assertInvalid("[$it]") }
+        listOf("0", "-1", "\"25\"", "25.0", "25e0", "true", "9223372036854775808", "-9223372036854775809")
+            .forEach { invalid ->
+                assertInvalid("[${withUnits(invalid, "4000000")}]")
+                assertInvalid("[${withUnits("25", invalid)}]")
+            }
     }
 
     @Test
@@ -198,6 +234,12 @@ class DevelopmentMarketSettingsTest {
     }
 
     private fun read(json: String): DevelopmentMarketRegistry = parseDevelopmentMarketsDocument(json)
+
+    private fun withUnits(
+        priceTick: String,
+        quantityStep: String,
+        document: String = market(),
+    ): String = document.replace("\"feePolicy\":", "\"priceTick\":$priceTick,\"quantityStep\":$quantityStep,\"feePolicy\":")
 
     private fun market(
         id: String = "BTC-USDT",

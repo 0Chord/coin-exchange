@@ -152,6 +152,8 @@ class FundingReplicationComparisonTest {
                 "baseAssetId" to "OTHER",
                 "quoteAssetId" to "OTHER",
                 "baseQuantityScale" to 8,
+                "priceTick" to 2L,
+                "quantityStep" to 2_000_000_000L,
                 "productType" to "PERPETUAL_FUTURES",
                 "feeTier" to "WRONG",
                 "scheduleVersion" to 1,
@@ -348,6 +350,8 @@ class FundingReplicationComparisonTest {
                 "baseAssetId" to "BTC",
                 "quoteAssetId" to "USDT",
                 "baseQuantityScale" to 8,
+                "priceTick" to 1L,
+                "quantityStep" to 100_000_000L,
                 "feePolicy" to
                     mapOf(
                         "productType" to "SPOT",
@@ -364,6 +368,8 @@ class FundingReplicationComparisonTest {
                 "baseAssetId" to "SUI",
                 "quoteAssetId" to "USDT",
                 "baseQuantityScale" to 9,
+                "priceTick" to 1L,
+                "quantityStep" to 1_000_000_000L,
                 "feePolicy" to
                     mapOf(
                         "productType" to "SPOT",

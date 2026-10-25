@@ -23,7 +23,7 @@
 | 예약·잔고·원장을 1.5 BTC로 맞추되 주문은 2 BTC | 후보 생성 거절 | 숫자끼리 맞아도 주문의 의미가 다르면 허용하지 않음 |
 | hold=MAX에서 1 추가 | ArithmeticException | 원본 유지, 잔고 부족으로 바꾸지 않음 |
 
-**‘계산 후보’와 ‘접수 성공’은 다르다.** 같은 입력으로 후보를 여러 번 계산할 수 있다. 최신 엔진 상태에 실제로 적용하는 일은 #85, 재전송 처리 #86, 매칭·정산·복제·DB는 후속이다. quote 대금의 전체/부분 체결 단위 검사는 #46이다. 이번 SELL 후보 성공이 모든 정산 성공을 보장하지 않는다.
+**‘계산 후보’와 ‘접수 성공’은 다르다.** 이 문서는 #84의 당시 구현 기록이다. 최신 코드의 접수·재전송·매칭·정산 연결은 후속 이슈에서 추가됐다. #128 리뷰 수정에서는 원래 #46에 남겼던 가격·수량 단위와 전체 대금 범위 검증도 BUY·SELL 예약 전에 포함했다. 최신 조건과 사례는 [거래 상태 읽기의 정밀도 수정](trading-state-review.md#precision)을 따른다.
 
 ## 읽을 파일과 역할
 
@@ -54,13 +54,13 @@
 | [테스트](../domain-trading/src/test/kotlin/com/exchange/core/trading/OrderAdmissionCalculatorTest.kt#L156) | 유효한 SELL에 USDT 또는 타 사용자 BTC | 각 잔고로 계산 | IllegalArgumentException, 해당 원본 잔고 유지 |
 | [테스트](../domain-trading/src/test/kotlin/com/exchange/core/trading/OrderAdmissionCalculatorTest.kt#L167) | SELL, 다른 마켓/비현물 정책/잘못된 기록·자산 ID를 각각 준비 | 각 잘못된 문맥으로 계산 | IllegalArgumentException, 원본 BTC 3/0 유지. 길이 65·NUL·잘못된 high/low surrogate 및 기록 ID 빈값/공백, 자산 ID 콜론 포함 |
 | [테스트](../domain-trading/src/test/kotlin/com/exchange/core/trading/OrderAdmissionCalculatorTest.kt#L192) | SELL의 market/order/user ID를 길이 65·NUL·high/low surrogate로 각각 설정, 사용자 콜론도 별도 | 각 입력으로 계산 | INVALID_ORDER_IDENTIFIER, 전달 잔고 유지 |
-| [테스트](../domain-trading/src/test/kotlin/com/exchange/core/trading/OrderAdmissionCalculatorTest.kt#L220) | 가격 1·수량 1 / 가격 MAX·수량 2 BTC / 가격 MAX·수량 MAX, 각 충분한 BTC·100% 정책 | 각 입력으로 계산 | 새 잔고 0/1단위, 1/2 BTC, 0/MAX. base 수량만 예약, 수수료 0, 정책·원본 유지 |
+| [테스트](../domain-trading/src/test/kotlin/com/exchange/core/trading/OrderAdmissionCalculatorTest.kt#L220) | 가격 1·수량 1 / 가격 MAX·수량 2 BTC / 가격 MAX·수량 MAX, 각 충분한 BTC | 각 입력으로 계산 | 최신 코드는 단위 위반 또는 quote 대금 초과를 정상 거절하고 원본을 유지. 호환되는 최소 수량 설정에서 대금 범위 안의 MAX 수량 정상 대조도 확인 |
 | [테스트](../domain-trading/src/test/kotlin/com/exchange/core/trading/OrderAdmissionCalculatorTest.kt#L254) | BTC 내부 1/MAX, 다음은 MAX/1, 수량 1 | 첫 계산에서 오류 확인 후 별개 잔고로 정상 계산 | 첫 번째 hold 합산만 ArithmeticException·원본 유지. 두 번째 MAX−1/2 후보와 원본 유지 |
 | [테스트](../domain-trading/src/test/kotlin/com/exchange/core/trading/OrderAdmissionCalculatorTest.kt#L275) | 동일 SELL·원본 잔고·명시 ID/시각 | 두 번 계산 후 다른 기록 ID·60초 뒤 시각으로 세 번째 계산 | 첫 두 후보 전체 값, 세 번째 ID/시각 변경과 같은 사건 ID·예약·분개·새 잔고. 이전 후보와 입력 유지 |
 | [테스트](../domain-trading/src/test/kotlin/com/exchange/core/trading/OrderAdmissionCalculatorTest.kt#L391) | BUY와 SELL 각각 수량 0 | 각 입력으로 계산 | INVALID_QUANTITY, 입력 수량 0 유지. 값 타입이 막는 음수/0 가격 검증으로 확대하지 않음 |
 | [테스트](../domain-trading/src/test/kotlin/com/exchange/core/trading/OrderAdmissionCalculatorTest.kt#L401) | BUY/SELL 각각 MARKET 또는 IOC, 총 네 조합 | 각 입력으로 계산 | 모두 UNSUPPORTED_ORDER_CONDITION. SELL LIMIT+GTC는 정상 테스트에서 허용 |
 
-최소 수량·MAX 사례의 예약액은 base 수량이다. 가격 1·수량 1·scale 8의 quote 대금이나 2×MAX 대금을 SELL 접수 단계에서 계산하지 않는 것은 기존 SELL 규칙이다. 실제 체결 가능성 검증이 끝났다는 뜻으로 읽으면 안 된다.
+SELL 예약액은 여전히 base 수량이고 수수료 선예약은 0이다. 다만 #128 리뷰 수정부터는 가격·수량 단위 및 전체 quote 대금 범위도 예약 전에 검사한다. 예전의 ‘quote 표현과 무관하게 예약’ 기대는 승인된 부분 체결 안전성 규칙에 맞춰 거절로 바뀌었다. hold 합산 overflow 검사는 최소 수량을 허용하는 호환 설정을 명시해 기존 경계를 계속 실행한다.
 
 ### 후보 — 잘못된 조합도 그럴듯할 수 있다
 
@@ -175,4 +175,4 @@ cd /Users/0chord/.codex/worktrees/issue84-sell-candidate/exchange-core
 
 SELL은 팔 BTC를 먼저 묶고 실제 판매대금에서 수수료를 빼므로 USDT를 미리 예약하지 않는다. 판매대금 200 USDT·수수료 0.2%라면 199.6을 받는다는 숫자는 기존 정산 규칙의 설명이며 이번 코드가 정산까지 실행한 결과는 아니다.
 
-후보 계산과 실제 접수의 구분, SELL 수수료 선예약 없음, quote 단위 검사 #46의 후속 경계를 먼저 확인한다. 테스트·독립 AI 리뷰 통과를 사람의 이해·승인으로 표시하지 않는다.
+후보 계산과 실제 접수의 구분, SELL 수수료 선예약 없음, [최신 가격·수량 검증](trading-state-review.md#precision)을 먼저 확인한다. 테스트·독립 AI 리뷰 통과를 사람의 이해·승인으로 표시하지 않는다.
