@@ -145,6 +145,13 @@ internal class OrderBook {
      */
     fun bestAskLevel(): PriceLevel? = asks.firstEntry()?.value
 
+    /** 실제 주문을 변경하지 않고 반대편 가격·FIFO 순서로 읽는다. 엔진 내부에서만 사용한다. */
+    fun oppositeOrders(takerSide: Side): Sequence<BookOrder> =
+        when (takerSide) {
+            Side.BUY -> asks
+            Side.SELL -> bids
+        }.values.asSequence().flatMap { it.ordersInOrder() }
+
     /**
      * 전량 체결된 주문을 book과 취소용 인덱스에서 제거한다.
      *
