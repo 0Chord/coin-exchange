@@ -123,7 +123,7 @@ internal class AeronOrderGateway(
                         transport = null
                         clearDisconnected()
                         if (synchronized(lock) { closing }) break
-                        transport = openTransport()
+                        transport = reconnect() ?: break
                         synchronized(lock) { available = !closing }
                     }
                     val current = checkNotNull(transport)
@@ -137,7 +137,7 @@ internal class AeronOrderGateway(
                     transport = null
                     clearDisconnected()
                     if (synchronized(lock) { closing }) break
-                    transport = openTransport()
+                    transport = reconnect() ?: break
                     synchronized(lock) { available = !closing }
                 }
             }
@@ -157,6 +157,20 @@ internal class AeronOrderGateway(
                 clearDisconnected()
             }
         }
+    }
+
+    /** 최초 시작 실패와 달리 교체 연결 실패는 새 요청을 막은 채 종료 요청까지 재시도한다. */
+    private fun reconnect(): GatewayOrderTransport? {
+        val retryIdle = SleepingMillisIdleStrategy(100)
+        while (!synchronized(lock) { closing }) {
+            try {
+                return openTransport()
+            } catch (error: Exception) {
+                logger.warn("Aeron 교체 연결을 열지 못해 신규 요청을 차단한 채 재시도합니다", error)
+                retryIdle.idle()
+            }
+        }
+        return null
     }
 
     private fun sendQueued(transport: GatewayOrderTransport): Int =

@@ -253,6 +253,49 @@ class AeronOrderGatewayTest {
     }
 
     @Test
+    fun `연결 오류 뒤 교체 연결이 실패해도 재시도하여 새 주문을 처리한다`() {
+        assertRecoveryAfterFailedReplacement(timedOut = false)
+    }
+
+    @Test
+    fun `결과 기한 만료 뒤 교체 연결이 실패해도 재시도하여 새 주문을 처리한다`() {
+        assertRecoveryAfterFailedReplacement(timedOut = true)
+    }
+
+    @Test
+    fun `교체 연결이 계속 실패하는 동안에도 종료할 수 있다`() {
+        val old = TestTransport()
+        val opens = AtomicInteger()
+        val failedAttempts = CountDownLatch(2)
+        val gateway =
+            AeronOrderGateway(settings(), markets) {
+                if (opens.getAndIncrement() == 0) {
+                    old
+                } else {
+                    failedAttempts.countDown()
+                    throw IllegalStateException("cluster unavailable")
+                }
+            }
+        try {
+            val result = gateway.submit(submission())
+            old.awaitOffer()
+            old.pollFailure.set(IllegalStateException("connection lost"))
+
+            assertEquals(TradingAdmissionResult.Unknown("CONNECTION_LOST"), result.await())
+            assertTrue(failedAttempts.await(3, TimeUnit.SECONDS), "교체 연결을 한 번 실패해도 다시 시도한다")
+            gateway.close()
+
+            assertEquals(1, old.closeCalls.get())
+            assertEquals(
+                TradingAdmissionResult.NotSubmitted("GATEWAY_UNAVAILABLE"),
+                gateway.submit(submission("R2", "O2")).await(),
+            )
+        } finally {
+            gateway.close()
+        }
+    }
+
+    @Test
     fun `종료는 전송된 주문을 미확인으로 완료하고 이후 제출은 미전달이다`() {
         val transport = TestTransport()
         val gateway = gateway(transport)
@@ -279,6 +322,67 @@ class AeronOrderGatewayTest {
                 AeronOrderGateway(settings(), markets) { throw failure }
             }
         assertSame(failure, error.cause)
+    }
+
+    private fun assertRecoveryAfterFailedReplacement(timedOut: Boolean) {
+        val old = TestTransport()
+        val replacement = TestTransport()
+        val opens = AtomicInteger()
+        val failedOpenStarted = CountDownLatch(1)
+        val releaseFailedOpen = CountDownLatch(1)
+        val gateway =
+            AeronOrderGateway(settings(resultTimeoutMs = if (timedOut) 200 else 5_000), markets) {
+                when (opens.getAndIncrement()) {
+                    0 -> {
+                        old
+                    }
+
+                    1 -> {
+                        assertEquals(1, old.closeCalls.get())
+                        failedOpenStarted.countDown()
+                        check(releaseFailedOpen.await(3, TimeUnit.SECONDS))
+                        throw IllegalStateException("replacement connection unavailable")
+                    }
+
+                    else -> {
+                        replacement
+                    }
+                }
+            }
+        try {
+            val original = submission()
+            val first = gateway.submit(original)
+            old.awaitOffer()
+            if (!timedOut) old.pollFailure.set(IllegalStateException("connection lost"))
+            val unknown =
+                if (timedOut) {
+                    TradingAdmissionResult.Unknown("ADMISSION_TIMEOUT", timedOut = true)
+                } else {
+                    TradingAdmissionResult.Unknown("CONNECTION_LOST")
+                }
+            assertEquals(unknown, first.await())
+            assertTrue(failedOpenStarted.await(3, TimeUnit.SECONDS))
+            assertEquals(
+                TradingAdmissionResult.NotSubmitted("GATEWAY_UNAVAILABLE"),
+                gateway.submit(submission("R2", "O2")).await(),
+            )
+
+            releaseFailedOpen.countDown()
+            val retry = awaitAvailable(gateway, original)
+            assertEquals(original.order, AdmissionCommandCodec().decode(replacement.awaitOffer()).order)
+            old.respond(accepted(original, 100))
+            replacement.awaitAnotherPoll()
+            assertFalse(retry.isDone)
+            replacement.respond(accepted(original, 101))
+
+            assertEquals(TradingAdmissionResult.Accepted(101), retry.await())
+            assertEquals(unknown, first.await(), "복구 후에도 이전 미확인 결과는 바꾸지 않는다")
+            assertEquals(3, opens.get())
+            assertEquals(1, old.closeCalls.get())
+        } finally {
+            releaseFailedOpen.countDown()
+            gateway.close()
+        }
     }
 
     private fun gateway(
