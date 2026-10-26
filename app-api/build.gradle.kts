@@ -149,3 +149,12 @@ tasks.register<JavaExec>("runDevelopmentMarketRegistration") {
     mainClass.set("com.exchange.core.api.trading.infrastructure.aeron.DevelopmentMarketRegistrationKt")
     javaLauncher.set(javaToolchains.launcherFor(java.toolchain))
 }
+
+tasks.register<JavaExec>("runTradingGateway") {
+    group = "application"
+    description = "RDB 마켓 설정을 확인하고 Aeron 주문 접수 전용 HTTP 서버를 실행한다."
+    classpath = sourceSets["main"].runtimeClasspath
+    mainClass.set("com.exchange.core.TradingGatewayApplicationKt")
+    javaLauncher.set(javaToolchains.launcherFor(java.toolchain))
+    jvmArgs("--add-opens=java.base/jdk.internal.misc=ALL-UNNAMED", "--add-opens=java.base/java.util.zip=ALL-UNNAMED")
+}

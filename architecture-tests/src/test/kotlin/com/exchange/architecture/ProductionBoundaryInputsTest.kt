@@ -34,6 +34,9 @@ class ProductionBoundaryInputsTest {
     private val marketHttp = "com.exchange.core.api.market.api"
     private val marketStore = "$marketApp.port.MarketConfigurationStore"
     private val marketPersistence = "com.exchange.core.api.market.infrastructure.persistence"
+    private val tradingApp = "com.exchange.core.api.trading.application"
+    private val tradingHttp = "com.exchange.core.api.trading.api"
+    private val tradingInfrastructure = "com.exchange.core.api.trading.infrastructure.aeron"
 
     private fun scope(
         vararg sources: Pair<String, String>,
@@ -103,6 +106,134 @@ class ProductionBoundaryInputsTest {
     }
 
     private fun source(name: String) = directory.resolve("src/main/kotlin/${name.replace('.', '/')}.java")
+
+    @Test fun `거래 HTTP는 유즈케이스와 공개 접수 원본 결과를 참조할 수 있다`() {
+        val input =
+            scope(
+                "$tradingApp.InspectTradingUseCase" to
+                    """
+                    public class InspectTradingUseCase {
+                        private $tradingApp.TradingOrderGateway gateway;
+                        public java.util.concurrent.CompletableFuture<$tradingApp.TradingAdmissionResult> submit(
+                            $tradingApp.TradingOrderSubmission submission
+                        ) { return gateway.submit(submission); }
+                    }
+                    """.trimIndent(),
+                "$tradingHttp.InspectTradingController" to
+                    """
+                    @org.springframework.web.bind.annotation.RestController
+                    public class InspectTradingController {
+                        private $tradingApp.InspectTradingUseCase useCase;
+                        public java.util.concurrent.CompletableFuture<$tradingApp.TradingAdmissionResult> submit(
+                            $tradingApp.TradingOrderSubmission submission
+                        ) { return useCase.submit(submission); }
+                    }
+                    """.trimIndent(),
+            )
+        val registration = ProductionBoundaryInputs.http(input)
+        val httpResult = HttpEntryBoundary.inspect(input, registration)
+        val application = ApplicationImplementationIndependence.inspect(input, ProductionBoundaryInputs.application(input))
+        val names = NamingRules.inspectTypes(input, ProjectLayoutPolicy.target, ProductionScope.requiredTypes.keys)
+        assertTrue(httpResult.evaluated, httpResult.problems.toString())
+        assertTrue(application.evaluated, application.problems.toString())
+        assertTrue(names.evaluated, names.problems.toString())
+        assertEquals(emptyList(), httpResult.violations)
+        assertEquals(emptyList(), application.violations)
+        assertEquals(emptyList(), names.violations)
+        val contracts = setOf("$tradingApp.TradingOrderSubmission", "$tradingApp.TradingAdmissionResult")
+        assertTrue(contracts.all { it in registration.types.getValue(HttpRole.DATA) })
+        assertTrue(contracts.all { it in application.applicationTypes })
+        assertTrue("$tradingHttp.TradingOrderController" in httpResult.apiTypes)
+        assertTrue("$tradingHttp.InspectTradingController" in httpResult.apiTypes)
+        assertTrue("$tradingApp.SubmitTradingOrderUseCase" in application.applicationTypes)
+        assertTrue("$tradingApp.InspectTradingUseCase" in application.applicationTypes)
+    }
+
+    @Test fun `거래 HTTP의 JDBC 전송 포트 인프라 내부 업무 직접 참조는 거절한다`() {
+        val origin = "$tradingHttp.BypassTradingController"
+        val targets =
+            setOf(
+                "java.sql.Connection",
+                "$tradingApp.TradingOrderGateway",
+                "$tradingInfrastructure.AeronOrderGateway",
+                "$tradingApp.InternalTradingWork",
+            )
+        val input =
+            scope(
+                "$tradingApp.InternalTradingWork" to "public class InternalTradingWork {}",
+                origin to
+                    """
+                    @org.springframework.web.bind.annotation.RestController
+                    public class BypassTradingController {
+                        private java.sql.Connection connection;
+                        private $tradingApp.TradingOrderGateway gateway;
+                        private $tradingInfrastructure.AeronOrderGateway implementation;
+                        private $tradingApp.InternalTradingWork work;
+                    }
+                    """.trimIndent(),
+            )
+        val result = HttpEntryBoundary.inspect(input, ProductionBoundaryInputs.http(input))
+        assertTrue(result.evaluated, result.problems.toString())
+        assertEquals(
+            targets,
+            result.violations
+                .filter { it.originType == origin }
+                .map { it.targetType }
+                .toSet(),
+        )
+    }
+
+    @Test fun `거래 유즈케이스의 JDBC와 Aeron 구현 직접 참조는 거절한다`() {
+        val origin = "$tradingApp.DirectTradingUseCase"
+        val input =
+            scope(
+                origin to
+                    """
+                    public class DirectTradingUseCase {
+                        private java.sql.Connection connection;
+                        private $tradingInfrastructure.AeronOrderGateway implementation;
+                    }
+                    """.trimIndent(),
+            )
+        val result = ApplicationImplementationIndependence.inspect(input, ProductionBoundaryInputs.application(input))
+        assertTrue(result.evaluated, result.problems.toString())
+        assertTrue(origin in result.applicationTypes)
+        assertEquals(
+            setOf("java.sql.Connection", "$tradingInfrastructure.AeronOrderGateway"),
+            result.violations
+                .filter { it.originType == origin }
+                .map { it.targetType }
+                .toSet(),
+        )
+    }
+
+    @Test fun `HTTP 공개 거래 원본 안에 숨긴 JDBC 의존도 application 검사에서 거절한다`() {
+        val contract = "$tradingApp.TradingOrderSubmission"
+        val input =
+            scope(
+                contract to
+                    """
+                    public class TradingOrderSubmission {
+                        private java.sql.Connection connection;
+                        public String getRequestId() { return "R1"; }
+                        public com.exchange.core.trading.OrderAdmissionInput getOrder() { return null; }
+                    }
+                    """.trimIndent(),
+                replacedTypes = setOf(contract),
+            )
+        val registration = ProductionBoundaryInputs.http(input)
+        assertTrue(contract in registration.types.getValue(HttpRole.DATA))
+        val result = ApplicationImplementationIndependence.inspect(input, ProductionBoundaryInputs.application(input))
+        assertTrue(result.evaluated, result.problems.toString())
+        assertTrue(contract in result.applicationTypes)
+        assertEquals(
+            setOf("java.sql.Connection"),
+            result.violations
+                .filter { it.originType == contract }
+                .map { it.targetType }
+                .toSet(),
+        )
+    }
 
     @Test fun `마켓 HTTP는 유즈케이스와 공개 결과를 사용하고 유즈케이스는 저장 포트만 참조한다`() {
         val input =

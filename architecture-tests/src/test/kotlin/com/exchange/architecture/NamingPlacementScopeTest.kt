@@ -102,6 +102,7 @@ class NamingPlacementScopeTest {
         val s = namingScope("app-api" to listOf(SubmitOrderUseCase::class.java))
         for (p in listOf(
             policy.copy(folders = policy.folders.filter { it.id != "order-application" }),
+            policy.copy(folders = policy.folders.filter { it.id != "trading-application" }),
             policy.copy(naming = policy.naming.copy(storeTargets = mapOf("missing" to "unknown"))),
         )) {
             val r = inspect(s, p)
@@ -128,16 +129,18 @@ class NamingPlacementScopeTest {
         assertFalse(inspect(ProductionScopeImporter().load(listOf(ModuleOutput("app-api", listOf(output))), expectations)).evaluated)
     }
 
-    @Test fun `프로젝트 정책은 이유를 가진 정확한 25개 폴더다`() {
+    @Test fun `프로젝트 정책은 이유를 가진 정확한 27개 폴더다`() {
         val p = ProjectLayoutPolicy.target
         assertEquals(emptyList(), LayoutPolicyValidation.inspect(p, ProductionScope.requiredTypes.keys))
         assertEquals(emptyList(), PortPlacementPolicy.validate(p))
-        assertEquals(25, p.folders.size)
+        assertEquals(27, p.folders.size)
         assertEquals("com.exchange.core.ledger", p.folders.single { it.id == "domain-ledger" }.packageName)
         assertEquals("com.exchange.core.trading", p.folders.single { it.id == "domain-trading" }.packageName)
         assertEquals("com.exchange.core.api.ledger.application", p.folders.single { it.id == "ledger-application" }.packageName)
         assertEquals("com.exchange.core.api.market.api", p.folders.single { it.id == "market-http" }.packageName)
         assertEquals("com.exchange.core.api.market.application", p.folders.single { it.id == "market-application" }.packageName)
+        assertEquals("com.exchange.core.api.trading.api", p.folders.single { it.id == "trading-http" }.packageName)
+        assertEquals("com.exchange.core.api.trading.application", p.folders.single { it.id == "trading-application" }.packageName)
         assertEquals("com.exchange.core.api.market.application.port", p.folders.single { it.id == "market-ports" }.packageName)
         assertEquals(
             "com.exchange.core.api.market.infrastructure.persistence",

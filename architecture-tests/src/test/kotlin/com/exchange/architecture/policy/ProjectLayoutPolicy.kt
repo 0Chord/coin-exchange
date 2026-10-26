@@ -41,6 +41,8 @@ object ProjectLayoutPolicy {
                 app("matching-ports", "$base/api/matching/application/port", "매칭 저장·발행 계약"),
                 app("matching-persistence", "$base/api/matching/infrastructure/persistence", "매칭 영속화"),
                 app("matching-publish", "$base/api/matching/infrastructure/publish", "명시한 미저장 발행 구현"),
+                app("trading-http", "$base/api/trading/api", "Aeron 주문 접수 HTTP·DTO 변환"),
+                app("trading-application", "$base/api/trading/application", "Aeron 주문 접수 진입점과 전송 결과 계약"),
                 app("admission-codec", "$base/api/trading/infrastructure/codec", "주문 접수 명령·응답 변환"),
                 app("development-aeron", "$base/api/trading/infrastructure/aeron", "개발용 자금 준비의 실제 Aeron 실행"),
                 AllowedFolder(
