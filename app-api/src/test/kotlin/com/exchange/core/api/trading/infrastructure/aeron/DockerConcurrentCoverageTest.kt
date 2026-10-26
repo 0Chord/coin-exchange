@@ -69,7 +69,8 @@ class DockerConcurrentCoverageTest {
         setField(runner, "pairPositions", mapOf(orders[0].name to 448L, orders[1].name to 768L))
         field<MutableMap<Int, List<JsonNode>>>(runner, "events").putAll(
             (0..2).associateWith { member ->
-                checkpoints.map { (step, position) -> applied(runId, member, step, position) }
+                checkpoints.map { (step, position) -> applied(runId, member, step, position) } +
+                    listOf(execution(runId, member, orders.last().expectedState))
             },
         )
         field<MutableMap<String, List<JsonNode>>>(runner, "pairClientEvents").putAll(
@@ -81,6 +82,34 @@ class DockerConcurrentCoverageTest {
             },
         )
         return runner
+    }
+
+    private fun execution(
+        runId: String,
+        member: Int,
+        expectedState: Map<String, Any?>,
+    ): JsonNode {
+        // 실행기 배선 시험 자료다. 숫자 판정 자체의 반례는 AutomaticExecutionComparisonTest가 별도로 검증한다.
+        val event =
+            mapper.valueToTree<ObjectNode>(
+                mapOf(
+                    "kind" to "APPLIED",
+                    "runId" to runId,
+                    "memberId" to member,
+                    "role" to if (member == 0) "LEADER" else "FOLLOWER",
+                    "position" to 864L,
+                    "inputKind" to "EXECUTION",
+                    "executionSequence" to 1L,
+                ),
+            )
+        val executions = listOf<JsonNode>(event)
+        event.set("state", mapper.valueToTree<JsonNode>(pendingStateAtPosition(expectedState, executions, 864L)))
+        event.set(
+            "trading",
+            mapper.valueToTree<JsonNode>(restingOnlyExpectedTrading(expectedState, executions, 864L) + ("callbackTimestamp" to 1_000L)),
+        )
+        (event.at("/trading/completions/0") as ObjectNode).put("occurredAt", "1970-01-01T00:00:01Z")
+        return event
     }
 
     private fun applied(

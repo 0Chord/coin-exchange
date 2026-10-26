@@ -11,9 +11,12 @@ import com.exchange.core.api.trading.infrastructure.codec.DevelopmentBalanceComm
 import com.exchange.core.api.trading.infrastructure.codec.DevelopmentBalanceCommandPayload
 import com.exchange.core.api.trading.infrastructure.codec.DevelopmentBalanceResultCodec
 import com.exchange.core.api.trading.infrastructure.codec.DevelopmentBalanceResultPayload
+import com.exchange.core.api.trading.infrastructure.codec.ExecuteAdmissionCodec
+import com.exchange.core.api.trading.infrastructure.codec.ExecuteAdmissionPayload
 import com.exchange.core.ledger.OpeningBalanceConflictException
 import com.exchange.core.ledger.OpeningBalanceRequestConflictException
 import com.exchange.core.trading.OrderAdmissionState
+import com.exchange.core.trading.TradingState
 import io.aeron.ExclusivePublication
 import io.aeron.Image
 import io.aeron.Publication
@@ -25,11 +28,13 @@ import io.aeron.logbuffer.Header
 import org.agrona.DirectBuffer
 import org.agrona.concurrent.AgentTerminationException
 import org.agrona.concurrent.UnsafeBuffer
+import java.time.Instant
+import java.util.concurrent.TimeUnit
 
 /** 서비스 스레드가 완성한 값만 외부에 공개한다. 영구 Aeron Snapshot과는 다르다. */
 internal data class FundingObservation(
     val position: Long,
-    val snapshot: OrderAdmissionState.Snapshot?,
+    val snapshot: TradingState.Snapshot?,
     val result: DevelopmentBalanceResultPayload?,
     val failure: String? = null,
     val malformedMessages: Long = 0,
@@ -38,20 +43,25 @@ internal data class FundingObservation(
     val blocked: Boolean = false,
     val admissionResult: AdmissionResultPayload? = null,
     val appliedRole: String? = null,
+    val executionSequence: Long? = null,
 )
 
 /** 확정 callback에서 같은 코어에 동기 적용하고, 이미 만든 결과의 전달만 재시도한다. */
 internal class DevelopmentFundingAdapter(
-    private val state: OrderAdmissionState,
+    private val state: TradingState,
     private val maxReplyAttempts: Int = 100,
     private val replyTimeoutNs: Long = 100_000_000,
     private val markets: DevelopmentMarketRegistry = DevelopmentMarketRegistry(listOf(DevelopmentMarketContext.BTC_USDT)),
+    private val serviceId: Int = 0,
+    private val maxExecutionOfferAttempts: Int = 1_000,
+    private val executionOfferTimeoutNs: Long = 1_000_000_000,
     private val onFatal: (Throwable) -> Unit,
 ) : ClusteredService {
     private val commands = DevelopmentBalanceCommandCodec()
     private val results = DevelopmentBalanceResultCodec()
     private val admissionCommands = AdmissionCommandCodec()
     private val admissionResults = AdmissionResultCodec()
+    private val executionCommands = ExecuteAdmissionCodec()
     private lateinit var cluster: Cluster
     private var malformedMessages = 0L
     private var fatalCause: Throwable? = null
@@ -67,6 +77,8 @@ internal class DevelopmentFundingAdapter(
     init {
         require(maxReplyAttempts > 0) { "응답 재시도 횟수는 양수여야 합니다" }
         require(replyTimeoutNs > 0) { "응답 재시도 기한은 양수여야 합니다" }
+        require(serviceId in 0..127) { "서비스 ID 범위를 벗어났습니다" }
+        require(maxExecutionOfferAttempts > 0 && executionOfferTimeoutNs > 0) { "실행 제출의 유한 재시도 한도가 필요합니다" }
     }
 
     override fun onStart(
@@ -76,6 +88,8 @@ internal class DevelopmentFundingAdapter(
         if (this::cluster.isInitialized) fail(IllegalStateException("종료한 개발 서비스를 다시 시작할 수 없습니다"))
         this.cluster = cluster
         if (snapshotImage != null) fail(UnsupportedOperationException("개발 자금 상태의 Snapshot 복구는 지원하지 않습니다"))
+        // 새 클러스터의 onStart에는 아직 leadership term이 없어 timeUnit이 null이다.
+        cluster.timeUnit()?.let { requireMillisecondClock(it) }
         started = true
     }
 
@@ -88,11 +102,14 @@ internal class DevelopmentFundingAdapter(
         header: Header,
     ) {
         ensureRunning()
+        requireMillisecondClock(cluster.timeUnit())
         try {
+            val internal = ClusterMessageOrigin.isServiceMessage(buffer, offset, length, serviceId)
             val command =
                 try {
-                    decode(buffer, offset, length)
+                    decode(buffer, offset, length, internal)
                 } catch (error: AdmissionMessageException) {
+                    if (internal) throw error
                     malformedMessages++
                     observation =
                         FundingObservation(
@@ -108,6 +125,7 @@ internal class DevelopmentFundingAdapter(
             // 역할·세션·전송 성공 여부가 확정된 업무 적용을 바꾸지 않는다.
             var fundingResult: DevelopmentBalanceResultPayload? = null
             var admissionResult: AdmissionResultPayload? = null
+            var executionSequence: Long? = null
             val reply =
                 when (command) {
                     is Command.Funding -> {
@@ -119,6 +137,12 @@ internal class DevelopmentFundingAdapter(
                         admissionResult = admit(command.value)
                         admissionResults.encode(admissionResult)
                     }
+
+                    is Command.Execution -> {
+                        executionSequence = command.value.admissionSequence
+                        state.executePending(executionSequence, Instant.ofEpochMilli(timestamp))
+                        null
+                    }
                 }
             val applied =
                 FundingObservation(
@@ -126,12 +150,13 @@ internal class DevelopmentFundingAdapter(
                     state.snapshot(),
                     fundingResult,
                     malformedMessages = malformedMessages,
-                    replyStatus = "PENDING",
+                    replyStatus = if (reply == null) "EXECUTED" else "PENDING",
                     admissionResult = admissionResult,
                     appliedRole = cluster.role().name,
+                    executionSequence = executionSequence,
                 )
             observation = applied
-            observation = sendReply(session, reply, applied)
+            if (reply != null) observation = sendReply(session, reply, applied)
         } catch (error: Throwable) {
             fail(error)
         }
@@ -141,6 +166,7 @@ internal class DevelopmentFundingAdapter(
         buffer: DirectBuffer,
         offset: Int,
         length: Int,
+        internal: Boolean,
     ): Command {
         if (offset < 0 || length < AdmissionMessageFormat.HEADER_LENGTH ||
             length > AdmissionMessageFormat.MAX_MESSAGE_LENGTH || offset > buffer.capacity() - length
@@ -149,7 +175,12 @@ internal class DevelopmentFundingAdapter(
         }
         val bytes = ByteArray(length)
         buffer.getBytes(offset, bytes)
-        return when (AdmissionMessageReader(bytes, 0, bytes.size).kind) {
+        val kind = AdmissionMessageReader(bytes, 0, bytes.size).kind
+        if (internal) {
+            if (kind != AdmissionMessageFormat.EXECUTE_ADMISSION) throw AdmissionMessageException("내부 실행 명령 종류가 잘못됐습니다")
+            return Command.Execution(executionCommands.decode(bytes))
+        }
+        return when (kind) {
             AdmissionMessageFormat.DEVELOPMENT_BALANCE_COMMAND -> Command.Funding(commands.decode(bytes))
             AdmissionMessageFormat.COMMAND -> Command.Admission(admissionCommands.decode(bytes))
             else -> throw AdmissionMessageException("지원하지 않는 명령 종류입니다")
@@ -163,6 +194,10 @@ internal class DevelopmentFundingAdapter(
 
         data class Admission(
             val value: AdmissionCommandPayload,
+        ) : Command
+
+        data class Execution(
+            val value: ExecuteAdmissionPayload,
         ) : Command
     }
 
@@ -181,8 +216,7 @@ internal class DevelopmentFundingAdapter(
                 )
             }
         }
-        return AdmissionResultPayload.from(
-            command,
+        val result =
             state.admit(
                 command.requestId,
                 command.order,
@@ -190,8 +224,28 @@ internal class DevelopmentFundingAdapter(
                 command.feePolicySnapshot,
                 command.ledgerTransactionId,
                 command.occurredAt,
-            ),
-        )
+            )
+        if (!knownRequest && result is OrderAdmissionState.Result.Accepted) submitExecution(result.record.sequence)
+        return AdmissionResultPayload.from(command, result)
+    }
+
+    /** 모든 사본이 같은 확정 승인에서 같은 순서로 생성한다. 업무 실행은 이 입력의 확정 뒤다. */
+    private fun submitExecution(sequence: Long) {
+        val bytes = executionCommands.encode(ExecuteAdmissionPayload(sequence))
+        val buffer = UnsafeBuffer(bytes)
+        val startNs = System.nanoTime()
+        for (attempt in 1..maxExecutionOfferAttempts) {
+            check(attempt == 1 || System.nanoTime() - startNs < executionOfferTimeoutNs) { "내부 실행 제출 기한을 초과했습니다: $sequence" }
+            val position = cluster.offer(buffer, 0, bytes.size)
+            if (position > 0) return
+            check(position == Publication.BACK_PRESSURED || position == Publication.ADMIN_ACTION) {
+                "내부 실행을 제출할 수 없습니다: sequence=$sequence, result=$position"
+            }
+            check(attempt < maxExecutionOfferAttempts && System.nanoTime() - startNs < executionOfferTimeoutNs) {
+                "내부 실행 제출 재시도 한도를 초과했습니다: $sequence"
+            }
+            cluster.idleStrategy().idle()
+        }
     }
 
     private fun prepare(command: DevelopmentBalanceCommandPayload): DevelopmentBalanceResultPayload {
@@ -288,6 +342,23 @@ internal class DevelopmentFundingAdapter(
         correlationId: Long,
         timestamp: Long,
     ) = Unit
+
+    override fun onNewLeadershipTermEvent(
+        leadershipTermId: Long,
+        logPosition: Long,
+        timestamp: Long,
+        termBaseLogPosition: Long,
+        leaderMemberId: Int,
+        logSessionId: Int,
+        timeUnit: TimeUnit,
+        appVersion: Int,
+    ) {
+        requireMillisecondClock(timeUnit)
+    }
+
+    private fun requireMillisecondClock(timeUnit: TimeUnit?) {
+        if (timeUnit != TimeUnit.MILLISECONDS) fail(IllegalStateException("개발 거래 시각은 밀리초여야 합니다"))
+    }
 
     override fun onRoleChange(newRole: Cluster.Role) = Unit
 

@@ -2,13 +2,13 @@ package com.exchange.core.api.trading.infrastructure.aeron
 
 import com.exchange.core.api.trading.infrastructure.codec.DevelopmentBalanceCommandCodec
 import com.exchange.core.api.trading.infrastructure.codec.DevelopmentBalanceCommandPayload
-import com.exchange.core.api.trading.infrastructure.codec.admissionCalculator
 import com.exchange.core.common.Amount
 import com.exchange.core.common.AssetId
 import com.exchange.core.common.UserId
 import com.exchange.core.ledger.OpeningBalance
-import com.exchange.core.trading.OrderAdmissionState
+import com.exchange.core.trading.TradingState
 import io.aeron.Publication
+import io.aeron.cluster.client.AeronCluster
 import io.aeron.cluster.service.ClientSession
 import io.aeron.cluster.service.Cluster
 import io.aeron.cluster.service.ClusteredService
@@ -16,13 +16,13 @@ import io.aeron.logbuffer.Header
 import org.agrona.DirectBuffer
 import org.agrona.concurrent.AgentTerminationException
 import org.agrona.concurrent.IdleStrategy
-import org.agrona.concurrent.UnsafeBuffer
 import org.mockito.ArgumentMatchers.any
 import org.mockito.ArgumentMatchers.anyInt
 import org.mockito.Mockito.doAnswer
 import org.mockito.Mockito.mock
 import org.mockito.Mockito.`when`
 import java.time.Instant
+import java.util.concurrent.TimeUnit
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
@@ -162,11 +162,12 @@ class FundingVerificationCollectorTest {
         capacity: Int = 16,
         offers: List<Long> = listOf(1L),
     ): Fixture {
-        val state = OrderAdmissionState(emptyList(), admissionCalculator())
+        val state = tradingState()
         val cluster = mock(Cluster::class.java)
         val session = mock(ClientSession::class.java)
         val failures = mutableListOf<Throwable>()
         var replyCount = 0
+        `when`(cluster.timeUnit()).thenReturn(TimeUnit.MILLISECONDS)
         `when`(cluster.role()).thenReturn(Cluster.Role.LEADER)
         `when`(cluster.logPosition()).thenReturn(256L)
         `when`(cluster.idleStrategy()).thenReturn(mock(IdleStrategy::class.java))
@@ -200,10 +201,17 @@ class FundingVerificationCollectorTest {
     private fun sendBytes(
         fixture: Fixture,
         bytes: ByteArray,
-    ) = fixture.decorated.onSessionMessage(fixture.session, Long.MAX_VALUE, UnsafeBuffer(bytes), 0, bytes.size, Header(0, 0))
+    ) = fixture.decorated.onSessionMessage(
+        fixture.session,
+        Long.MAX_VALUE,
+        clusterFrame(bytes),
+        AeronCluster.SESSION_HEADER_LENGTH,
+        bytes.size,
+        Header(0, 0),
+    )
 
     private data class Fixture(
-        val state: OrderAdmissionState,
+        val state: TradingState,
         val cluster: Cluster,
         val session: ClientSession,
         val service: DevelopmentFundingAdapter,

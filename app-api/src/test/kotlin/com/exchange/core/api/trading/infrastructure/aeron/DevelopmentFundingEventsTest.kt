@@ -3,9 +3,7 @@ package com.exchange.core.api.trading.infrastructure.aeron
 import com.exchange.core.api.trading.infrastructure.codec.AdmissionCommandPayload
 import com.exchange.core.api.trading.infrastructure.codec.AdmissionResultPayload
 import com.exchange.core.api.trading.infrastructure.codec.DevelopmentBalanceResultPayload
-import com.exchange.core.api.trading.infrastructure.codec.admissionCalculator
 import com.exchange.core.api.trading.infrastructure.codec.admissionCommand
-import com.exchange.core.api.trading.infrastructure.codec.admit
 import com.exchange.core.common.Amount
 import com.exchange.core.common.AssetId
 import com.exchange.core.common.MarketId
@@ -14,7 +12,7 @@ import com.exchange.core.common.UserId
 import com.exchange.core.ledger.OpeningBalance
 import com.exchange.core.order.MarketDefinition
 import com.exchange.core.order.Side
-import com.exchange.core.trading.OrderAdmissionState
+import com.exchange.core.trading.TradingState
 import tools.jackson.databind.JsonNode
 import tools.jackson.module.kotlin.jacksonObjectMapper
 import java.nio.file.Path
@@ -251,12 +249,39 @@ class DevelopmentFundingEventsTest {
         assertTrue(event.at("/state/pendingOrders/0/candidate/reservation/releasedAmount").isNull)
     }
 
-    private fun emptyState(): OrderAdmissionState = OrderAdmissionState(emptyList(), admissionCalculator())
+    @Test
+    fun `실행이 끝나 처리 대기에서 빠져도 실제 RESERVE 원장은 관찰에 남는다`() {
+        val state = preparedState("BTC", 100_000_000)
+        val sell = command(quantity = 100_000_000).let { it.copy(order = it.order.copy(side = Side.SELL)) }
+        val admitted = applyOrder(state, sell, 256)
+        assertEquals(1, admitted.at("/state/pendingOrders").size())
+
+        state.executePending(1, secondTime)
+        val event =
+            tree(
+                fundingAppliedFields(
+                    config,
+                    FundingObservation(384, state.snapshot(), null, appliedRole = "LEADER", executionSequence = 1),
+                ),
+            )
+
+        assertEquals("EXECUTION", event.path("inputKind").asString())
+        assertEquals(0, event.at("/state/pendingOrders").size())
+        assertEquals(tree(listOf(balance("BTC", 0, 100_000_000))), event.at("/state/balances"))
+        assertEquals(admitted.at("/state/transactions"), event.at("/state/transactions"))
+        assertEquals(
+            listOf("L-OPEN-1", "L-RESERVE-1"),
+            event.at("/state/transactions").toList().map { it.path("transactionId").asString() },
+        )
+        assertEquals(admitted.at("/state/requests"), event.at("/state/requests"), "최초 접수 기록은 실행 후에도 바뀌지 않는다")
+    }
+
+    private fun emptyState(): TradingState = tradingState()
 
     private fun preparedState(
         asset: String = "USDT",
         amount: Long = 1_000_000_000,
-    ): OrderAdmissionState =
+    ): TradingState =
         emptyState().apply {
             prepareDevelopmentBalance(OpeningBalance("P1", UserId("U1"), AssetId(asset), Amount(amount)), "L-OPEN-1", openingTime)
         }
@@ -276,11 +301,22 @@ class DevelopmentFundingEventsTest {
         }
 
     private fun applyOrder(
-        state: OrderAdmissionState,
+        state: TradingState,
         command: AdmissionCommandPayload,
         position: Long,
     ): JsonNode {
-        val result = AdmissionResultPayload.from(command, admit(state, command))
+        val result =
+            AdmissionResultPayload.from(
+                command,
+                state.admit(
+                    command.requestId,
+                    command.order,
+                    command.market,
+                    command.feePolicySnapshot,
+                    command.ledgerTransactionId,
+                    command.occurredAt,
+                ),
+            )
         return tree(
             fundingAppliedFields(
                 config,

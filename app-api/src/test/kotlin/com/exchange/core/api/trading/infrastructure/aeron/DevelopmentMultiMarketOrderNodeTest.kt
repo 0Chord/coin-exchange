@@ -25,6 +25,7 @@ import com.exchange.core.order.TimeInForce
 import com.exchange.core.trading.OrderAdmissionInput
 import com.exchange.core.trading.OrderAdmissionResult
 import com.exchange.core.trading.OrderAdmissionState
+import com.exchange.core.trading.TradingState
 import tools.jackson.databind.JsonNode
 import tools.jackson.module.kotlin.jacksonObjectMapper
 import java.net.DatagramSocket
@@ -45,7 +46,7 @@ class DevelopmentMultiMarketOrderNodeTest {
     @Test
     fun `BTC 600 예약 뒤 SUI 500은 부족하고 SUI 400 승인 뒤에도 최초 부족값은 유지된다`() {
         val config = config()
-        DevelopmentFundingNode.start(config).use { node ->
+        startObservedTradingNode(config).use { node ->
             val ready = jacksonObjectMapper().valueToTree<JsonNode>(fundingReadyFields(config, node))
             val expectedMarkets =
                 jacksonObjectMapper().readTree(
@@ -68,7 +69,7 @@ class DevelopmentMultiMarketOrderNodeTest {
             assertFalse(ready.path("settings").has("feePolicy"))
             val opening = prepare(node)
             assertBalance(opening, available = 1_000_000_000, hold = 0)
-            assertEquals(0L, opening.lastSequence)
+            assertEquals(0L, opening.lastAdmissionSequence)
             assertTrue(opening.pendingOrders.isEmpty())
             assertTrue(opening.requests.isEmpty())
             assertEquals(1, opening.preparations.size)
@@ -83,9 +84,9 @@ class DevelopmentMultiMarketOrderNodeTest {
             assertEquals(1L, assertIs<AdmissionResultPayload.Accepted>(first.admissionResult).sequence)
             val afterBtc = assertNotNull(first.snapshot)
             assertBalance(afterBtc, available = 400_000_000, hold = 600_000_000)
-            assertEquals(1L, afterBtc.lastSequence)
-            assertEquals(listOf("O-BTC"), pendingOrders(afterBtc, BTC))
-            assertTrue(pendingOrders(afterBtc, SUI).isEmpty())
+            assertEquals(1L, afterBtc.lastAdmissionSequence)
+            assertEquals(listOf("O-BTC"), approvedOrders(afterBtc, BTC))
+            assertTrue(approvedOrders(afterBtc, SUI).isEmpty())
             assertEquals(listOf("R-BTC"), afterBtc.requests.map { it.requestId })
             assertReservation(afterBtc, btc, amount = 600_000_000, sequence = 1, sourceEventId = BTC_RESERVE_SOURCE)
 
@@ -111,9 +112,9 @@ class DevelopmentMultiMarketOrderNodeTest {
             val completed = assertNotNull(second.snapshot)
             assertBalance(completed, available = 0, hold = 1_000_000_000)
             assertEquals(1, completed.balances.size)
-            assertEquals(2L, completed.lastSequence)
-            assertEquals(listOf("O-BTC"), pendingOrders(completed, BTC))
-            assertEquals(listOf("O-SUI-2"), pendingOrders(completed, SUI))
+            assertEquals(2L, completed.lastAdmissionSequence)
+            assertEquals(listOf("O-BTC"), approvedOrders(completed, BTC))
+            assertEquals(listOf("O-SUI-2"), approvedOrders(completed, SUI))
             assertEquals(listOf("R-BTC", "R-SUI", "R-SUI-2"), completed.requests.map { it.requestId })
             assertEquals(1, completed.preparations.size)
             assertEquals(transactionValues(openingTransaction), transactionValues(completed.preparations.single().transaction))
@@ -133,7 +134,7 @@ class DevelopmentMultiMarketOrderNodeTest {
 
     @Test
     fun `신규 SUI 문맥의 불일치는 기록 없이 거절하고 고친 같은 요청을 접수한다`() {
-        DevelopmentFundingNode.start(config()).use { node ->
+        startObservedTradingNode(config()).use { node ->
             prepare(node)
             val prototype = order(SUI, "R-SUI", "O-SUI", price = 20_000_000, quantity = 1_000_000_000)
             val mismatches = suiContextChanges(prototype)
@@ -170,13 +171,13 @@ class DevelopmentMultiMarketOrderNodeTest {
                 val current = assertNotNull(accepted.snapshot)
                 assertBalance(current, available = 980_000_000L - index * 20_000_000L, hold = (index + 1L) * 20_000_000L)
                 assertEquals(index + 1, current.requests.size, field)
-                assertEquals(index + 1, current.pendingOrders.size, field)
-                assertTrue(pendingOrders(current, BTC).isEmpty(), field)
-                assertEquals(index + 1, pendingOrders(current, SUI).size, field)
+                assertEquals(index + 1, originalApprovalRecords(current).size, field)
+                assertTrue(approvedOrders(current, BTC).isEmpty(), field)
+                assertEquals(index + 1, approvedOrders(current, SUI).size, field)
                 assertRequest(current, correct)
                 assertEquals(
                     SUI.feePolicySnapshot,
-                    current.pendingOrders
+                    originalApprovalRecords(current)
                         .last()
                         .candidate.reservation.feePolicySnapshot,
                 )
@@ -187,7 +188,7 @@ class DevelopmentMultiMarketOrderNodeTest {
 
     @Test
     fun `기존 SUI 승인과 부족은 전달 마켓 정책 원장 시각을 바꿔도 최초 결과와 기록을 보존한다`() {
-        DevelopmentFundingNode.start(config()).use { node ->
+        startObservedTradingNode(config()).use { node ->
             prepare(node)
             val acceptedCommand = order(SUI, "R-ACCEPTED", "O-ACCEPTED", price = 20_000_000, quantity = 20_000_000_000)
             val accepted = assertIs<AdmissionResultPayload.Accepted>(request(node, acceptedCommand).admissionResult)
@@ -212,15 +213,15 @@ class DevelopmentMultiMarketOrderNodeTest {
                 assertRequest(current, command)
                 assertNull(node.error)
             }
-            assertEquals(1L, original.lastSequence)
+            assertEquals(1L, original.lastAdmissionSequence)
             assertEquals(2, original.requests.size)
-            assertEquals(listOf("O-ACCEPTED"), pendingOrders(original, SUI))
+            assertEquals(listOf("O-ACCEPTED"), approvedOrders(original, SUI))
         }
     }
 
     @Test
     fun `기존 BTC 요청의 마켓을 SUI로 바꾸면 내용 충돌이고 신규 중복은 문맥 확인 뒤 기록한다`() {
-        DevelopmentFundingNode.start(config()).use { node ->
+        startObservedTradingNode(config()).use { node ->
             prepare(node)
             val btc = order(BTC, "R-BTC", "SAME-ORDER", price = 100_000_000, quantity = 100_000_000)
             request(node, btc)
@@ -266,7 +267,7 @@ class DevelopmentMultiMarketOrderNodeTest {
 
     @Test
     fun `다른 마켓의 같은 주문 ID는 별개 예약과 원장 사건으로 전역 순번을 받는다`() {
-        DevelopmentFundingNode.start(config()).use { node ->
+        startObservedTradingNode(config()).use { node ->
             prepare(node)
             val btc = order(BTC, "R-BTC", "SAME-ORDER", price = 100_000_000, quantity = 100_000_000)
             val sui = order(SUI, "R-SUI", "SAME-ORDER", price = 20_000_000, quantity = 5_000_000_000)
@@ -278,22 +279,22 @@ class DevelopmentMultiMarketOrderNodeTest {
             val current = assertNotNull(second.snapshot)
             assertBalance(current, available = 800_000_000, hold = 200_000_000)
             assertEquals(1, current.balances.size)
-            assertEquals(2L, current.lastSequence)
-            assertEquals(listOf("SAME-ORDER"), pendingOrders(current, BTC))
-            assertEquals(listOf("SAME-ORDER"), pendingOrders(current, SUI))
+            assertEquals(2L, current.lastAdmissionSequence)
+            assertEquals(listOf("SAME-ORDER"), approvedOrders(current, BTC))
+            assertEquals(listOf("SAME-ORDER"), approvedOrders(current, SUI))
             assertEquals(2, current.requests.size)
             assertReservation(current, btc, amount = 100_000_000, sequence = 1, sourceEventId = BTC_SAME_ORDER_SOURCE)
             assertReservation(current, sui, amount = 100_000_000, sequence = 2, sourceEventId = SUI_SAME_ORDER_SOURCE)
             assertEquals(
                 2,
-                current.pendingOrders
+                originalApprovalRecords(current)
                     .map { it.candidate.reserveTransaction.ledgerTransactionId }
                     .distinct()
                     .size,
             )
             assertEquals(
                 2,
-                current.pendingOrders
+                originalApprovalRecords(current)
                     .map { it.candidate.reserveTransaction.sourceEventId }
                     .distinct()
                     .size,
@@ -304,7 +305,7 @@ class DevelopmentMultiMarketOrderNodeTest {
 
     @Test
     fun `U1의 USDT와 BTC가 있어도 U2의 SUI 매수와 U1의 SUI 매도에는 사용하지 않는다`() {
-        DevelopmentFundingNode.start(config()).use { node ->
+        startObservedTradingNode(config()).use { node ->
             prepare(node)
             val prepared = prepare(node, preparation = "P-BTC", asset = "BTC", amount = 300_000_000, ledger = "OPENING-BTC")
             val otherUser = order(SUI, "R-U2", "O-U2", price = 20_000_000, quantity = 1_000_000_000, user = "U2")
@@ -341,7 +342,7 @@ class DevelopmentMultiMarketOrderNodeTest {
 
     @Test
     fun `BTC에서 발행한 원장 ID는 부족한 SUI를 중단시키지 않지만 충분한 SUI의 재사용은 노드를 중단한다`() {
-        DevelopmentFundingNode.start(config()).use { node ->
+        startObservedTradingNode(config()).use { node ->
             prepare(node)
             val btc = order(BTC, "R-BTC", "O-BTC", price = 100_000_000, quantity = 600_000_000)
             val first = request(node, btc)
@@ -399,7 +400,7 @@ class DevelopmentMultiMarketOrderNodeTest {
                   "feePolicy":{"productType":"SPOT","feeTier":"NORMAL","scheduleVersion":2,"makerPartsPerMillion":0,"takerPartsPerMillion":0}}]
                 """.trimIndent()
             val settings = config().copy(markets = readDevelopmentMarkets(database.register(document)))
-            DevelopmentFundingNode.start(settings).use { node ->
+            startObservedTradingNode(settings).use { node ->
                 prepare(node)
                 DevelopmentOrderClient(settings).use { client ->
                     database.close()
@@ -409,12 +410,13 @@ class DevelopmentMultiMarketOrderNodeTest {
                     assertEquals(1L, assertIs<AdmissionResultPayload.Accepted>(response).sequence)
                     val observed = applied(node, previousPosition)
                     assertEquals(response, observed.admissionResult)
+                    awaitAutomaticCompletion(node, response)
                     val snapshot = assertNotNull(observed.snapshot)
                     assertBalance(snapshot, available = 600_000_000, hold = 400_000_000)
-                    assertEquals(listOf("O-AFTER-DB"), pendingOrders(snapshot, SUI))
+                    assertEquals(listOf("O-AFTER-DB"), approvedOrders(snapshot, SUI))
                     assertEquals(
                         2L,
-                        snapshot.pendingOrders
+                        originalApprovalRecords(snapshot)
                             .single()
                             .candidate.feePolicySnapshot.scheduleVersion,
                     )
@@ -486,7 +488,7 @@ class DevelopmentMultiMarketOrderNodeTest {
         asset: String = "USDT",
         amount: Long = 1_000_000_000,
         ledger: String = "OPENING-1",
-    ): OrderAdmissionState.Snapshot {
+    ): TradingState.Snapshot {
         val previousPosition = node.observation?.position ?: 0
         val opening = OpeningBalance(preparation, UserId(user), AssetId(asset), Amount(amount))
         val response =
@@ -516,7 +518,8 @@ class DevelopmentMultiMarketOrderNodeTest {
         assertEquals(command.order.orderId.value, response.orderId)
         val observation = applied(node, previousPosition)
         assertEquals(response, observation.admissionResult)
-        return observation
+        awaitAutomaticCompletion(node, response)
+        return observation.copy(snapshot = checkNotNull(node.observation?.snapshot))
     }
 
     private fun applied(
@@ -526,7 +529,7 @@ class DevelopmentMultiMarketOrderNodeTest {
         val start = System.nanoTime()
         while (true) {
             assertNull(node.error, "새 요청의 관찰 전에 실제 노드가 실패했습니다")
-            val observed = node.observation
+            val observed = lastExternalObservation(node)
             if (observed != null && observed.position > previousPosition && observed.replyStatus != "PENDING") {
                 assertNull(observed.failure)
                 assertFalse(observed.blocked)
@@ -540,7 +543,7 @@ class DevelopmentMultiMarketOrderNodeTest {
     }
 
     private fun assertBalance(
-        snapshot: OrderAdmissionState.Snapshot,
+        snapshot: TradingState.Snapshot,
         available: Long,
         hold: Long,
         user: String = "U1",
@@ -566,22 +569,22 @@ class DevelopmentMultiMarketOrderNodeTest {
         assertEquals(Amount(shortfall), shortage.shortfall)
     }
 
-    private fun pendingOrders(
-        snapshot: OrderAdmissionState.Snapshot,
+    private fun approvedOrders(
+        snapshot: TradingState.Snapshot,
         context: DevelopmentMarketContext,
     ): List<String> =
-        snapshot.pendingOrders
+        originalApprovalRecords(snapshot)
             .filter { it.candidate.order.marketId == context.market.marketId }
             .map { it.candidate.order.orderId.value }
 
     private fun assertReservation(
-        snapshot: OrderAdmissionState.Snapshot,
+        snapshot: TradingState.Snapshot,
         command: AdmissionCommandPayload,
         amount: Long,
         sequence: Long,
         sourceEventId: String,
     ) {
-        val record = snapshot.pendingOrders.single { it.candidate.order == command.order }
+        val record = originalApprovalRecords(snapshot).single { it.candidate.order == command.order }
         assertEquals(sequence, record.sequence)
         val candidate = record.candidate
         assertEquals(command.market, candidate.market)
@@ -611,7 +614,7 @@ class DevelopmentMultiMarketOrderNodeTest {
     }
 
     private fun assertRequest(
-        snapshot: OrderAdmissionState.Snapshot,
+        snapshot: TradingState.Snapshot,
         command: AdmissionCommandPayload,
     ) {
         val request = snapshot.requests.single { it.requestId == command.requestId && it.order.userId == command.order.userId }
@@ -622,17 +625,21 @@ class DevelopmentMultiMarketOrderNodeTest {
         assertEquals(command.occurredAt, request.occurredAt)
     }
 
-    private fun fundingValues(snapshot: OrderAdmissionState.Snapshot): List<Any?> =
+    private fun fundingValues(snapshot: TradingState.Snapshot): List<Any?> =
         listOf(
             snapshot.balances,
-            snapshot.lastSequence,
-            snapshot.pendingOrders.map { recordValues(it) },
+            snapshot.lastAdmissionSequence,
+            snapshot.reservations,
+            snapshot.ledgerTransactions.map(::transactionValues),
+            originalApprovalRecords(snapshot).map { recordValues(it) },
             snapshot.preparations.map { listOf(it.result, transactionValues(it.transaction)) },
         )
 
-    private fun snapshotValues(snapshot: OrderAdmissionState.Snapshot): List<Any?> =
+    private fun snapshotValues(snapshot: TradingState.Snapshot): List<Any?> =
         fundingValues(snapshot) +
             listOf(
+                snapshot.pendingOrders.map(::recordValues),
+                snapshot.completions.map { listOf(it.executionId, it.occurredAt, it.matchingResult, it.settlement) },
                 snapshot.requests.map {
                     listOf(
                         it.requestId,

@@ -5,6 +5,8 @@ internal enum class OrderReplicationScenario(
     val asset: String,
     val openingAmount: Long,
 ) {
+    AUTOMATIC_TRADE("USDT", 1_000),
+    AUTOMATIC_MULTIPLE_FILLS("USDT", 1_000),
     BUY_SEQUENCE("USDT", 1_000_000_000),
     SELL("BTC", 300_000_000),
     INSUFFICIENT("USDT", 1_000_000_000),
@@ -16,6 +18,8 @@ internal enum class OrderReplicationScenario(
 
     fun steps(): List<OrderReplicationStep> {
         when (this) {
+            AUTOMATIC_TRADE -> return automaticTradingSteps(false)
+            AUTOMATIC_MULTIPLE_FILLS -> return automaticTradingSteps(true)
             ACCEPTED_REPLAY -> return acceptedReplaySteps()
             REJECTED_REPLAY -> return rejectedReplaySteps()
             CONTEXT_CORRECTION -> return contextCorrectionSteps()
@@ -37,7 +41,7 @@ internal enum class OrderReplicationScenario(
                 listOf(opening, first)
             }
 
-            ACCEPTED_REPLAY, REJECTED_REPLAY, CONTEXT_CORRECTION, MULTI_MARKET_SHARED_FUNDS -> {
+            AUTOMATIC_TRADE, AUTOMATIC_MULTIPLE_FILLS, ACCEPTED_REPLAY, REJECTED_REPLAY, CONTEXT_CORRECTION, MULTI_MARKET_SHARED_FUNDS -> {
                 error("별도 단계가 있는 사례는 위에서 구성한다")
             }
 
@@ -277,6 +281,8 @@ internal data class OrderReplicationStep(
     val expectedResult: Map<String, Any?>,
     val expectedState: Map<String, Any?>,
     val marketId: String?,
+    val executionState: Map<String, Any?>? = null,
+    val executionTrading: Map<String, Any?>? = null,
 ) {
     init {
         require(inputKind != "ORDER" || !marketId.isNullOrBlank()) { "ORDER 단계는 마켓 ID를 명시해야 합니다" }

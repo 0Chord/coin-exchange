@@ -15,6 +15,7 @@ import com.exchange.core.common.Quantity
 import com.exchange.core.common.UserId
 import com.exchange.core.ledger.OpeningBalance
 import com.exchange.core.ledger.OpeningBalanceResult
+import com.exchange.core.trading.TradingState
 import io.aeron.CommonContext
 import io.aeron.Publication
 import io.aeron.cluster.client.AeronCluster
@@ -98,9 +99,8 @@ class DevelopmentOrderClientTest {
             assertTrue(received > transport, text)
             assertTrue(text.contains("접수 결과이며 체결·정산 완료가 아닙니다"), text)
             assertFalse(text.contains("UNCONFIRMED"), text)
-            val observation = assertNotNull(node.observation)
-            assertEquals(expected(command, 1), assertIs<AdmissionResultPayload.Accepted>(observation.admissionResult))
-            val snapshot = assertNotNull(observation.snapshot)
+            val snapshot = snapshot(node)
+            assertEquals(expected(command, 1), assertIs<AdmissionResultPayload.Accepted>(recordedResult(snapshot, command)))
             assertEquals(
                 700_000_000L,
                 snapshot.balances
@@ -113,10 +113,13 @@ class DevelopmentOrderClientTest {
                     .single()
                     .hold.value,
             )
-            assertEquals(1L, snapshot.lastSequence)
+            assertEquals(1L, snapshot.lastAdmissionSequence)
             assertEquals(1, snapshot.preparations.size)
             assertEquals(1, snapshot.requests.size)
-            val candidate = snapshot.pendingOrders.single().candidate
+            val candidate =
+                snapshot.completions
+                    .single()
+                    .admission.candidate
             assertEquals(command.order, candidate.order)
             assertEquals(1L, candidate.feePolicySnapshot.scheduleVersion)
             assertEquals(300_000_000L, candidate.reservation.reservedAmount.value)
@@ -168,7 +171,7 @@ class DevelopmentOrderClientTest {
                     )
                 }
             }
-            val snapshot = assertNotNull(node.observation?.snapshot)
+            val snapshot = snapshot(node)
             assertEquals(
                 700_000_000L,
                 snapshot.balances
@@ -181,15 +184,15 @@ class DevelopmentOrderClientTest {
                     .single()
                     .hold.value,
             )
-            assertEquals(1, snapshot.pendingOrders.size)
+            assertEquals(1, snapshot.completions.size)
             assertEquals(
                 1L,
-                snapshot.pendingOrders
+                snapshot.completions
                     .single()
-                    .candidate.feePolicySnapshot.scheduleVersion,
+                    .admission.candidate.feePolicySnapshot.scheduleVersion,
             )
             assertEquals(2, snapshot.requests.size)
-            assertEquals(1L, snapshot.lastSequence)
+            assertEquals(1L, snapshot.lastAdmissionSequence)
             assertNull(node.error)
         }
     }
@@ -230,9 +233,9 @@ class DevelopmentOrderClientTest {
                     assertFalse(event.has("clientId"))
                     assertFalse(event.has("gatePath"))
                 }
-                assertEquals(expected(command, index + 1L), node.observation?.admissionResult)
+                assertEquals(expected(command, index + 1L), recordedResult(snapshot(node), command))
             }
-            assertEquals(3, assertNotNull(node.observation?.snapshot).pendingOrders.size)
+            assertEquals(3, snapshot(node).completions.size)
             assertEquals("stale-run", Files.readString(gatePath))
             assertNull(node.error)
         }
@@ -278,8 +281,8 @@ class DevelopmentOrderClientTest {
                 assertEquals(clientConfig.runRoot.toString(), event.path("runRoot").asString())
                 assertEquals(120_000L, event.path("gateTimeoutMs").asLong())
             }
-            assertEquals(expected(command, 1), node.observation?.admissionResult)
-            assertEquals(1, assertNotNull(node.observation?.snapshot).pendingOrders.size)
+            assertEquals(expected(command, 1), recordedResult(snapshot(node), command))
+            assertEquals(1, snapshot(node).completions.size)
             assertFalse(CommonContext.isDriverActive(Path.of(clientConfig.driverDirectory).toFile(), 1_000) {})
             assertNull(node.error)
         }
@@ -339,10 +342,12 @@ class DevelopmentOrderClientTest {
                     runDevelopmentOrderClient(arguments + "2", clientEnvironment(clientConfig, nodeConfig.members))
                 }
 
-                val observation = assertNotNull(node.observation)
-                assertEquals(expected(command, 1), observation.admissionResult)
-                val snapshot = assertNotNull(observation.snapshot)
-                val admitted = snapshot.pendingOrders.single().candidate
+                val snapshot = snapshot(node)
+                assertEquals(expected(command, 1), recordedResult(snapshot, command))
+                val admitted =
+                    snapshot.completions
+                        .single()
+                        .admission.candidate
                 assertEquals(2L, admitted.feePolicySnapshot.scheduleVersion)
                 assertEquals(
                     2L,
@@ -362,7 +367,7 @@ class DevelopmentOrderClientTest {
                         .single()
                         .hold.value,
                 )
-                assertEquals(1L, snapshot.lastSequence)
+                assertEquals(1L, snapshot.lastAdmissionSequence)
                 assertNull(node.error)
             }
         }
@@ -511,7 +516,7 @@ class DevelopmentOrderClientTest {
                     assertEquals(expected, actual.result, invalid.name)
                 }
             }
-            val snapshot = assertNotNull(node.observation?.snapshot)
+            val snapshot = snapshot(node)
             assertEquals(
                 2_600_000_000L,
                 snapshot.balances
@@ -524,8 +529,8 @@ class DevelopmentOrderClientTest {
                     .single()
                     .hold.value,
             )
-            assertEquals(8L, snapshot.lastSequence)
-            assertEquals(8, snapshot.pendingOrders.size)
+            assertEquals(8L, snapshot.lastAdmissionSequence)
+            assertEquals(8, snapshot.completions.size)
             assertEquals(8, snapshot.requests.size)
             assertEquals(1, snapshot.preparations.size)
             assertNull(node.error)
@@ -611,6 +616,32 @@ class DevelopmentOrderClientTest {
             }
         }
     }
+
+    private fun snapshot(node: DevelopmentFundingNode): TradingState.Snapshot {
+        val started = System.nanoTime()
+        while (true) {
+            assertNull(node.error, "자동 실행 중 노드가 실패했습니다")
+            val current = node.observation?.snapshot
+            if (current != null && current.pendingOrders.isEmpty() && current.completions.size.toLong() == current.lastAdmissionSequence) {
+                return current
+            }
+            assertTrue(System.nanoTime() - started < TimeUnit.SECONDS.toNanos(5), "자동 실행 완료 관찰 대기 초과")
+            Thread.sleep(1)
+        }
+    }
+
+    private fun recordedResult(
+        snapshot: TradingState.Snapshot,
+        command: AdmissionCommandPayload,
+    ): AdmissionResultPayload =
+        AdmissionResultPayload.from(
+            command,
+            snapshot.requests
+                .single {
+                    it.requestId == command.requestId &&
+                        it.order.userId == command.order.userId
+                }.result,
+        )
 
     private data class ReplyCase(
         val name: String,

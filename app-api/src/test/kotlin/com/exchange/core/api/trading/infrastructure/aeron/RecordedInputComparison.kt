@@ -6,13 +6,14 @@ import com.exchange.core.api.trading.infrastructure.codec.AdmissionMessageFormat
 import com.exchange.core.api.trading.infrastructure.codec.AdmissionMessageReader
 import com.exchange.core.api.trading.infrastructure.codec.DevelopmentBalanceCommandCodec
 import com.exchange.core.api.trading.infrastructure.codec.DevelopmentBalanceCommandPayload
+import com.exchange.core.api.trading.infrastructure.codec.ExecuteAdmissionCodec
 
 /** bytes는 실제 offer의 복사본, values는 검사에서 독립적으로 준비한 명령 값이다. */
 internal data class ExpectedRecordedInput(
     val bytes: ByteArray,
     val position: Long,
     val values: Map<String, Any>,
-    val offerPosition: Long,
+    val offerPosition: Long?,
 )
 
 internal enum class RecordingComparisonStatus { MATCH, MISMATCH, UNVERIFIABLE }
@@ -33,7 +34,7 @@ internal fun compareRecordedInputs(
     if (expected.isEmpty() || actual.inputs.isEmpty()) {
         return RecordingComparison(RecordingComparisonStatus.UNVERIFIABLE, listOf("대상 입력이 비어 있습니다"))
     }
-    if (expected.any { it.offerPosition <= 0 }) {
+    if (expected.any { it.values["kind"] != "EXECUTION" && (it.offerPosition == null || it.offerPosition <= 0) }) {
         return RecordingComparison(RecordingComparisonStatus.UNVERIFIABLE, listOf("실제 전송 수용 위치가 없습니다"))
     }
     if (actual.consumedPosition != actual.limitPosition || actual.inputs.last().position != actual.limitPosition) {
@@ -57,6 +58,13 @@ internal fun compareRecordedInputs(
 
                     AdmissionMessageFormat.COMMAND -> {
                         orderValues(AdmissionCommandCodec().decode(recorded.bytes))
+                    }
+
+                    AdmissionMessageFormat.EXECUTE_ADMISSION -> {
+                        mapOf(
+                            "kind" to "EXECUTION",
+                            "admissionSequence" to ExecuteAdmissionCodec().decode(recorded.bytes).admissionSequence,
+                        )
                     }
 
                     else -> {
