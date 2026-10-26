@@ -1,12 +1,16 @@
 package com.exchange.core.api.trading.infrastructure.aeron
 
+import com.exchange.core.fee.TradingFeeCalculator
 import com.exchange.core.fee.TradingFeePolicySnapshot
 import com.exchange.core.fee.TradingFeeReserveCalculator
 import com.exchange.core.order.BuyOrderFundingQuoteCalculator
 import com.exchange.core.order.MarketDefinition
+import com.exchange.core.order.OrderFillSettlementCalculator
 import com.exchange.core.order.OrderReservationCalculator
 import com.exchange.core.trading.OrderAdmissionCalculator
-import com.exchange.core.trading.OrderAdmissionState
+import com.exchange.core.trading.OrderSettlementCalculator
+import com.exchange.core.trading.SettlementLedgerTransactions
+import com.exchange.core.trading.TradingState
 import io.aeron.ChannelUri
 import io.aeron.archive.Archive
 import io.aeron.archive.ArchiveThreadingMode
@@ -14,6 +18,7 @@ import io.aeron.archive.client.AeronArchive
 import io.aeron.cluster.ClusterMember
 import io.aeron.cluster.ConsensusModule
 import io.aeron.cluster.ElectionState
+import io.aeron.cluster.MillisecondClusterClock
 import io.aeron.cluster.service.Cluster
 import io.aeron.cluster.service.ClusteredService
 import io.aeron.cluster.service.ClusteredServiceContainer
@@ -109,13 +114,23 @@ internal class DevelopmentFundingNode private constructor(
     private var container: ClusteredServiceContainer? = null
     private val service =
         DevelopmentFundingAdapter(
-            OrderAdmissionState(
-                emptyList(),
-                OrderAdmissionCalculator(OrderReservationCalculator(BuyOrderFundingQuoteCalculator(TradingFeeReserveCalculator()))),
-            ),
+            run {
+                val fees = TradingFeeReserveCalculator()
+                val reservation = OrderReservationCalculator(BuyOrderFundingQuoteCalculator(fees))
+                TradingState(
+                    OrderAdmissionCalculator(reservation),
+                    OrderSettlementCalculator(
+                        OrderFillSettlementCalculator(TradingFeeCalculator(), fees),
+                        reservation,
+                        fees,
+                        SettlementLedgerTransactions(),
+                    ),
+                )
+            },
             config.maxReplyAttempts,
             TimeUnit.MILLISECONDS.toNanos(config.replyTimeoutMs),
             markets = config.markets,
+            serviceId = config.serviceId,
             onFatal = ::fail,
         )
     val observation: FundingObservation? get() = service.observation
@@ -213,6 +228,7 @@ internal class DevelopmentFundingNode private constructor(
                     .Context()
                     .aeronDirectoryName(config.driverDirectory)
                     .clusterId(config.clusterId)
+                    .clusterClock(MillisecondClusterClock())
                     .clusterMemberId(config.memberId)
                     .appointedLeaderId(if (config.clustered) -1 else config.memberId)
                     .clusterMembers(config.members)

@@ -8,7 +8,6 @@ import com.exchange.core.api.trading.infrastructure.codec.DevelopmentBalanceComm
 import com.exchange.core.api.trading.infrastructure.codec.DevelopmentBalanceRejectionReason
 import com.exchange.core.api.trading.infrastructure.codec.DevelopmentBalanceResultCodec
 import com.exchange.core.api.trading.infrastructure.codec.DevelopmentBalanceResultPayload
-import com.exchange.core.api.trading.infrastructure.codec.admissionCalculator
 import com.exchange.core.api.trading.infrastructure.codec.admissionCommand
 import com.exchange.core.common.Amount
 import com.exchange.core.common.AssetId
@@ -16,9 +15,11 @@ import com.exchange.core.common.UserId
 import com.exchange.core.ledger.OpeningBalance
 import com.exchange.core.ledger.OpeningBalanceResult
 import com.exchange.core.trading.OrderAdmissionState
+import com.exchange.core.trading.TradingState
 import io.aeron.ExclusivePublication
 import io.aeron.Image
 import io.aeron.Publication
+import io.aeron.cluster.client.AeronCluster
 import io.aeron.cluster.service.ClientSession
 import io.aeron.cluster.service.Cluster
 import io.aeron.logbuffer.Header
@@ -38,6 +39,7 @@ import org.mockito.Mockito.verify
 import org.mockito.Mockito.verifyNoInteractions
 import org.mockito.Mockito.`when`
 import java.time.Instant
+import java.util.concurrent.TimeUnit
 import java.util.concurrent.locks.LockSupport
 import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
@@ -60,10 +62,18 @@ class DevelopmentFundingAdapterTest {
     fun `비영점 구간만 복원하고 업무 시각과 불변 관찰을 보존한다`() {
         val fixture = fixture()
         val bytes = commands.encode(command())
-        val shared = ByteArray(11 + bytes.size + 7) { 0x7F }
-        bytes.copyInto(shared, 11)
+        val framed = clusterFrame(bytes)
+        val shared = ByteArray(11 + framed.capacity() + 7) { 0x7F }
+        framed.getBytes(0, shared, 11, framed.capacity())
 
-        fixture.service.onSessionMessage(fixture.session, Long.MAX_VALUE, UnsafeBuffer(shared), 11, bytes.size, header)
+        fixture.service.onSessionMessage(
+            fixture.session,
+            Long.MAX_VALUE,
+            UnsafeBuffer(shared),
+            11 + AeronCluster.SESSION_HEADER_LENGTH,
+            bytes.size,
+            header,
+        )
         shared.fill(0)
 
         val observation = assertNotNull(fixture.service.observation)
@@ -144,7 +154,7 @@ class DevelopmentFundingAdapterTest {
     }
 
     @Test
-    fun `잘림 누락 미지원과 구간 오류는 코어에 들어가지 않고 다음 요청을 허용한다`() {
+    fun `유효한 Cluster 헤더의 외부 본문이 잘리거나 미지원이면 코어 진입 없이 다음 요청을 허용한다`() {
         val fixture = fixture()
         val bytes = commands.encode(command())
         val missing =
@@ -156,14 +166,12 @@ class DevelopmentFundingAdapterTest {
         listOf(bytes.copyOf(7), bytes.copyOf(bytes.size - 1), missing, unsupported, ByteArray(4097)).forEach {
             sendBytes(fixture, it)
         }
-        fixture.service.onSessionMessage(fixture.session, 0, UnsafeBuffer(bytes), -1, bytes.size, header)
-        fixture.service.onSessionMessage(fixture.session, 0, UnsafeBuffer(bytes), Int.MAX_VALUE, bytes.size, header)
-        assertEquals(7L, fixture.service.observation!!.malformedMessages)
+        assertEquals(5L, fixture.service.observation!!.malformedMessages)
         verifyNoInteractions(fixture.state, fixture.session)
 
         send(fixture, command())
 
-        assertEquals(7L, fixture.service.observation!!.malformedMessages)
+        assertEquals(5L, fixture.service.observation!!.malformedMessages)
         assertEquals(
             1,
             fixture.service.observation!!
@@ -174,15 +182,48 @@ class DevelopmentFundingAdapterTest {
     }
 
     @Test
+    fun `Cluster 세션 헤더를 읽을 수 없는 구간은 외부 본문 오류로 숨기지 않고 중단한다`() {
+        val bytes = commands.encode(command())
+        listOf(-1, 0, Int.MAX_VALUE).forEach { offset ->
+            val fixture = fixture()
+
+            val fatal =
+                assertFailsWith<AgentTerminationException>("offset=$offset") {
+                    fixture.service.onSessionMessage(fixture.session, 0, clusterFrame(bytes), offset, bytes.size, header)
+                }
+
+            assertSame(fatal.cause, fixture.failures.single())
+            assertFalse(fixture.service.started)
+            assertFalse(fixture.state.isBlocked, "메타데이터 오류는 돈 계산을 시작하지 않는다")
+            assertTrue(
+                fixture.state
+                    .snapshot()
+                    .balances
+                    .isEmpty(),
+            )
+            assertNull(fixture.service.observation!!.snapshot)
+            verifyNoInteractions(fixture.session)
+        }
+    }
+
+    @Test
     fun `주문 응답이 밀려도 같은 바이트만 다시 보내고 예약은 한 번만 만든다`() {
         val fixture = fixture(offers = listOf(Publication.BACK_PRESSURED, Publication.ADMIN_ACTION, 99L))
         sendBytes(fixture, commands.encode(command()), null)
         val command = admissionCommand().let { it.copy(order = it.order.copy(userId = UserId("U1"))) }
         val bytes = AdmissionCommandCodec().encode(command)
-        val shared = ByteArray(bytes.size + 17) { 0x7F }
-        bytes.copyInto(shared, 9)
+        val framed = clusterFrame(bytes)
+        val shared = ByteArray(framed.capacity() + 17) { 0x7F }
+        framed.getBytes(0, shared, 9, framed.capacity())
 
-        fixture.service.onSessionMessage(fixture.session, Long.MAX_VALUE, UnsafeBuffer(shared), 9, bytes.size, header)
+        fixture.service.onSessionMessage(
+            fixture.session,
+            Long.MAX_VALUE,
+            UnsafeBuffer(shared),
+            9 + AeronCluster.SESSION_HEADER_LENGTH,
+            bytes.size,
+            header,
+        )
         shared.fill(0)
 
         assertEquals(3, fixture.replies.size)
@@ -533,8 +574,9 @@ class DevelopmentFundingAdapterTest {
     fun `종료 알림 자체의 오류는 원래 fatal 원인을 가리지 않는다`() {
         val notificationFailure = IllegalStateException("종료 알림 오류")
         val service =
-            DevelopmentFundingAdapter(OrderAdmissionState(emptyList(), admissionCalculator()), onFatal = { throw notificationFailure })
+            DevelopmentFundingAdapter(tradingState(), onFatal = { throw notificationFailure })
         val cluster = mock(Cluster::class.java)
+        `when`(cluster.timeUnit()).thenReturn(TimeUnit.MILLISECONDS)
         service.onStart(cluster, null)
 
         val fatal = assertFailsWith<AgentTerminationException> { service.onTakeSnapshot(mock(ExclusivePublication::class.java)) }
@@ -563,7 +605,14 @@ class DevelopmentFundingAdapterTest {
         fixture: Fixture,
         bytes: ByteArray,
         session: ClientSession? = fixture.session,
-    ) = fixture.service.onSessionMessage(session, Long.MAX_VALUE, UnsafeBuffer(bytes), 0, bytes.size, header)
+    ) = fixture.service.onSessionMessage(
+        session,
+        Long.MAX_VALUE,
+        clusterFrame(bytes),
+        AeronCluster.SESSION_HEADER_LENGTH,
+        bytes.size,
+        header,
+    )
 
     private fun fixture(
         role: Cluster.Role = Cluster.Role.LEADER,
@@ -572,13 +621,15 @@ class DevelopmentFundingAdapterTest {
         replyTimeoutNs: Long = 1_000_000_000,
         start: Boolean = true,
     ): Fixture {
-        val state = spy(OrderAdmissionState(emptyList(), admissionCalculator()))
+        val state = spy(tradingState())
         val cluster = mock(Cluster::class.java)
         val session = mock(ClientSession::class.java)
         val idle = mock(IdleStrategy::class.java)
         val replies = mutableListOf<ByteArray>()
         val replyBuffers = mutableListOf<DirectBuffer>()
         val failures = mutableListOf<Throwable>()
+        `when`(cluster.timeUnit()).thenReturn(TimeUnit.MILLISECONDS)
+        `when`(cluster.offer(any(DirectBuffer::class.java), anyInt(), anyInt())).thenReturn(1L)
         `when`(cluster.role()).thenReturn(role)
         `when`(cluster.logPosition()).thenReturn(256L)
         `when`(cluster.idleStrategy()).thenReturn(idle)
@@ -612,7 +663,7 @@ class DevelopmentFundingAdapterTest {
     }
 
     private data class Fixture(
-        val state: OrderAdmissionState,
+        val state: TradingState,
         val cluster: Cluster,
         val session: ClientSession,
         val idle: IdleStrategy,
@@ -624,21 +675,26 @@ class DevelopmentFundingAdapterTest {
 
     /** 기존 코어 오류 검증처럼 실제 쓰기 한 지점만 실패시킨다. */
     private fun failOnPreparationWrite(
-        state: OrderAdmissionState,
+        state: TradingState,
         failure: Throwable,
     ) = failOnWrite(state, "preparations", failure)
 
     private fun failOnWrite(
-        state: OrderAdmissionState,
+        state: TradingState,
         fieldName: String,
         failure: Throwable,
     ) {
+        val admission =
+            TradingState::class.java
+                .getDeclaredField("admission")
+                .apply { isAccessible = true }
+                .get(state)
         val field = OrderAdmissionState::class.java.getDeclaredField(fieldName).apply { isAccessible = true }
 
         @Suppress("UNCHECKED_CAST")
-        val original = field.get(state) as MutableMap<Any, Any>
+        val original = field.get(admission) as MutableMap<Any, Any>
         field.set(
-            state,
+            admission,
             object : MutableMap<Any, Any> by original {
                 override fun put(
                     key: Any,

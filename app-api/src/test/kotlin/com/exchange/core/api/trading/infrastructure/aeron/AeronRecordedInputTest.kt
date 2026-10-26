@@ -4,6 +4,8 @@ import com.exchange.core.api.trading.infrastructure.codec.AdmissionCommandCodec
 import com.exchange.core.api.trading.infrastructure.codec.AdmissionCommandPayload
 import com.exchange.core.api.trading.infrastructure.codec.AdmissionResultPayload
 import com.exchange.core.api.trading.infrastructure.codec.DevelopmentBalanceCommandPayload
+import com.exchange.core.api.trading.infrastructure.codec.ExecuteAdmissionCodec
+import com.exchange.core.api.trading.infrastructure.codec.ExecuteAdmissionPayload
 import com.exchange.core.api.trading.infrastructure.codec.admissionCommand
 import com.exchange.core.common.Amount
 import com.exchange.core.common.AssetId
@@ -17,6 +19,7 @@ import com.exchange.core.ledger.LedgerTransaction
 import com.exchange.core.ledger.OpeningBalance
 import com.exchange.core.order.MarketDefinition
 import com.exchange.core.trading.OrderAdmissionState
+import com.exchange.core.trading.TradingState
 import io.aeron.ChannelUri
 import java.net.DatagramSocket
 import java.nio.file.Files
@@ -37,13 +40,13 @@ class AeronRecordedInputTest {
     @Test
     fun `자금 준비와 주문의 실제 Archive 내용과 끝 위치가 원본과 같고 읽기는 돈을 바꾸지 않는다`() {
         val config = config()
-        DevelopmentFundingNode.start(config).use { node ->
+        startObservedTradingNode(config).use { node ->
             val expected = listOf(fund(node), send(node, order()))
-            assertEquals(1L, assertIs<AdmissionResultPayload.Accepted>(node.observation?.admissionResult).sequence)
+            assertEquals(1L, assertIs<AdmissionResultPayload.Accepted>(lastExternalObservation(node)?.admissionResult).sequence)
             val before = snapshotValues(assertNotNull(node.observation?.snapshot))
-            val read = completed(reader(node).read(expected.last().position))
-            assertMatch(expected, read)
-            assertEquals(expected.map { it.position }, read.inputs.map { it.position })
+            val read = completed(reader(node).read(assertNotNull(node.observation).position))
+            assertMatch(withExecutions(node, expected, read.limitPosition), read)
+            assertEquals(expected.map { it.position }, read.inputs.filter { it.clusterSessionId >= 0 }.map { it.position })
             assertTrue(read.controls.isNotEmpty(), "실제 Cluster 제어 메시지와 업무 입력을 구분한다")
             assertEquals(before, snapshotValues(assertNotNull(node.observation?.snapshot)))
             val balance = assertNotNull(node.observation?.snapshot).balances.single()
@@ -58,29 +61,32 @@ class AeronRecordedInputTest {
     @Test
     fun `입력 네 건과 반복 R1 두 위치를 읽어도 예약과 RESERVE는 한 번뿐이다`() {
         val config = config()
-        DevelopmentFundingNode.start(config).use { node ->
+        startObservedTradingNode(config).use { node ->
             val expected = mutableListOf(fund(node))
             val first = order()
             expected.add(send(node, first))
-            val accepted = assertIs<AdmissionResultPayload.Accepted>(node.observation?.admissionResult)
+            val accepted = assertIs<AdmissionResultPayload.Accepted>(lastExternalObservation(node)?.admissionResult)
             val shortage = order("R2", "O2").let { it.copy(order = it.order.copy(quantity = Quantity(800_000_000))) }
             expected.add(send(node, shortage))
-            val rejected = assertIs<AdmissionResultPayload.Rejected>(node.observation?.admissionResult)
+            val rejected = assertIs<AdmissionResultPayload.Rejected>(lastExternalObservation(node)?.admissionResult)
             assertEquals(AdmissionResultPayload.Reason.INSUFFICIENT_BALANCE, rejected.reason)
             assertEquals(Amount(700_000_000), assertNotNull(rejected.insufficientBalance).available)
             assertEquals(Amount(800_000_000), assertNotNull(rejected.insufficientBalance).required)
             assertEquals(Amount(100_000_000), assertNotNull(rejected.insufficientBalance).shortfall)
             expected.add(send(node, first))
-            assertEquals(accepted, node.observation?.admissionResult)
+            assertEquals(accepted, lastExternalObservation(node)?.admissionResult)
 
             val before = assertNotNull(node.observation?.snapshot)
             assertRepresentativeState(before)
-            val read = completed(reader(node).read(expected.last().position))
-            assertMatch(expected, read)
-            assertEquals(4, read.inputs.size)
-            assertEquals(expected.map { it.position }, read.inputs.map { it.position })
+            val read = completed(reader(node).read(assertNotNull(node.observation).position))
+            assertMatch(withExecutions(node, expected, read.limitPosition), read)
+            assertEquals(5, read.inputs.size)
+            assertEquals(expected.map { it.position }, read.inputs.filter { it.clusterSessionId >= 0 }.map { it.position })
             assertTrue(read.inputs.zipWithNext().all { (left, right) -> left.position < right.position })
-            assertContentEquals(read.inputs[1].bytes, read.inputs[3].bytes)
+            assertContentEquals(
+                read.inputs.filter { it.clusterSessionId >= 0 }[1].bytes,
+                read.inputs.filter { it.clusterSessionId >= 0 }[3].bytes,
+            )
             assertEquals(snapshotValues(before), snapshotValues(assertNotNull(node.observation?.snapshot)))
             assertRepresentativeState(assertNotNull(node.observation?.snapshot))
         }
@@ -88,28 +94,31 @@ class AeronRecordedInputTest {
 
     @Test
     fun `완전히 읽은 실물 기록에서 바이트 의미 필드 위치 순서와 건수의 차이를 각각 발견한다`() {
-        DevelopmentFundingNode.start(config()).use { node ->
+        startObservedTradingNode(config()).use { node ->
             val expected = listOf(fund(node), send(node, order()))
-            val read = completed(reader(node).read(expected.last().position))
-            assertMatch(expected, read)
+            val read = completed(reader(node).read(assertNotNull(node.observation).position))
+            assertMatch(withExecutions(node, expected, read.limitPosition), read)
+            val allExpected = withExecutions(node, expected, read.limitPosition)
             val original = expected.last()
+
+            fun replacingOriginal(changed: ExpectedRecordedInput) = allExpected.map { if (it === original) changed else it }
             val changedBytes = original.bytes.copyOf().apply { this[lastIndex] = (this[lastIndex].toInt() xor 1).toByte() }
-            val bytesOnly = compareRecordedInputs(listOf(expected.first(), original.copy(bytes = changedBytes)), read)
+            val bytesOnly = compareRecordedInputs(replacingOriginal(original.copy(bytes = changedBytes)), read)
             assertEquals(RecordingComparisonStatus.MISMATCH, bytesOnly.status)
             assertTrue(bytesOnly.reasons.any { it.contains("원본 바이트") })
             // 실제 기록과 캡처 바이트는 그대로 두고 기대 업무 값만 바꾼다. byte-only 검사는 이 반례를 놓친다.
             original.values.keys.forEach { field ->
                 val changed = original.copy(values = original.values + (field to "다른 기대값:$field"))
-                val result = compareRecordedInputs(listOf(expected.first(), changed), read)
+                val result = compareRecordedInputs(replacingOriginal(changed), read)
                 assertEquals(RecordingComparisonStatus.MISMATCH, result.status, field)
                 assertTrue(result.reasons.any { it.contains(" $field:") }, field)
                 assertTrue(result.reasons.none { it.contains("원본 바이트") }, field)
             }
-            listOf(expected.reversed(), expected.dropLast(1), expected + original).forEach { wrong ->
+            listOf(allExpected.reversed(), allExpected.dropLast(1), allExpected + original).forEach { wrong ->
                 assertEquals(RecordingComparisonStatus.MISMATCH, compareRecordedInputs(wrong, read).status)
             }
             val wrongPosition = original.copy(position = original.position + 32)
-            val positionResult = compareRecordedInputs(listOf(expected.first(), wrongPosition), read)
+            val positionResult = compareRecordedInputs(replacingOriginal(wrongPosition), read)
             assertEquals(RecordingComparisonStatus.MISMATCH, positionResult.status)
             assertTrue(positionResult.reasons.any { it.contains("처리 위치") })
             assertEquals(RecordingComparisonStatus.UNVERIFIABLE, compareRecordedInputs(emptyList(), read).status)
@@ -118,7 +127,7 @@ class AeronRecordedInputTest {
 
     @Test
     fun `L 뒤에 새 주문이 기록돼도 고정한 끝까지만 읽고 현재 자금은 그대로 둔다`() {
-        DevelopmentFundingNode.start(config()).use { node ->
+        startObservedTradingNode(config()).use { node ->
             val first = order()
             val expected =
                 listOf(
@@ -132,25 +141,25 @@ class AeronRecordedInputTest {
             assertTrue(later.position > limit)
             val beforeReading = snapshotValues(assertNotNull(node.observation?.snapshot))
             val read = completed(reader(node).read(limit))
-            assertMatch(expected, read)
+            assertMatch(withExecutions(node, expected, read.limitPosition), read)
             assertEquals(limit, read.consumedPosition)
-            assertEquals(4, read.inputs.size)
+            assertEquals(5, read.inputs.size)
             assertTrue(read.inputs.none { it.position == later.position })
             assertEquals(beforeReading, snapshotValues(assertNotNull(node.observation?.snapshot)))
             val current = assertNotNull(node.observation?.snapshot)
             assertEquals(Amount(600_000_000), current.balances.single().available)
             assertEquals(Amount(400_000_000), current.balances.single().hold)
-            assertEquals(2L, current.lastSequence)
+            assertEquals(2L, current.lastAdmissionSequence)
         }
     }
 
     @Test
     fun `변경한 정책 원장 시각의 재전송은 실제 입력대로 남고 엔진의 첫 승인은 유지된다`() {
-        DevelopmentFundingNode.start(config()).use { node ->
+        startObservedTradingNode(config()).use { node ->
             val expected = mutableListOf(fund(node))
             val first = order()
             expected.add(send(node, first))
-            val accepted = assertIs<AdmissionResultPayload.Accepted>(node.observation?.admissionResult)
+            val accepted = assertIs<AdmissionResultPayload.Accepted>(lastExternalObservation(node)?.admissionResult)
             val before = snapshotValues(assertNotNull(node.observation?.snapshot))
             val changed =
                 first.copy(
@@ -163,11 +172,11 @@ class AeronRecordedInputTest {
                     occurredAt = Instant.parse("2040-01-01T00:00:00.987654321Z"),
                 )
             expected.add(send(node, changed))
-            assertEquals(accepted, node.observation?.admissionResult)
+            assertEquals(accepted, lastExternalObservation(node)?.admissionResult)
             assertEquals(before, snapshotValues(assertNotNull(node.observation?.snapshot)))
-            val read = completed(reader(node).read(expected.last().position))
-            assertMatch(expected, read)
-            assertEquals(changed, AdmissionCommandCodec().decode(read.inputs.last().bytes))
+            val read = completed(reader(node).read(assertNotNull(node.observation).position))
+            assertMatch(withExecutions(node, expected, read.limitPosition), read)
+            assertEquals(changed, AdmissionCommandCodec().decode(read.inputs.last { it.clusterSessionId >= 0 }.bytes))
             val request = assertNotNull(node.observation?.snapshot).requests.single()
             assertEquals(first.feePolicySnapshot, request.feePolicySnapshot)
             assertEquals(first.ledgerTransactionId, request.ledgerTransactionId)
@@ -193,7 +202,7 @@ class AeronRecordedInputTest {
                     ),
             )
         val user = UserId("사".repeat(64))
-        DevelopmentFundingNode.start(config).use { node ->
+        startObservedTradingNode(config).use { node ->
             val opening = opening().copy(opening = OpeningBalance("P1", user, market.quoteAssetId, Amount(1_000_000_000)))
             val expected = mutableListOf(fund(node, opening))
             val command =
@@ -212,17 +221,17 @@ class AeronRecordedInputTest {
             assertTrue(expected.last().bytes.size > maximumPayload, "실제 UDP publication의 MTU payload를 넘어야 한다")
             assertTrue(expected.last().bytes.size <= 4096)
             val before = snapshotValues(assertNotNull(node.observation?.snapshot))
-            val read = completed(reader(node).read(expected.last().position))
-            assertMatch(expected, read)
-            assertTrue(read.inputs.last().fragmentCount > 1, "실제 Archive의 여러 조각이 합쳐졌는지 확인한다")
-            assertEquals(command, AdmissionCommandCodec().decode(read.inputs.last().bytes))
+            val read = completed(reader(node).read(assertNotNull(node.observation).position))
+            assertMatch(withExecutions(node, expected, read.limitPosition), read)
+            assertTrue(read.inputs.last { it.clusterSessionId >= 0 }.fragmentCount > 1, "실제 Archive의 여러 조각이 합쳐졌는지 확인한다")
+            assertEquals(command, AdmissionCommandCodec().decode(read.inputs.last { it.clusterSessionId >= 0 }.bytes))
             assertEquals(before, snapshotValues(assertNotNull(node.observation?.snapshot)))
             val current = assertNotNull(node.observation?.snapshot)
             assertEquals(Amount(699_400_000), current.balances.single().available)
             assertEquals(Amount(300_600_000), current.balances.single().hold)
             assertEquals(
                 Amount(600_000),
-                current.pendingOrders
+                originalApprovalRecords(current)
                     .single()
                     .candidate.reservation.initialFeeReserveAmount,
             )
@@ -234,7 +243,7 @@ class AeronRecordedInputTest {
 
     @Test
     fun `다른 기록 세션 Archive stream과 기록 미도달은 일치가 아니라 검증 불가다`() {
-        DevelopmentFundingNode.start(config()).use { node ->
+        startObservedTradingNode(config()).use { node ->
             val expected = listOf(fund(node), send(node, order()))
             val limit = expected.last().position
             val actual = completed(reader(node).read(limit))
@@ -276,7 +285,7 @@ class AeronRecordedInputTest {
 
     @Test
     fun `이전 관찰값이나 실패 차단 상태 및 결과 누락의 위치를 완료 상한으로 쓰지 않는다`() {
-        DevelopmentFundingNode.start(config()).use { node ->
+        startObservedTradingNode(config()).use { node ->
             fund(node)
             val valid = assertNotNull(node.observation)
             assertEquals(valid, normalObservation(valid, 0))
@@ -341,6 +350,7 @@ class AeronRecordedInputTest {
             }
         val observation = applied(node, previous)
         assertEquals(response, observation.admissionResult)
+        awaitAutomaticCompletion(node, response)
         return ExpectedRecordedInput(assertNotNull(bytes), observation.position, orderValues(command), offerPosition)
     }
 
@@ -375,17 +385,37 @@ class AeronRecordedInputTest {
         }
     }
 
-    private fun assertRepresentativeState(snapshot: OrderAdmissionState.Snapshot) {
+    private fun withExecutions(
+        node: DevelopmentFundingNode,
+        external: List<ExpectedRecordedInput>,
+        limit: Long,
+    ): List<ExpectedRecordedInput> =
+        (
+            external +
+                capturedTradingObservations(node).filter { it.executionSequence != null && it.position <= limit }.map {
+                    val sequence = checkNotNull(it.executionSequence)
+                    ExpectedRecordedInput(
+                        ExecuteAdmissionCodec().encode(ExecuteAdmissionPayload(sequence)),
+                        it.position,
+                        mapOf("kind" to "EXECUTION", "admissionSequence" to sequence),
+                        null,
+                    )
+                }
+        ).sortedBy { it.position }
+
+    private fun assertRepresentativeState(snapshot: TradingState.Snapshot) {
         assertEquals(Amount(700_000_000), snapshot.balances.single().available)
         assertEquals(Amount(300_000_000), snapshot.balances.single().hold)
-        assertEquals(1L, snapshot.lastSequence)
+        assertEquals(1L, snapshot.lastAdmissionSequence)
         assertEquals(
             "OPENING",
             snapshot.preparations
                 .single()
                 .transaction.transactionType.name,
         )
-        val pending = snapshot.pendingOrders.single()
+        assertTrue(snapshot.pendingOrders.isEmpty(), "자동 실행을 마친 주문은 호가창에 있고 처리 대기는 비어 있다")
+        assertEquals(1, snapshot.completions.size)
+        val pending = originalApprovalRecords(snapshot).single()
         assertEquals("RESERVE", pending.candidate.reserveTransaction.transactionType.name)
         assertEquals(Amount(300_000_000), pending.candidate.reservation.remainingAmount)
         assertEquals(listOf("R1", "R2"), snapshot.requests.map { it.requestId })
@@ -405,7 +435,7 @@ class AeronRecordedInputTest {
         val start = System.nanoTime()
         while (System.nanoTime() - start < TimeUnit.SECONDS.toNanos(5)) {
             assertNull(node.error)
-            normalObservation(node.observation, after)?.let { return it }
+            normalObservation(lastExternalObservation(node), after)?.let { return it }
             Thread.sleep(1)
         }
         error("입력에 대응하는 정상 처리 관찰값이 없습니다")
@@ -421,10 +451,13 @@ class AeronRecordedInputTest {
         return value
     }
 
-    private fun snapshotValues(snapshot: OrderAdmissionState.Snapshot): List<Any?> =
+    private fun snapshotValues(snapshot: TradingState.Snapshot): List<Any?> =
         listOf(
             snapshot.balances,
-            snapshot.lastSequence,
+            snapshot.lastAdmissionSequence,
+            snapshot.reservations,
+            snapshot.ledgerTransactions.map(::transactionValues),
+            snapshot.completions.map { listOf(it.executionId, it.occurredAt, it.matchingResult, it.settlement) },
             snapshot.pendingOrders.map { recordValues(it) },
             snapshot.preparations.map { listOf(it.result, transactionValues(it.transaction)) },
             snapshot.requests.map {

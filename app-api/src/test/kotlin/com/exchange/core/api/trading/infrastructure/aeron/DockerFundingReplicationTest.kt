@@ -275,6 +275,11 @@ internal class DockerFundingVerification(
                 issues.addAll(comparison.issues)
             }
             attemptedSteps.add(OrderCheckpoint(step, previousPosition, comparison.position, stepClientEvents))
+            if (step.expectedResult["outcome"] ==
+                "ACCEPTED"
+            ) {
+                awaitAutomaticExecution((step.expectedResult.getValue("sequence") as Number).toLong())
+            }
             recheckOrderInputs()
             stepReports.add(
                 mapOf(
@@ -293,6 +298,24 @@ internal class DockerFundingVerification(
             // 응답과 세 사본이 확인되지 않았으면 다음 입력을 보내지 않는다.
             if (issues.isNotEmpty()) break
             previousPosition = checkNotNull(comparison.position)
+        }
+    }
+
+    private fun awaitAutomaticExecution(sequence: Long) {
+        val limit = deadline(15_000)
+        while (true) {
+            collectNodes(limit, requireRunning = true)
+            if ((0..2).all { member ->
+                    events[member].orEmpty().any {
+                        it.path("kind").asString() == "APPLIED" && it.path("inputKind").asString() == "EXECUTION" &&
+                            it.path("executionSequence").asLong() == sequence
+                    }
+                }
+            ) {
+                return
+            }
+            check(System.nanoTime() < limit) { "승인 $sequence 내부 실행의 세 사본이 확인되지 않았습니다" }
+            Thread.sleep(50)
         }
     }
 
@@ -387,6 +410,7 @@ internal class DockerFundingVerification(
                 if (pair.orderedSteps.size == 2 &&
                     pair.orderedSteps.all { hasOrderObservations(it, pair.positions[it.name], checkNotNull(openingPosition)) }
                 ) {
+                    awaitAutomaticExecution(1L)
                     issues.addAll(pair.issues)
                     stepReports.add(
                         mapOf(
@@ -461,7 +485,7 @@ internal class DockerFundingVerification(
         if (checkpoints.size != 3) {
             issues.add(FundingVerificationIssue("UNVERIFIABLE", "P1과 두 동시 주문의 최종 checkpoint 미확인"))
         }
-        val coverageIssues = compareOrderReplicationCoverage(runId, events, checkpoints)
+        val coverageIssues = compareOrderReplicationCoverage(runId, events, checkpoints, requireAutomaticExecution = true)
         issues.addAll(coverageIssues)
         stepReports.add(mapOf("step" to "FINAL_COVERAGE", "checkpoints" to checkpoints, "issues" to coverageIssues))
         comparison = FundingReplicationComparison(pair.position, issues.distinct())
@@ -498,7 +522,16 @@ internal class DockerFundingVerification(
             )
         }
         if (scenario != null) {
-            issues.addAll(compareOrderReplicationCoverage(runId, events, attemptedSteps.map { it.step to it.position }))
+            issues.addAll(
+                compareOrderReplicationCoverage(
+                    runId,
+                    events,
+                    attemptedSteps.map {
+                        it.step to it.position
+                    },
+                    requireAutomaticExecution = true,
+                ),
+            )
         }
     }
 

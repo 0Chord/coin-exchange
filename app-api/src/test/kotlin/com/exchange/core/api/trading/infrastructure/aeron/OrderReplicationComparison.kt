@@ -8,6 +8,7 @@ internal fun compareOrderReplicationCoverage(
     runId: String,
     eventsByMember: Map<Int, List<JsonNode>>,
     checkpoints: List<Pair<OrderReplicationStep, Long?>>,
+    requireAutomaticExecution: Boolean = false,
 ): List<FundingVerificationIssue> {
     val issues = mutableListOf<FundingVerificationIssue>()
     if (checkpoints.isEmpty()) issues.add(FundingVerificationIssue("UNVERIFIABLE", "이번 실행의 checkpoint가 없습니다"))
@@ -31,6 +32,7 @@ internal fun compareOrderReplicationCoverage(
             }
             if (event.path("kind").asString() != "APPLIED") continue
             val position = event.path("position")
+            if (event.path("inputKind").asString() == "EXECUTION") continue
             if (observedApplicationPosition(event) !in positions) {
                 issues.add(FundingVerificationIssue("UNVERIFIABLE", "node$member 계획 밖 적용 위치: actual=$position, checkpoints=$positions"))
             }
@@ -51,6 +53,7 @@ internal fun compareOrderReplicationCoverage(
             if (member !in 0..2) issues.add(FundingVerificationIssue("MISMATCH", "계획 밖 멤버 node$member 적용 관찰: position=$position"))
         }
     }
+    if (requireAutomaticExecution) issues.addAll(compareAutomaticExecutionCoverage(runId, eventsByMember, checkpoints))
     return issues.distinct()
 }
 
@@ -95,7 +98,8 @@ private fun compareOrderAppliedObservations(
     val issues = mutableListOf<FundingVerificationIssue>()
 
     fun belongs(event: JsonNode): Boolean =
-        event.path("runId").asString() == runId &&
+        event.path("inputKind").asString() == step.inputKind &&
+            event.path("runId").asString() == runId &&
             step.identity.all { (key, value) -> event.path(key).asString() == value }
     val applied =
         (0..2).associateWith { member ->
@@ -153,7 +157,12 @@ private fun compareOrderAppliedObservations(
                 issues,
             )
             compareOrderFields("${step.name}.node$member.result", event.path("result"), step.expectedResult, issues)
-            compareOrderFields("${step.name}.node$member.state", event.path("state"), step.expectedState, issues)
+            compareOrderFields(
+                "${step.name}.node$member.state",
+                event.path("state"),
+                pendingStateAtPosition(step.expectedState, source, observedApplicationPosition(event) ?: 0L),
+                issues,
+            )
             if (event.hasNonNull(
                     "failure",
                 )

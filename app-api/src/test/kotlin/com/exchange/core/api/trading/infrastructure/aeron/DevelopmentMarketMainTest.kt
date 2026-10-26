@@ -61,13 +61,27 @@ class DevelopmentMarketMainTest {
                         listOf("userId", "requestId", "marketId", "orderId")
                     }
                 identityKeys.forEach { key -> assertEquals(expectedResult[key], events.first().path(key).asString()) }
-                val observed = run.applied(node, expectedResult, position)
-                assertEquals(json(expectedResult), observed.path("result"))
+                // 접수 응답은 클라이언트 stdout에서 확인했다. 노드 main은 최신 관찰만
+                // 출력하므로 신규 승인은 외부 접수 관찰 대신 확정된 내부 실행을 기다린다.
+                val execution = expectedResult["outcome"] == "ACCEPTED"
+                val observed =
+                    if (execution) {
+                        run.executed(node, (expectedResult.getValue("sequence") as Number).toLong(), position)
+                    } else {
+                        run.applied(node, expectedResult, position)
+                    }
+                if (execution) {
+                    assertEquals("EXECUTION", observed.path("inputKind").asString())
+                    assertEquals("EXECUTED", observed.path("replyStatus").asString())
+                    assertTrue(observed.path("result").isNull)
+                } else {
+                    assertEquals(json(expectedResult), observed.path("result"))
+                    assertEquals(if (stage == 0) "FUNDING" else "ORDER", observed.path("inputKind").asString())
+                    assertEquals("U1", observed.path("userId").asString())
+                    assertEquals("OFFERED", observed.path("replyStatus").asString())
+                }
                 assertEquals(json(expectedState(stage)), observed.path("state"))
-                assertEquals(if (stage == 0) "FUNDING" else "ORDER", observed.path("inputKind").asString())
-                assertEquals("U1", observed.path("userId").asString())
                 assertEquals("LEADER", observed.path("role").asString())
-                assertEquals("OFFERED", observed.path("replyStatus").asString())
                 assertTrue(observed.path("failure").isNull)
                 position = observed.path("position").asLong()
             }
@@ -118,7 +132,7 @@ class DevelopmentMarketMainTest {
                     assertEquals(json(opening()), events(run.fund().stdout).last().path("result"))
                     val openingPosition = run.applied(node, opening(), 0).path("position").asLong()
                     assertEquals(json(accepted(BTC)), events(run.order(BTC, select = false).stdout).last().path("result"))
-                    assertEquals(json(expectedState(1)), run.applied(node, accepted(BTC), openingPosition).path("state"))
+                    assertEquals(json(expectedState(1)), run.executed(node, BTC.sequence.toLong(), openingPosition).path("state"))
                 } else {
                     val ready = run.localReady(node)
                     assertTrue(ready.contains("markets=${listOf(market("BTC"))}"), ready)
@@ -302,6 +316,21 @@ class DevelopmentMarketMainTest {
                 }
             }
 
+        fun executed(
+            node: RunningVerificationCommand,
+            admissionSequence: Long,
+            previousPosition: Long,
+        ): JsonNode =
+            awaitNode(node) { output ->
+                events(output).firstOrNull {
+                    it.path("kind").asString() == "APPLIED" &&
+                        it.path("inputKind").asString() == "EXECUTION" &&
+                        it.path("executionSequence").asLong() == admissionSequence &&
+                        it.path("position").asLong() > previousPosition &&
+                        it.path("replyStatus").asString() == "EXECUTED"
+                }
+            }
+
         private fun successfulClient(
             entry: String,
             arguments: List<String>,
@@ -367,13 +396,13 @@ class DevelopmentMarketMainTest {
 
     /** 기대값은 응답이나 제품 계산기에서 가져오지 않고 명세의 금액·원본으로 만든다. */
     private fun expectedState(stage: Int): Map<String, Any?> {
-        val pending =
+        val acceptedCount =
             if (stage == 0) {
-                emptyList()
+                0
             } else if (stage < 3) {
-                listOf(record(BTC))
+                1
             } else {
-                listOf(record(BTC), record(SUI_SMALL))
+                2
             }
         val requests =
             buildList {
@@ -395,11 +424,11 @@ class DevelopmentMarketMainTest {
                     ),
                 ),
             "preparationCount" to 1,
-            "pendingOrderCount" to pending.size,
+            "pendingOrderCount" to 0,
             "requestRecordCount" to requests.size,
-            "lastSequence" to pending.size,
+            "lastSequence" to acceptedCount,
             "preparations" to listOf(opening()),
-            "pendingOrders" to pending,
+            "pendingOrders" to emptyList<Any>(),
             "requests" to requests,
             "transactions" to
                 listOf(

@@ -19,13 +19,13 @@ internal class FundingVerificationCollector(
             require(capacity in 1..1024 && Integer.bitCount(capacity) == 1) {
                 "검증 관찰 용량은 1..1024 범위의 2의 거듭제곱이어야 합니다"
             }
-            OneToOneConcurrentArrayQueue<FundingObservation>(capacity)
+            OneToOneConcurrentArrayQueue<CollectedFundingObservation>(capacity)
         }
     private val failure = AtomicReference<String?>()
 
     @Volatile
-    private var terminalObservation: FundingObservation? = null
-    private var deliveredTerminal: FundingObservation? = null
+    private var terminalObservation: CollectedFundingObservation? = null
+    private var deliveredTerminal: CollectedFundingObservation? = null
 
     val verificationFailure: String? get() = failure.get()
 
@@ -43,22 +43,49 @@ internal class FundingVerificationCollector(
                 try {
                     service.onSessionMessage(session, timestamp, buffer, offset, length, header)
                 } finally {
-                    service.observation?.takeIf { it !== previous }?.let(::retain)
+                    service.observation?.takeIf { it !== previous }?.let { retain(it, service, timestamp) }
                 }
             }
         }
 
-    private fun retain(observation: FundingObservation) {
+    private data class CollectedFundingObservation(
+        val observation: FundingObservation,
+        val evidence: Map<String, Any?>,
+    )
+
+    private fun retain(
+        observation: FundingObservation,
+        service: DevelopmentFundingAdapter,
+        timestamp: Long,
+    ) {
+        val collected =
+            CollectedFundingObservation(
+                observation,
+                if (observation.snapshot ==
+                    null
+                ) {
+                    emptyMap()
+                } else {
+                    tradingVerificationEvidence(service) + ("callbackTimestamp" to timestamp)
+                },
+            )
         if (observation.failure != null) {
-            terminalObservation = observation
+            terminalObservation = collected
             failure.compareAndSet(null, "서비스 적용 실패: ${observation.failure}")
-        } else if (!observations.offer(observation)) {
+        } else if (!observations.offer(collected)) {
             failure.compareAndSet(null, "검증 관찰 버퍼 초과: capacity=$capacity, position=${observation.position}")
         }
     }
 
     /** 큐가 가득 차도 실제 서비스의 종료 오류는 별도 슬롯에서 한 번 배출한다. 실패 상태는 지우지 않는다. */
-    fun drainObservations(): List<FundingObservation> =
+    fun drainObservations(): List<FundingObservation> = drainCollected().map { it.observation }
+
+    fun drainFields(config: DevelopmentFundingSettings): List<Map<String, Any?>> =
+        drainCollected().map {
+            fundingVerificationAppliedFields(config, it.observation) + ("trading" to it.evidence)
+        }
+
+    private fun drainCollected(): List<CollectedFundingObservation> =
         buildList {
             observations.drainTo(this, capacity)
             terminalObservation?.let { terminal ->
@@ -124,7 +151,7 @@ fun main(args: Array<String>) {
             try {
                 fundingEvent(fundingVerificationReadyFields(config, node, collector))
                 do {
-                    collector.drainObservations().forEach { fundingEvent(fundingVerificationAppliedFields(config, it)) }
+                    collector.drainFields(config).forEach(::fundingEvent)
                     collector.verificationFailure?.let { error(it) }
                 } while (!node.awaitClosed(100))
                 node.error?.let { throw IllegalStateException("개발 노드가 오류로 중단됐습니다", it) }
@@ -132,7 +159,7 @@ fun main(args: Array<String>) {
                 try {
                     node.close()
                     check(node.awaitClosed(5_000)) { "관찰 생산자의 종료를 확인하지 못했습니다" }
-                    collector.drainObservations().forEach { fundingEvent(fundingVerificationAppliedFields(config, it)) }
+                    collector.drainFields(config).forEach(::fundingEvent)
                     drainSucceeded.set(true)
                 } finally {
                     observationsDrained.countDown()

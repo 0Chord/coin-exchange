@@ -137,6 +137,11 @@ message DevelopmentBalanceRejected {
   optional DevelopmentBalanceRejectionReason reason = 5;
 }
 
+// 서비스가 같은 클러스터에 제출하는 내부 실행 명령(kind7). 주문 원본은 승인 상태에서 읽는다.
+message ExecuteAdmission {
+  optional int64 admission_sequence = 1;
+}
+
 enum DevelopmentBalanceRejectionReason {
   DEVELOPMENT_BALANCE_REJECTION_REASON_UNSPECIFIED = 0;
   DEVELOPMENT_BALANCE_REQUEST_CONTENT_CONFLICT = 1;

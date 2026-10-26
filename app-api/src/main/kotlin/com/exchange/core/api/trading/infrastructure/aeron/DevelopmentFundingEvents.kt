@@ -10,6 +10,7 @@ import com.exchange.core.order.OrderReservation
 import com.exchange.core.trading.OrderAdmissionInput
 import com.exchange.core.trading.OrderAdmissionResult
 import com.exchange.core.trading.OrderAdmissionState
+import com.exchange.core.trading.TradingState
 import tools.jackson.databind.json.JsonMapper
 import java.nio.file.Path
 import java.time.Instant
@@ -119,10 +120,12 @@ internal fun fundingAppliedFields(
         "position" to observation.position,
         "inputKind" to
             when {
+                observation.executionSequence != null -> "EXECUTION"
                 funding != null -> "FUNDING"
                 admission != null -> "ORDER"
                 else -> null
             },
+        "executionSequence" to observation.executionSequence,
         "preparationId" to funding?.get("preparationId"),
         "userId" to (funding?.get("userId") ?: admission?.get("userId")),
         "requestId" to admission?.get("requestId"),
@@ -157,13 +160,13 @@ internal fun admissionResultFields(payload: AdmissionResultPayload): Map<String,
             }
         }
 
-private fun admissionStateFields(state: OrderAdmissionState.Snapshot): Map<String, Any?> =
+private fun admissionStateFields(state: TradingState.Snapshot): Map<String, Any?> =
     mapOf(
         "balances" to state.balances.map(::balanceFields),
         "preparationCount" to state.preparations.size,
         "pendingOrderCount" to state.pendingOrders.size,
         "requestRecordCount" to state.requests.size,
-        "lastSequence" to state.lastSequence,
+        "lastSequence" to state.lastAdmissionSequence,
         "preparations" to state.preparations.map { fundingResultFields(DevelopmentBalanceResultPayload.Prepared(it.result)) },
         // Snapshot의 실제 대기 순서와 최초 결과를 그대로 보존한다.
         "pendingOrders" to state.pendingOrders.map(::admissionRecordFields),
@@ -179,9 +182,7 @@ private fun admissionStateFields(state: OrderAdmissionState.Snapshot): Map<Strin
                 ) + instantFields(request.occurredAt)
             },
         // 제출한 거절 원장 ID는 실제 발행한 전표가 아니다.
-        "transactions" to
-            state.preparations.map { transactionFields(it.transaction) } +
-            state.pendingOrders.map { transactionFields(it.candidate.reserveTransaction) },
+        "transactions" to state.ledgerTransactions.map(::transactionFields),
     )
 
 private fun admissionRecordFields(record: OrderAdmissionState.Record): Map<String, Any?> =

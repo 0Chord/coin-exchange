@@ -18,9 +18,11 @@ import com.exchange.core.fee.FeeRate
 import com.exchange.core.fee.FeeTier
 import com.exchange.core.fee.MakerTakerFeeRates
 import com.exchange.core.ledger.LedgerTransaction
+import com.exchange.core.ledger.LedgerTransactionType
 import com.exchange.core.ledger.OpeningBalance
 import com.exchange.core.order.Side
 import com.exchange.core.trading.OrderAdmissionState
+import com.exchange.core.trading.TradingState
 import io.aeron.Publication
 import io.aeron.cluster.client.AeronCluster
 import org.agrona.concurrent.UnsafeBuffer
@@ -49,7 +51,7 @@ class DevelopmentOrderNodeTest {
 
             assertEquals(1L, result.sequence)
             assertEquals(command.requestId, result.requestId)
-            val snapshot = assertNotNull(node.observation?.snapshot)
+            val snapshot = snapshot(node)
             assertEquals(
                 700_000_000L,
                 snapshot.balances
@@ -62,8 +64,11 @@ class DevelopmentOrderNodeTest {
                     .single()
                     .hold.value,
             )
-            assertEquals(1L, snapshot.lastSequence)
-            val candidate = snapshot.pendingOrders.single().candidate
+            assertEquals(1L, snapshot.lastAdmissionSequence)
+            val candidate =
+                snapshot.completions
+                    .single()
+                    .admission.candidate
             assertEquals(command.order, candidate.order)
             assertEquals(300_000_000L, candidate.reservation.remainingAmount.value)
             val transaction = candidate.reserveTransaction
@@ -94,14 +99,14 @@ class DevelopmentOrderNodeTest {
             (listOf(command) + changedContexts).forEach { repeated ->
                 assertEquals(first, request(config, repeated))
                 assertEquals(before, snapshotValues(snapshot(node)))
-                assertEquals(first, node.observation?.admissionResult)
+                assertEquals(first, recordedResult(snapshot(node), command))
                 assertNull(node.error)
             }
 
             val current = snapshot(node)
-            assertEquals(1L, current.lastSequence)
+            assertEquals(1L, current.lastAdmissionSequence)
             assertEquals(1, current.requests.size)
-            assertEquals(1, current.pendingOrders.size)
+            assertEquals(1, current.completions.size)
             assertBalance(current, available = 700_000_000, hold = 300_000_000)
             assertEquals(command.market, current.requests.single().market)
             assertEquals(command.feePolicySnapshot, current.requests.single().feePolicySnapshot)
@@ -124,7 +129,7 @@ class DevelopmentOrderNodeTest {
             assertEquals(Amount(300_000_000), shortage.shortfall)
             assertTrue(snapshot(node).balances.isEmpty())
             assertTrue(snapshot(node).pendingOrders.isEmpty())
-            assertEquals(0L, snapshot(node).lastSequence)
+            assertEquals(0L, snapshot(node).lastAdmissionSequence)
 
             prepare(config)
             val before = snapshotValues(snapshot(node))
@@ -151,7 +156,7 @@ class DevelopmentOrderNodeTest {
             assertEquals(command.feePolicySnapshot, current.requests.first().feePolicySnapshot)
             assertEquals(command.ledgerTransactionId, current.requests.first().ledgerTransactionId)
             assertEquals(command.occurredAt, current.requests.first().occurredAt)
-            assertEquals(1, current.pendingOrders.size)
+            assertEquals(1, current.completions.size)
             assertNull(node.error)
         }
     }
@@ -195,7 +200,7 @@ class DevelopmentOrderNodeTest {
                 assertEquals(index + 1L, accepted.sequence, field)
                 val current = snapshot(node)
                 assertBalance(current, available = 1_900_000_000L - index * 100_000_000L, hold = (index + 1L) * 100_000_000L)
-                assertEquals(index + 1, current.pendingOrders.size, field)
+                assertEquals(index + 1, current.completions.size, field)
                 assertEquals(index + 1, current.requests.size, field)
                 assertNull(node.error, field)
             }
@@ -232,8 +237,8 @@ class DevelopmentOrderNodeTest {
             assertNull(duplicateRejection.insufficientBalance)
             val current = snapshot(node)
             assertBalance(current, available = 700_000_000, hold = 300_000_000)
-            assertEquals(1L, current.lastSequence)
-            assertEquals(1, current.pendingOrders.size)
+            assertEquals(1L, current.lastAdmissionSequence)
+            assertEquals(1, current.completions.size)
             assertEquals(listOf("R1", "R4"), current.requests.map { it.requestId })
             assertEquals(
                 com.exchange.core.trading.OrderAdmissionResult.Reason.DUPLICATE_ORDER,
@@ -260,7 +265,7 @@ class DevelopmentOrderNodeTest {
             assertEquals(Amount(1_100_000_000), shortage.required)
             assertEquals(Amount(100_000_000), shortage.shortfall)
             assertBalance(snapshot(node), available = 1_000_000_000, hold = 0)
-            assertEquals(0L, snapshot(node).lastSequence)
+            assertEquals(0L, snapshot(node).lastAdmissionSequence)
             assertTrue(snapshot(node).pendingOrders.isEmpty())
             assertEquals(opening, snapshot(node).preparations.map { transactionValues(it.transaction) })
 
@@ -293,7 +298,7 @@ class DevelopmentOrderNodeTest {
             assertEquals(listOf("U1", "U2"), current.requests.map { it.order.userId.value })
             assertEquals(listOf("R1", "R1"), current.requests.map { it.requestId })
             assertEquals(2, current.preparations.size)
-            assertEquals(2, current.pendingOrders.size)
+            assertEquals(2, current.completions.size)
             assertNull(node.error)
         }
     }
@@ -347,7 +352,10 @@ class DevelopmentOrderNodeTest {
             assertEquals(1L, result.sequence)
             val current = snapshot(node)
             assertBalance(current, available = 699_400_000, hold = 300_600_000)
-            val candidate = current.pendingOrders.single().candidate
+            val candidate =
+                current.completions
+                    .single()
+                    .admission.candidate
             assertEquals(config.feePolicySnapshot, candidate.feePolicySnapshot)
             assertEquals(config.feePolicySnapshot, candidate.reservation.feePolicySnapshot)
             assertEquals(Amount(300_600_000), candidate.reservation.reservedAmount)
@@ -385,7 +393,10 @@ class DevelopmentOrderNodeTest {
             val current = snapshot(node)
             assertBalance(current, available = 100_000_000, hold = 200_000_000, asset = "BTC")
             assertEquals(listOf(AssetId("BTC")), current.balances.map { it.assetId })
-            val candidate = current.pendingOrders.single().candidate
+            val candidate =
+                current.completions
+                    .single()
+                    .admission.candidate
             assertEquals(command.order, candidate.order)
             assertEquals(config.feePolicySnapshot, candidate.reservation.feePolicySnapshot)
             assertEquals(Amount(200_000_000), candidate.reservation.reservedAmount)
@@ -417,8 +428,14 @@ class DevelopmentOrderNodeTest {
                 assertTrue(unknown.transportAccepted)
                 assertTrue(unknown.reason.contains("결과 미확인"))
                 assertTrue(unknown.reason.contains("같은 사용자·요청 ID"))
-                eventually { node.observation?.admissionResult is AdmissionResultPayload.Accepted }
-                val first = assertIs<AdmissionResultPayload.Accepted>(node.observation?.admissionResult)
+                eventually {
+                    assertNull(node.error, "응답을 폐기한 주문을 처리하던 노드가 실패했다")
+                    node.observation
+                        ?.snapshot
+                        ?.requests
+                        ?.any { it.requestId == command.requestId } == true
+                }
+                val first = assertIs<AdmissionResultPayload.Accepted>(recordedResult(snapshot(node), command))
                 val before = snapshotValues(snapshot(node))
                 assertBalance(snapshot(node), available = 700_000_000, hold = 300_000_000)
 
@@ -427,8 +444,91 @@ class DevelopmentOrderNodeTest {
                 assertEquals(first, confirmed.result)
                 assertEquals(1L, first.sequence)
                 assertEquals(before, snapshotValues(snapshot(node)))
-                assertEquals(1, snapshot(node).pendingOrders.size)
+                assertEquals(1, snapshot(node).completions.size)
                 assertEquals(1, snapshot(node).requests.size)
+                assertNull(node.error)
+            }
+        }
+    }
+
+    @Test
+    fun `실제 체결 뒤 BUY 응답을 잃어도 같은 요청 재전송은 잔고 원장 호가와 완료를 바꾸지 않는다`() {
+        val config = config().copy(resultTimeoutMs = 250)
+        val collector = FundingVerificationCollector()
+        DevelopmentFundingNode.start(config, collector::decorate).use { node ->
+            prepare(config, preparation = "P-BUYER", user = "U1", ledger = "OPENING-BUYER")
+            prepare(config, preparation = "P-SELLER", user = "U2", asset = "BTC", amount = 100_000_000, ledger = "OPENING-SELLER")
+            val sell =
+                order(
+                    "R-SELL",
+                    "O-SELL",
+                    "U2",
+                ).let { it.copy(order = it.order.copy(side = Side.SELL, quantity = Quantity(100_000_000))) }
+            assertEquals(1L, assertIs<AdmissionResultPayload.Accepted>(request(config, sell)).sequence)
+            assertEquals(1, snapshot(node).completions.size)
+            val buy = order("R-BUY", "O-BUY").let { it.copy(order = it.order.copy(quantity = Quantity(100_000_000))) }
+            var acceptResponse = false
+
+            // 응답 수신만 폐기한다. 예약·내부 실행·체결·정산은 실제 UDP 노드가 수행한다.
+            DevelopmentOrderClient(config, acceptResponse = { acceptResponse }).use { client ->
+                val unconfirmed = assertIs<OrderRequestOutcome.Unconfirmed>(client.request(buy))
+                assertTrue(unconfirmed.transportAccepted)
+                assertTrue(unconfirmed.reason.contains("결과 미확인"))
+                eventually {
+                    assertNull(node.error, "응답을 폐기한 BUY를 처리하던 노드가 실패했다")
+                    node.observation
+                        ?.snapshot
+                        ?.completions
+                        ?.size == 2
+                }
+                val settled = snapshot(node)
+                val first = assertIs<AdmissionResultPayload.Accepted>(recordedResult(settled, buy))
+                assertEquals(2L, first.sequence)
+                assertBalance(settled, available = 900_000_000, hold = 0, user = "U1", asset = "USDT")
+                assertBalance(settled, available = 100_000_000, hold = 0, user = "U1", asset = "BTC")
+                assertBalance(settled, available = 100_000_000, hold = 0, user = "U2", asset = "USDT")
+                assertBalance(settled, available = 0, hold = 0, user = "U2", asset = "BTC")
+                assertEquals(5, settled.ledgerTransactions.size)
+                assertEquals(2, settled.ledgerTransactions.count { it.transactionType == LedgerTransactionType.OPENING })
+                assertEquals(2, settled.ledgerTransactions.count { it.transactionType == LedgerTransactionType.RESERVE })
+                assertEquals(1, settled.ledgerTransactions.count { it.transactionType == LedgerTransactionType.SETTLEMENT })
+                assertTrue(settled.reservations.all { it.remainingAmount == Amount.ZERO })
+                val stateBeforeReplay = snapshotValues(settled)
+
+                // 호가는 서비스 스레드의 callback 직후 수집한 실제 증거에서 읽는다.
+                val observations = mutableListOf<Map<String, Any?>>()
+                eventually {
+                    observations += collector.drainFields(config)
+                    observations.any { it["inputKind"] == "EXECUTION" && it["executionSequence"] == 2L }
+                }
+                val execution = observations.single { it["inputKind"] == "EXECUTION" && it["executionSequence"] == 2L }
+                val tradingBeforeReplay = execution["trading"] as Map<*, *>
+                val book = (tradingBeforeReplay["books"] as List<*>).single() as Map<*, *>
+                assertEquals("BTC-USDT", book["marketId"])
+                assertEquals(2L, book["lastEngineSequence"])
+                assertEquals(emptyList<Any>(), book["orders"])
+
+                acceptResponse = true
+                val confirmed = assertIs<OrderRequestOutcome.Confirmed>(client.request(buy))
+
+                assertEquals(first, confirmed.result)
+                assertEquals(stateBeforeReplay, snapshotValues(snapshot(node)))
+                val replayObservations = mutableListOf<Map<String, Any?>>()
+                eventually {
+                    replayObservations += collector.drainFields(config)
+                    replayObservations.any { it["inputKind"] == "ORDER" && it["requestId"] == buy.requestId }
+                }
+                val replay = replayObservations.single { it["inputKind"] == "ORDER" && it["requestId"] == buy.requestId }
+                // 확정 callback 자체의 시각은 새 입력마다 다르다. 업무 완료·정산의 최초 시각은 그대로여야 한다.
+                val tradingAfterReplay = replay["trading"] as Map<*, *>
+                assertEquals(
+                    tradingBeforeReplay.filterKeys { it != "callbackTimestamp" },
+                    tradingAfterReplay.filterKeys { it != "callbackTimestamp" },
+                    "최초 완료·호가·현재 예약의 전체 업무 증거가 유지된다",
+                )
+                assertEquals(settled.completions, snapshot(node).completions, "최초 완료의 시각·전체 정산도 유지된다")
+                assertTrue(replayObservations.none { it["inputKind"] == "EXECUTION" }, "최초 승인의 재전송은 새 실행을 만들지 않는다")
+                assertNull(collector.verificationFailure)
                 assertNull(node.error)
             }
         }
@@ -457,7 +557,7 @@ class DevelopmentOrderNodeTest {
             val current = snapshot(node)
             assertBalance(current, available = 700_000_000, hold = 300_000_000)
             assertEquals(1, current.preparations.size)
-            assertEquals(1, current.pendingOrders.size)
+            assertEquals(1, current.completions.size)
             assertEquals(1, current.requests.size)
             assertEquals(2L, node.observation?.malformedMessages)
             assertNull(node.error)
@@ -483,8 +583,8 @@ class DevelopmentOrderNodeTest {
 
                     val current = snapshot(node)
                     assertBalance(current, available = 700_000_000, hold = 300_000_000)
-                    assertEquals(1L, current.lastSequence)
-                    assertEquals(1, current.pendingOrders.size)
+                    assertEquals(1L, current.lastAdmissionSequence)
+                    assertEquals(1, current.completions.size)
                     assertEquals(1, current.preparations.size)
                     assertEquals(listOf("R0", "R1", "R2"), current.requests.map { it.requestId })
                     assertNull(node.error)
@@ -560,10 +660,33 @@ class DevelopmentOrderNodeTest {
                 ),
         )
 
-    private fun snapshot(node: DevelopmentFundingNode): OrderAdmissionState.Snapshot = assertNotNull(node.observation?.snapshot)
+    private fun snapshot(node: DevelopmentFundingNode): TradingState.Snapshot {
+        eventually {
+            assertNull(node.error, "자동 실행 중 노드가 실패했습니다")
+            node.observation?.snapshot?.let { it.pendingOrders.isEmpty() && it.completions.size.toLong() == it.lastAdmissionSequence } ==
+                true
+        }
+        val current = assertNotNull(node.observation?.snapshot)
+        assertTrue(current.pendingOrders.isEmpty(), "승인된 주문은 자동 실행 뒤 처리 대기에 남지 않는다")
+        assertEquals(current.lastAdmissionSequence, current.completions.size.toLong())
+        return current
+    }
+
+    private fun recordedResult(
+        snapshot: TradingState.Snapshot,
+        command: AdmissionCommandPayload,
+    ): AdmissionResultPayload =
+        AdmissionResultPayload.from(
+            command,
+            snapshot.requests
+                .single {
+                    it.requestId == command.requestId &&
+                        it.order.userId == command.order.userId
+                }.result,
+        )
 
     private fun assertBalance(
-        snapshot: OrderAdmissionState.Snapshot,
+        snapshot: TradingState.Snapshot,
         available: Long,
         hold: Long,
         user: String = "U1",
@@ -574,10 +697,22 @@ class DevelopmentOrderNodeTest {
         assertEquals(Amount(hold), balance.hold)
     }
 
-    private fun snapshotValues(snapshot: OrderAdmissionState.Snapshot): List<Any?> =
+    private fun snapshotValues(snapshot: TradingState.Snapshot): List<Any?> =
         listOf(
             snapshot.balances,
-            snapshot.lastSequence,
+            snapshot.lastAdmissionSequence,
+            snapshot.reservations,
+            snapshot.ledgerTransactions.map(::transactionValues),
+            snapshot.completions.map {
+                // 서로 독립된 노드는 확정 콜백 시각이 다르므로 시각은 동등성 대상이 아니다.
+                listOf(
+                    it.admission.sequence,
+                    it.executionId,
+                    it.matchingResult,
+                    it.settlement.balanceChanges,
+                    it.settlement.reservationChanges,
+                )
+            },
             snapshot.pendingOrders.map { recordValues(it) },
             snapshot.preparations.map { listOf(it.result, transactionValues(it.transaction)) },
             snapshot.requests.map {

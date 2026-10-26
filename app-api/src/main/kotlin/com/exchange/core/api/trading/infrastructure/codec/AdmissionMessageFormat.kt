@@ -27,6 +27,7 @@ internal object AdmissionMessageFormat {
     const val DEVELOPMENT_BALANCE_COMMAND = 4
     const val DEVELOPMENT_BALANCE_PREPARED = 5
     const val DEVELOPMENT_BALANCE_REJECTED = 6
+    const val EXECUTE_ADMISSION = 7
     private const val SCHEMA = 87
     private const val VERSION = 2
 

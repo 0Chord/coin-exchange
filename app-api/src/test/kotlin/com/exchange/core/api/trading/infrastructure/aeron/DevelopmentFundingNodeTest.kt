@@ -411,7 +411,9 @@ class DevelopmentFundingNodeTest {
             val adapterField = DevelopmentFundingNode::class.java.getDeclaredField("service").apply { isAccessible = true }
             val adapter = adapterField.get(node)
             val stateField = DevelopmentFundingAdapter::class.java.getDeclaredField("state").apply { isAccessible = true }
-            val state = stateField.get(adapter) as com.exchange.core.trading.OrderAdmissionState
+            val trading = stateField.get(adapter) as com.exchange.core.trading.TradingState
+            val admission = trading.javaClass.getDeclaredField("admission").apply { isAccessible = true }
+            val state = admission.get(trading) as com.exchange.core.trading.OrderAdmissionState
             val preparations = state.javaClass.getDeclaredField("preparations").apply { isAccessible = true }
 
             @Suppress("UNCHECKED_CAST")
