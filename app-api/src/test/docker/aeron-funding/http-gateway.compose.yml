@@ -1,0 +1,29 @@
+services:
+  gateway:
+    image: ${FUNDING_IMAGE:?FUNDING_IMAGE must identify the prepared image}
+    hostname: gateway
+    stop_grace_period: 15s
+    networks:
+      funding:
+        aliases: [gateway-aeron]
+      # internal 거래 bridge는 호스트 포트를 게시하지 않으므로 HTTP만 별도 bridge로 연다.
+      gateway-http: {}
+    ports:
+      - "127.0.0.1::8080"
+    environment:
+      SPRING_PROFILES_ACTIVE: aeron-gateway
+      SERVER_PORT: "8080"
+      TRADING_GATEWAY_RUN_ROOT: /tmp/${FUNDING_RUN_ID}-gateway
+      TRADING_GATEWAY_INGRESS_ENDPOINTS: "0=node0:19700,1=node1:19700,2=node2:19700"
+      TRADING_GATEWAY_EGRESS_ENDPOINT: gateway-aeron:20707
+      FUNDING_MARKET_DB_URL:
+      FUNDING_MARKET_DB_USER:
+      FUNDING_MARKET_DB_PASSWORD:
+      FUNDING_MARKET_CONFIG_VERSION:
+      FUNDING_MARKET_CONFIG_SHA256:
+    command:
+      - com.exchange.core.TradingGatewayApplicationKt
+
+networks:
+  gateway-http:
+    driver: bridge

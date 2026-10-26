@@ -227,7 +227,7 @@ object NamingRules {
                 condition("Controller 이름·어노테이션·HTTP 위치를 지킨다") { type ->
                     name(type, input, "controller", "Controller") +
                         shape(type, input, "controller", tagged(type, controllerAnnotations), "표준 Controller 또는 RestController") +
-                        position(type, input, "controller", listOf("order-http", "market-http").map { area(policy, it) })
+                        position(type, input, "controller", listOf("order-http", "market-http", "trading-http").map { area(policy, it) })
                 },
             ).allowEmptyShould(true)
 
@@ -256,7 +256,7 @@ object NamingRules {
     fun useCases(
         input: NamingPlacementInput,
         policy: LayoutPolicy,
-    ) = application(input, policy, "UseCase", "order-application", "ledger-application", "market-application")
+    ) = application(input, policy, "UseCase", "order-application", "ledger-application", "market-application", "trading-application")
 
     fun services(
         input: NamingPlacementInput,
@@ -541,7 +541,7 @@ object NamingRules {
             .should(
                 condition("Request·Response 이름·HTTP 위치를 지킨다") { t ->
                     name(t, input, "http-data", if (t.simpleName.endsWith("Request")) "Request" else "Response") +
-                        position(t, input, "http-data", listOf("order-http", "market-http").map { area(policy, it) })
+                        position(t, input, "http-data", listOf("order-http", "market-http", "trading-http").map { area(policy, it) })
                 },
             ).allowEmptyShould(true)
 

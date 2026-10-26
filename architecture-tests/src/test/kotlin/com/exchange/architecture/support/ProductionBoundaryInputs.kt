@@ -12,24 +12,27 @@ object ProductionBoundaryInputs {
     private const val ORDER_APPLICATION = "$BASE.api.order.application"
     private const val LEDGER_APPLICATION = "$BASE.api.ledger.application"
     private const val MARKET_APPLICATION = "$BASE.api.market.application"
-    private val useCasePackages = setOf(ORDER_APPLICATION, LEDGER_APPLICATION, MARKET_APPLICATION)
+    private const val TRADING_APPLICATION = "$BASE.api.trading.application"
+    private val useCasePackages = setOf(ORDER_APPLICATION, LEDGER_APPLICATION, MARKET_APPLICATION, TRADING_APPLICATION)
     private val applicationPackages = useCasePackages + "$BASE.api.matching.application"
-    private val apiPackages = setOf("$BASE.api.order.api", "$BASE.api.market.api", "$BASE.api.common")
+    private val apiPackages = setOf("$BASE.api.order.api", "$BASE.api.market.api", "$BASE.api.trading.api", "$BASE.api.common")
     private const val CONFIGURATION_PACKAGE = "$BASE.api.config"
     private const val EXECUTOR_CONTRACT = "$BASE.matching.MarketCommandProcessor"
-    private val httpContracts = setOf("$BASE.matching.MatchingCommand", "$BASE.matching.MatchingEvent")
+    private val httpContracts = setOf("$BASE.matching.MatchingCommand", "$BASE.matching.MatchingEvent", "$BASE.trading.OrderAdmissionInput")
     private val httpEnums = setOf("$BASE.order.Side", "$BASE.order.OrderType", "$BASE.order.TimeInForce")
 
     // HTTP에서 읽는 마켓 결과·오류만 허용한다. 일반 application 작업 타입까지 DATA로 넓히지 않는다.
     private val applicationHttpData =
         setOf("Registration", "Release", "Summary", "Error", "Exception")
             .map { "$MARKET_APPLICATION.MarketConfiguration$it" }
-            .toSet()
+            .toSet() + setOf("$TRADING_APPLICATION.TradingAdmissionResult", "$TRADING_APPLICATION.TradingOrderSubmission")
 
     // 기존 공개 진입점의 삭제를 잡는 최소 기대이며, 전체 검사 대상의 등록표가 아니다.
     val requiredTypes =
         setOf(
             "$BASE.api.order.api.OrderController",
+            "$BASE.api.trading.api.TradingOrderController",
+            "${TRADING_APPLICATION}.SubmitTradingOrderUseCase",
             "$BASE.api.market.api.MarketConfigurationController",
             "${ORDER_APPLICATION}.SubmitOrderUseCase",
             "${ORDER_APPLICATION}.CancelOrderUseCase",

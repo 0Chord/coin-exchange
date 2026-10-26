@@ -103,7 +103,7 @@ class NamingPlacementGradleAutomaticTest {
         assertTrue(
             report().contains(
                 "violation=com.example.order.SubmitOrderUseCase:package:" +
-                    "com.example.ledger.application, com.example.market.application, com.example.other",
+                    "com.example.ledger.application, com.example.market.application, com.example.other, com.example.trading.application",
             ),
         )
         write("$policyDir/ProjectLayoutPolicy.kt", "const val allowedFolder = \"com/example/order\"")
