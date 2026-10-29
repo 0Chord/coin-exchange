@@ -51,6 +51,21 @@ class MatchingEngine {
         return Collections.unmodifiableList(orders)
     }
 
+    /**
+     * Releases a terminal identity only for an owner that preserves exact duplicate detection
+     * in durable history. Standalone engine callers retain the existing lifetime identity guard.
+     */
+    fun releaseTerminalOrderIdentity(
+        marketId: MarketId,
+        orderId: OrderId,
+    ) {
+        check(orderBooks[marketId]?.find(orderId) == null) { "cannot release a resting order identity" }
+        seenOrderIds[marketId]?.let { seen ->
+            seen.remove(orderId)
+            if (seen.isEmpty()) seenOrderIds.remove(marketId)
+        }
+    }
+
     /** 조회만으로 없는 마켓의 주문장이나 순번을 만들지 않는다. */
     fun lastEngineSequence(marketId: MarketId): Long = lastSequence(marketId)
 

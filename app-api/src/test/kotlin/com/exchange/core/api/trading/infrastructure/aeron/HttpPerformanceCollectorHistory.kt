@@ -1,11 +1,10 @@
 package com.exchange.core.api.trading.infrastructure.aeron
 
 import com.exchange.core.api.trading.infrastructure.codec.AdmissionResultPayload
-import org.agrona.collections.Long2LongHashMap
 import org.agrona.collections.Long2ObjectHashMap
 import org.agrona.collections.LongHashSet
 
-/** 단일 collector 소유. 파일 모드는 완료와 저장 확인 뒤 원문을 해제하고 primitive 인덱스만 누적한다. */
+/** 단일 collector 소유. 파일 모드는 완료와 저장 확인 뒤 원문과 누적 인덱스를 디스크로 옮긴다. */
 internal class HttpPerformanceCollectorHistory(
     private val capacity: Int,
     private val archive: HttpPerformanceIdentityArchive? = null,
@@ -17,8 +16,21 @@ internal class HttpPerformanceCollectorHistory(
 
     private val segments = Long2ObjectHashMap<Segment>()
     private val pending = Long2ObjectHashMap<AdmissionResultPayload.Accepted>()
-    private val offsets = Long2LongHashMap(-1L)
-    private val diskCompleted = LongHashSet()
+    private var indexFailure: String? = null
+    private val diskIndex =
+        archive?.let {
+            try {
+                HttpPerformanceCollectorDiskIndex(it.evidencePath.resolveSibling("${it.evidencePath.fileName}.index"))
+            } catch (failure: Throwable) {
+                try {
+                    it.close()
+                } catch (closeFailure: Throwable) {
+                    failure.addSuppressed(closeFailure)
+                }
+                indexFailure = "Accepted 원문 인덱스 열기 실패: ${failure.javaClass.simpleName}: ${failure.message}"
+                null
+            }
+        }
     private val releaseAfterCallback = LongHashSet()
     private var closed = false
     val retainedCount: Int get() =
@@ -29,7 +41,8 @@ internal class HttpPerformanceCollectorHistory(
         } else {
             pending.size
         }
-    val error: String? get() = archive?.error
+    val error: String? get() = indexFailure ?: archive?.error
+    val retainedIndexCount: Int get() = diskIndex?.retainedCount ?: 0
     var identityCount: Int = 0
         private set
     var completedCount: Int = 0
@@ -43,7 +56,7 @@ internal class HttpPerformanceCollectorHistory(
         check(!closed) { "닫힌 완료 표식 기록" }
         if (archive == null) return segments.get(sequence shr SEGMENT_SHIFT)?.identities?.get(offset(sequence))
         pending.get(sequence)?.let { return it }
-        val position = offsets.get(sequence)
+        val position = checkNotNull(diskIndex).offset(sequence)
         return if (position == -1L) null else archive.read(sequence, position)
     }
 
@@ -72,7 +85,7 @@ internal class HttpPerformanceCollectorHistory(
     }
 
     fun isCompleted(sequence: Long): Boolean {
-        if (archive != null) return diskCompleted.contains(sequence)
+        if (archive != null) return checkNotNull(diskIndex).completed(sequence)
         val segment = segments.get(sequence shr SEGMENT_SHIFT) ?: return false
         val offset = offset(sequence)
         return (segment.completed[offset / Long.SIZE_BITS] and (1L shl (offset % Long.SIZE_BITS))) != 0L
@@ -81,11 +94,12 @@ internal class HttpPerformanceCollectorHistory(
     fun markCompleted(sequence: Long): Boolean {
         check(!closed) { "닫힌 완료 표식 기록" }
         if (archive != null) {
-            check(pending.containsKey(sequence) || offsets.containsKey(sequence)) { "접수하지 않은 완료 순번" }
-            if (!diskCompleted.add(sequence)) return false
+            val index = checkNotNull(diskIndex)
+            check(pending.containsKey(sequence) || index.offset(sequence) != -1L) { "접수하지 않은 완료 순번" }
+            if (!index.markCompleted(sequence)) return false
             completedCount++
             // Keep the current callback's original for JFR/timing; only its tail drain releases it.
-            if (offsets.containsKey(sequence)) releaseAfterCallback.add(sequence)
+            if (index.offset(sequence) != -1L) releaseAfterCallback.add(sequence)
             return true
         }
         val segment = checkNotNull(segments.get(sequence shr SEGMENT_SHIFT))
@@ -102,6 +116,7 @@ internal class HttpPerformanceCollectorHistory(
     /** Service callback tail and idle both run on the collector thread, never on the writer. */
     fun drainAcknowledgements(): Int {
         if (archive == null) return 0
+        check(indexFailure == null) { checkNotNull(indexFailure) }
         archive.checkHealthy()
         return drain()
     }
@@ -112,8 +127,8 @@ internal class HttpPerformanceCollectorHistory(
         while (true) {
             val ack = storage.pollAcknowledgement() ?: break
             check(pending.containsKey(ack.sequence)) { "원문 없는 Accepted 저장 확인" }
-            check(offsets.put(ack.sequence, ack.offset) == -1L) { "중복 Accepted 저장 확인" }
-            if (diskCompleted.contains(ack.sequence)) pending.remove(ack.sequence)
+            checkNotNull(diskIndex).recordOffset(ack.sequence, ack.offset)
+            if (diskIndex.completed(ack.sequence)) pending.remove(ack.sequence)
             count++
         }
         val iterator = releaseAfterCallback.iterator()
@@ -133,8 +148,7 @@ internal class HttpPerformanceCollectorHistory(
             } finally {
                 pending.clear()
                 segments.clear()
-                offsets.clear()
-                diskCompleted.clear()
+                diskIndex?.close()
                 releaseAfterCallback.clear()
             }
         }

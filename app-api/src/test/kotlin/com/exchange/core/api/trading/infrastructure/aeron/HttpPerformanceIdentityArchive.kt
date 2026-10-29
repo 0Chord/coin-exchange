@@ -18,7 +18,7 @@ internal data class HttpPerformanceIdentityArchiveLimits(
     val pendingCapacity: Int = HTTP_PERFORMANCE_CALLBACK_CAPACITY,
     val queueCapacity: Int = HTTP_PERFORMANCE_CALLBACK_CAPACITY,
     val maximumRecordBytes: Int = 4096,
-    val maximumFileBytes: Long = 512L * 1024 * 1024,
+    val maximumFileBytes: Long = 3L * 1024 * 1024 * 1024,
     val closeTimeoutMs: Long = 5000,
 ) {
     init {

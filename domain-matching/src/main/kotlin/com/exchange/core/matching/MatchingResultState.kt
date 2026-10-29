@@ -151,12 +151,32 @@ class MatchingResultState {
         return lastSequences[marketId] ?: 0L
     }
 
+    /** The common owner must durably preserve the result and exact submitted-order guard first. */
+    fun releaseHistory(
+        marketId: MarketId,
+        commandId: String,
+        terminalOrderId: OrderId,
+    ) {
+        checkUsable()
+        val key = CommandKey(marketId, commandId)
+        val result = records[key] ?: return
+        val command = result.command as? SubmitOrderCommand
+        require(command?.orderId == terminalOrderId) { "history release does not match the submitted order" }
+        records.remove(key)
+        submittedOrders.remove(OrderKey(marketId, terminalOrderId))
+    }
+
     fun snapshot(): Snapshot {
         checkUsable()
         return Snapshot(
             Collections.unmodifiableList(records.values.toList()),
             Collections.unmodifiableMap(LinkedHashMap(lastSequences)),
         )
+    }
+
+    internal fun validateHistoricalResult(result: MatchingCommandResult) {
+        requireResult(result.commandId.isNotBlank(), "내부 명령 ID가 비어 있습니다")
+        validate(result)
     }
 
     private fun validate(result: MatchingCommandResult) {

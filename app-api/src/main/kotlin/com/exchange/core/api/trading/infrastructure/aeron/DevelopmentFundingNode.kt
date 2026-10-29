@@ -1,5 +1,6 @@
 package com.exchange.core.api.trading.infrastructure.aeron
 
+import com.exchange.core.api.trading.infrastructure.history.RocksDbTradingHistoryStore
 import com.exchange.core.fee.TradingFeeCalculator
 import com.exchange.core.fee.TradingFeePolicySnapshot
 import com.exchange.core.fee.TradingFeeReserveCalculator
@@ -49,6 +50,7 @@ internal data class DevelopmentFundingSettings(
     val bindHost: String = advertisedHost,
     val clusterMembers: String? = null,
     val runId: String? = null,
+    val archiveFileSyncLevel: Int = 2,
 ) {
     init {
         require(runRoot.isAbsolute) { "실행 루트는 절대 경로여야 합니다" }
@@ -62,6 +64,7 @@ internal data class DevelopmentFundingSettings(
         require(configured.map { it.id() }.distinct().size == configured.size)
         require(configured.any { it.id() == memberId }) { "멤버 목록에 자기 ID가 없습니다" }
         require(runId == null || runId.matches(Regex("[a-z0-9-]{1,64}")))
+        require(archiveFileSyncLevel in 0..2)
     }
 
     val market: MarketDefinition get() = markets.single().market
@@ -111,6 +114,7 @@ internal class DevelopmentFundingNode private constructor(
     private var archive: Archive? = null
     private var consensus: ConsensusModule? = null
     private var container: ClusteredServiceContainer? = null
+    private var history: RocksDbTradingHistoryStore? = null
 
     /** 요청 ID를 tag로 쓰지 않는 운영용 고정 구간 지표. 서비스 상태·복제 로그와 분리한다. */
     private val metricsRegistry: io.micrometer.core.instrument.MeterRegistry =
@@ -122,9 +126,15 @@ internal class DevelopmentFundingNode private constructor(
             metricRecorder.awaitRecorded()
             return metricsRegistry
         }
-    private val service =
+    private val service by lazy {
         DevelopmentFundingAdapter(
             run {
+                // launch가 새 실행 루트를 만든 뒤 연다. 이전 이력만 재사용해 로그 재실행을 건너뛰지 않는다.
+                val historyStore =
+                    RocksDbTradingHistoryStore.create(config.runRoot.resolve("history"), onFatal = ::fail).also {
+                        history =
+                            it
+                    }
                 val fees = TradingFeeReserveCalculator()
                 val reservation = OrderReservationCalculator(BuyOrderFundingQuoteCalculator(fees))
                 TradingState(
@@ -135,6 +145,7 @@ internal class DevelopmentFundingNode private constructor(
                         fees,
                         SettlementLedgerTransactions(),
                     ),
+                    historyStore = historyStore,
                 )
             },
             config.maxReplyAttempts,
@@ -144,6 +155,7 @@ internal class DevelopmentFundingNode private constructor(
             telemetry = metricRecorder,
             onFatal = ::fail,
         )
+    }
     val observation: FundingObservation? get() = service.observation
 
     /** 전체 조회는 서비스 스레드에 요청한다. 일반 명령은 누적 상태를 복사하지 않는다. */
@@ -243,7 +255,7 @@ internal class DevelopmentFundingNode private constructor(
                     .replicationChannel(config.udp(5))
                     .recordingEventsEnabled(false)
                     .segmentFileLength(TradingAeronRuntime.TERM_LENGTH_BYTES)
-                    .fileSyncLevel(2)
+                    .fileSyncLevel(config.archiveFileSyncLevel)
                     .catalogFileSyncLevel(2)
                     .threadingMode(ArchiveThreadingMode.SHARED)
                     .idleStrategySupplier(TradingAeronRuntime::idleStrategy)
@@ -286,7 +298,7 @@ internal class DevelopmentFundingNode private constructor(
                     .errorHandler(errors)
                     .terminationHook { fail(IllegalStateException("자금 준비 서비스가 종료됐습니다")) },
             )
-        check(storageLevels == listOf(2, 2, 2)) { "실제 저장 설정이 다릅니다" }
+        check(storageLevels == listOf(config.archiveFileSyncLevel, 2, 2)) { "실제 저장 설정이 다릅니다" }
         while (!service.started ||
             requireNotNull(consensus).context().electionStateCounter().get() != ElectionState.CLOSED.code().toLong() ||
             (!config.clustered && role != Cluster.Role.LEADER)
@@ -323,7 +335,7 @@ internal class DevelopmentFundingNode private constructor(
         if (!stopping.compareAndSet(false, true)) return
         stopSignal.countDown()
         try {
-            listOf(container, consensus, archive, driver).forEach { resource ->
+            listOf(container, consensus, archive, driver, history).forEach { resource ->
                 try {
                     resource?.close()
                 } catch (error: Throwable) {

@@ -119,6 +119,7 @@ internal class HttpPerformanceCluster(
     onMarker: (HttpPerformanceCompletion, Long) -> Unit,
 ) : AutoCloseable {
     private val mapper = jacksonObjectMapper()
+    private val archiveSyncLevel = System.getProperty("performance.archiveSyncLevel", "2").toInt().also { require(it in 0..2) }
     private val control = reports.resolve("control")
     private val image = "exchange-http-performance:$runId"
     private val environment =
@@ -135,6 +136,7 @@ internal class HttpPerformanceCluster(
             "PERFORMANCE_MARKER_PLAN_ORDERS" to markerPlan.orders.toString(),
             "PERFORMANCE_EVIDENCE_TIME_BUDGET" to evidenceTimeBudget.name,
             "PERFORMANCE_NODE_MAX_HEAP" to "${nodeMaxHeapMb}m",
+            "PERFORMANCE_ARCHIVE_SYNC_LEVEL" to archiveSyncLevel.toString(),
             "PERFORMANCE_GATEWAY_MAIN" to
                 if (stageDiagnostics) {
                     "com.exchange.core.api.trading.infrastructure.aeron.HttpPerformanceGatewayKt"
@@ -301,7 +303,7 @@ internal class HttpPerformanceCluster(
         }
         must(compose(listOf("up", "-d", "node0", "node1", "node2"), 60_000), "세 성능 노드 기동")
         try {
-            await("세 노드 동일 설정·sync=2·리더 준비", 60_000) {
+            await("세 노드 동일 설정·sync=$archiveSyncLevel·리더 준비", 60_000) {
                 collectNodes()
                 ready()
             }
@@ -1119,7 +1121,7 @@ internal class HttpPerformanceCluster(
                         "clock" to "remote combined direct client JVM; never subtract host receiver clock",
                     )
                 },
-            "storageGuarantee" to "Archive fileSyncLevel=2, catalogFileSyncLevel=2, Consensus fileSyncLevel=2",
+            "storageGuarantee" to "Archive fileSyncLevel=$archiveSyncLevel, catalogFileSyncLevel=2, Consensus fileSyncLevel=2",
             "hostProcessors" to Runtime.getRuntime().availableProcessors(),
             "hostOs" to System.getProperty("os.name"),
             "hostArchitecture" to System.getProperty("os.arch"),
@@ -1230,7 +1232,7 @@ internal class HttpPerformanceCluster(
                     .path("settings")
                     .path("storageLevels")
                     .toList()
-                    .map { value -> value.asInt() } != listOf(2, 2, 2) ||
+                    .map { value -> value.asInt() } != listOf(archiveSyncLevel, 2, 2) ||
                     it.path("settings").path("marketConfigVersion").asLong() != expected.version ||
                     it.path("settings").path("marketConfigSha256").asString() != expected.sha256
             }

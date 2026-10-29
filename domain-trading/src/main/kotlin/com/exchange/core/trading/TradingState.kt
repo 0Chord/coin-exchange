@@ -64,8 +64,11 @@ interface TradingExecutionObserver {
 class TradingState(
     admissionCalculator: OrderAdmissionCalculator,
     private val settlementCalculator: OrderSettlementCalculator,
+    historyStore: TradingHistoryStore? = null,
+    historyBatchLimit: Int = 1_024,
 ) {
-    private val admission = OrderAdmissionState(emptyList(), admissionCalculator)
+    private val admission =
+        OrderAdmissionState(emptyList(), admissionCalculator, historyStore, historyBatchLimit, ::evictHistory)
     private val engine = MatchingEngine()
     private val resultState = MatchingResultState()
     private val completions: MutableMap<Long, Completion> = linkedMapOf()
@@ -122,10 +125,7 @@ class TradingState(
     fun hasRequest(
         userId: UserId,
         requestId: String,
-    ): Boolean {
-        checkUsable()
-        return admission.hasRequest(userId, requestId)
-    }
+    ): Boolean = admissionCall { admission.hasRequest(userId, requestId) }
 
     fun pendingOrders(marketId: MarketId): List<OrderAdmissionState.Record> {
         checkUsable()
@@ -141,8 +141,10 @@ class TradingState(
     ): Completion {
         checkUsable()
         completions[admissionSequence]?.let { return it }
+        admissionCall { admission.completion(admissionSequence) }?.let { return it }
+        admissionCall { admission.prepareHistoryCapacity() }
         require(admissionSequence > 0) { "승인 순번은 양수여야 합니다" }
-        val record = requireNotNull(admission.accepted(admissionSequence)) { "승인된 주문이 없습니다" }
+        val record = requireNotNull(admissionCall { admission.accepted(admissionSequence) }) { "승인된 주문이 없습니다" }
         val first = admission.firstPending(record.candidate.order.marketId)
         if (first != null) require(first.sequence == admissionSequence) { "같은 마켓의 앞선 대기 주문부터 처리해야 합니다" }
 
@@ -215,6 +217,7 @@ class TradingState(
                 admission.completePending(record)
                 val completion = Completion(record, executionId, occurredAt, matchingResult, completedSettlement)
                 completions[admissionSequence] = completion
+                admission.recordCompletion(completion)
                 isBlocked = false
                 completion
             }
@@ -258,20 +261,42 @@ class TradingState(
     }
 
     /** 정상 조회만 복사한다. 주문 실행 중에는 전체 상태 snapshot을 만들지 않는다. */
-    fun snapshot(): Snapshot {
-        checkUsable()
-        val current = admission.snapshot()
-        return Snapshot(
-            current.balances,
-            admission.reservations(),
-            current.pendingOrders,
-            immutableList(completions.values),
-            admission.transactions(),
-            resultState.snapshot().results,
-            current.lastSequence,
-            current.requests,
-            current.preparations,
-        )
+    fun snapshot(): Snapshot =
+        admissionCall {
+            val current = admission.snapshot()
+            val coldHistory = admission.completionHistory()
+            val history = if (coldHistory == null) immutableList(completions.values) else immutableList(coldHistory)
+            Snapshot(
+                current.balances,
+                admission.reservations(),
+                current.pendingOrders,
+                history,
+                admission.transactions(),
+                if (coldHistory == null) resultState.snapshot().results else immutableList(history.map { it.matchingResult }),
+                current.lastSequence,
+                current.requests,
+                current.preparations,
+            )
+        }
+
+    /** Waits for durable history and releases acknowledged historical objects. */
+    fun flushHistory() = admissionCall { admission.flushHistory() }
+
+    fun historyRetention(): TradingHistoryRetention =
+        admissionCall { admission.historyRetention().copy(retainedCompletions = completions.size) }
+
+    private fun evictHistory(batch: TradingHistoryBatch) {
+        for (reservation in batch.reservations) {
+            if (reservation.status != OrderReservationStatus.ACTIVE) {
+                val record = admission.retainedAdmission(reservation.marketId, reservation.orderId)
+                if (record != null) {
+                    completions.remove(record.sequence)?.let { completion ->
+                        resultState.releaseHistory(reservation.marketId, completion.executionId, reservation.orderId)
+                    }
+                    engine.releaseTerminalOrderIdentity(reservation.marketId, reservation.orderId)
+                }
+            }
+        }
     }
 
     fun book(marketId: MarketId): List<RestingOrderSnapshot> {

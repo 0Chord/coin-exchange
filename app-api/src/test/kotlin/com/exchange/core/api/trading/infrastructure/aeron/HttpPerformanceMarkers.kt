@@ -26,7 +26,7 @@ import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicLong
 
 internal const val HTTP_PERFORMANCE_MARKER_CAPACITY = 8192
-private const val MAX_MARKER_PLAN_ORDERS = 600_000
+private const val MAX_MARKER_PLAN_ORDERS = 3_000_000
 private const val MAX_MARKER_PLAN_WARMUP = 12_000
 private const val MAX_MARKER_PLAN_IDENTITIES = 2 * (MAX_MARKER_PLAN_ORDERS + MAX_MARKER_PLAN_WARMUP)
 private const val MARKER_STREAM = 142
@@ -76,7 +76,7 @@ internal class HttpPerformanceMarkerOutbox(
     val capacity: Int,
     private val plan: HttpPerformanceMarkerPlan? = null,
     private val evidencePath: Path? = null,
-    private val maximumEvidenceBytes: Long = 256L * 1024 * 1024,
+    private val maximumEvidenceBytes: Long = 3L * 1024 * 1024 * 1024,
 ) : AutoCloseable {
     internal enum class Status {
         QUEUED,

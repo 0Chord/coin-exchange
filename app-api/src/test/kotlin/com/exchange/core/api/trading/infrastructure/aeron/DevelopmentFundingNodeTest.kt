@@ -478,8 +478,8 @@ class DevelopmentFundingNodeTest {
         val config = config().copy(resultTimeoutMs = 100)
         DevelopmentFundingNode.start(config).use { node ->
             // 실물 노드의 한 메모리 쓰기만 실패시킨다. 제품에 장애 주입 입구를 만들지 않는다.
-            val adapterField = DevelopmentFundingNode::class.java.getDeclaredField("service").apply { isAccessible = true }
-            val adapter = adapterField.get(node)
+            val adapterGetter = DevelopmentFundingNode::class.java.getDeclaredMethod("getService").apply { isAccessible = true }
+            val adapter = adapterGetter.invoke(node)
             val stateField = DevelopmentFundingAdapter::class.java.getDeclaredField("state").apply { isAccessible = true }
             val trading = stateField.get(adapter) as com.exchange.core.trading.TradingState
             val admission = trading.javaClass.getDeclaredField("admission").apply { isAccessible = true }

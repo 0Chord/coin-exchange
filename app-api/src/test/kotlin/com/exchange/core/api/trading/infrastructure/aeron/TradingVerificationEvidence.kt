@@ -17,6 +17,9 @@ private fun verificationTradingState(service: DevelopmentFundingAdapter): Tradin
 
 internal fun isVerificationTradingBlocked(service: DevelopmentFundingAdapter): Boolean = verificationTradingState(service).isBlocked
 
+/** 서비스 스레드에서 크기만 읽으며 누적 결과 객체를 복사하지 않는다. */
+internal fun captureVerificationRetention(service: DevelopmentFundingAdapter) = verificationTradingState(service).historyRetention()
+
 /** 전체 상태의 학습·대조용 값이다. 명시적으로 캡처한 callback 상태를 재사용한다. */
 internal fun tradingVerificationEvidence(
     service: DevelopmentFundingAdapter,

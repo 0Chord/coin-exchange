@@ -20,4 +20,20 @@ class MatchingCommandResult internal constructor(
             lastEngineSequence == other.lastEngineSequence && events == other.events
 
     override fun hashCode(): Int = Objects.hash(commandId, command, expectedEventCount, firstEngineSequence, lastEngineSequence, events)
+
+    companion object {
+        /** Restores a validated result without advancing a live matching owner. */
+        fun restore(
+            commandId: String,
+            command: MatchingCommand,
+            expectedEventCount: Int,
+            firstEngineSequence: Long,
+            lastEngineSequence: Long,
+            events: List<MatchingEvent>,
+        ): MatchingCommandResult {
+            val result = MatchingCommandResult(commandId, command, expectedEventCount, firstEngineSequence, lastEngineSequence, events)
+            MatchingResultState().validateHistoricalResult(result)
+            return result
+        }
+    }
 }

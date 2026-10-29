@@ -5,6 +5,7 @@ import com.exchange.core.api.trading.infrastructure.codec.DevelopmentBalanceResu
 import com.exchange.core.matching.OrderEnteredBook
 import com.exchange.core.matching.SubmitOrderCommand
 import com.exchange.core.matching.TradeExecuted
+import com.exchange.core.trading.TradingHistoryRetention
 import com.exchange.core.trading.TradingState
 import io.aeron.Image
 import io.aeron.cluster.service.ClientSession
@@ -347,6 +348,12 @@ internal class HttpPerformanceCollector(
     private val checkpointResult = AtomicReference<HttpPerformanceCheckpointCapture?>()
     private val roleChanges = AtomicLong()
     private val currentRole = AtomicReference("UNKNOWN")
+    private val recordRetention = identityEvidencePath != null
+    private var lastRetentionNs = 0L
+
+    @Volatile
+    var tradingHistoryRetention: TradingHistoryRetention? = null
+        private set
     internal val retainedIdentityCount: Int get() = history.retainedCount
     val error: String? get() = failure.get() ?: history.error
     val roleChangeCount: Long get() = roleChanges.get()
@@ -399,7 +406,10 @@ internal class HttpPerformanceCollector(
                         failure.compareAndSet(null, "노드 계측 장애: failures=${service.telemetryFailureCount}")
                     }
                     val observation = service.observation?.takeIf { it !== previous }
-                    val firstExecution = observation?.executionSequence?.let { !history.isCompleted(it) } == true
+                    val firstExecution =
+                        observeSafely("최초 실행 완료 여부 조회") {
+                            observation?.executionSequence?.let { !history.isCompleted(it) } == true
+                        } ?: false
                     observation?.let(::observe)
                     if (jfrEvent != null) {
                         observeRequestJfr {
@@ -435,6 +445,12 @@ internal class HttpPerformanceCollector(
 
             override fun doBackgroundWork(nowNs: Long): Int {
                 val work = service.doBackgroundWork(nowNs) + drainIdentityHistory()
+                if (recordRetention && nowNs - lastRetentionNs >= TimeUnit.SECONDS.toNanos(1)) {
+                    lastRetentionNs = nowNs
+                    observeSafely("업무 이력 보관량 수집") {
+                        if (!isVerificationTradingBlocked(service)) tradingHistoryRetention = captureVerificationRetention(service)
+                    }
+                }
                 val label = checkpointRequest.getAndSet(null) ?: return work
                 try {
                     val observation = service.captureObservation().join()
@@ -483,6 +499,18 @@ internal class HttpPerformanceCollector(
 
     // 이 설정은 경로·마켓 정보만 담고 DB 자격증명을 담지 않는다.
     private var config: DevelopmentFundingSettings? = null
+
+    private inline fun <T> observeSafely(
+        operation: String,
+        action: () -> T,
+    ): T? =
+        try {
+            action()
+        } catch (error: Throwable) {
+            // 관찰용 디스크 조회나 진단 실패는 제품 callback의 결과·예외를 바꾸지 않는다.
+            failure.compareAndSet(null, "$operation 실패: ${error.javaClass.simpleName}: ${error.message}")
+            null
+        }
 
     private inline fun <T> observeRequestJfr(action: () -> T): T? =
         try {
@@ -772,7 +800,10 @@ private fun performanceCheckpointTradingEvidence(
 /** 테스트 전용 진입점이다. 측정 밖에서 명시적으로 요청한 체크포인트만 전체 상태를 수집한다. */
 fun main(args: Array<String>) {
     require(args.contentEquals(arrayOf("--cluster-env"))) { "성능 노드 사용법: --cluster-env" }
-    val config = developmentClusterSettings()
+    val config =
+        developmentClusterSettings().copy(
+            archiveFileSyncLevel = (System.getenv("PERFORMANCE_ARCHIVE_SYNC_LEVEL") ?: "2").toInt(),
+        )
     val endpoint = requireNotNull(System.getenv("PERFORMANCE_MARKER_ENDPOINT"))
     val control = Path.of(requireNotNull(System.getenv("PERFORMANCE_CONTROL_DIRECTORY")))
     val markerIdlePolicy =
@@ -874,6 +905,7 @@ fun main(args: Array<String>) {
                             "roleChangeCount" to collector.roleChangeCount,
                             "position" to node.observation?.position,
                             "collectorFailure" to collector.error,
+                            "tradingHistoryRetention" to collector.tradingHistoryRetention,
                             "failure" to node.error?.toString(),
                         ),
                     )
