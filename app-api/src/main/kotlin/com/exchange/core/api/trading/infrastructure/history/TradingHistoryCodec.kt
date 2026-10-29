@@ -45,11 +45,11 @@ import com.exchange.core.trading.SettlementExecution
 import com.exchange.core.trading.TradingHistoryValues
 import com.exchange.core.trading.TradingState
 import java.io.ByteArrayInputStream
-import java.io.ByteArrayOutputStream
 import java.io.DataInputStream
 import java.io.DataOutputStream
 import java.io.OutputStream
 import java.time.Instant
+import java.util.Objects
 import java.util.zip.CRC32C
 
 /** Versioned, bounded values; JVM serialization and constructor bypass are deliberately absent. */
@@ -88,35 +88,65 @@ internal class TradingHistoryCodec(
         kind: Int,
         write: Writer.() -> Unit,
     ): ByteArray {
-        val bytes = ByteArrayOutputStream()
-        val bounded =
-            object : OutputStream() {
-                override fun write(value: Int) {
-                    check(bytes.size() < maximumValueBytes - FRAME_BYTES) { "history value exceeds its byte limit" }
-                    bytes.write(value)
-                }
+        val frame = FrameBuffer(maximumValueBytes)
+        Writer(DataOutputStream(frame)).write()
+        return frame.finish(kind)
+    }
 
-                override fun write(
-                    value: ByteArray,
-                    offset: Int,
-                    length: Int,
-                ) {
-                    check(length <= maximumValueBytes - FRAME_BYTES - bytes.size()) { "history value exceeds its byte limit" }
-                    bytes.write(value, offset, length)
-                }
-            }
-        Writer(DataOutputStream(bounded)).write()
-        val body = bytes.toByteArray()
-        val framed = ByteArrayOutputStream(body.size + FRAME_BYTES)
-        DataOutputStream(framed).use {
-            it.writeInt(MAGIC)
-            it.writeInt(VERSION)
-            it.writeInt(kind)
-            it.writeInt(body.size)
-            it.write(body)
-            it.writeInt(CRC32C().apply { update(body) }.value.toInt())
+    /** Each encode owns its buffer; reserve the header and copy only the completed frame. */
+    private class FrameBuffer(
+        maximumValueBytes: Int,
+    ) : OutputStream() {
+        private val maximumBodyEnd = maximumValueBytes - Int.SIZE_BYTES
+        private var bytes = ByteArray(minOf(maximumBodyEnd, 1_024))
+        private var position = HEADER_BYTES
+
+        override fun write(value: Int) {
+            reserve(1)
+            bytes[position++] = value.toByte()
         }
-        return framed.toByteArray()
+
+        override fun write(
+            value: ByteArray,
+            offset: Int,
+            length: Int,
+        ) {
+            Objects.checkFromIndexSize(offset, length, value.size)
+            reserve(length)
+            value.copyInto(bytes, position, offset, offset + length)
+            position += length
+        }
+
+        private fun reserve(length: Int) {
+            check(length <= maximumBodyEnd - position) { "history value exceeds its byte limit" }
+            val required = position + length
+            if (required > bytes.size) {
+                bytes = bytes.copyOf(minOf(maximumBodyEnd, maxOf(required, bytes.size * 2)))
+            }
+        }
+
+        fun finish(kind: Int): ByteArray {
+            val bodyLength = position - HEADER_BYTES
+            val checksum = CRC32C().apply { update(bytes, HEADER_BYTES, bodyLength) }.value.toInt()
+            val frame = bytes.copyOf(position + Int.SIZE_BYTES)
+            putInt(frame, 0, MAGIC)
+            putInt(frame, 4, VERSION)
+            putInt(frame, 8, kind)
+            putInt(frame, 12, bodyLength)
+            putInt(frame, position, checksum)
+            return frame
+        }
+
+        private fun putInt(
+            target: ByteArray,
+            offset: Int,
+            value: Int,
+        ) {
+            target[offset] = (value ushr 24).toByte()
+            target[offset + 1] = (value ushr 16).toByte()
+            target[offset + 2] = (value ushr 8).toByte()
+            target[offset + 3] = value.toByte()
+        }
     }
 
     private fun <T> decode(
@@ -145,10 +175,23 @@ internal class TradingHistoryCodec(
     private class Writer(
         val out: DataOutputStream,
     ) {
+        private val textBuffer = ByteArray(1_024)
+
         fun text(value: String) {
             out.writeInt(value.length)
             // Preserve every UTF-16 code unit, including domain inputs containing unpaired surrogates.
-            out.writeChars(value)
+            // Bulk writes also check the value bound once per chunk, not once per encoded byte.
+            var offset = 0
+            while (offset < value.length) {
+                val count = minOf(value.length - offset, textBuffer.size / Char.SIZE_BYTES)
+                for (index in 0 until count) {
+                    val code = value[offset + index].code
+                    textBuffer[index * 2] = (code ushr 8).toByte()
+                    textBuffer[index * 2 + 1] = code.toByte()
+                }
+                out.write(textBuffer, 0, count * Char.SIZE_BYTES)
+                offset += count
+            }
         }
 
         fun enum(value: Enum<*>) = text(value.name)

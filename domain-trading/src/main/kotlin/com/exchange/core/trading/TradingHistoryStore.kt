@@ -20,6 +20,15 @@ interface TradingHistoryStore {
     /** Waits for every preceding append to become durable, or throws. */
     fun flush(): Long
 
+    /** Waits for a previously appended ordinal, or throws. May also acknowledge later appends. */
+    fun awaitDurable(ordinal: Long): Long {
+        require(ordinal >= 0) { "history durability target must not be negative" }
+        // Stores without partial barriers retain the existing full-flush contract.
+        val durable = flush()
+        check(durable >= ordinal) { "history did not acknowledge the requested ordinal" }
+        return durable
+    }
+
     fun findRequest(
         userId: UserId,
         requestId: String,

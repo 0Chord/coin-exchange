@@ -17,8 +17,6 @@ import org.rocksdb.RocksDB
 import org.rocksdb.WriteBatch
 import org.rocksdb.WriteBufferManager
 import org.rocksdb.WriteOptions
-import java.io.ByteArrayOutputStream
-import java.io.DataOutputStream
 import java.nio.ByteBuffer
 import java.nio.file.Files
 import java.nio.file.Path
@@ -36,14 +34,22 @@ data class TradingHistoryStorageLimits(
     val targetGroupBytes: Long = 256L * 1_024,
     val maximumOpenFiles: Int = 64,
     val maximumWrittenBytes: Long = 8L * 1_024 * 1_024 * 1_024,
+    val maximumCachedAdmissionIndexes: Int = 16_384,
+    val maximumCachedAdmissionIndexBytes: Long = 8L * 1_024 * 1_024,
 ) {
     init {
-        require(cacheBytes >= 65_536 && writeBufferBytes >= 65_536)
+        // RocksDB 10.1.3 charges pinned memory reservations in 256 KiB units. Leave
+        // space for memtables and concurrent table-reader/filter reservations in one strict cache.
+        require(cacheBytes >= 2L * 1_024 * 1_024) { "history cache must be at least 2 MiB" }
+        require(writeBufferBytes >= 65_536 && writeBufferBytes <= cacheBytes / 2) {
+            "history write buffers must fit within half of the strict cache"
+        }
         require(maximumPendingBytes > 0 && maximumPendingBatches > 0)
         require(maximumValueBytes in 1_024..64 * 1_024 * 1_024)
         require(maximumGroupBatches in 1..maximumPendingBatches && targetGroupBytes > 0)
         require(maximumOpenFiles in 16..1_024)
         require(maximumWrittenBytes > 0)
+        require(maximumCachedAdmissionIndexes >= 0 && maximumCachedAdmissionIndexBytes >= 0)
     }
 }
 
@@ -86,6 +92,9 @@ class RocksDbTradingHistoryStore private constructor(
     private val monitor = Object()
     private val queue = ArrayDeque<Pending>()
     private val pendingValues = HashMap<Key, Put>()
+    private val knownKeys = TradingHistoryKeyFilter()
+    private val admissionIndexes = LinkedHashMap<Key, ByteArray>(16, 0.75f, true)
+    private var admissionIndexBytes = 0L
     private var pendingBytes = 0L
     private var pendingCount = 0
     private var appendedOrdinal = 0L
@@ -110,6 +119,8 @@ class RocksDbTradingHistoryStore private constructor(
 
     internal val pendingBatchCount: Int get() = synchronized(monitor) { pendingCount }
     internal val retainedPendingBytes: Long get() = synchronized(monitor) { pendingBytes }
+    internal val cachedAdmissionIndexCount: Int get() = synchronized(monitor) { admissionIndexes.size }
+    internal val cachedAdmissionIndexBytes: Long get() = synchronized(monitor) { admissionIndexBytes }
 
     override fun append(batch: TradingHistoryBatch) =
         guarded {
@@ -137,7 +148,11 @@ class RocksDbTradingHistoryStore private constructor(
                 }
                 val pending = Pending(batch.ordinal, puts, bytes)
                 queue.addLast(pending)
-                for (put in puts) pendingValues[put.key] = put
+                for (put in puts) {
+                    knownKeys.add(put.key.bytes)
+                    pendingValues[put.key] = put
+                    cacheAdmissionIndex(put.key, put.value)
+                }
                 pendingBytes += bytes
                 pendingCount++
                 appendedOrdinal = batch.ordinal
@@ -150,14 +165,28 @@ class RocksDbTradingHistoryStore private constructor(
         guarded {
             synchronized(monitor) {
                 checkUsable()
-                val target = appendedOrdinal
-                val deadline = System.nanoTime() + WAIT_NANOS
-                flushRequested = true
-                monitor.notifyAll()
-                while (committedOrdinal < target) awaitProgress(deadline)
-                committedOrdinal
+                awaitDurableLocked(appendedOrdinal)
             }
         }
+
+    override fun awaitDurable(ordinal: Long): Long =
+        guarded {
+            synchronized(monitor) {
+                checkUsable()
+                require(ordinal in 0..appendedOrdinal) { "history durability target has not been appended" }
+                awaitDurableLocked(ordinal)
+            }
+        }
+
+    private fun awaitDurableLocked(ordinal: Long): Long {
+        if (committedOrdinal < ordinal) {
+            val deadline = System.nanoTime() + WAIT_NANOS
+            flushRequested = true
+            monitor.notifyAll()
+            while (committedOrdinal < ordinal) awaitProgress(deadline)
+        }
+        return committedOrdinal
+    }
 
     override fun findRequest(
         userId: UserId,
@@ -304,8 +333,40 @@ class RocksDbTradingHistoryStore private constructor(
     private fun read(key: ByteArray): ByteArray? =
         synchronized(monitor) {
             checkUsable()
-            pendingValues[Key(key)]?.value ?: database.get(key)
+            // This store only opens a fresh generation. Every enqueued key enters the
+            // filter before publication; a negative is exact, a positive still reads the full key.
+            if (!knownKeys.mightContain(key)) {
+                null
+            } else {
+                val wrapped = Key(key)
+                pendingValues[wrapped]?.value ?: admissionIndexes[wrapped] ?: database.get(key)?.also {
+                    cacheAdmissionIndex(wrapped, it)
+                }
+            }
         }
+
+    /** Exact, byte- and count-bounded reuse of recent order-to-sequence indexes during settlement. */
+    private fun cacheAdmissionIndex(
+        key: Key,
+        value: ByteArray,
+    ) {
+        if (key.bytes.first() != ADMISSION_INDEX) return
+        val bytes = key.bytes.size.toLong() + value.size + ENTRY_OVERHEAD_BYTES
+        val old = admissionIndexes.remove(key)
+        if (old != null) admissionIndexBytes -= key.bytes.size.toLong() + old.size + ENTRY_OVERHEAD_BYTES
+        if (limits.maximumCachedAdmissionIndexes == 0 || bytes > limits.maximumCachedAdmissionIndexBytes) return
+        while (admissionIndexes.size >= limits.maximumCachedAdmissionIndexes ||
+            bytes > limits.maximumCachedAdmissionIndexBytes - admissionIndexBytes
+        ) {
+            val iterator = admissionIndexes.entries.iterator()
+            val first = iterator.next()
+            val firstKeySize = first.key.bytes.size
+            admissionIndexBytes -= firstKeySize.toLong() + first.value.size + ENTRY_OVERHEAD_BYTES
+            iterator.remove()
+        }
+        admissionIndexes[key] = value
+        admissionIndexBytes += bytes
+    }
 
     /** Flush first; reopen a short-lived iterator per row, so abandoning a sequence leaks no native handle. */
     private fun <T> scan(
@@ -350,8 +411,16 @@ class RocksDbTradingHistoryStore private constructor(
                     synchronized(monitor) {
                         while (queue.isEmpty() && !stopping && failure == null) monitor.wait()
                         if (failure != null || (stopping && queue.isEmpty())) return
-                        // A short collection window groups sparse transition pairs without unbounded latency.
-                        if (!flushRequested && queue.size < limits.maximumGroupBatches) monitor.wait(1)
+                        // Appends notify this monitor too. Keep collecting until the deadline
+                        // instead of turning each notification into a one-transition WAL sync.
+                        val groupDeadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(1)
+                        while (!flushRequested && !stopping && failure == null &&
+                            queue.size < limits.maximumGroupBatches && pendingBytes < limits.targetGroupBytes
+                        ) {
+                            val remaining = groupDeadline - System.nanoTime()
+                            if (remaining <= 0) break
+                            TimeUnit.NANOSECONDS.timedWait(monitor, remaining)
+                        }
                         if (failure != null) return
                         val selected = ArrayList<Pending>()
                         var bytes = 0L
@@ -451,6 +520,8 @@ class RocksDbTradingHistoryStore private constructor(
             synchronized(monitor) {
                 closed = true
                 pendingValues.clear()
+                admissionIndexes.clear()
+                admissionIndexBytes = 0
                 queue.clear()
                 pendingBytes = 0
                 pendingCount = 0
@@ -496,7 +567,10 @@ class RocksDbTradingHistoryStore private constructor(
             Files.createDirectory(directory)
             val resources = ArrayList<AutoCloseable>()
             try {
-                val cache = LRUCache(limits.cacheBytes, -1, true).also(resources::add)
+                // Automatic sharding divides 32 MiB into 64 independent 512 KiB limits.
+                // Pinned 256 KiB memory reservations can exhaust one shard while most of
+                // the cache is free. One shard keeps the same strict global byte limit.
+                val cache = LRUCache(limits.cacheBytes, 0, true).also(resources::add)
                 val buffers = WriteBufferManager(limits.writeBufferBytes, cache, true).also(resources::add)
                 val filter = BloomFilter(10.0).also(resources::add)
                 val table =
@@ -538,15 +612,16 @@ class RocksDbTradingHistoryStore private constructor(
             prefix: Byte,
             vararg values: String,
         ): ByteArray {
-            val bytes = ByteArrayOutputStream()
-            DataOutputStream(bytes).use { output ->
-                output.writeByte(prefix.toInt())
-                values.forEach {
-                    output.writeInt(it.length)
-                    output.writeChars(it)
-                }
+            var size = 1
+            for (value in values) {
+                size = Math.addExact(size, Math.addExact(Int.SIZE_BYTES, Math.multiplyExact(value.length, Char.SIZE_BYTES)))
             }
-            return bytes.toByteArray()
+            val buffer = ByteBuffer.allocate(size).put(prefix)
+            for (value in values) {
+                buffer.putInt(value.length)
+                for (character in value) buffer.putChar(character)
+            }
+            return buffer.array()
         }
 
         private fun numberKey(
@@ -562,5 +637,46 @@ class RocksDbTradingHistoryStore private constructor(
                         putLong(it)
                     }
                 }.array()
+    }
+}
+
+/** Fixed 8 MiB negative lookup filter. Saturation only causes extra exact reads, never a missing history. */
+internal class TradingHistoryKeyFilter(
+    wordCount: Int = 1 shl 20,
+) {
+    init {
+        require(wordCount > 0 && wordCount <= (1 shl 20) && wordCount and (wordCount - 1) == 0)
+    }
+
+    private val words = LongArray(wordCount)
+    private val mask = wordCount * Long.SIZE_BITS - 1
+
+    fun add(key: ByteArray) {
+        var hash = hash(key)
+        val step = (hash ushr 32).toInt() or 1
+        repeat(4) {
+            val bit = hash.toInt() and mask
+            words[bit ushr 6] = words[bit ushr 6] or (1L shl (bit and 63))
+            hash += step
+        }
+    }
+
+    fun mightContain(key: ByteArray): Boolean {
+        var hash = hash(key)
+        val step = (hash ushr 32).toInt() or 1
+        repeat(4) {
+            val bit = hash.toInt() and mask
+            if (words[bit ushr 6] and (1L shl (bit and 63)) == 0L) return false
+            hash += step
+        }
+        return true
+    }
+
+    private fun hash(key: ByteArray): Long {
+        var hash = -3750763034362895579L
+        for (value in key) hash = (hash xor (value.toLong() and 255)) * 1099511628211L
+        hash = (hash xor (hash ushr 33)) * -49064778989728563L
+        hash = (hash xor (hash ushr 33)) * -4265267296055464877L
+        return hash xor (hash ushr 33)
     }
 }

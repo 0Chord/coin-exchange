@@ -490,7 +490,11 @@ class OrderAdmissionState(
         try {
             drainHistory()
             if (historyBatches.size >= historyBatchLimit) {
-                flushHistory()
+                // One acknowledged prefix frees capacity; later writes may continue in parallel.
+                val target = historyBatches.first().ordinal
+                val durable = historyStore.awaitDurable(target)
+                check(durable in target..lastHistoryOrdinal) { "invalid history capacity acknowledgement" }
+                drainHistory()
                 check(historyBatches.size < historyBatchLimit) { "history staging did not drain" }
             }
         } catch (failure: Throwable) {

@@ -36,7 +36,7 @@ internal class HttpPerformanceCollectorDiskIndex(
     init {
         RocksDB.loadLibrary()
         Files.createDirectory(path)
-        cache = LRUCache(4L * 1024 * 1024, -1, true)
+        cache = LRUCache(4L * 1024 * 1024, 0, true)
         options =
             Options()
                 .setCreateIfMissing(true)

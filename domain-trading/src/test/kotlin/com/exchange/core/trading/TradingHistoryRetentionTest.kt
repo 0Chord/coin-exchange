@@ -31,6 +31,62 @@ import kotlin.test.assertTrue
 
 class TradingHistoryRetentionTest {
     @Test
+    fun `full staging waits only for its oldest batch while explicit flush still acknowledges everything`() {
+        val store = ControlledHistoryStore(acknowledgeRequestedOnly = true)
+        val state = state(store, historyBatchLimit = 3)
+        fund(state, seller, btc, 1)
+        fund(state, buyer, usdt, 100)
+        val sell = admit(state, order("S", seller, Side.SELL, 90, 1))
+        assertEquals(3, state.historyRetention().stagedBatches)
+        store.flushFailure = true
+
+        state.executePending(sell.record.sequence, time)
+
+        assertEquals(listOf(1L), store.awaitedOrdinals)
+        assertEquals(0, store.flushCount)
+        val retained = state.historyRetention()
+        assertEquals(1L, retained.durableOrdinal)
+        assertEquals(4L, retained.lastOrdinal)
+        assertEquals(3, retained.stagedBatches)
+        assertEquals(1, retained.retainedPreparations)
+        assertEquals(1, retained.retainedRequests)
+        assertEquals(1, retained.retainedCompletions)
+        assertEquals(1, retained.activeOrders)
+
+        store.flushFailure = false
+        state.flushHistory()
+        assertEquals(1, store.flushCount)
+        assertEquals(4L, state.historyRetention().durableOrdinal)
+        assertEquals(0, state.historyRetention().stagedBatches)
+        assertEquals(0, state.historyRetention().retainedPreparations)
+        assertEquals(0, state.historyRetention().retainedRequests)
+        assertEquals(1, state.historyRetention().activeOrders)
+        assertEquals(Quantity(1), state.book(market.marketId).single().remainingQuantity)
+    }
+
+    @Test
+    fun `invalid or stalled target acknowledgements block before another transition is appended`() {
+        for (reported in listOf(0L, 1L, 99L)) {
+            val backend = ControlledHistoryStore()
+            val store =
+                object : TradingHistoryStore by backend {
+                    // 1 claims success without actually advancing the durable prefix.
+                    override fun awaitDurable(ordinal: Long): Long = reported
+                }
+            val state = state(store, historyBatchLimit = 1)
+            fund(state, seller, btc, 1)
+
+            assertFailsWith<IllegalStateException> { fund(state, buyer, usdt, 100) }
+
+            assertTrue(state.isBlocked)
+            assertEquals(1L, backend.lastOrdinal)
+            assertEquals(0L, backend.durableOrdinal)
+            assertEquals(1, retainedCollectionSize(state, "admission", "historyBatches"))
+            assertEquals(1, retainedMapSize(state, "admission", "preparations"))
+        }
+    }
+
+    @Test
     fun `bounded staging releases all terminal histories while exact cold answers and ledger survive`() {
         val store = ControlledHistoryStore()
         val state = state(store, historyBatchLimit = 3)
@@ -241,6 +297,7 @@ private class HistoryFailure : RuntimeException()
 /** Models a lossless external history with independently controlled durability and fresh read objects. */
 private class ControlledHistoryStore(
     var autoAcknowledge: Boolean = false,
+    private val acknowledgeRequestedOnly: Boolean = false,
 ) : TradingHistoryStore {
     override var durableOrdinal = 0L
         private set
@@ -251,6 +308,7 @@ private class ControlledHistoryStore(
     var readFailure = false
     var appendFailure = false
     var flushFailure = false
+    val awaitedOrdinals = mutableListOf<Long>()
     private val requestValues = linkedMapOf<Pair<UserId, String>, OrderAdmissionState.RequestRecord>()
     private val admissionValues = linkedMapOf<Long, OrderAdmissionState.Record>()
     private val orderValues = linkedMapOf<Pair<MarketId, OrderId>, OrderAdmissionState.Record>()
@@ -287,6 +345,14 @@ private class ControlledHistoryStore(
         if (flushFailure) throw HistoryFailure()
         flushCount++
         durableOrdinal = lastOrdinal
+        return durableOrdinal
+    }
+
+    override fun awaitDurable(ordinal: Long): Long {
+        awaitedOrdinals.add(ordinal)
+        if (!acknowledgeRequestedOnly) return super<TradingHistoryStore>.awaitDurable(ordinal)
+        require(ordinal in 0..lastOrdinal)
+        durableOrdinal = maxOf(durableOrdinal, ordinal)
         return durableOrdinal
     }
 

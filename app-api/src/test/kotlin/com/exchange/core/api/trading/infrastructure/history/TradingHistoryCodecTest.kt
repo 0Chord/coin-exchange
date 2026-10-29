@@ -1,11 +1,15 @@
 package com.exchange.core.api.trading.infrastructure.history
 
 import com.exchange.core.common.UserId
+import com.exchange.core.ledger.LedgerTransaction
 import com.exchange.core.order.Side
 import com.exchange.core.trading.OrderAdmissionResult
 import com.exchange.core.trading.OrderAdmissionState
 import com.exchange.core.trading.TradingHistoryValues
 import org.junit.jupiter.api.Test
+import java.io.ByteArrayOutputStream
+import java.io.DataOutputStream
+import java.util.zip.CRC32C
 import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
@@ -85,6 +89,28 @@ class TradingHistoryCodecTest {
     }
 
     @Test
+    fun `bulk UTF16 writes preserve the original frame and exact value size limit across chunks`() {
+        val fixture = TradingHistoryFixture().apply { funding("seller", "BTC", 100) }
+        val original =
+            fixture.batches
+                .single()
+                .ledgerTransactions
+                .single()
+        // The surrogate pair crosses the 512-code-unit buffer boundary; isolated units stay exact too.
+        val identifier = "a".repeat(511) + "\uD800\uDC00\u0000é한\uDFFF" + "b".repeat(1_030) + "\uD800"
+        val transaction =
+            LedgerTransaction(identifier, "", original.transactionType, original.occurredAt, original.postings)
+        val expected = originalTransactionFrame(transaction)
+        val exactCodec = TradingHistoryCodec(expected.size)
+
+        assertContentEquals(expected, exactCodec.encodeTransaction(transaction))
+        val restored = exactCodec.decodeTransaction(expected)
+        assertEquals(identifier, restored.ledgerTransactionId)
+        assertEquals("", restored.sourceEventId)
+        assertFailsWith<IllegalStateException> { TradingHistoryCodec(expected.size - 1).encodeTransaction(transaction) }
+    }
+
+    @Test
     fun `corrupt truncated mismatched and trailing frames fail instead of decoding a different value`() {
         val fixture = TradingHistoryFixture().apply { completedTrade() }
         val bytes = codec.encodeCompletion(fixture.batches.mapNotNull { it.completion }.last())
@@ -100,5 +126,39 @@ class TradingHistoryCodecTest {
                 1_024,
             ).encodeCompletion(fixture.batches.mapNotNull { it.completion }.last())
         }
+    }
+
+    /** Independent version-one reference using the original DataOutputStream character encoding. */
+    private fun originalTransactionFrame(value: LedgerTransaction): ByteArray {
+        val payload = ByteArrayOutputStream()
+        DataOutputStream(payload).use { output ->
+            fun text(value: String) {
+                output.writeInt(value.length)
+                output.writeChars(value)
+            }
+            text(value.ledgerTransactionId)
+            text(value.sourceEventId)
+            text(value.transactionType.name)
+            output.writeLong(value.occurredAt.epochSecond)
+            output.writeInt(value.occurredAt.nano)
+            output.writeInt(value.postings.size)
+            for (posting in value.postings) {
+                text(posting.accountId)
+                text(posting.assetId.value)
+                text(posting.side.name)
+                output.writeLong(posting.amount.value)
+            }
+        }
+        val body = payload.toByteArray()
+        val frame = ByteArrayOutputStream()
+        DataOutputStream(frame).use { output ->
+            output.writeInt(0x54484831)
+            output.writeInt(1)
+            output.writeInt(6)
+            output.writeInt(body.size)
+            output.write(body)
+            output.writeInt(CRC32C().apply { update(body) }.value.toInt())
+        }
+        return frame.toByteArray()
     }
 }
