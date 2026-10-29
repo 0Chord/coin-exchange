@@ -181,6 +181,7 @@ class TradingState(
                 }
             val executionId = "EXECUTE:v1:$admissionSequence"
             lateinit var preparedSettlement: OrderAdmissionState.PreparedSettlement
+            lateinit var completedSettlement: OrderSettlementCandidate
             val registration =
                 observedExecutionPhase(admissionSequence, TradingExecutionPhase.RESULT_VALIDATION, observer) {
                     validateJointResult(record, plan, settlement, executions)
@@ -197,6 +198,8 @@ class TradingState(
                             plan.lastEngineSequence,
                             plan.events,
                         )
+                    // 실제 쓰기 전에 이력 보관 공간도 준비한다. 조회는 당시 값만 복원한다.
+                    completedSettlement = settlement.compactForHistory()
                     preparedSettlement = admission.prepareSettlement(settlement)
                     preparedRegistration
                 }
@@ -210,7 +213,7 @@ class TradingState(
                 }
             return observedExecutionPhase(admissionSequence, TradingExecutionPhase.COMPLETION, observer) {
                 admission.completePending(record)
-                val completion = Completion(record, executionId, occurredAt, matchingResult, settlement)
+                val completion = Completion(record, executionId, occurredAt, matchingResult, completedSettlement)
                 completions[admissionSequence] = completion
                 isBlocked = false
                 completion

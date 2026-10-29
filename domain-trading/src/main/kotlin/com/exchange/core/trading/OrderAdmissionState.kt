@@ -253,7 +253,7 @@ class OrderAdmissionState(
         if (calculation is OrderAdmissionResult.Rejected) return Result.Rejected(calculation.reason, calculation.insufficientBalance)
 
         val candidate = (calculation as OrderAdmissionResult.Calculated).candidate
-        check(candidate.previousBalance == currentBalance) { "후보가 읽은 잔고와 현재 잔고가 다릅니다" }
+        check(candidate.hasPreviousBalance(currentBalance)) { "후보가 읽은 잔고와 현재 잔고가 다릅니다" }
         check(candidate.order == order && candidate.market == market && candidate.feePolicySnapshot == feePolicySnapshot) {
             "후보의 주문·마켓·정책 연결이 다릅니다"
         }
@@ -266,12 +266,13 @@ class OrderAdmissionState(
         request: RequestRecord? = null,
     ) {
         val candidate = record.candidate
-        val balanceKey = BalanceKey(candidate.order.userId, candidate.nextBalance.assetId)
+        val nextBalance = candidate.nextBalance
+        val balanceKey = BalanceKey(candidate.order.userId, nextBalance.assetId)
         val orderKey = OrderKey(candidate.order.marketId, candidate.order.orderId)
 
         // 최초 결과도 이 구간에서 기록한다. 어느 쓰기든 실패하면 차단 상태가 남는다.
         isBlocked = true
-        balances[balanceKey] = candidate.nextBalance
+        balances[balanceKey] = nextBalance
         records[orderKey] = record
         val sequenceIndex = record.sequence - 1
         val segmentKey = sequenceIndex / ADMISSION_SEQUENCE_SEGMENT_SIZE

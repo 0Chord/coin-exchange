@@ -18,8 +18,11 @@ import org.agrona.concurrent.SystemNanoClock
 import org.junit.jupiter.api.io.TempDir
 import org.mockito.ArgumentMatchers.any
 import org.mockito.ArgumentMatchers.anyLong
+import org.mockito.Mockito.atMost
 import org.mockito.Mockito.doThrow
 import org.mockito.Mockito.mock
+import org.mockito.Mockito.spy
+import org.mockito.Mockito.verify
 import java.io.IOException
 import java.nio.ByteBuffer
 import java.nio.channels.FileChannel
@@ -44,6 +47,36 @@ import kotlin.test.assertTrue
 class HttpPerformanceFileBackedCollectorHistoryTest {
     @TempDir
     lateinit var directory: Path
+
+    @Test
+    fun `쌓인 완료 원문은 묶음 쓰기로 배출하고 각 원문의 offset과 CRC를 보존한다`() {
+        val target = spy(FileChannel.open(directory.resolve("batch-writes.bin"), CREATE_NEW, READ, WRITE))
+        val archive =
+            HttpPerformanceIdentityArchive(
+                directory.resolve("batch-writes.bin"),
+                limits(pending = 512),
+                { target },
+                startImmediately = false,
+            )
+        HttpPerformanceCollectorHistory(512, archive).use { history ->
+            repeat(512) {
+                history.record(accepted(it.toLong()))
+                history.markCompleted(it.toLong())
+            }
+            archive.start()
+            await {
+                history.drainAcknowledgements()
+                history.retainedCount == 0
+            }
+            assertEquals(512, history.identityCount)
+            assertEquals(512, history.completedCount)
+            repeat(512) { assertEquals(accepted(it.toLong()), history[it.toLong()]) }
+            // The old one-record-per-write path made 512 calls for this same queued cohort.
+            verify(target, atMost(4)).write(any(ByteBuffer::class.java), anyLong())
+        }
+        assertFalse(target.isOpen)
+        assertNull(archive.error)
+    }
 
     @Test
     fun `여러 작은 완료 batch는 원문을 해제하고 누적 식별 완료 수와 오래된 exact 원문을 보존한다`() {

@@ -137,10 +137,13 @@ internal class HttpPerformanceIdentityArchive(
             val target = openChannel(evidencePath)
             channel = target
             try {
+                val batch = ByteBuffer.allocate(maxOf(BATCH_BYTES, limits.maximumRecordBytes))
                 while (accepting.get() || queue.isNotEmpty()) {
-                    // The payload's append stack has returned before an acknowledgement escapes.
-                    val acknowledgement = appendNext(target) ?: continue
-                    check(acknowledgements.offer(acknowledgement)) { "Accepted 원문 acknowledgement queue 초과" }
+                    // One positional write covers a bounded group; all original frame boundaries remain intact.
+                    val written = appendBatch(target, batch)
+                    for (acknowledgement in written) {
+                        check(acknowledgements.offer(acknowledgement)) { "Accepted 원문 acknowledgement queue 초과" }
+                    }
                 }
             } finally {
                 try {
@@ -157,31 +160,52 @@ internal class HttpPerformanceIdentityArchive(
         }
     }
 
-    private fun appendNext(target: FileChannel): Acknowledgement? {
-        val accepted = queue.poll(10, TimeUnit.MILLISECONDS) ?: return null
-        val length = recordBytes(accepted)
-        check(length <= limits.maximumRecordBytes) { "Accepted 원문 record byte 상한 초과" }
-        check(length <= limits.maximumFileBytes - writtenBytes) { "Accepted 원문 file byte 상한 초과" }
-        val frame = ByteBuffer.allocate(length.toInt())
-        frame.putInt(MAGIC).putInt(length.toInt()).putLong(accepted.sequence)
-        for (field in arrayOf(accepted.userId, accepted.requestId, accepted.marketId, accepted.orderId)) {
-            frame.putInt(field.length)
-            for (character in field) frame.putChar(character)
+    private fun appendBatch(
+        target: FileChannel,
+        batch: ByteBuffer,
+    ): List<Acknowledgement> {
+        var accepted = queue.poll(10, TimeUnit.MILLISECONDS) ?: return emptyList()
+        batch.clear()
+        val written = ArrayList<Acknowledgement>(MAX_BATCH_RECORDS)
+        val start = writtenBytes
+        while (true) {
+            val offset = Math.addExact(start, batch.position().toLong())
+            appendFrame(batch, accepted, offset)
+            written += Acknowledgement(accepted.sequence, offset)
+            if (written.size == MAX_BATCH_RECORDS) break
+            val next = queue.peek() ?: break
+            if (recordBytes(next) > batch.remaining()) break
+            accepted = checkNotNull(queue.poll())
         }
-        val checksum = CRC32()
-        checksum.update(frame.array(), 0, frame.position())
-        frame.putInt(checksum.value.toInt())
-        frame.flip()
-        val offset = writtenBytes
-        var position = offset
-        while (frame.hasRemaining()) {
-            val count = target.write(frame, position)
+        batch.flip()
+        var position = start
+        while (batch.hasRemaining()) {
+            val count = target.write(batch, position)
             check(count > 0) { "Accepted 원문 파일 쓰기 진행 실패" }
             position = Math.addExact(position, count.toLong())
         }
         writtenBytes = position
-        // Positional replay can now read the full frame. Shutdown force failures invalidate STOPPED.
-        return Acknowledgement(accepted.sequence, offset)
+        // The complete batch is readable before acknowledgements escape. Shutdown force failures still invalidate STOPPED.
+        return written
+    }
+
+    private fun appendFrame(
+        batch: ByteBuffer,
+        accepted: AdmissionResultPayload.Accepted,
+        offset: Long,
+    ) {
+        val length = recordBytes(accepted)
+        check(length <= limits.maximumRecordBytes) { "Accepted 원문 record byte 상한 초과" }
+        check(length <= limits.maximumFileBytes - offset) { "Accepted 원문 file byte 상한 초과" }
+        val frameStart = batch.position()
+        batch.putInt(MAGIC).putInt(length.toInt()).putLong(accepted.sequence)
+        for (field in arrayOf(accepted.userId, accepted.requestId, accepted.marketId, accepted.orderId)) {
+            batch.putInt(field.length)
+            for (character in field) batch.putChar(character)
+        }
+        val checksum = CRC32()
+        checksum.update(batch.array(), frameStart, batch.position() - frameStart)
+        batch.putInt(checksum.value.toInt())
     }
 
     override fun close() {
@@ -230,6 +254,8 @@ internal class HttpPerformanceIdentityArchive(
     }
 
     private companion object {
+        const val BATCH_BYTES = 64 * 1024
+        const val MAX_BATCH_RECORDS = 256
         const val MAGIC = 0x48504931 // HPI1: original Java string code units, including unpaired surrogates.
         const val HEADER_BYTES = 16
         const val CHECKSUM_BYTES = Int.SIZE_BYTES

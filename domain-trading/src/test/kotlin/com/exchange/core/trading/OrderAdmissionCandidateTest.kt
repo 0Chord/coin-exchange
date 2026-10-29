@@ -28,6 +28,8 @@ import java.time.Instant
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
+import kotlin.test.assertFalse
+import kotlin.test.assertNotSame
 
 /** 잔고·예약·원장을 독립적으로 준비하여 SELL 후보의 조합 검증을 직접 확인한다. */
 class OrderAdmissionCandidateTest {
@@ -90,6 +92,25 @@ class OrderAdmissionCandidateTest {
         assertEquals(next, candidate.nextBalance)
         assertEquals(reservation, candidate.reservation)
         assertEquals(record, candidate.reserveTransaction)
+    }
+
+    @Test
+    fun `승인 후보는 당시 잔고 값을 보존하지만 이전 Balance 객체를 보관하지 않는다`() {
+        val candidate = candidate()
+        val fields =
+            candidate.javaClass.declaredFields.filterNot {
+                java.lang.reflect.Modifier
+                    .isStatic(it.modifiers)
+            }
+        assertFalse(fields.any { it.apply { isAccessible = true }.get(candidate) is Balance })
+
+        repeat(3) {
+            assertEquals(previous, candidate.previousBalance)
+            assertEquals(next, candidate.nextBalance)
+            assertNotSame(previous, candidate.previousBalance)
+            assertNotSame(next, candidate.nextBalance)
+            candidate.validate()
+        }
     }
 
     @Test

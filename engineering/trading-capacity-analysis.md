@@ -799,3 +799,7 @@ service stack sample 610개 중 TradingNodeMetrics.recordCompleted가 top frame�
 근거: `/Users/0chord/.codex/visualizations/2026/09/23/01a0ce63-9327-7f32-a7e0-3429380284d8/issue142-performance/observer-retention-20261029/verification-summary.json`, `regression-r3.log`, `final-regression-xml/`, `independent-review.md`, `full-review-r2/manifest.json`.
 
 남은 문제: 업무 완료 기록이 최초 접수 후보와 전체 정산 후보를 보관하는 경로는 그대로다. 장기 이력 저장·과거 결과 재사용·재시작 복구 계약을 유지하면서 줄여야 하며, 현재 이 단계에서 삭제하거나 TTL을 적용하지 않았다. 수신 발생기의 전체 이력 보관도 이번 두 노드 관찰 경로 변경 범위에 포함하지 않았다. 현재 5분 지속 성공·메모리 절감 바이트·TPS 개선은 미측정이다.
+
+## 31. 과거 잔고 보관 축소와 세 노드 재측정 — 2026-10-29
+
+후속으로 접수·완료 이력의 과거 잔고 표현을 줄이고 관찰 원문을 묶어서 쓰도록 수정했다. 회귀·구조 검사 676개와 독립 검토를 마쳤다. 엔진 단독 3회 중앙값의 GC 후 Heap은 320.8→311.8MB, 임시 할당은 9,707→10,202B/BUY다. 같은 세 노드·sync2·BTC/SOL/SUI의 유한 240k 주문 비교에서 전체 완료는 12,027→17,900TPS, BUY 세 노드 완료 관측 p99는 1,155→587ms였다. 각 1회이며 리더가 달라 코드만의 확정 개선율이나 최대·지속 TPS로 주장하지 않는다. 이력은 여전히 건수에 비례한다. 조건·실패 시도·원본 검증·남은 범위는 [주문 이력 보관 비용 수정과 재측정](trading-retention-20261029.md)에 기록했다.
