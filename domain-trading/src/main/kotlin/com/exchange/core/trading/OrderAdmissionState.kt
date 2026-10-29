@@ -11,6 +11,7 @@ import com.exchange.core.ledger.LedgerTransaction
 import com.exchange.core.ledger.OpeningBalance
 import com.exchange.core.ledger.OpeningBalanceRequestConflictException
 import com.exchange.core.ledger.OpeningBalanceResult
+import com.exchange.core.matching.MatchingCheckpoint
 import com.exchange.core.order.MarketDefinition
 import com.exchange.core.order.OrderReservation
 import com.exchange.core.order.OrderReservationStatus
@@ -22,7 +23,8 @@ private const val ADMISSION_SEQUENCE_SEGMENT_SIZE = 1_024
 
 /**
  * 한 실행자가 순서대로 호출하는 접수 상태. 여러 마켓이 사용자·자산별 최신 잔고를 공유한다.
- * 영구 저장·동시 호출·복구는 제공하지 않으며, 반영 중 오류 뒤에는 재전송과 정상 조회도 차단한다.
+ * 저장 매체와 동시 호출은 소유하지 않는다. 공통 거래 소유자가 복구를 조율하며,
+ * 반영 중 오류 뒤에는 재전송과 정상 조회도 차단한다.
  */
 class OrderAdmissionState(
     initialBalances: List<Balance>,
@@ -74,6 +76,7 @@ class OrderAdmissionState(
     private var lastHistoryOrdinal = 0L
     private var durableHistoryOrdinal = 0L
     private val historyBatches = ArrayDeque<TradingHistoryBatch>()
+    private var checkpointRestored = false
 
     /** 차단 여부만 진단할 수 있다. 부분 반영 가능성이 있는 잔고를 정상 조회로 내보내지 않는다. */
     var isBlocked: Boolean = false
@@ -246,6 +249,112 @@ class OrderAdmissionState(
             historyRead { requests().toList() }?.let(::immutableList) ?: immutableList(requestRecords.values),
             historyRead { preparations().toList() }?.let(::immutableList) ?: immutableList(preparations.values),
         )
+    }
+
+    internal fun checkpoint(
+        matching: MatchingCheckpoint,
+        completions: List<TradingState.Completion>,
+    ): TradingCheckpoint {
+        checkUsable()
+        check(historyStore != null) { "live checkpoint requires exact durable history" }
+        check(historyBatches.isEmpty() && durableHistoryOrdinal == lastHistoryOrdinal) { "checkpoint history is not durable" }
+        check(currentReservations.values.all { it.status == OrderReservationStatus.ACTIVE }) { "checkpoint retained terminal state" }
+        return TradingCheckpoint(
+            balances.values.toList(),
+            usedBalances.map { TradingBalanceKey(it.userId, it.assetId) },
+            records.values.sortedBy { it.sequence },
+            currentReservations.values.toList(),
+            pendingByMarket.values
+                .flatMap { it }
+                .map { it.sequence }
+                .sorted(),
+            completions,
+            lastSequence,
+            lastHistoryOrdinal,
+            matching,
+        )
+    }
+
+    internal fun requireEmptyForRestore() {
+        checkUsable()
+        check(
+            !checkpointRestored && lastSequence == 0L && lastHistoryOrdinal == 0L && balances.isEmpty() &&
+                records.isEmpty() && currentReservations.isEmpty() && requestRecords.isEmpty() && preparations.isEmpty() &&
+                pendingByMarket.isEmpty() && historyBatches.isEmpty() && usedBalances.isEmpty(),
+        ) { "trading checkpoint requires an empty state" }
+    }
+
+    /** All checks run before any live-state collection is changed. The caller validates matching relationships too. */
+    internal fun validateCheckpointForRestore(checkpoint: TradingCheckpoint) {
+        requireEmptyForRestore()
+        val store = checkNotNull(historyStore) { "live checkpoint requires exact durable history" }
+        require(checkpoint.historyOrdinal >= 0 && checkpoint.lastAdmissionSequence in 0..checkpoint.historyOrdinal) {
+            "invalid checkpoint admission or history sequence"
+        }
+        check(store.durableOrdinal == checkpoint.historyOrdinal) { "checkpoint and restored history ordinals differ" }
+        check(store.flush() == checkpoint.historyOrdinal) { "restored history has unacknowledged transitions beyond checkpoint" }
+        val balanceKeys = hashSetOf<TradingBalanceKey>()
+        for (balance in checkpoint.balances) {
+            require(balanceKeys.add(TradingBalanceKey(balance.userId, balance.assetId))) { "duplicate checkpoint balance" }
+        }
+        require(checkpoint.usedBalances.size == checkpoint.usedBalances.toSet().size) { "duplicate checkpoint used balance" }
+        require(checkpoint.usedBalances.toSet() == balanceKeys) { "checkpoint used balances must match all touched balances" }
+        val sequenceKeys = hashSetOf<Long>()
+        val orderKeys = hashSetOf<OrderKey>()
+        var previousSequence = 0L
+        for (record in checkpoint.admissions) {
+            require(record.sequence in 1..checkpoint.lastAdmissionSequence && sequenceKeys.add(record.sequence)) {
+                "invalid or duplicate checkpoint admission sequence"
+            }
+            require(record.sequence > previousSequence) { "checkpoint admissions are not ordered" }
+            previousSequence = record.sequence
+            record.candidate.validate()
+            val order = record.candidate.order
+            require(orderKeys.add(OrderKey(order.marketId, order.orderId))) { "duplicate checkpoint order" }
+            val historical = checkNotNull(store.findAdmission(record.sequence)) { "checkpoint admission is absent from history" }
+            requireSameAdmission(record, historical)
+            val indexed = checkNotNull(store.findAdmission(order.marketId, order.orderId)) { "checkpoint order index is absent" }
+            requireSameAdmission(record, indexed)
+        }
+        val reservationKeys = hashSetOf<OrderKey>()
+        for (reservation in checkpoint.reservations) {
+            require(reservation.status == OrderReservationStatus.ACTIVE) { "checkpoint reservation is not active" }
+            require(reservationKeys.add(OrderKey(reservation.marketId, reservation.orderId))) { "duplicate checkpoint reservation" }
+        }
+        require(orderKeys == reservationKeys) { "checkpoint admissions and reservations differ" }
+        var lastPending = 0L
+        for (sequence in checkpoint.pendingAdmissionSequences) {
+            require(sequence > lastPending && sequence in sequenceKeys) { "invalid checkpoint pending order sequence" }
+            require(store.findCompletion(sequence) == null) { "checkpoint pending order is already completed in history" }
+            lastPending = sequence
+        }
+    }
+
+    /** Called only after the common owner has checked the entire checkpoint. */
+    internal fun applyCheckpoint(checkpoint: TradingCheckpoint) {
+        requireEmptyForRestore()
+        isBlocked = true
+        for (balance in checkpoint.balances) balances[BalanceKey(balance.userId, balance.assetId)] = balance
+        for (key in checkpoint.usedBalances) usedBalances.add(BalanceKey(key.userId, key.assetId))
+        val pending = checkpoint.pendingAdmissionSequences.toHashSet()
+        for (record in checkpoint.admissions) {
+            val order = record.candidate.order
+            records[OrderKey(order.marketId, order.orderId)] = record
+            val index = record.sequence - 1
+            val segmentKey = index / ADMISSION_SEQUENCE_SEGMENT_SIZE
+            val segment = recordsBySequence.getOrPut(segmentKey) { MutableList(ADMISSION_SEQUENCE_SEGMENT_SIZE) { null } }
+            segment[(index % ADMISSION_SEQUENCE_SEGMENT_SIZE).toInt()] = record
+            sequenceSegmentSizes[segmentKey] = (sequenceSegmentSizes[segmentKey] ?: 0) + 1
+            if (record.sequence in pending) pendingByMarket.getOrPut(order.marketId) { ArrayDeque() }.addLast(record)
+        }
+        for (reservation in checkpoint.reservations) {
+            currentReservations[OrderKey(reservation.marketId, reservation.orderId)] = reservation
+        }
+        lastSequence = checkpoint.lastAdmissionSequence
+        lastHistoryOrdinal = checkpoint.historyOrdinal
+        durableHistoryOrdinal = checkpoint.historyOrdinal
+        checkpointRestored = true
+        isBlocked = false
     }
 
     fun pendingOrders(marketId: MarketId): List<Record> {

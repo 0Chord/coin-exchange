@@ -219,3 +219,161 @@ warmup 포함 84,000개 요청과 252,000개 완료 표식의 ID·승인 순번�
 파일별 원문·압축 크기와 해시는 `old-evidence-compression.jsonl`, `new-evidence-compression.jsonl`, 합계는 `final-cleanup-summary.json`에 있다. 최종 실행의 원문 파일은 결과 감사가 끝난 뒤 압축했다.
 
 로컬 작업 폴더는 `/Users/0chord/.codex/worktrees/issue148-http-aeron/exchange-core`, 브랜치는 `test/http-trading-performance/142`다. 이 변경은 로컬 커밋으로 보관하며 이번 요청에서 PR 게시·push·병합은 진행하지 않았다.
+
+## 공식 자료 조사에 따른 구조 수정 제안 — 2026-10-30
+
+사용자는 웹 조사로 성능·고가용성·정합성을 함께 지킬 방법을 요청했다. 이 절은 **조사 결과와 제안**이며 구현 완료나 새 계약 합의가 아니다. 이번 조사에서는 코드 변경·빌드·부하 실행을 하지 않았다. 앞의 측정 결과를 새 결과로 대체하지 않는다.
+
+### 현재 코드에서 확인한 문제
+
+`OrderAdmissionState.prepareHistoryCapacity()`는 1,024개 staging이 차면 `historyStore.awaitDurable(target)`을 호출한다. `RocksDbTradingHistoryStore.append()`는 writer에 넘기기 전에 호출 스레드에서 직렬화하고, 저장소 pending 한도에서도 대기할 수 있다. 과거 ID·응답 조회도 같은 업무 처리 경로에 연결돼 있다. RocksDB writer는 묶음으로 쓰지만 `WriteOptions.setSync(true)`로 WAL 영속 완료를 기다린다. 매 주문마다 정확히 한 번 force한다는 의미는 아니다.
+
+따라서 정상 거래의 진행이 조회 이력 저장 속도에 의존한다. 이는 [Aeron의 업무 코드 지침](https://aeron.io/docs/aeron-cluster/efficient-business-logic/)에서 DB 쓰기 때문에 클러스터 업무 처리를 붙잡지 말라고 권고하는 부분과 맞지 않는다. RocksDB 제품 자체의 처리량 한계나 성능 회귀 전부의 단독 원인이라는 뜻은 아니다. 현재 계측의 차감 구간을 RocksDB force 시간이라고 바꾸어 부르지도 않는다.
+
+`DevelopmentFundingAdapter`는 snapshot 저장과 snapshot을 이용한 시작을 명시적으로 거절한다. 현재 history DB도 실행마다 새로 생성한다. **이력 보관이 추가됐지만 거래 상태 재시작 복구가 구현된 것은 아니다.** 저장소를 제거하면 누적 문제가 돌아오고, 저장 전에 이력을 버리면 중복·최초 응답 계약이 깨진다.
+
+### 공개 사례에서 확인한 사실
+
+| 출처 | 확인한 내용 | 우리에게 적용할 때의 한계 |
+|---|---|---|
+| [Aeron Databases](https://aeron.io/docs/aeron-cluster/databases/) | 중요 출력은 Archive 기록과 DB의 처리 완료 위치로 누락 구간을 재생하는 구성을 제시한다. | 비동기 큐만 추가해서 유실 방지가 완성되는 것은 아니다. |
+| [Coinbase INTX, AWS re:Invent 2023 발표](https://d1.awsstatic.com/events/Summits/reinvent2023/FSI309_Coinbase-Building-an-ultra-low-latency-crypto-exchange-on-AWS.pdf) | PDF 22–24쪽은 자금·리스크 OMS와 매칭을 별도 복제 그룹으로 구성하며 Aeron 기반 Raft와 내부 p99 왕복 1ms 미만을 설명한다. 20쪽의 용량은 100k messages/s다. | 우리 HTTP→정산 완료 100k 주문/s와 같은 수치가 아니다. 부하 구성·force 설정·정확한 ACK 경계는 공개 자료만으로 확인되지 않는다. |
+| [AWS의 Coinbase INTX 사례](https://aws.amazon.com/solutions/case-studies/coinbase-cryptocurrency-exchange-case-study/) | z1d, 로컬 NVMe, cluster placement group을 사용한다. Aurora는 근실시간·과거 거래 조회에 사용한다. | 한 Mac의 Docker 세 개와 CPU·디스크·네트워크 조건이 다르다. 하드웨어만 바꾸면 목표를 달성한다는 근거도 아니다. |
+| [Coinbase의 2026년 5월 장애 보고서](https://www.coinbase.com/blog/a-postmortem-of-our-may-7-2026-outage) | Coinbase Exchange의 5노드 Raft 중 한 건물 장애로 3대가 내려가 quorum을 잃었다. 당시 자동 cross-zone failover가 없었다. | 2023 INTX와 다른 제품·시점이다. 복제본 수만으로 장애영역 전체의 HA가 완성되지 않음을 보여준다. |
+
+Binance가 같은 Aeron 구조를 쓴다는 사실은 이번 자료로 확인하지 않았다. 해당 주장을 설계 근거로 사용하지 않는다.
+
+### 권장 책임과 흐름
+
+```mermaid
+flowchart TD
+    G[Gateway: 요청 식별과 전송] --> C[현재 3노드 거래 클러스터]
+    C --> M[각 노드 메모리: 잔고·예약·주문장·미완료 작업]
+    C --> L[합의된 입력: 각 노드 Archive]
+    M --> S[버전 있는 업무 스냅샷]
+    L --> R[스냅샷 이후 로그로 상태 복구]
+    S --> R
+    C --> E[재생 가능한 확정 결과 기록]
+    E --> W[별도 전달 워커: 처리 위치·재전송]
+    W --> K[Kafka]
+    K --> H[과거 응답·원장·조회 DB]
+    L --> D[별도 장애 영역의 복구 기록]
+    S --> D
+    D --> A[요구 내구 위치 확인 뒤 성공 공개]
+    C --> A
+    A --> G
+```
+
+이 그림은 목표 구조다. 원격 저장과 출력 재생이 이미 연결됐다는 뜻은 아니다. Archive 입력 로그는 JVM 객체 전체나 결과 인덱스를 자동 저장하지 않는다. snapshot에는 잔고·활성 예약·주문장·미완료 실행·ID 생성 상태·중복 방지 상태·적용 정책과 버전 등 결과를 결정하는 정보를 넣는다. 결과는 같은 입력과 정책으로 재현할 수 있어야 하며, 코드·스키마 변경 뒤 replay 호환성도 관리한다. snapshot 없이 전체 로그로 복원하는 방법도 가능하지만, 시작 상태와 전체 입력이 필요하고 복구 시간이 길어진다. [Aeron Cluster Tutorial](https://github.com/aeron-io/aeron/wiki/Cluster-Tutorial)
+
+결과 전달은 안정적인 event ID, 확정 입력 위치와의 연결, 재전송 위치, 소비 측 중복 방지를 갖춘다. state 반영 뒤 출력 전 장애와 리더 교체에서도 누락된 결과를 다시 만들거나 읽어 보낼 수 있어야 한다. 조회 DB 저장을 보통의 접수 승인 조건에 넣지는 않는다. 다만 후속 저장이 무기한 멈추면 보관 공간은 유한하므로, 안전한 한도에 도달하기 전에 신규 입력을 제한한다.
+
+오래된 로그의 삭제는 복구 가능한 snapshot, 이력 출력의 보존, 전달 재개 위치, 원격 복사 완료를 함께 확인한 범위에서만 한다. 서로 다른 스트림의 숫자 위치를 직접 비교하지 않고, 해당 입력·결과 위치의 대응을 관리한다. 현재 snapshot이 있다는 이유만으로 과거 원장 감사 기록을 삭제하지 않는다.
+
+### 메모리를 줄여도 과거 요청을 다시 실행하면 안 된다
+
+현재 계약은 임의 요청 ID의 최초 승인·거절 결과를 계속 돌려주는 것이다. 제한된 최근 캐시만으로는 처음 받은 ID와 이미 처리하고 잊은 ID를 구별할 수 없다. Archive는 기록 위치부터 재생하는 저장소이므로 임의 ID의 빠른 조회에는 별도 정확 인덱스가 필요하다. 입력만 남겼다면 과거 결과를 얻기 위해 상태도 재실행해야 한다. [Archive recordings API](https://aeron.io/docs/aeron-archive/working-with-recordings/)
+
+**기존 계약을 유지할 이행안:** 과거 조회를 별도 처리기로 보내더라도 인덱스가 어느 확정 위치까지 완전한지 증명해야 한다. 그 이후 ID는 엔진이 정확히 기억한다. 조회 결과·기준 위치를 복제 입력으로 받고, 적용할 때 그 이후 처리한 요청과 다시 대조한다. 기준 위치가 오래돼 검증할 수 없거나 저장소가 실패하면 새 주문으로 실행하지 않는다. 같은 ID의 동시 요청이 조회를 각각 통과해도 최종 순서에서 한 번만 적용한다. 이 경로는 추가 설계·검증 대상이며 현재 구현으로 보장됐다고 주장하지 않는다.
+
+**장기 프로토콜 제안:** 세션 세대와 증가 순번, 미응답 요청의 제한된 구간을 사용하면 모든 과거 ID 객체를 메모리에 들고 있지 않고 재실행을 막는 설계가 가능하다. Raft 박사논문은 동시 요청의 sequence/result 집합과 가장 작은 미수신 sequence를 이용한 응답 보존을 설명한다. 단순 최고 순번으로 중간 미처리 요청을 처리했다고 간주하면 안 된다. [Raft client interaction 원문](https://raw.githubusercontent.com/ongardie/dissertation/master/clients/clients.tex)
+
+이 제안은 기존 임의 ID API를 자동으로 대체하지 않는다. 옛 응답을 캐시에서 내리더라도 영구 이력에서 최초 결과를 조회하고, 오래된 요청을 재실행하지 않는 규칙은 유지한다. 주문 ID·원장 ID의 유일성도 별도로 보존해야 한다. 새로운 ID 계약의 합의 전에는 정확 인덱스 조회를 지우거나 TTL로 중복 방지를 끝내지 않는다.
+
+### 고가용성과 전체 디스크 유실을 구분한다
+
+- 운영 노드는 서로 다른 호스트에 둔다. 현재 한 Mac의 컨테이너 세 개는 프로세스 분리 검증이며 호스트·전원·저장장치 장애를 분리하지 못한다.
+- `fileSyncLevel=2`는 해당 파일의 데이터·메타데이터 영속성이다. 디스크 자체 소실의 보호 수단은 아니다. 기록과 catalog의 sync 설정을 함께 확인한다. [Aeron Archive durability](https://github.com/aeron-io/aeron/wiki/Aeron-Archive#recording-durability)
+- 일반 ClusterBackup은 live commit을 뒤따르므로 지연할 수 있다. 그것만 붙여서 모든 primary 디스크 유실 시 성공 응답 유실 0이라고 표현하지 않는다. [Cluster Backup](https://aeron.io/docs/aeron-cluster/cluster-backup/)
+- 기존 합의인 **전체 primary 저장소 유실에도 성공 기록 유실 0**을 유지하려면, 별도 장애 영역에 복구 가능한 snapshot·연속 로그·메타데이터가 영속 저장됐음을 성공 공개 조건에 넣어야 한다. 이는 자료에서 도출한 설계 권고이며 기본 ClusterBackup의 자동 보장이 아니다. 예약 성공은 접수 위치, 실행 완료는 실행 위치까지 각각 확인한다. 외부 체결 통지 등도 이 내구성 기준보다 앞서 확정 공개하지 않는다.
+- 원격 저장 완료 대기는 업무 스레드를 막지 않고 배치·파이프라인으로 처리할 수 있지만 원격 RTT와 저장 지연 자체는 남는다. 원격 기록이 불가능할 때 같은 보장을 유지하려면 확정 응답을 제한해야 한다. 복구 때는 기존 클러스터가 동시에 쓰지 못하게 차단하고 새 소유자를 승격한다.
+
+### 실제 수정 순서와 완료 조건
+
+| 순서 | 작은 변경의 결과 | 확인할 조건 |
+|---|---|---|
+| 1 | 현재 상태의 재시작 복구 기반 | 같은 입력에서 잔고·예약·주문장·최초 결과·미완료 실행·원장이 복원됨. 설정도 현재 DB 값으로 임의 교체하지 않음. |
+| 2 | 확정 결과의 재생과 별도 이력 인덱스 | 출력 전 장애, 워커 재시작, 중복 전송에서도 결과 누락·중복 반영이 없음. 기존 ID 계약과 cold lookup의 기준 위치를 검증함. |
+| 3 | 거래 콜백에서 로컬 이력 직렬화·조회·저장 대기 분리 | 동등한 중복·원장 보존 근거를 갖춘 뒤 전환. 이력 작업자를 멈춰도 보관 여유 내에서는 거래가 진행되고, 한도에서는 유실 없이 입력을 제한함. |
+| 4 | 독립 장애영역과 원격 내구성 응답 조건 | 리더 장애, 전체 프로세스 종료·재시작, primary 디스크 유실, 원격 단절을 구분해 검증. 과반수 상실 시 동시에 두 리더가 거래하지 않음. |
+| 5 | 같은 조건의 짧은 성능 대조와 후속 분리 판단 | 접수·정산 완료·세 사본 관측을 분리. 입력률보다 완료율이 낮아 큐가 계속 늘면 지속 TPS로 채택하지 않음. |
+
+자금·마켓 매칭 클러스터 분리는 기존 후속 방향으로 유지한다. 먼저 현재 콜백의 저장 의존을 해결해야 하며, 분리만으로 그 비용이 사라지지는 않는다. 분리 시 자금 예약·정산은 동일한 자금 소유자가 맡고, 마켓은 예약된 사용권만 사용한다. 전달·중복·정산 대기·취소·복구 계약이 필요하다.
+
+50k 완료 주문/s를 하나의 업무 스레드가 처리하려면 접수·실행을 합친 평균 업무량 예산은 주문당 20μs 이하다. 이는 네트워크 왕복 p99가 20μs라는 뜻은 아니다. 여러 요청의 복제·저장은 겹쳐 진행할 수 있고, 입력 메시지 수와 force 횟수도 다르다. 현재 코드·하드웨어·원격 내구성 조건에서 목표 달성 여부는 미검증이다. 이번 조사는 낮아진 sync 값이나 이력 삭제로 목표를 달성했다고 표현하지 않는다.
+
+
+## Archive 복구와 이중 WAL 제거 — 2026-10-30 구현
+
+위 조사 뒤 사용자가 진행을 승인했다. 이번 구현은 **재시작 복구 기반과, 그 근거를 갖춘 sync2 노드의 이중 WAL 제거**까지다. 직렬화·임의 과거 ID 조회를 전부 업무 callback 밖으로 옮긴 것은 아니며, 원격 재해 복구나 50k 완료 TPS를 달성했다고 표시하지 않는다.
+
+### 실제 변경과 복구 순서
+
+1. 새 실행은 기존처럼 빈 루트만 허용한다. `FUNDING_RECOVER_EXISTING=true`인 경우만 기존 Archive·recording.log·실행 정체성 파일을 확인하고 복구한다. 같은 루트의 동시 기동은 파일 잠금으로 거절한다.
+2. 마켓·수수료·스키마·시각 단위·클러스터 설정을 고정한다. 로컬 재시작 identity에는 멤버와 바인딩도 포함한다. 다른 멤버의 snapshot payload를 사용할 수 있도록 snapshot identity는 별도의 클러스터 공통 값으로 만든다.
+3. **매번 새로운 RocksDB 세대**를 만든다. 장애 직전 DB가 snapshot보다 앞선 값을 가질 수 있으므로 기존 DB를 그대로 열지 않는다.
+4. Snapshot이 있으면 잔고, 사용한 자금 키, 활성 주문의 최초 접수·완료 결과, 현재 예약과 수수료 나머지, 대기 순서, 마켓별 이벤트 순번, 주문장 FIFO를 복원한다. 과거 요청·원장·정확 ID 인덱스도 snapshot에 포함하되 한 행씩 읽고 써서 전체 이력을 객체 목록으로 만들지 않는다.
+5. 버전·정체성·행 순서·ID 인덱스 양방향 참조·원문 CRC·전체 checksum·잔고/예약 관계를 검사한다. Snapshot 이후 확정 로그만 재생한다. Snapshot이 없으면 처음부터 재생한다.
+6. replay 중 과거 고객 응답은 보내지 않는다. 접수 callback이 만들던 내부 실행 명령은 Aeron의 결정론적 pending-service-message 처리에 따라 다시 만든다. 이 부분을 임의로 생략하면 접수만 확정된 주문이 남을 수 있다.
+
+이는 애플리케이션의 실제 복구 기능이다. Aeron이 JVM 객체를 자동 저장해 준다는 뜻이 아니다. Snapshot 전용 대기 중에도 Aeron heartbeat는 처리하지만, 상태 관찰은 snapshot의 독점 이력 접근이 끝날 때까지 미룬다.
+
+### RocksDB WAL을 없애도 되는 범위
+
+`RocksDbTradingHistoryStore.create()`는 기존 WAL+sync 계약을 유지한다. **`DevelopmentFundingNode`의 Archive fileSyncLevel=2에서만** 내부 `createRebuildableIndex()`를 선택한다. 여기서는 RocksDB를 로그로 다시 만들 수 있는 조회 인덱스로 취급하고 `sync=false, disableWAL=true`를 적용한다. Archive·catalog·cluster 기록의 sync 설정은 계속 `[2,2,2]`다. Archive sync0/1 노드는 기존 strict RocksDB 경로를 유지한다.
+
+Aeron 1.53.3 소스에서 다음 순서를 확인했고 독립 리뷰에서도 대조했다.
+
+- `RecordingWriter.onBlock()`은 force(true) 완료 후 위치를 전진시키고, `RecordingSession.record()`는 그 뒤 `RecordingPos`를 공개한다.
+- Leader의 commit 위치는 quorum과 로컬 RecordingPos 이하이며 follower도 로컬 RecordingPos를 넘어서 적용하지 않는다.
+- 서비스 callback은 commit 위치까지만 실행한다. 따라서 이 callback의 이력은 이미 보존된 입력으로 재구성할 수 있다.
+- Snapshot callback 반환만으로 저장 완료를 ACK하지 않는다. Archive 기록 위치가 snapshot publication의 끝까지 도달한 뒤 ACK하고, 완료된 snapshot 세트만 recording.log에 기록한다.
+
+`durableOrdinal`은 이 모드에서 **인덱스에 원자적으로 반영됐고 권위 있는 로그/스냅샷으로 복구 가능한 연속 범위**다. RocksDB 자체가 디스크에 강제 저장됐다는 뜻이 아니다. 이 근거 없이 임의 저장소에서 WAL을 끄는 방법으로 일반화하지 않는다. Archive 입력·snapshot 삭제 기능도 추가하지 않았다.
+
+### 테스트가 확인하는 것
+
+| 준비·실행 | 실제 확인 |
+|---|---|
+| 일부만 체결된 maker, 남은 대기 주문, 잔고 부족 거절을 저장하고 복원 | 잔고·예약·수수료 나머지·FIFO·순번·원장 및 최초 응답 원문이 동일함. 후속 부분 체결도 이어짐. |
+| snapshot을 만든 뒤 원래 DB를 더 진행시킴 | 새 DB에 snapshot 시점만 복원되고 나중 상태가 섞이지 않음. |
+| 실제 UDP/Aeron 노드를 닫고 같은 기록으로 다시 실행 | 전체 Archive replay, snapshot+suffix replay, 마지막 snapshot 이후 업무 로그가 없는 경우를 각각 확인함. |
+| 접수 확정 뒤 실행 제출 직전에 실제 서비스 오류 주입 | 복구 후 대기 실행이 생성되고 한 번 완료됨. 같은 요청으로 예약이 중복되지 않음. |
+| snapshot 출력 backpressure 중 상태 관찰 요청 | idle의 background 재진입이 관찰을 미루고, 저장 후 정상 조회됨. |
+| 다른 정책, 손상·누락·중복 snapshot 행, 잘못된 원문·checksum | 정상 상태로 복원하거나 새 요청으로 실행하지 않고 거절·차단함. |
+| sync0/1/2 실제 노드와 native WriteOptions 확인 | sync2만 파생 인덱스를 쓰며 0/1의 WAL 강제 저장 설정은 유지됨. |
+
+도메인 374개(거래 221·매칭 153), 해당 app-api 회귀 95개, 아키텍처 385개, 총 **854개 검사 통과, 실패·skip 0**. 변경 모듈 ktlint도 통과했다. Gradle 중간 실패는 snapshot 테스트의 객체 참조 비교와 예상한 손상 저장소 종료 오류 처리, 마지막으로 줄바꿈 규칙이었고 각각 수정 후 관련 검사를 완료했다. 객체 값은 원문 직렬화 전체를 비교하도록 바꿨으며 검증 범위를 줄이지 않았다.
+
+실제 실행 폴더는 `/Users/0chord/.codex/worktrees/issue148-http-aeron/exchange-core`, 브랜치는 `test/http-trading-performance/142`다. 작성 대화를 상속하지 않은 독립 리뷰어가 `/tmp/exchange-recovery-review-20261030-r1`, `r2` 고정 source manifest를 검토했다. 발견한 snapshot 관찰 재진입·멤버 identity·snapshot-only 복구 관찰의 세 결함은 수정하고 재리뷰했다. r2 이후 코드 변경은 저장소 포트 KDoc 보완과 테스트 줄바꿈뿐이다.
+
+### 짧은 비교 측정
+
+기존 `DirectStreamingRun`을 그대로 사용했다. HTTP/Gateway를 제외한 세 컨테이너, 각 2 CPU/2 GiB, 노드 Xmx 1536 MiB, CPU affinity, BTC/SOL/SUI, 실제 저장 수준 `[2,2,2]`가 전후 동일하다. 준비 12,000 SELL + 12,000 BUY 후 같은 클러스터에서 6,000 SELL·6,000 BUY 단위로 총 측정 주문 60,000건을 처리했다. BUY 표본의 접수/완료 지연을 별도로 측정한다. 300초는 최대 시간이며 **실제 측정은 아래의 유한 건수 처리 시간**이다. 5분 지속 성능이나 최대 지속 TPS로 부르지 않는다.
+
+| 관측 | 변경 전 | 변경 후 |
+|---|---:|---:|
+| 측정 60,000 주문 전체 구간 | 21.704초 | 16.942초 |
+| 전체 주문 완료율: SELL+BUY / 전체 구간 | 2,764 TPS | 3,541 TPS |
+| BUY 접수 응답 cohort 완료율 | 1,523 TPS | 1,982 TPS |
+| BUY 세 사본 완료 관측 cohort 완료율 | 1,480 TPS | 1,909 TPS |
+| BUY 접수 p95 / p99 | 2,532 / 3,072 ms | 1,434 / 1,723 ms |
+| BUY leader 완료 관측 p95 / p99 | 3,358 / 3,511 ms | 2,867 / 2,944 ms |
+| BUY 세 사본 완료 관측 p95 / p99 | 3,580 / 3,683 ms | 3,366 / 3,510 ms |
+
+전후 각각 준비 포함 84,000개 명령과 252,000개 노드별 완료 표식을 대조했고 누락·중복·오류는 0이다. 이 timing cohort의 marker 검증이 전체 재무 불변식 검사를 대신하지는 않는다. 별도 회귀 테스트가 자금·예약·원장·복구를 검증한다.
+
+**해석 제한:** 전 실행의 리더는 member1, 후 실행은 member2였다. 따라서 이 한 쌍의 처리율 상승 약 28%를 코드만의 인과 효과로 확정하지 않는다. 같은 Mac에서 프로세스/디스크를 공유한다. 직접 발생기와 단계별 drain·관측 비용도 전체 구간에 포함된다. p99는 burst 대기까지 포함한 요청 왕복/완료 관측 값이며 단일 코어 계산 시간이나 외부 API 지연이 아니다. 기존 8만 engine-only TPS와 직접 비교하지 않는다. 이번 수치를 50k 목표 달성 또는 최대 TPS로 표시하지 않는다.
+
+별도의 성능 근거 리뷰어가 전후 원본 84,000행을 재계산해 ID 집합·순번·log position·마커의 노드별 일치와 p95/p99를 확인했다. DirectStreaming 실행 클래스와 외부 라이브러리 바이트는 동일하며, 업무 runtime은 변경된 코드다. 마켓 JSON의 원문 hash는 키 출력 순서 때문에 다르지만 해석한 설정 값은 동일하다. 발생기의 pending 제한 대기는 0회였으나 이것만으로 발생기 병목이 없음을 증명하지 않는다. 동일 구간의 체결 건수는 BUY 30,000건이므로 체결 처리율은 각각 1,382·1,771건/s다. 주문 수와 체결 수를 섞지 않는다.
+
+실행 기록 `cluster-started.json`에 남은 “No CPU/GC/disk sampler in the measured window” 설명은 오래된 문구다. 실제로는 두 실행 모두 자원·디스크 보호 관측이 활성화되어 resource 표본이 13회·11회 남았다. 원본 기록을 사후 수정하지 않고 이 해석 오류를 여기에 명시한다. 워밍업을 수행했지만 JIT/GC 수렴을 별도로 입증한 것은 아니다.
+
+### 남은 비용과 경계
+
+- `append()`의 직렬화와 exact cold 조회, bounded staging이 찼을 때 대기는 아직 callback 경로에 있다. WAL 제거만으로 이를 제거한 것은 아니다. 다음 단위는 결과 전달의 재생 위치와 정확한 ID 조회 범위를 갖춘 비동기 인덱스다. worker로 encode를 단순 이동하면 기존 append 시점 검증·read-your-writes 계약이 달라질 수 있어 그대로 적용하지 않았다.
+- Snapshot은 자기완결성을 위해 과거 이력도 포함한다. 메모리 사용은 행별로 제한하지만 snapshot 크기와 복원 시간은 누적 이력에 비례한다. 8 GiB 누적 쓰기 제한과 노드 시작 시간 제한도 유지한다. 이 구현을 무제한 보관·대규모 복구 완료라고 하지 않는다.
+- 실제 SIGKILL/전원 장애, 세 노드 동시 재시작, 멤버 간 snapshot 전송, Archive 저장 오류, 대량 이력 RTO는 별도 검증이 남았다. 현재 실제 재시작 회귀는 단일 멤버로 저장/재생 경로를 확인하고, 성능 cohort는 세 노드다.
+- 모든 primary 디스크 유실 시 성공 기록 유실 0은 아직 구현하지 않았다. 별도 장애영역의 복구 기록과 내구 위치 확인 후 응답 공개 조건이 필요하다. 로컬 sync2나 현재 snapshot을 그 보장으로 바꾸어 설명하지 않는다.
+
+근거 디렉터리: `/Users/0chord/.codex/visualizations/2026/09/23/01a0ce63-9327-7f32-a7e0-3429380284d8/issue142-performance/business-retention-20261029/bounded-history-20261029/recovery-index-20261030`의 `paired-result.json`, 실행 명령 JSON, `regression-xml/`, 전후 `control/client-summary.json`, node metrics 및 압축 원본 자료. 실행 전용 컨테이너·이미지·볼륨은 실행기 종료에서 정리하며, 원본은 SHA-256 확인 후 압축 보관한다.

@@ -21,7 +21,65 @@ class MatchingEngine {
     private val seenOrderIds = HashMap<MarketId, MutableSet<OrderId>>()
 
     // 로컬 계획의 발급자 확인에만 쓰며 거래 ID·복제 결과에는 넣지 않는다.
-    private val planToken = Any()
+    private var planToken = Any()
+    private var checkpointRestored = false
+
+    /** Only a common owner with exact durable duplicate detection may restore this active view. */
+    fun activeCheckpoint(): MatchingCheckpoint =
+        MatchingCheckpoint(
+            lastEngineSequences.keys.sortedBy { it.value }.map { marketId ->
+                MatchingCheckpoint.Market(
+                    marketId,
+                    lastEngineSequence(marketId),
+                    restingOrders(marketId).map {
+                        MatchingCheckpoint.Order(it.orderId, it.userId, it.side, it.price, it.originalQuantity, it.remainingQuantity)
+                    },
+                )
+            },
+        )
+
+    /** Rebuilds an empty engine without executing orders or issuing matching events. */
+    fun restoreActiveCheckpoint(checkpoint: MatchingCheckpoint) {
+        check(!checkpointRestored && orderBooks.isEmpty() && lastEngineSequences.isEmpty() && seenOrderIds.isEmpty()) {
+            "matching checkpoint requires an empty engine"
+        }
+        val restoredBooks = HashMap<MarketId, OrderBook>()
+        val restoredSequences = HashMap<MarketId, Long>()
+        val restoredIdentities = HashMap<MarketId, MutableSet<OrderId>>()
+        for (market in checkpoint.markets) {
+            require(market.lastEngineSequence > 0) { "checkpoint market sequence must be positive" }
+            require(restoredSequences.put(market.marketId, market.lastEngineSequence) == null) { "duplicate checkpoint market" }
+            val book = OrderBook()
+            val identities = hashSetOf<OrderId>()
+            var previous: MatchingCheckpoint.Order? = null
+            for (order in market.orders) {
+                require(identities.add(order.orderId)) { "duplicate checkpoint resting order" }
+                previous?.let {
+                    require(it.side != Side.SELL || order.side == Side.SELL) { "checkpoint bids must precede asks" }
+                    if (it.side == order.side) {
+                        require(if (order.side == Side.BUY) it.price >= order.price else it.price <= order.price) {
+                            "checkpoint price priority is invalid"
+                        }
+                    }
+                }
+                book.addRestingOrder(
+                    BookOrder(order.orderId, order.userId, order.side, order.price, order.originalQuantity, order.remainingQuantity),
+                )
+                previous = order
+            }
+            val bid = book.bestBid()
+            val ask = book.bestAsk()
+            require(bid == null || ask == null || bid < ask) { "checkpoint contains crossed books" }
+            restoredBooks[market.marketId] = book
+            if (identities.isNotEmpty()) restoredIdentities[market.marketId] = identities
+        }
+        orderBooks.putAll(restoredBooks)
+        lastEngineSequences.putAll(restoredSequences)
+        seenOrderIds.putAll(restoredIdentities)
+        // Even an empty checkpoint invalidates candidates prepared before the restoration boundary.
+        planToken = Any()
+        checkpointRestored = true
+    }
 
     fun process(command: MatchingCommand): List<MatchingEvent> =
         when (command) {

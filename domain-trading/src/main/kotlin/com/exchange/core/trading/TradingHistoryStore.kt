@@ -9,18 +9,20 @@ import com.exchange.core.order.OrderReservation
 /**
  * Exact, lossless history for one newly created trading owner. Implementations keep bounded
  * staging, provide read-your-writes, and never interpret an I/O failure as a missing value.
- * An append is atomic across its indexes. Only the contiguous durable ordinal permits eviction.
- * This history alone is not a live-state recovery checkpoint.
+ * An append is atomic across its indexes. Only the contiguous recoverable ordinal permits eviction:
+ * values must be materialized for exact reads and recoverable from either this store's durable data
+ * or a preserved authoritative log/checkpoint. A derived index must never acknowledge solely on
+ * an unbacked memory write. This history alone is not a live-state recovery checkpoint.
  */
 interface TradingHistoryStore {
     val durableOrdinal: Long
 
     fun append(batch: TradingHistoryBatch)
 
-    /** Waits for every preceding append to become durable, or throws. */
+    /** Waits until every preceding append is materialized and recoverable under the store's contract, or throws. */
     fun flush(): Long
 
-    /** Waits for a previously appended ordinal, or throws. May also acknowledge later appends. */
+    /** Same recovery barrier for a previously appended ordinal; may also acknowledge later appends. */
     fun awaitDurable(ordinal: Long): Long {
         require(ordinal >= 0) { "history durability target must not be negative" }
         // Stores without partial barriers retain the existing full-flush contract.

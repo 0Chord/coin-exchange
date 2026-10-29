@@ -3,6 +3,7 @@ package com.exchange.core.api.trading.infrastructure.aeron
 import com.exchange.core.api.trading.infrastructure.codec.DevelopmentBalanceCommandPayload
 import com.exchange.core.api.trading.infrastructure.codec.DevelopmentBalanceRejectionReason
 import com.exchange.core.api.trading.infrastructure.codec.DevelopmentBalanceResultPayload
+import com.exchange.core.api.trading.infrastructure.history.RocksDbTradingHistoryStore
 import com.exchange.core.common.Amount
 import com.exchange.core.common.AssetId
 import com.exchange.core.common.UserId
@@ -24,6 +25,7 @@ import org.agrona.concurrent.BackoffIdleStrategy
 import org.agrona.concurrent.UnsafeBuffer
 import org.agrona.concurrent.errors.ErrorLogReader
 import org.junit.jupiter.api.io.TempDir
+import org.rocksdb.WriteOptions
 import java.net.DatagramSocket
 import java.nio.file.Files
 import java.nio.file.Path
@@ -45,6 +47,21 @@ import kotlin.test.assertTrue
 class DevelopmentFundingNodeTest {
     @TempDir
     lateinit var temporaryDirectory: Path
+
+    @Test
+    fun `Archive sync2 노드만 파생 이력의 WAL을 생략하고 나머지는 자체 내구성을 유지한다`() {
+        (0..2).forEach { archiveSync ->
+            DevelopmentFundingNode.start(config().copy(archiveFileSyncLevel = archiveSync)).use { node ->
+                val historyField = DevelopmentFundingNode::class.java.getDeclaredField("history").apply { isAccessible = true }
+                val history = historyField.get(node) as RocksDbTradingHistoryStore
+                val writesField = RocksDbTradingHistoryStore::class.java.getDeclaredField("writeOptions").apply { isAccessible = true }
+                val writes = writesField.get(history) as WriteOptions
+                assertEquals(archiveSync == 2, writes.disableWAL())
+                assertEquals(archiveSync != 2, writes.sync())
+                assertEquals(listOf(archiveSync, 2, 2), node.storageLevels)
+            }
+        }
+    }
 
     @Test
     fun `공유 CPU용 agent는 접수 배치를 제한하고 전송 창과 저장 내구성을 유지한다`() {
@@ -521,21 +538,28 @@ class DevelopmentFundingNodeTest {
     }
 
     @Test
-    fun `실제 Snapshot 요청은 빈 성공 대신 노드 종료로 끝난다`() {
+    fun `실제 Snapshot 요청은 기록 완료 뒤에도 다음 요청을 처리한다`() {
         val config = config()
         DevelopmentFundingNode.start(config).use { node ->
+            DevelopmentFundingClient(config).use { client -> assertIs<FundingRequestOutcome.Confirmed>(client.request(command())) }
             Aeron.connect(Aeron.Context().aeronDirectoryName(config.driverDirectory)).use { aeron ->
                 val toggle = assertNotNull(ClusterControl.findControlToggle(aeron.countersReader(), config.clusterId))
+                val before = consensus(node).context().snapshotCounter().get()
                 eventually { ClusterControl.ToggleState.SNAPSHOT.toggle(toggle) }
-                assertTrue(node.awaitClosed(5_000), "Snapshot 거절이 실제 실행 중단까지 이어져야 한다")
-                assertNotNull(node.error)
-                assertTrue(node.observation!!.failure!!.contains("Snapshot"))
+                eventually { consensus(node).context().snapshotCounter().get() > before }
+                assertNull(node.error)
+                assertFalse(node.isClosed)
+                DevelopmentFundingClient(config).use { client ->
+                    val repeated = assertIs<FundingRequestOutcome.Confirmed>(client.request(command()))
+                    assertTrue(assertIs<DevelopmentBalanceResultPayload.Prepared>(repeated.result).result.alreadyPrepared)
+                }
+                assertEquals(1, assertNotNull(node.captureObservation()?.snapshot).preparations.size)
             }
         }
     }
 
     @Test
-    fun `종료 뒤에도 기록을 보존하고 기존 디렉터리의 재실행을 거절한다`() {
+    fun `종료 뒤에도 기록을 보존하고 복구를 명시하지 않은 재실행을 거절한다`() {
         val config = config()
         DevelopmentFundingNode.start(config).use { node ->
             DevelopmentFundingClient(config).use { client -> assertIs<FundingRequestOutcome.Confirmed>(client.request(command())) }

@@ -22,6 +22,7 @@ import java.nio.ByteBuffer
 import java.nio.file.Files
 import java.nio.file.Path
 import java.util.ArrayDeque
+import java.util.Arrays
 import java.util.concurrent.TimeUnit
 
 /** Limits cover the pending overlay, native block cache, memtables and table readers separately. */
@@ -55,9 +56,11 @@ data class TradingHistoryStorageLimits(
 }
 
 /**
- * One business owner enqueues immutable transitions. A bounded worker group commits them with WAL sync.
- * The bounded pending overlay supplies read-your-writes; only a successful sync advances durableOrdinal.
- * This is a fresh, per-run derived history, not recovery of the in-memory trading state.
+ * One business owner enqueues immutable transitions. A bounded worker group materializes them
+ * atomically; the pending overlay supplies read-your-writes. [create] additionally syncs the WAL.
+ * The internal rebuildable index instead depends on the caller's authoritative, durable Archive.
+ * Restoring its checkpoint requires the matching live-state checkpoint; this history alone does
+ * not restore balances, active orders or the trading owner.
  */
 class RocksDbTradingHistoryStore private constructor(
     private val database: RocksDB,
@@ -108,16 +111,26 @@ class RocksDbTradingHistoryStore private constructor(
     private var stopping = false
     private var closed = false
     private var flushRequested = false
+    private var snapshotOperation: Thread? = null
+    private var restoringSnapshot = false
+    private var restoredPreviousKey: ByteArray? = null
+    private var restoredOrdinal: Long? = null
+    private var restoredWrittenBytes: Long? = null
+    private var restoredEntryBytes = 0L
     private val writer =
         Thread(::writeLoop, "trading-history-writer").apply {
             isDaemon = true
             start()
         }
 
+    /**
+     * Contiguous materialized prefix safe for owner eviction. With [create], its WAL is synced.
+     * A rebuildable index acknowledges recoverability from the caller's Archive, never local DB durability.
+     */
     override val durableOrdinal: Long
         get() =
             synchronized(monitor) {
-                checkUsable()
+                checkOperational()
                 committedOrdinal
             }
 
@@ -129,6 +142,7 @@ class RocksDbTradingHistoryStore private constructor(
 
     override fun append(batch: TradingHistoryBatch) =
         guarded {
+            synchronized(monitor) { checkOperational() }
             val puts = encode(batch)
             val bytes =
                 puts.fold(
@@ -142,7 +156,7 @@ class RocksDbTradingHistoryStore private constructor(
                 }
             check(bytes <= limits.maximumPendingBytes) { "one trading history transition exceeds the pending byte limit" }
             synchronized(monitor) {
-                checkUsable()
+                checkOperational()
                 check(batch.ordinal == Math.addExact(appendedOrdinal, 1L)) { "history ordinals must be contiguous" }
                 check(bytes <= limits.maximumWrittenBytes - appendedBytes) { "trading history cumulative write byte limit exceeded" }
                 val deadline = System.nanoTime() + WAIT_NANOS
@@ -170,7 +184,7 @@ class RocksDbTradingHistoryStore private constructor(
     override fun flush(): Long =
         guarded {
             synchronized(monitor) {
-                checkUsable()
+                checkOperational()
                 awaitDurableLocked(appendedOrdinal)
             }
         }
@@ -178,7 +192,7 @@ class RocksDbTradingHistoryStore private constructor(
     override fun awaitDurable(ordinal: Long): Long =
         guarded {
             synchronized(monitor) {
-                checkUsable()
+                checkOperational()
                 require(ordinal in 0..appendedOrdinal) { "history durability target has not been appended" }
                 awaitDurableLocked(ordinal)
             }
@@ -192,6 +206,283 @@ class RocksDbTradingHistoryStore private constructor(
             while (committedOrdinal < ordinal) awaitProgress(deadline)
         }
         return committedOrdinal
+    }
+
+    /**
+     * Streams a complete cold-history checkpoint while its business owner is stopped. Memory is
+     * bounded by one row; snapshot size and time still grow with all retained history. The final
+     * snapshot-only row preserves the cumulative write budget, including overwritten old values.
+     */
+    fun exportSnapshot(accept: (ByteArray, ByteArray) -> Unit): Long =
+        guarded {
+            val ordinal =
+                synchronized(monitor) {
+                    checkOperational()
+                    awaitDurableLocked(appendedOrdinal)
+                    check(pendingCount == 0 && queue.isEmpty() && pendingValues.isEmpty())
+                    snapshotOperation = Thread.currentThread()
+                    committedOrdinal
+                }
+            try {
+                database.newIterator().use { cursor ->
+                    cursor.seekToFirst()
+                    while (cursor.isValid) {
+                        cursor.status()
+                        accept(cursor.key(), cursor.value())
+                        cursor.next()
+                    }
+                    cursor.status()
+                }
+                accept(byteArrayOf(SNAPSHOT_WRITTEN_BYTES), ByteBuffer.allocate(Long.SIZE_BYTES).putLong(appendedBytes).array())
+                ordinal
+            } finally {
+                synchronized(monitor) { snapshotOperation = null }
+            }
+        }
+
+    /** Only a new empty generation can receive a snapshot; live methods stay unavailable until completion. */
+    fun beginSnapshotRestore() =
+        guarded {
+            synchronized(monitor) {
+                checkOperational()
+                check(appendedOrdinal == 0L && committedOrdinal == 0L && pendingCount == 0 && queue.isEmpty()) {
+                    "history snapshot requires an empty store"
+                }
+                database.newIterator().use { cursor ->
+                    cursor.seekToFirst()
+                    cursor.status()
+                    check(!cursor.isValid) { "history snapshot requires an empty database" }
+                }
+                restoredPreviousKey = null
+                restoredOrdinal = null
+                restoredWrittenBytes = null
+                restoredEntryBytes = 0
+                snapshotOperation = Thread.currentThread()
+                restoringSnapshot = true
+            }
+        }
+
+    /** Strict byte ordering rejects duplicate rows without retaining a set of historical keys. */
+    fun restoreSnapshotEntry(
+        key: ByteArray,
+        value: ByteArray,
+    ) = guarded {
+        synchronized(monitor) {
+            checkSnapshotRestore()
+            check(key.isNotEmpty() && key.size <= limits.maximumValueBytes) { "invalid history snapshot key length" }
+            check(value.isNotEmpty() && value.size <= limits.maximumValueBytes) { "invalid history snapshot value length" }
+            restoredPreviousKey?.let { check(Arrays.compareUnsigned(it, key) < 0) { "history snapshot keys are not strictly ordered" } }
+            validateSnapshotKey(key, value)
+            if (key[0] == SNAPSHOT_WRITTEN_BYTES) {
+                restoredWrittenBytes = ByteBuffer.wrap(value).long.also { check(it >= 0) { "invalid history snapshot write budget" } }
+            } else {
+                val bytes = Math.addExact(key.size.toLong() + value.size, ENTRY_OVERHEAD_BYTES)
+                restoredEntryBytes = Math.addExact(restoredEntryBytes, bytes)
+                check(restoredEntryBytes <= limits.maximumWrittenBytes) { "history snapshot exceeds the write byte limit" }
+                database.put(writeOptions, key, value)
+                knownKeys.add(key)
+                if (key[0] == METADATA) {
+                    restoredOrdinal = ByteBuffer.wrap(value).long.also { check(it > 0) { "invalid history snapshot ordinal" } }
+                }
+            }
+            restoredPreviousKey = key.copyOf()
+        }
+    }
+
+    /** Validates every stored value and both directions of its exact-key indexes before making it visible. */
+    fun completeSnapshotRestore(expectedOrdinal: Long) =
+        guarded {
+            synchronized(monitor) {
+                checkSnapshotRestore()
+                check(expectedOrdinal >= 0 && (restoredOrdinal ?: 0L) == expectedOrdinal) { "history snapshot ordinal mismatch" }
+                val written = checkNotNull(restoredWrittenBytes) { "history snapshot write budget is missing" }
+                check(written in restoredEntryBytes..limits.maximumWrittenBytes) { "history snapshot write budget mismatch" }
+                check(expectedOrdinal != 0L || (restoredEntryBytes == 0L && written == 0L)) { "empty history snapshot contains data" }
+                database.newIterator().use { cursor ->
+                    cursor.seekToFirst()
+                    while (cursor.isValid) {
+                        cursor.status()
+                        validateSnapshotRow(cursor.key(), cursor.value(), expectedOrdinal)
+                        cursor.next()
+                    }
+                    cursor.status()
+                }
+                appendedOrdinal = expectedOrdinal
+                committedOrdinal = expectedOrdinal
+                appendedBytes = written
+                restoringSnapshot = false
+                snapshotOperation = null
+                restoredPreviousKey = null
+            }
+        }
+
+    private fun checkSnapshotRestore() {
+        checkUsable()
+        check(restoringSnapshot && snapshotOperation === Thread.currentThread()) { "history snapshot restore is not owned by this thread" }
+    }
+
+    private fun validateSnapshotKey(
+        key: ByteArray,
+        value: ByteArray,
+    ) {
+        when (key[0]) {
+            REQUEST_DATA, ADMISSION_DATA, COMPLETION_DATA, PREPARATION_DATA, RESERVATION_DATA, COMPLETION_INDEX -> {
+                check(key.size == 9 && ByteBuffer.wrap(key, 1, Long.SIZE_BYTES).long > 0) { "invalid history snapshot numeric key" }
+            }
+
+            TRANSACTION_DATA -> {
+                check(
+                    key.size == 17 && ByteBuffer.wrap(key, 1, Long.SIZE_BYTES).long > 0 &&
+                        ByteBuffer.wrap(key, 9, Long.SIZE_BYTES).long >= 0,
+                ) { "invalid history snapshot transaction key" }
+            }
+
+            REQUEST_INDEX, ADMISSION_INDEX, PREPARATION_INDEX, TRANSACTION_INDEX, SOURCE_INDEX -> {
+                val fields = if (key[0] == REQUEST_INDEX || key[0] == ADMISSION_INDEX) 2 else 1
+                val buffer = ByteBuffer.wrap(key).position(1)
+                repeat(fields) {
+                    check(buffer.remaining() >= Int.SIZE_BYTES) { "truncated history snapshot string key" }
+                    val characters = buffer.int
+                    check(characters > 0 && characters <= buffer.remaining() / Char.SIZE_BYTES) { "invalid history snapshot string length" }
+                    buffer.position(buffer.position() + characters * Char.SIZE_BYTES)
+                }
+                check(!buffer.hasRemaining()) { "trailing history snapshot key bytes" }
+            }
+
+            METADATA, SNAPSHOT_WRITTEN_BYTES -> {
+                check(key.size == 1 && value.size == Long.SIZE_BYTES) { "invalid history snapshot metadata" }
+            }
+
+            else -> {
+                error("unknown history snapshot key prefix")
+            }
+        }
+    }
+
+    private fun validateSnapshotRow(
+        rowKey: ByteArray,
+        value: ByteArray,
+        ordinal: Long,
+    ) {
+        fun exactIndex(index: ByteArray) {
+            check(database.get(index)?.contentEquals(rowKey) == true) { "history snapshot data/index mismatch" }
+        }
+
+        fun admission(sequence: Long): OrderAdmissionState.Record =
+            codec.decodeAdmission(
+                checkNotNull(database.get(numberKey(ADMISSION_DATA, sequence))) { "history snapshot admission is missing" },
+            )
+
+        when (rowKey[0]) {
+            REQUEST_DATA -> {
+                check(ByteBuffer.wrap(rowKey, 1, Long.SIZE_BYTES).long <= ordinal) { "history snapshot request ordinal is ahead" }
+                val request = codec.decodeStoredRequest(value, ::admission)
+                exactIndex(key(REQUEST_INDEX, request.order.userId.value, request.requestId))
+            }
+
+            ADMISSION_DATA -> {
+                val record = codec.decodeAdmission(value)
+                check(
+                    ByteBuffer.wrap(rowKey, 1, Long.SIZE_BYTES).long == record.sequence,
+                ) { "history snapshot admission sequence mismatch" }
+                exactIndex(key(ADMISSION_INDEX, record.candidate.order.marketId.value, record.candidate.order.orderId.value))
+            }
+
+            COMPLETION_DATA -> {
+                check(ByteBuffer.wrap(rowKey, 1, Long.SIZE_BYTES).long <= ordinal) { "history snapshot completion ordinal is ahead" }
+                val completion = codec.decodeStoredCompletion(value, ::admission)
+                exactIndex(numberKey(COMPLETION_INDEX, completion.admission.sequence))
+            }
+
+            PREPARATION_DATA -> {
+                check(ByteBuffer.wrap(rowKey, 1, Long.SIZE_BYTES).long <= ordinal) { "history snapshot preparation ordinal is ahead" }
+                exactIndex(
+                    key(
+                        PREPARATION_INDEX,
+                        codec
+                            .decodePreparation(value)
+                            .result.opening.preparationId,
+                    ),
+                )
+            }
+
+            RESERVATION_DATA -> {
+                val reservation = codec.decodeReservation(value)
+                val order = admission(ByteBuffer.wrap(rowKey, 1, Long.SIZE_BYTES).long).candidate.order
+                check(
+                    order.marketId == reservation.marketId && order.orderId == reservation.orderId,
+                ) { "history snapshot reservation mismatch" }
+            }
+
+            TRANSACTION_DATA -> {
+                check(ByteBuffer.wrap(rowKey, 1, Long.SIZE_BYTES).long <= ordinal) { "history snapshot transaction ordinal is ahead" }
+                val transaction = codec.decodeTransaction(value)
+                exactIndex(key(TRANSACTION_INDEX, transaction.ledgerTransactionId))
+                exactIndex(key(SOURCE_INDEX, transaction.sourceEventId))
+            }
+
+            REQUEST_INDEX, ADMISSION_INDEX, COMPLETION_INDEX, PREPARATION_INDEX, TRANSACTION_INDEX, SOURCE_INDEX -> {
+                val prefix =
+                    when (rowKey[0]) {
+                        REQUEST_INDEX -> REQUEST_DATA
+                        ADMISSION_INDEX -> ADMISSION_DATA
+                        COMPLETION_INDEX -> COMPLETION_DATA
+                        PREPARATION_INDEX -> PREPARATION_DATA
+                        else -> TRANSACTION_DATA
+                    }
+                check(value.size == (if (prefix == TRANSACTION_DATA) 17 else 9) && value[0] == prefix) { "invalid history snapshot index" }
+                val target = checkNotNull(database.get(value)) { "history snapshot index target is missing" }
+                val expected =
+                    when (rowKey[0]) {
+                        REQUEST_INDEX -> {
+                            codec
+                                .decodeStoredRequest(
+                                    target,
+                                    ::admission,
+                                ).let { key(REQUEST_INDEX, it.order.userId.value, it.requestId) }
+                        }
+
+                        ADMISSION_INDEX -> {
+                            codec.decodeAdmission(target).let {
+                                key(ADMISSION_INDEX, it.candidate.order.marketId.value, it.candidate.order.orderId.value)
+                            }
+                        }
+
+                        COMPLETION_INDEX -> {
+                            numberKey(
+                                COMPLETION_INDEX,
+                                codec.decodeStoredCompletion(target, ::admission).admission.sequence,
+                            )
+                        }
+
+                        PREPARATION_INDEX -> {
+                            key(
+                                PREPARATION_INDEX,
+                                codec
+                                    .decodePreparation(target)
+                                    .result.opening.preparationId,
+                            )
+                        }
+
+                        TRANSACTION_INDEX -> {
+                            key(TRANSACTION_INDEX, codec.decodeTransaction(target).ledgerTransactionId)
+                        }
+
+                        else -> {
+                            key(SOURCE_INDEX, codec.decodeTransaction(target).sourceEventId)
+                        }
+                    }
+                check(rowKey.contentEquals(expected)) { "history snapshot index identity mismatch" }
+            }
+
+            METADATA -> {
+                check(ByteBuffer.wrap(value).long == ordinal) { "history snapshot metadata mismatch" }
+            }
+
+            else -> {
+                error("unknown history snapshot stored key")
+            }
+        }
     }
 
     override fun findRequest(
@@ -216,6 +507,7 @@ class RocksDbTradingHistoryStore private constructor(
 
     override fun findAdmission(sequence: Long): OrderAdmissionState.Record? =
         guarded {
+            synchronized(monitor) { checkOperational() }
             if (sequence <= 0) {
                 null
             } else {
@@ -227,6 +519,7 @@ class RocksDbTradingHistoryStore private constructor(
 
     override fun findCompletion(sequence: Long): TradingState.Completion? =
         guarded {
+            synchronized(monitor) { checkOperational() }
             if (sequence <= 0) {
                 null
             } else {
@@ -388,9 +681,9 @@ class RocksDbTradingHistoryStore private constructor(
 
     private fun read(key: ByteArray): ByteArray? =
         synchronized(monitor) {
-            checkUsable()
-            // This store only opens a fresh generation. Every enqueued key enters the
-            // filter before publication; a negative is exact, a positive still reads the full key.
+            checkOperational()
+            // Every restored or enqueued key enters the filter before publication;
+            // a negative is exact, a positive still reads the full key.
             if (!knownKeys.mightContain(key)) {
                 null
             } else {
@@ -526,6 +819,11 @@ class RocksDbTradingHistoryStore private constructor(
         check(!closed && !stopping) { "trading history store is closed" }
     }
 
+    private fun checkOperational() {
+        checkUsable()
+        check(snapshotOperation == null) { "history snapshot operation is in progress" }
+    }
+
     private fun recordFailure(error: Throwable) {
         val first =
             synchronized(monitor) {
@@ -615,6 +913,7 @@ class RocksDbTradingHistoryStore private constructor(
         private const val TRANSACTION_INDEX: Byte = 16
         private const val SOURCE_INDEX: Byte = 17
         private const val METADATA: Byte = 20
+        private const val SNAPSHOT_WRITTEN_BYTES: Byte = 21
         private const val ENTRY_OVERHEAD_BYTES = 128L
         private val WAIT_NANOS = TimeUnit.SECONDS.toNanos(30)
 
@@ -623,6 +922,26 @@ class RocksDbTradingHistoryStore private constructor(
             limits: TradingHistoryStorageLimits = TradingHistoryStorageLimits(),
             onFatal: (Throwable) -> Unit = {
             },
+        ): RocksDbTradingHistoryStore = open(directory, limits, onFatal, rebuildable = false)
+
+        /**
+         * Creates a disposable index without its own WAL or force. The caller must apply only
+         * committed inputs already forced to an authoritative Archive (fileSyncLevel=2), retain
+         * the required log and complete snapshots, and rebuild a fresh generation on every restart.
+         * A successful writer acknowledgement means materialized and recoverable from that source;
+         * this database must never be reopened as recovery authority. Standalone users use [create].
+         */
+        internal fun createRebuildableIndex(
+            directory: Path,
+            limits: TradingHistoryStorageLimits = TradingHistoryStorageLimits(),
+            onFatal: (Throwable) -> Unit = {},
+        ): RocksDbTradingHistoryStore = open(directory, limits, onFatal, rebuildable = true)
+
+        private fun open(
+            directory: Path,
+            limits: TradingHistoryStorageLimits,
+            onFatal: (Throwable) -> Unit,
+            rebuildable: Boolean,
         ): RocksDbTradingHistoryStore {
             RocksDB.loadLibrary()
             // A new exclusive generation is mandatory; existing data cannot restore the live trading owner.
@@ -655,7 +974,7 @@ class RocksDbTradingHistoryStore private constructor(
                         .setMaxTotalWalSize(limits.writeBufferBytes * 2)
                         .setTableFormatConfig(table)
                         .also(resources::add)
-                val writes = WriteOptions().setSync(true).setDisableWAL(false).also(resources::add)
+                val writes = WriteOptions().setSync(!rebuildable).setDisableWAL(rebuildable).also(resources::add)
                 val database = RocksDB.open(options, directory.toString()).also(resources::add)
                 return RocksDbTradingHistoryStore(database, options, writes, cache, buffers, filter, limits, onFatal)
             } catch (error: Throwable) {

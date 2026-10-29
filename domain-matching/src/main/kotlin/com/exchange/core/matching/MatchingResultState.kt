@@ -22,7 +22,49 @@ class MatchingResultState {
     private val records: MutableMap<CommandKey, MatchingCommandResult> = linkedMapOf()
     private val lastSequences: MutableMap<MarketId, Long> = linkedMapOf()
     private val submittedOrders = mutableSetOf<OrderKey>()
-    private val planToken = Any()
+    private var planToken = Any()
+    private var checkpointRestored = false
+
+    /** Restores active first results and all market high-water marks without filling historical gaps. */
+    fun restoreActiveCheckpoint(
+        lastEngineSequences: Map<MarketId, Long>,
+        results: List<MatchingCommandResult>,
+    ) {
+        checkUsable()
+        check(!checkpointRestored && records.isEmpty() && lastSequences.isEmpty() && submittedOrders.isEmpty()) {
+            "matching result checkpoint requires an empty state"
+        }
+        require(lastEngineSequences.values.all { it > 0 }) { "checkpoint result sequences must be positive" }
+        val restored = linkedMapOf<CommandKey, MatchingCommandResult>()
+        val orders = hashSetOf<OrderKey>()
+        val ranges = hashMapOf<MarketId, MutableList<MatchingCommandResult>>()
+        for (result in results) {
+            validateHistoricalResult(result)
+            val command = result.command
+            require(result.lastEngineSequence <= (lastEngineSequences[command.marketId] ?: 0L)) {
+                "checkpoint result exceeds market sequence"
+            }
+            require(restored.put(CommandKey(command.marketId, result.commandId), result) == null) { "duplicate checkpoint result" }
+            require(command is SubmitOrderCommand && orders.add(OrderKey(command.marketId, command.orderId))) {
+                "checkpoint must contain distinct active submit results"
+            }
+            ranges.getOrPut(command.marketId) { mutableListOf() }.add(result)
+        }
+        for (marketResults in ranges.values) {
+            var last = 0L
+            for (result in marketResults.sortedBy { it.firstEngineSequence }) {
+                require(result.firstEngineSequence > last) { "checkpoint result sequence ranges overlap" }
+                last = result.lastEngineSequence
+            }
+        }
+        isBlocked = true
+        records.putAll(restored)
+        lastSequences.putAll(lastEngineSequences)
+        submittedOrders.addAll(orders)
+        planToken = Any()
+        checkpointRestored = true
+        isBlocked = false
+    }
 
     /** 검증을 마친 불변 결과. 발급한 상태의 같은 마켓 순번에서만 처음 등록할 수 있다. */
     class PreparedRegistration internal constructor(

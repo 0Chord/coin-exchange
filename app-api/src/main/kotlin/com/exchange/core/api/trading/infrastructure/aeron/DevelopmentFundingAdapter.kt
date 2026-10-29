@@ -64,6 +64,7 @@ internal class DevelopmentFundingAdapter(
     private val executionOfferTimeoutNs: Long = 1_000_000_000,
     private var telemetry: TradingNodeTelemetry = TradingNodeTelemetry.NONE,
     private var telemetryNanoTime: NanoClock = SystemNanoClock.INSTANCE,
+    private val snapshots: TradingStateSnapshotPersistence? = null,
     private val onFatal: (Throwable) -> Unit,
 ) : ClusteredService {
     private val commands = DevelopmentBalanceCommandCodec()
@@ -74,6 +75,7 @@ internal class DevelopmentFundingAdapter(
     private val executionClaim = BufferClaim()
     private lateinit var cluster: Cluster
     private var malformedMessages = 0L
+    private var snapshotInProgress = false
     private var fatalCause: Throwable? = null
     private lateinit var serviceThread: Thread
     private val observationCaptures = ArrayDeque<CompletableFuture<FundingObservation?>>()
@@ -115,7 +117,25 @@ internal class DevelopmentFundingAdapter(
         if (this::cluster.isInitialized) fail(IllegalStateException("종료한 개발 서비스를 다시 시작할 수 없습니다"))
         this.cluster = cluster
         serviceThread = Thread.currentThread()
-        if (snapshotImage != null) fail(UnsupportedOperationException("개발 자금 상태의 Snapshot 복구는 지원하지 않습니다"))
+        if (snapshotImage != null) {
+            snapshotInProgress = true
+            try {
+                val persistence = snapshots ?: throw UnsupportedOperationException("Snapshot 저장소가 연결되지 않았습니다")
+                malformedMessages = persistence.restore(state, snapshotImage, cluster)
+                observation =
+                    FundingObservation(
+                        cluster.logPosition(),
+                        null,
+                        null,
+                        malformedMessages = malformedMessages,
+                        replyStatus = "RESTORED_SNAPSHOT",
+                    )
+            } catch (failure: Throwable) {
+                fail(failure)
+            } finally {
+                snapshotInProgress = false
+            }
+        }
         // 새 클러스터의 onStart에는 아직 leadership term이 없어 timeUnit이 null이다.
         cluster.timeUnit()?.let { requireMillisecondClock(it) }
         started = true
@@ -293,7 +313,7 @@ internal class DevelopmentFundingAdapter(
         synchronized(observationCaptures) {
             if (!started) {
                 capture.completeExceptionally(IllegalStateException("개발 자금 서비스가 준비되지 않았습니다"))
-            } else if (Thread.currentThread() === serviceThread) {
+            } else if (Thread.currentThread() === serviceThread && !snapshotInProgress) {
                 completeCapture(capture)
             } else if (observationCaptures.size >= 16) {
                 capture.completeExceptionally(IllegalStateException("상태 관찰 요청 버퍼가 가득 찼습니다"))
@@ -308,6 +328,7 @@ internal class DevelopmentFundingAdapter(
     fun captureSnapshotOnServiceThread(): TradingState.Snapshot {
         check(this::serviceThread.isInitialized && Thread.currentThread() === serviceThread) { "상태 복사는 서비스 스레드에서만 가능합니다" }
         check(started) { "개발 자금 서비스가 준비되지 않았습니다" }
+        check(!snapshotInProgress) { "영구 Snapshot 처리 중에는 상태 관찰을 미룹니다" }
         return state.snapshot()
     }
 
@@ -318,7 +339,10 @@ internal class DevelopmentFundingAdapter(
             // 잘못된 외부 메시지와 종료 관찰은 기존처럼 정상 상태를 담지 않는다.
             val captured =
                 if (current == null || current.failure != null ||
-                    (current.result == null && current.admissionResult == null && current.executionCompletion == null)
+                    (
+                        current.result == null && current.admissionResult == null && current.executionCompletion == null &&
+                            current.replyStatus != "RESTORED_SNAPSHOT"
+                    )
                 ) {
                     current
                 } else {
@@ -542,7 +566,16 @@ internal class DevelopmentFundingAdapter(
     }
 
     override fun onTakeSnapshot(snapshotPublication: ExclusivePublication) {
-        fail(UnsupportedOperationException("개발 자금 상태의 Snapshot 저장은 지원하지 않습니다"))
+        ensureRunning()
+        snapshotInProgress = true
+        try {
+            val persistence = snapshots ?: throw UnsupportedOperationException("Snapshot 저장소가 연결되지 않았습니다")
+            persistence.save(state, snapshotPublication, cluster, malformedMessages)
+        } catch (failure: Throwable) {
+            fail(failure)
+        } finally {
+            snapshotInProgress = false
+        }
     }
 
     override fun onSessionOpen(
@@ -581,6 +614,9 @@ internal class DevelopmentFundingAdapter(
     override fun onRoleChange(newRole: Cluster.Role) = Unit
 
     override fun doBackgroundWork(nowNs: Long): Int {
+        // Aeron idle() re-enters this callback while streaming a snapshot. Keep queued
+        // reads until its exclusive history export/import has finished.
+        if (snapshotInProgress || !started) return 0
         val captures =
             synchronized(observationCaptures) {
                 if (observationCaptures.isEmpty()) return 0
