@@ -9,13 +9,86 @@ import com.exchange.core.trading.TradingHistoryValues
 import org.junit.jupiter.api.Test
 import java.io.ByteArrayOutputStream
 import java.io.DataOutputStream
+import java.nio.ByteBuffer
 import java.util.zip.CRC32C
 import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
+import kotlin.test.assertTrue
 
 class TradingHistoryCodecTest {
     private val codec = TradingHistoryCodec(1_024 * 1_024)
+
+    @Test
+    fun `referenced frames restore the exact original request and completion while legacy frames stay readable`() {
+        val fixture = TradingHistoryFixture().apply { completedTrade() }
+        val admissions = fixture.batches.mapNotNull { it.admission }.associateBy { it.sequence }
+        for (batch in fixture.batches) {
+            batch.request?.let { request ->
+                val full = codec.encodeRequest(request)
+                assertContentEquals(full, codec.encodeRequest(codec.decodeStoredRequest(full) { error("unexpected reference") }))
+                if (request.result is OrderAdmissionState.Result.Accepted) {
+                    val referenced = codec.encodeReferencedRequest(request)
+                    assertEquals(7, ByteBuffer.wrap(referenced).getInt(8))
+                    assertTrue(referenced.size < full.size)
+                    assertContentEquals(full, codec.encodeRequest(codec.decodeStoredRequest(referenced, admissions::get)))
+                }
+            }
+            batch.completion?.let { completion ->
+                val full = codec.encodeCompletion(completion)
+                assertContentEquals(full, codec.encodeCompletion(codec.decodeStoredCompletion(full) { error("unexpected reference") }))
+                val referenced = codec.encodeReferencedCompletion(completion)
+                assertEquals(8, ByteBuffer.wrap(referenced).getInt(8))
+                assertTrue(referenced.size < full.size)
+                assertContentEquals(full, codec.encodeCompletion(codec.decodeStoredCompletion(referenced, admissions::get)))
+            }
+        }
+    }
+
+    @Test
+    fun `referenced frames reject missing or mismatched admissions and validate checksum before lookup`() {
+        val fixture = TradingHistoryFixture().apply { completedTrade() }
+        val admissions = fixture.batches.mapNotNull { it.admission }
+        val request = fixture.batches.mapNotNull { it.request }.first()
+        val requestBytes = codec.encodeReferencedRequest(request)
+        val completionBytes = codec.encodeReferencedCompletion(fixture.batches.mapNotNull { it.completion }.first())
+        assertFailsWith<IllegalStateException> { codec.decodeStoredRequest(requestBytes) { null } }
+        assertFailsWith<IllegalStateException> { codec.decodeStoredCompletion(completionBytes) { null } }
+        assertFailsWith<IllegalStateException> { codec.decodeStoredRequest(requestBytes) { admissions.last() } }
+        assertFailsWith<IllegalStateException> { codec.decodeStoredCompletion(completionBytes) { admissions.last() } }
+        var lookups = 0
+        val corrupt = completionBytes.copyOf().apply { this[16] = (this[16].toInt() xor 1).toByte() }
+        assertFailsWith<IllegalStateException> {
+            codec.decodeStoredCompletion(corrupt) {
+                lookups++
+                admissions.first()
+            }
+        }
+        assertEquals(0, lookups)
+        val invalidSequence = completionBytes.copyOf()
+        ByteBuffer.wrap(invalidSequence).putLong(16, 0)
+        val checksum = CRC32C().apply { update(invalidSequence, 16, invalidSequence.size - 20) }.value.toInt()
+        ByteBuffer.wrap(invalidSequence).putInt(invalidSequence.size - 4, checksum)
+        assertFailsWith<IllegalStateException> { codec.decodeStoredCompletion(invalidSequence) { admissions.first() } }
+    }
+
+    @Test
+    fun `referenced completion retains its exact value limit`() {
+        val fixture = TradingHistoryFixture().apply { completedTrade() }
+        val completion = fixture.batches.mapNotNull { it.completion }.last()
+        val bytes = codec.encodeReferencedCompletion(completion)
+        assertTrue(bytes.size > 1_024)
+        val exact = TradingHistoryCodec(bytes.size)
+        assertContentEquals(bytes, exact.encodeReferencedCompletion(completion))
+        assertContentEquals(
+            codec.encodeCompletion(completion),
+            codec.encodeCompletion(exact.decodeStoredCompletion(bytes) { completion.admission }),
+        )
+        assertFailsWith<IllegalStateException> { TradingHistoryCodec(bytes.size - 1).encodeReferencedCompletion(completion) }
+        assertFailsWith<IllegalStateException> {
+            TradingHistoryCodec(bytes.size - 1).decodeStoredCompletion(bytes) { completion.admission }
+        }
+    }
 
     @Test
     fun `all original values survive explicit binary round trip including nanos and settlement`() {

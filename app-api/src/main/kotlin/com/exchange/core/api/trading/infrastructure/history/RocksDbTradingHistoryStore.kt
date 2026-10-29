@@ -17,6 +17,7 @@ import org.rocksdb.RocksDB
 import org.rocksdb.WriteBatch
 import org.rocksdb.WriteBufferManager
 import org.rocksdb.WriteOptions
+import java.lang.ref.WeakReference
 import java.nio.ByteBuffer
 import java.nio.file.Files
 import java.nio.file.Path
@@ -94,6 +95,9 @@ class RocksDbTradingHistoryStore private constructor(
     private val pendingValues = HashMap<Key, Put>()
     private val knownKeys = TradingHistoryKeyFilter()
     private val admissionIndexes = LinkedHashMap<Key, ByteArray>(16, 0.75f, true)
+
+    // Identity hits avoid re-encoding active admissions without retaining their object graphs.
+    private val admissionIdentities = LinkedHashMap<Long, WeakReference<OrderAdmissionState.Record>>(16, 0.75f, true)
     private var admissionIndexBytes = 0L
     private var pendingBytes = 0L
     private var pendingCount = 0
@@ -121,6 +125,7 @@ class RocksDbTradingHistoryStore private constructor(
     internal val retainedPendingBytes: Long get() = synchronized(monitor) { pendingBytes }
     internal val cachedAdmissionIndexCount: Int get() = synchronized(monitor) { admissionIndexes.size }
     internal val cachedAdmissionIndexBytes: Long get() = synchronized(monitor) { admissionIndexBytes }
+    internal val cachedAdmissionIdentityCount: Int get() = synchronized(monitor) { admissionIdentities.size }
 
     override fun append(batch: TradingHistoryBatch) =
         guarded {
@@ -153,6 +158,7 @@ class RocksDbTradingHistoryStore private constructor(
                     pendingValues[put.key] = put
                     cacheAdmissionIndex(put.key, put.value)
                 }
+                batch.admission?.let(::cacheAdmissionIdentity)
                 pendingBytes += bytes
                 pendingCount++
                 appendedOrdinal = batch.ordinal
@@ -193,7 +199,7 @@ class RocksDbTradingHistoryStore private constructor(
         requestId: String,
     ): OrderAdmissionState.RequestRecord? =
         guarded {
-            indexed(key(REQUEST_INDEX, userId.value, requestId), REQUEST_DATA)?.let(codec::decodeRequest)?.also {
+            indexed(key(REQUEST_INDEX, userId.value, requestId), REQUEST_DATA)?.let(::decodeRequest)?.also {
                 check(it.order.userId == userId && it.requestId == requestId) { "history request index mismatch" }
             }
         }
@@ -224,7 +230,7 @@ class RocksDbTradingHistoryStore private constructor(
             if (sequence <= 0) {
                 null
             } else {
-                indexed(numberKey(COMPLETION_INDEX, sequence), COMPLETION_DATA)?.let(codec::decodeCompletion)?.also {
+                indexed(numberKey(COMPLETION_INDEX, sequence), COMPLETION_DATA)?.let(::decodeCompletion)?.also {
                     check(it.admission.sequence == sequence) { "history completion sequence mismatch" }
                 }
             }
@@ -251,11 +257,11 @@ class RocksDbTradingHistoryStore private constructor(
             } != null
         }
 
-    override fun requests(): Sequence<OrderAdmissionState.RequestRecord> = scan(REQUEST_DATA, codec::decodeRequest)
+    override fun requests(): Sequence<OrderAdmissionState.RequestRecord> = scan(REQUEST_DATA, ::decodeRequest)
 
     override fun admissions(): Sequence<OrderAdmissionState.Record> = scan(ADMISSION_DATA, codec::decodeAdmission)
 
-    override fun completions(): Sequence<TradingState.Completion> = scan(COMPLETION_DATA, codec::decodeCompletion)
+    override fun completions(): Sequence<TradingState.Completion> = scan(COMPLETION_DATA, ::decodeCompletion)
 
     override fun preparations(): Sequence<OrderAdmissionState.PreparationRecord> = scan(PREPARATION_DATA, codec::decodePreparation)
 
@@ -277,17 +283,38 @@ class RocksDbTradingHistoryStore private constructor(
         }
         batch.request?.let {
             val target = numberKey(REQUEST_DATA, batch.ordinal)
-            put(target, codec.encodeRequest(it))
+            val accepted = it.result as? OrderAdmissionState.Result.Accepted
+            val value =
+                if (accepted != null && accepted.record === batch.admission) {
+                    codec.encodeReferencedRequest(it)
+                } else {
+                    codec.encodeRequest(it)
+                }
+            put(target, value)
             put(key(REQUEST_INDEX, it.order.userId.value, it.requestId), target)
         }
         batch.admission?.let {
             val target = numberKey(ADMISSION_DATA, it.sequence)
-            put(target, codec.encodeAdmission(it))
+            val value = codec.encodeAdmission(it)
+            // References require one immutable original per admission sequence. Validate before
+            // publishing any key from this transition; identical re-registration is harmless.
+            val previous = read(target)
+            check(previous == null || previous.contentEquals(value)) { "history admission sequence changed its original value" }
+            put(target, value)
             put(key(ADMISSION_INDEX, it.candidate.order.marketId.value, it.candidate.order.orderId.value), target)
         }
+        var referencedCompletion: TradingState.Completion? = null
         batch.completion?.let {
             val target = numberKey(COMPLETION_DATA, batch.ordinal)
-            put(target, codec.encodeCompletion(it))
+            val value =
+                if (it.admission === batch.admission || canReferenceAdmission(it.admission)) {
+                    referencedCompletion = it
+                    codec.encodeReferencedCompletion(it)
+                } else {
+                    // Standalone or noncanonical completion batches retain their original full value.
+                    codec.encodeCompletion(it)
+                }
+            put(target, value)
             put(numberKey(COMPLETION_INDEX, it.admission.sequence), target)
         }
         batch.preparation?.let {
@@ -297,7 +324,7 @@ class RocksDbTradingHistoryStore private constructor(
         }
         batch.reservations.forEach { reservation ->
             val sequence =
-                batch.admission
+                (batch.admission ?: referencedCompletion?.admission)
                     ?.takeIf {
                         it.candidate.order.marketId == reservation.marketId && it.candidate.order.orderId == reservation.orderId
                     }?.sequence ?: run {
@@ -320,6 +347,35 @@ class RocksDbTradingHistoryStore private constructor(
         put(byteArrayOf(METADATA), ByteBuffer.allocate(Long.SIZE_BYTES).putLong(batch.ordinal).array())
         return puts
     }
+
+    private fun canReferenceAdmission(record: OrderAdmissionState.Record): Boolean {
+        synchronized(monitor) {
+            checkUsable()
+            if (admissionIdentities[record.sequence]?.get() === record) return true
+        }
+        val original = read(numberKey(ADMISSION_DATA, record.sequence)) ?: return false
+        if (!original.contentEquals(codec.encodeAdmission(record))) {
+            // A valid different original uses the legacy full frame; corruption is never a fallback.
+            check(codec.decodeAdmission(original).sequence == record.sequence) { "history admission sequence mismatch" }
+            return false
+        }
+        synchronized(monitor) { cacheAdmissionIdentity(record) }
+        return true
+    }
+
+    private fun cacheAdmissionIdentity(record: OrderAdmissionState.Record) {
+        if (limits.maximumCachedAdmissionIndexes == 0) return
+        admissionIdentities[record.sequence] = WeakReference(record)
+        while (admissionIdentities.size > limits.maximumCachedAdmissionIndexes) {
+            val iterator = admissionIdentities.entries.iterator()
+            iterator.next()
+            iterator.remove()
+        }
+    }
+
+    private fun decodeRequest(bytes: ByteArray): OrderAdmissionState.RequestRecord = codec.decodeStoredRequest(bytes) { findAdmission(it) }
+
+    private fun decodeCompletion(bytes: ByteArray): TradingState.Completion = codec.decodeStoredCompletion(bytes) { findAdmission(it) }
 
     private fun indexed(
         index: ByteArray,
@@ -434,7 +490,12 @@ class RocksDbTradingHistoryStore private constructor(
                         selected
                     }
                 WriteBatch().use { write ->
-                    group.forEach { pending -> pending.puts.forEach { put -> write.put(put.key.bytes, put.value) } }
+                    val last = group.last()
+                    group.forEach { pending ->
+                        pending.puts.forEach { put ->
+                            if (put.key.bytes[0] != METADATA || pending === last) write.put(put.key.bytes, put.value)
+                        }
+                    }
                     database.write(writeOptions, write)
                 }
                 synchronized(monitor) {
@@ -521,6 +582,7 @@ class RocksDbTradingHistoryStore private constructor(
                 closed = true
                 pendingValues.clear()
                 admissionIndexes.clear()
+                admissionIdentities.clear()
                 admissionIndexBytes = 0
                 queue.clear()
                 pendingBytes = 0

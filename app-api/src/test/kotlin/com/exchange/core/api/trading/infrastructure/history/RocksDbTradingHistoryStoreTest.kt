@@ -12,6 +12,7 @@ import org.junit.jupiter.api.io.TempDir
 import org.rocksdb.FlushOptions
 import org.rocksdb.RocksDB
 import org.rocksdb.WriteOptions
+import java.lang.ref.WeakReference
 import java.nio.ByteBuffer
 import java.nio.file.FileAlreadyExistsException
 import java.nio.file.Path
@@ -42,6 +43,152 @@ class RocksDbTradingHistoryStoreTest {
             maximumOpenFiles = 16,
         )
     private val codec = TradingHistoryCodec(limits.maximumValueBytes)
+
+    @Test
+    fun `canonical references preserve exact values with disabled or cleared bounded identity caches`() {
+        for (cacheLimit in listOf(0, 1)) {
+            val fixture = TradingHistoryFixture().apply { completedTrade() }
+            RocksDbTradingHistoryStore
+                .create(directory.resolve("references-$cacheLimit"), limits.copy(maximumCachedAdmissionIndexes = cacheLimit))
+                .use { store ->
+                    for (batch in fixture.batches) {
+                        // Deterministically model cleared weak references, without relying on GC timing.
+                        privateField<Map<Long, WeakReference<*>>>(store, "admissionIdentities").values.forEach { it.clear() }
+                        store.append(batch)
+                        assertTrue(store.cachedAdmissionIdentityCount <= cacheLimit)
+                        batch.request?.let { expected ->
+                            assertContentEquals(
+                                codec.encodeRequest(expected),
+                                codec.encodeRequest(assertNotNull(store.findRequest(expected.order.userId, expected.requestId))),
+                            )
+                        }
+                        batch.completion?.let { expected ->
+                            assertContentEquals(
+                                codec.encodeCompletion(expected),
+                                codec.encodeCompletion(assertNotNull(store.findCompletion(expected.admission.sequence))),
+                            )
+                        }
+                    }
+                    assertEquals(fixture.batches.last().ordinal, store.flush())
+                    val db = privateField<RocksDB>(store, "database")
+                    for (batch in fixture.batches) {
+                        batch.request?.let {
+                            val expectedKind = if (it.result is OrderAdmissionState.Result.Accepted) 7 else 1
+                            assertEquals(expectedKind, ByteBuffer.wrap(assertNotNull(db.get(dataKey(1, batch.ordinal)))).getInt(8))
+                        }
+                        batch.completion?.let {
+                            assertEquals(8, ByteBuffer.wrap(assertNotNull(db.get(dataKey(3, batch.ordinal)))).getInt(8))
+                        }
+                    }
+                    val expectedRequests = fixture.batches.mapNotNull { it.request }.map(codec::encodeRequest)
+                    val actualRequests = store.requests().map(codec::encodeRequest).toList()
+                    assertEquals(expectedRequests.size, actualRequests.size)
+                    expectedRequests.zip(actualRequests).forEach { (expected, actual) -> assertContentEquals(expected, actual) }
+                    val expectedCompletions = fixture.batches.mapNotNull { it.completion }.map(codec::encodeCompletion)
+                    val actualCompletions = store.completions().map(codec::encodeCompletion).toList()
+                    assertEquals(expectedCompletions.size, actualCompletions.size)
+                    expectedCompletions.zip(actualCompletions).forEach { (expected, actual) -> assertContentEquals(expected, actual) }
+                }
+        }
+    }
+
+    @Test
+    fun `standalone and noncanonical originals retain full frames without changing their values`() {
+        val original = TradingHistoryFixture().apply { completedTrade() }
+        val different =
+            TradingHistoryFixture().apply {
+                funding("seller", "BTC", 200)
+                execute((admit("sell", "seller", Side.SELL) as OrderAdmissionState.Result.Accepted).record)
+            }
+        val request = different.batches.mapNotNull { it.request }.single()
+        val completion = different.batches.mapNotNull { it.completion }.single()
+        for (withCanonical in listOf(false, true)) {
+            RocksDbTradingHistoryStore.create(directory.resolve("fallback-$withCanonical"), limits).use { store ->
+                if (withCanonical) original.batches.forEach(store::append)
+                var ordinal = if (withCanonical) original.batches.last().ordinal else 0L
+                val requestOrdinal = ++ordinal
+                store.append(
+                    TradingHistoryBatch(
+                        requestOrdinal,
+                        request = request,
+                        admission = if (withCanonical) original.batches.mapNotNull { it.admission }.last() else null,
+                    ),
+                )
+                val completionOrdinal = ++ordinal
+                store.append(TradingHistoryBatch(completionOrdinal, completion = completion))
+                if (withCanonical) {
+                    // An identical canonical admission may be registered again, even as a fresh object.
+                    val record = original.batches.mapNotNull { it.admission }.first()
+                    store.append(TradingHistoryBatch(++ordinal, admission = codec.decodeAdmission(codec.encodeAdmission(record))))
+                }
+                assertEquals(ordinal, store.flush())
+                val db = privateField<RocksDB>(store, "database")
+                assertContentEquals(codec.encodeRequest(request), db.get(dataKey(1, requestOrdinal)))
+                assertContentEquals(codec.encodeCompletion(completion), db.get(dataKey(3, completionOrdinal)))
+                assertContentEquals(
+                    codec.encodeRequest(request),
+                    codec.encodeRequest(assertNotNull(store.findRequest(request.order.userId, request.requestId))),
+                )
+                assertContentEquals(
+                    codec.encodeCompletion(completion),
+                    codec.encodeCompletion(assertNotNull(store.findCompletion(completion.admission.sequence))),
+                )
+            }
+        }
+    }
+
+    @Test
+    fun `changing a canonical admission fails before publishing any part of the transition`() {
+        val fixture = TradingHistoryFixture().apply { completedTrade() }
+        val original = fixture.batches.mapNotNull { it.admission }.first()
+        val different =
+            TradingHistoryFixture().apply {
+                funding("seller", "BTC", 200)
+                admit("sell", "seller", Side.SELL)
+            }
+        val changed = different.batches.mapNotNull { it.admission }.single()
+        val store = RocksDbTradingHistoryStore.create(directory.resolve("immutable"), limits)
+        fixture.batches.forEach(store::append)
+        val last = store.flush()
+        val db = privateField<RocksDB>(store, "database")
+        assertFailsWith<IllegalStateException> {
+            store.append(TradingHistoryBatch(last + 1, request = different.batches.mapNotNull { it.request }.single(), admission = changed))
+        }
+        assertContentEquals(codec.encodeAdmission(original), db.get(dataKey(2, original.sequence)))
+        assertNull(db.get(dataKey(1, last + 1)))
+        assertEquals(last, ByteBuffer.wrap(assertNotNull(db.get(byteArrayOf(20)))).long)
+        assertFailsWith<IllegalStateException> { store.findAdmission(original.sequence) }
+        assertFailsWith<IllegalStateException> { store.close() }
+    }
+
+    @Test
+    fun `missing referenced admissions and corrupt identity cache fallbacks fail instead of replacing originals`() {
+        val fixture = TradingHistoryFixture().apply { completedTrade() }
+        val original = fixture.batches.mapNotNull { it.admission }.first()
+        val completion = fixture.batches.mapNotNull { it.completion }.first()
+        val missing = RocksDbTradingHistoryStore.create(directory.resolve("missing-reference"), limits)
+        fixture.batches.forEach(missing::append)
+        missing.flush()
+        privateField<RocksDB>(missing, "database").delete(dataKey(2, original.sequence))
+        assertFailsWith<IllegalStateException> { missing.findCompletion(original.sequence) }
+        assertFailsWith<IllegalStateException> { missing.close() }
+
+        val corrupt =
+            RocksDbTradingHistoryStore.create(
+                directory.resolve("corrupt-fallback"),
+                limits.copy(maximumCachedAdmissionIndexes = 0),
+            )
+        corrupt.append(TradingHistoryBatch(1, admission = original))
+        corrupt.flush()
+        val db = privateField<RocksDB>(corrupt, "database")
+        val key = dataKey(2, original.sequence)
+        val bytes = assertNotNull(db.get(key)).apply { this[40] = (this[40].toInt() xor 1).toByte() }
+        db.put(key, bytes)
+        assertFailsWith<IllegalStateException> { corrupt.append(TradingHistoryBatch(2, completion = completion)) }
+        assertNull(db.get(dataKey(3, 2)))
+        assertEquals(1L, ByteBuffer.wrap(assertNotNull(db.get(byteArrayOf(20)))).long)
+        assertFailsWith<IllegalStateException> { corrupt.close() }
+    }
 
     @Test
     fun `target durability acknowledges a prefix and full flush preserves all later values`() {
@@ -439,6 +586,16 @@ class RocksDbTradingHistoryStoreTest {
             fixture.time,
             OrderAdmissionState.Result.Rejected(OrderAdmissionResult.Reason.DUPLICATE_ORDER),
         )
+
+    private fun dataKey(
+        kind: Int,
+        ordinal: Long,
+    ): ByteArray =
+        ByteBuffer
+            .allocate(9)
+            .put(kind.toByte())
+            .putLong(ordinal)
+            .array()
 
     @Suppress("UNCHECKED_CAST")
     private fun <T> privateField(

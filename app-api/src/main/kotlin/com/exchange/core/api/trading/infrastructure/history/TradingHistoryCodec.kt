@@ -64,6 +64,53 @@ internal class TradingHistoryCodec(
 
     fun decodeRequest(bytes: ByteArray): OrderAdmissionState.RequestRecord = decode(bytes, 1) { request() }
 
+    fun encodeReferencedRequest(value: OrderAdmissionState.RequestRecord): ByteArray =
+        encode(7) {
+            val accepted = value.result as? OrderAdmissionState.Result.Accepted ?: error("referenced request must be accepted")
+            val candidate = accepted.record.candidate
+            check(accepted.record.sequence > 0)
+            check(
+                value.order == candidate.order &&
+                    value.market == candidate.market &&
+                    value.feePolicySnapshot == candidate.feePolicySnapshot,
+            )
+            check(value.ledgerTransactionId == candidate.reserveTransaction.ledgerTransactionId)
+            check(value.occurredAt == candidate.reserveTransaction.occurredAt)
+            text(value.requestId)
+            out.writeLong(accepted.record.sequence)
+        }
+
+    fun decodeStoredRequest(
+        bytes: ByteArray,
+        admission: (Long) -> OrderAdmissionState.Record?,
+    ): OrderAdmissionState.RequestRecord =
+        when (frameKind(bytes)) {
+            1 -> {
+                decodeRequest(bytes)
+            }
+
+            7 -> {
+                decode(bytes, 7) {
+                    val requestId = text()
+                    val record = referencedAdmission(admission)
+                    val candidate = record.candidate
+                    TradingHistoryValues.requestRecord(
+                        requestId,
+                        candidate.order,
+                        candidate.market,
+                        candidate.feePolicySnapshot,
+                        candidate.reserveTransaction.ledgerTransactionId,
+                        candidate.reserveTransaction.occurredAt,
+                        OrderAdmissionState.Result.Accepted(record),
+                    )
+                }
+            }
+
+            else -> {
+                error("unsupported stored request frame")
+            }
+        }
+
     fun encodeAdmission(value: OrderAdmissionState.Record): ByteArray = encode(2) { record(value) }
 
     fun decodeAdmission(bytes: ByteArray): OrderAdmissionState.Record = decode(bytes, 2) { record() }
@@ -71,6 +118,23 @@ internal class TradingHistoryCodec(
     fun encodeCompletion(value: TradingState.Completion): ByteArray = encode(3) { completion(value) }
 
     fun decodeCompletion(bytes: ByteArray): TradingState.Completion = decode(bytes, 3) { completion() }
+
+    fun encodeReferencedCompletion(value: TradingState.Completion): ByteArray =
+        encode(8) {
+            check(value.admission.sequence > 0)
+            out.writeLong(value.admission.sequence)
+            completionDetails(value)
+        }
+
+    fun decodeStoredCompletion(
+        bytes: ByteArray,
+        admission: (Long) -> OrderAdmissionState.Record?,
+    ): TradingState.Completion =
+        when (frameKind(bytes)) {
+            3 -> decodeCompletion(bytes)
+            8 -> decode(bytes, 8) { completion(referencedAdmission(admission)) }
+            else -> error("unsupported stored completion frame")
+        }
 
     fun encodePreparation(value: OrderAdmissionState.PreparationRecord): ByteArray = encode(4) { preparation(value) }
 
@@ -83,6 +147,12 @@ internal class TradingHistoryCodec(
     fun encodeTransaction(value: LedgerTransaction): ByteArray = encode(6) { transaction(value) }
 
     fun decodeTransaction(bytes: ByteArray): LedgerTransaction = decode(bytes, 6) { transaction() }
+
+    private fun frameKind(bytes: ByteArray): Int {
+        check(bytes.size in FRAME_BYTES..maximumValueBytes) { "invalid history value length" }
+        // The selected decoder still verifies magic, version, complete payload length and CRC.
+        return DataInputStream(ByteArrayInputStream(bytes, 8, Int.SIZE_BYTES)).readInt()
+    }
 
     private fun encode(
         kind: Int,
@@ -463,6 +533,10 @@ internal class TradingHistoryCodec(
 
         fun completion(value: TradingState.Completion) {
             record(value.admission)
+            completionDetails(value)
+        }
+
+        fun completionDetails(value: TradingState.Completion) {
             text(value.executionId)
             time(value.occurredAt)
             matching(value.matchingResult)
@@ -692,7 +766,16 @@ internal class TradingHistoryCodec(
         fun matching() =
             TradingHistoryValues.matchingResult(text(), command(), input.readInt(), input.readLong(), input.readLong(), list(::event))
 
-        fun completion() = TradingHistoryValues.completion(record(), text(), time(), matching(), settlement())
+        fun referencedAdmission(lookup: (Long) -> OrderAdmissionState.Record?): OrderAdmissionState.Record {
+            val sequence = input.readLong()
+            check(sequence > 0) { "invalid history admission reference" }
+            val record = checkNotNull(lookup(sequence)) { "history admission reference is missing" }
+            check(record.sequence == sequence) { "history admission reference sequence mismatch" }
+            return record
+        }
+
+        fun completion(admission: OrderAdmissionState.Record = record()) =
+            TradingHistoryValues.completion(admission, text(), time(), matching(), settlement())
     }
 
     private companion object {
