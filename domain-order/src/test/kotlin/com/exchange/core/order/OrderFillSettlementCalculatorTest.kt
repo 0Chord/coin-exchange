@@ -734,6 +734,129 @@ class OrderFillSettlementCalculatorTest {
         }
     }
 
+    @Test
+    fun `BUY 동일가 부분 체결 뒤 가격 개선 체결도 소수 수량과 수수료를 정확히 정산한다`() {
+        val scaledMarket =
+            market.copy(
+                baseAssetScale = 1,
+                priceTick = 10,
+                quantityStep = 1,
+            )
+        val reservation =
+            OrderReservation.create(
+                marketId = scaledMarket.marketId,
+                orderId = OrderId("buy-scaled-same-price-then-improved"),
+                userId = UserId("buyer"),
+                side = Side.BUY,
+                limitPrice = Price(510),
+                quantity = Quantity(5),
+                requirement =
+                    ReservationRequirement(
+                        assetId = scaledMarket.quoteAssetId,
+                        tradeReserveAmount = Amount(255),
+                        feeReserveAmount = Amount(3),
+                    ),
+                feePolicySnapshot =
+                    feeFreePolicySnapshot.copy(
+                        feeRates =
+                            MakerTakerFeeRates(
+                                makerFeeRate = FeeRate(5_000),
+                                takerFeeRate = FeeRate(10_000),
+                            ),
+                    ),
+            )
+        val original = reservation.copy()
+
+        val samePricePlan =
+            calculator.calculate(
+                market = scaledMarket,
+                reservation = reservation,
+                executionPrice = Price(510),
+                filledQuantity = Quantity(1),
+                liquidityRole = LiquidityRole.TAKER,
+            )
+        val firstReservation = samePricePlan.updatedReservation.copy()
+
+        // 0.1 base의 대금 51은 동일가 예약 감소액과 같고 수수료 0.51은 이월한다.
+        assertEquals(Amount(51), samePricePlan.reservedAmountToReduce)
+        assertEquals(Amount(51), samePricePlan.holdAmountToConsume)
+        assertEquals(Amount.ZERO, samePricePlan.holdAmountToRelease)
+        assertEquals(Amount(1), samePricePlan.creditAmount)
+        assertEquals(Amount.ZERO, samePricePlan.actualFeeAmount)
+        assertEquals(FeeRemainder(510_000), samePricePlan.updatedReservation.feeRemainder)
+        assertEquals(Quantity(4), samePricePlan.updatedReservation.remainingQuantity)
+        assertEquals(Amount(3), samePricePlan.updatedReservation.remainingFeeReserveAmount)
+        assertEquals(Amount(207), samePricePlan.updatedReservation.remainingAmount)
+        assertEquals(OrderReservationStatus.ACTIVE, samePricePlan.updatedReservation.status)
+
+        val improvedPricePlan =
+            calculator.calculate(
+                market = scaledMarket,
+                reservation = samePricePlan.updatedReservation,
+                executionPrice = Price(500),
+                filledQuantity = Quantity(4),
+                liquidityRole = LiquidityRole.MAKER,
+            )
+
+        // 다음 0.4 base는 개선가 대금 200과 수수료 1을 소비하고, 4 + 2를 반환한다.
+        assertEquals(Amount(207), improvedPricePlan.reservedAmountToReduce)
+        assertEquals(Amount(201), improvedPricePlan.holdAmountToConsume)
+        assertEquals(Amount(6), improvedPricePlan.holdAmountToRelease)
+        assertEquals(Amount(4), improvedPricePlan.creditAmount)
+        assertEquals(Amount(1), improvedPricePlan.actualFeeAmount)
+        assertEquals(FeeRemainder(510_000), improvedPricePlan.updatedReservation.feeRemainder)
+        assertEquals(Quantity.ZERO, improvedPricePlan.updatedReservation.remainingQuantity)
+        assertEquals(Amount.ZERO, improvedPricePlan.updatedReservation.remainingAmount)
+        assertEquals(Amount.ZERO, improvedPricePlan.updatedReservation.remainingFeeReserveAmount)
+        assertEquals(OrderReservationStatus.SETTLED, improvedPricePlan.updatedReservation.status)
+        assertEquals(original, reservation)
+        assertEquals(firstReservation, samePricePlan.updatedReservation)
+    }
+
+    @Test
+    fun `BUY 동일가 전량 체결은 중간 곱이 Long을 넘어도 정확한 quote 대금을 정산한다`() {
+        val price = Price(4_000_000_000_000_000_000)
+        val tradeAmount = Amount(2_000_000_000_000_000_000)
+        val scaledMarket =
+            market.copy(
+                baseAssetScale = 1,
+                priceTick = price.value,
+                quantityStep = 5,
+            )
+        val reservation =
+            OrderReservation.create(
+                marketId = scaledMarket.marketId,
+                orderId = OrderId("buy-same-price-wide-product"),
+                userId = UserId("buyer"),
+                side = Side.BUY,
+                limitPrice = price,
+                quantity = Quantity(5),
+                requirement = ReservationRequirement(scaledMarket.quoteAssetId, tradeAmount),
+                feePolicySnapshot = feeFreePolicySnapshot,
+            )
+        val original = reservation.copy()
+
+        val plan =
+            calculator.calculate(
+                market = scaledMarket,
+                reservation = reservation,
+                executionPrice = price,
+                filledQuantity = Quantity(5),
+                liquidityRole = LiquidityRole.MAKER,
+            )
+
+        assertEquals(tradeAmount, plan.reservedAmountToReduce)
+        assertEquals(tradeAmount, plan.holdAmountToConsume)
+        assertEquals(Amount.ZERO, plan.holdAmountToRelease)
+        assertEquals(Amount(5), plan.creditAmount)
+        assertEquals(Amount.ZERO, plan.actualFeeAmount)
+        assertEquals(FeeRemainder.ZERO, plan.updatedReservation.feeRemainder)
+        assertEquals(Quantity.ZERO, plan.updatedReservation.remainingQuantity)
+        assertEquals(Amount.ZERO, plan.updatedReservation.remainingAmount)
+        assertEquals(OrderReservationStatus.SETTLED, plan.updatedReservation.status)
+        assertEquals(original, reservation)
+    }
+
     private fun buyReservation(): OrderReservation =
         OrderReservation.create(
             marketId = market.marketId,

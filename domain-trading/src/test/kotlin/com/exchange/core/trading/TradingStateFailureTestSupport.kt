@@ -72,6 +72,27 @@ internal object TradingStateFailureTestSupport {
         return probe
     }
 
+    /** 원장 목록의 실제 append를 마친 뒤 표지를 남기고 동일한 예외 객체를 전달한다. */
+    @Suppress("UNCHECKED_CAST")
+    fun failAfterListAdd(
+        owner: Any,
+        name: String,
+        failure: Throwable,
+    ): WriteProbe {
+        val original = read(owner, name) as MutableList<Any>
+        val probe = WriteProbe()
+        val failing =
+            object : MutableList<Any> by original {
+                override fun add(element: Any): Boolean {
+                    check(original.add(element))
+                    probe.wrote(element)
+                    throw failure
+                }
+            }
+        write(owner, name, failing)
+        return probe
+    }
+
     /** 이미 있는 마켓의 실제 seen-ID set을 감싸 첫 add 뒤 실패시킨다. */
     @Suppress("UNCHECKED_CAST")
     fun failAfterNestedSetAdd(

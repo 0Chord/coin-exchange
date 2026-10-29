@@ -1,0 +1,13 @@
+# Gateway의 CPU 시간 예산·CFS 주기를 대조하는 명시 실행용 설정.
+# NanoCPUs와 Period/Quota를 함께 설정할 수 없어 gateway의 cpus만 해제한다.
+x-cpu-budget: &cpu-budget
+  cpus: !reset null
+  cpu_period: ${PERFORMANCE_CPU_PERIOD_US:?CPU period required}
+  cpu_quota: ${PERFORMANCE_CPU_QUOTA_US:?CPU quota required}
+
+services:
+  gateway:
+    <<: *cpu-budget
+    environment:
+      # CPU 예산 외에 JVM의 GC·컴파일러 병렬도까지 함께 바뀌지 않게 고정한다.
+      JAVA_TOOL_OPTIONS: "-XX:+UseG1GC -XX:ActiveProcessorCount=2 -Xms256m -Xmx512m"

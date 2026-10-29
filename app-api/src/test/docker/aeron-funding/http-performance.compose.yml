@@ -1,0 +1,85 @@
+# 명시적으로 요청한 HTTP 성능 실행에서 compose.yml, http-gateway.compose.yml 뒤에만 사용한다.
+x-performance-node: &performance-node
+  command: [com.exchange.core.api.trading.infrastructure.aeron.HttpPerformanceNodeKt, --cluster-env]
+  networks:
+    funding: {}
+    performance-observer: {}
+  extra_hosts:
+    - "host.docker.internal:host-gateway"
+  cpus: 2.0
+  mem_limit: 2g
+  shm_size: 1g
+
+x-performance-members: &performance-members "0,trade-node0:19700,trade-node0:19701,trade-node0:19702,trade-node0:19703,trade-node0:19704|1,trade-node1:19700,trade-node1:19701,trade-node1:19702,trade-node1:19703,trade-node1:19704|2,trade-node2:19700,trade-node2:19701,trade-node2:19702,trade-node2:19703,trade-node2:19704"
+
+x-performance-environment: &performance-environment
+  FUNDING_MEMBERS: *performance-members
+  PERFORMANCE_MARKER_ENDPOINT: ${PERFORMANCE_MARKER_ENDPOINT:?marker receiver endpoint required}
+  PERFORMANCE_CONTROL_DIRECTORY: /performance-control
+  PERFORMANCE_COUNTER_SAMPLING: ${PERFORMANCE_COUNTER_SAMPLING:-false}
+  PERFORMANCE_DETAILED_TRACING: ${PERFORMANCE_DETAILED_TRACING:-true}
+  PERFORMANCE_MARKER_IDLE_POLICY: ${PERFORMANCE_MARKER_IDLE_POLICY:-SLEEP_1MS}
+  PERFORMANCE_MARKER_PLAN_WARMUP: ${PERFORMANCE_MARKER_PLAN_WARMUP:?marker warmup plan required}
+  PERFORMANCE_MARKER_PLAN_ORDERS: ${PERFORMANCE_MARKER_PLAN_ORDERS:?marker orders plan required}
+  PERFORMANCE_EVIDENCE_TIME_BUDGET: ${PERFORMANCE_EVIDENCE_TIME_BUDGET:-STANDARD}
+  # 2 CPU·1536 MiB TPS 비교에서 사용한 선택값: PERFORMANCE_NODE_GC=Parallel.
+  JAVA_TOOL_OPTIONS: "-XX:+Use${PERFORMANCE_NODE_GC:-G1}GC -Xms256m -Xmx${PERFORMANCE_NODE_MAX_HEAP:-768m}"
+
+services:
+  node0:
+    <<: *performance-node
+    networks:
+      funding:
+        aliases: [trade-node0]
+      performance-observer: {}
+    environment:
+      <<: *performance-environment
+      FUNDING_HOST: trade-node0
+    volumes:
+      - ${PERFORMANCE_CONTROL_HOST_DIRECTORY:?control directory required}:/performance-control:rw
+  node1:
+    <<: *performance-node
+    networks:
+      funding:
+        aliases: [trade-node1]
+      performance-observer: {}
+    environment:
+      <<: *performance-environment
+      FUNDING_HOST: trade-node1
+    volumes:
+      - ${PERFORMANCE_CONTROL_HOST_DIRECTORY:?control directory required}:/performance-control:rw
+  node2:
+    <<: *performance-node
+    networks:
+      funding:
+        aliases: [trade-node2]
+      performance-observer: {}
+    environment:
+      <<: *performance-environment
+      FUNDING_HOST: trade-node2
+    volumes:
+      - ${PERFORMANCE_CONTROL_HOST_DIRECTORY:?control directory required}:/performance-control:rw
+  gateway:
+    command: ["${PERFORMANCE_GATEWAY_MAIN:-com.exchange.core.TradingGatewayApplicationKt}"]
+    cpus: 2.0
+    mem_limit: 1g
+    environment:
+      FUNDING_RUN_ID: ${FUNDING_RUN_ID:?run required}
+      PERFORMANCE_CONTROL_DIRECTORY: /performance-control
+      PERFORMANCE_DETAILED_TRACING: ${PERFORMANCE_DETAILED_TRACING:-true}
+      PERFORMANCE_HTTP_BOUNDARIES: ${PERFORMANCE_HTTP_BOUNDARIES:-false}
+      PERFORMANCE_HTTP_BOUNDARY_ORDERS: ${PERFORMANCE_HTTP_BOUNDARY_ORDERS:-0}
+      JAVA_TOOL_OPTIONS: "-XX:+UseG1GC -Xms256m -Xmx512m"
+      TRADING_GATEWAY_RESULT_TIMEOUT_MS: "5000"
+      TRADING_GATEWAY_QUEUE_CAPACITY: "1024"
+      TRADING_GATEWAY_MAX_IN_FLIGHT: "256"
+      TRADING_GATEWAY_INGRESS_ENDPOINTS: "0=trade-node0:19700,1=trade-node1:19700,2=trade-node2:19700"
+    volumes:
+      - ${PERFORMANCE_CONTROL_HOST_DIRECTORY:?control directory required}:/performance-control:rw
+  client:
+    environment:
+      FUNDING_MEMBERS: *performance-members
+
+networks:
+  performance-observer:
+    driver: bridge

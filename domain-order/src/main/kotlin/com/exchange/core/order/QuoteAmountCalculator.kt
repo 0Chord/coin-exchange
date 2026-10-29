@@ -5,6 +5,12 @@ import com.exchange.core.common.Price
 import com.exchange.core.common.Quantity
 import java.math.BigInteger
 
+private val quoteBaseUnits =
+    LongArray(19).apply {
+        this[0] = 1L
+        for (scale in 1 until size) this[scale] = this[scale - 1] * 10L
+    }
+
 /**
  * base 자산의 가격과 최소 단위 수량으로 quote 자산 대금을 계산한다.
  *
@@ -12,7 +18,7 @@ import java.math.BigInteger
  * 50,000,000이고 수량이 최소 단위 기준 10,000,000이며 scale이 8이면,
  * 0.1 BTC의 대금인 5,000,000을 반환한다.
  *
- * 중간 곱셈은 Long overflow를 방지하기 위해 [BigInteger]로 수행한다. 나눗셈에
+ * 중간 곱셈이 Long 범위 안이면 정수 연산을 사용하고, 넘으면 [BigInteger]로 계산한다. 나눗셈에
  * 나머지가 있으면 quote 자산의 최소 단위로 정확히 표현할 수 없으므로 반올림하거나
  * 버리지 않고 실패시킨다. 최종 결과가 Long 범위를 넘는 경우에도 실패한다.
  *
@@ -23,6 +29,25 @@ import java.math.BigInteger
  * @throws IllegalArgumentException 계산 결과가 scale에 정확히 맞지 않거나 Long 범위를 초과할 경우
  */
 internal fun calculateQuoteAmount(
+    price: Price,
+    quantity: Quantity,
+    baseAssetScale: Int,
+): Amount {
+    if (baseAssetScale !in quoteBaseUnits.indices) {
+        return calculateQuoteAmountWithBigInteger(price, quantity, baseAssetScale)
+    }
+    if (quantity.value > Long.MAX_VALUE / price.value) {
+        return calculateQuoteAmountWithBigInteger(price, quantity, baseAssetScale)
+    }
+    val numerator = price.value * quantity.value
+    val baseUnit = quoteBaseUnits[baseAssetScale]
+    require(numerator % baseUnit == 0L) {
+        "reservation amount must align with base asset scale"
+    }
+    return Amount(numerator / baseUnit)
+}
+
+private fun calculateQuoteAmountWithBigInteger(
     price: Price,
     quantity: Quantity,
     baseAssetScale: Int,

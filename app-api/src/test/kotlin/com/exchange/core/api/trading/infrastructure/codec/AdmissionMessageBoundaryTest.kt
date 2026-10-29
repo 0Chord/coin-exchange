@@ -35,6 +35,73 @@ class AdmissionMessageBoundaryTest {
     private val results = AdmissionResultCodec()
 
     @Test
+    fun `본문이 없는 정확한 8바이트 헤더와 unsigned 종류 값은 구간 안에서 읽는다`() {
+        for (kind in listOf(0, 1, 0x7FFF, 0x8000, 0xFF00, 0xFFFF)) {
+            val frame = protobufFrame(kind, byteArrayOf())
+            assertEquals(8, frame.size)
+            for (offset in listOf(0, 13)) {
+                val buffer = ByteArray(offset + frame.size + 7) { 0xA5.toByte() }
+                frame.copyInto(buffer, offset)
+
+                assertEquals(kind, AdmissionMessageReader(buffer, offset, frame.size).kind)
+            }
+        }
+    }
+
+    @Test
+    fun `스키마 버전 본문 길이의 고위 비트도 unsigned로 읽고 기존 오류로 거절한다`() {
+        val frame = protobufFrame(1, byteArrayOf())
+        for (fieldOffset in listOf(4, 6)) {
+            for (value in listOf(0x8000, 0x8057, 0xFFFF)) {
+                val invalid = frame.changed { putShort(fieldOffset, value.toShort()) }
+                assertEquals(
+                    "지원하지 않는 스키마 또는 버전입니다",
+                    assertFailsWith<AdmissionMessageException> { AdmissionMessageReader(invalid, 0, invalid.size) }.message,
+                )
+            }
+        }
+        for (value in listOf(0x8000, 0xFFFF)) {
+            val invalid = frame.changed { putShort(0, value.toShort()) }
+            assertEquals(
+                "본문 길이와 메시지 구간이 다릅니다",
+                assertFailsWith<AdmissionMessageException> { AdmissionMessageReader(invalid, 0, invalid.size) }.message,
+            )
+        }
+    }
+
+    @Test
+    fun `동시에 잘못된 헤더는 구간 스키마 길이 종류 순서로 거절한다`() {
+        val invalid =
+            protobufFrame(99, byteArrayOf()).changed {
+                putShort(0, 1)
+                putShort(4, 86)
+                putShort(6, 3)
+            }
+        assertEquals(
+            "메시지 구간 또는 전체 길이가 잘못됐습니다",
+            assertFailsWith<AdmissionMessageException> { commands.decode(invalid, 0, 7) }.message,
+        )
+        assertEquals(
+            "지원하지 않는 스키마 또는 버전입니다",
+            assertFailsWith<AdmissionMessageException> { commands.decode(invalid) }.message,
+        )
+        val wrongLength =
+            invalid.changed {
+                putShort(4, 87)
+                putShort(6, 2)
+            }
+        assertEquals(
+            "본문 길이와 메시지 구간이 다릅니다",
+            assertFailsWith<AdmissionMessageException> { commands.decode(wrongLength) }.message,
+        )
+        val wrongKind = wrongLength.changed { putShort(0, 0) }
+        assertEquals(
+            "명령 메시지가 아닙니다",
+            assertFailsWith<AdmissionMessageException> { commands.decode(wrongKind) }.message,
+        )
+    }
+
+    @Test
     fun `공유 버퍼의 정확한 구간만 읽고 반환한 명령은 원본 버퍼와 분리된다`() {
         val command = admissionCommand()
         val encoded = commands.encode(command)

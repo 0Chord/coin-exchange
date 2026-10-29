@@ -45,6 +45,8 @@ dependencies {
     testRuntimeOnly("com.google.protobuf:protobuf-java:4.33.2")
     // 실제 Aeron 어댑터의 상위 타입도 읽는다. 운영 검사 대상을 제외하지 않는다.
     testRuntimeOnly("io.aeron:aeron-cluster:1.53.3")
+    // Gateway HTTP protocol의 실제 상위 정의를 읽는다. 검사 대상과 규칙은 유지한다.
+    testRuntimeOnly("org.apache.tomcat.embed:tomcat-embed-core")
     testRuntimeOnly("org.junit.platform:junit-platform-launcher")
 }
 

@@ -17,6 +17,8 @@ import com.exchange.core.order.Side
 import java.time.Instant
 import java.util.Collections
 
+private const val ADMISSION_SEQUENCE_SEGMENT_SIZE = 1_024
+
 /**
  * 한 실행자가 순서대로 호출하는 접수 상태. 여러 마켓이 사용자·자산별 최신 잔고를 공유한다.
  * 영구 저장·동시 호출·복구는 제공하지 않으며, 반영 중 오류 뒤에는 재전송과 정상 조회도 차단한다.
@@ -42,7 +44,9 @@ class OrderAdmissionState(
 
     private val balances: MutableMap<BalanceKey, Balance> = linkedMapOf()
     private val records: MutableMap<OrderKey, Record> = linkedMapOf()
-    private val recordsBySequence: MutableMap<Long, Record> = linkedMapOf()
+
+    // 순번 순회는 하지 않는다. Long 구간 키마다 고정 크기의 원본 참조만 보관한다.
+    private val recordsBySequence: MutableMap<Long, MutableList<Record?>> = hashMapOf()
     private val pendingByMarket: MutableMap<MarketId, ArrayDeque<Record>> = linkedMapOf()
     private val currentReservations: MutableMap<OrderKey, OrderReservation> = linkedMapOf()
     private val ledgerTransactions: MutableList<LedgerTransaction> = mutableListOf()
@@ -50,6 +54,7 @@ class OrderAdmissionState(
     private val sourceEventIds = mutableSetOf<String>()
     private val requestRecords: MutableMap<RequestKey, RequestRecord> = linkedMapOf()
     private val preparations: MutableMap<String, PreparationRecord> = linkedMapOf()
+    private var preparedSettlement: PreparedSettlement? = null
     private val usedBalances =
         initialBalances
             .filter { it.available != Amount.ZERO }
@@ -268,7 +273,14 @@ class OrderAdmissionState(
         isBlocked = true
         balances[balanceKey] = candidate.nextBalance
         records[orderKey] = record
-        recordsBySequence[record.sequence] = record
+        val sequenceIndex = record.sequence - 1
+        val segmentKey = sequenceIndex / ADMISSION_SEQUENCE_SEGMENT_SIZE
+        val segmentOffset = (sequenceIndex % ADMISSION_SEQUENCE_SEGMENT_SIZE).toInt()
+        val segment =
+            recordsBySequence.getOrPut(segmentKey) {
+                MutableList(ADMISSION_SEQUENCE_SEGMENT_SIZE) { null }
+            }
+        segment[segmentOffset] = record
         pendingByMarket.getOrPut(candidate.order.marketId) { ArrayDeque() }.addLast(record)
         currentReservations[orderKey] = candidate.reservation
         ledgerTransactions.add(candidate.reserveTransaction)
@@ -293,7 +305,11 @@ class OrderAdmissionState(
     // 공통 소유자만 사용하는 참여 계약. 최초 기록을 현재 예약으로 덮어쓰지 않는다.
     internal fun accepted(sequence: Long): Record? {
         checkUsable()
-        return recordsBySequence[sequence]
+        if (sequence <= 0) return null
+        val sequenceIndex = sequence - 1
+        val segmentKey = sequenceIndex / ADMISSION_SEQUENCE_SEGMENT_SIZE
+        val segmentOffset = (sequenceIndex % ADMISSION_SEQUENCE_SEGMENT_SIZE).toInt()
+        return recordsBySequence[segmentKey]?.get(segmentOffset)
     }
 
     internal fun accepted(
@@ -335,7 +351,7 @@ class OrderAdmissionState(
         return immutableList(ledgerTransactions)
     }
 
-    internal fun validateSettlement(candidate: OrderSettlementCandidate) {
+    private fun validateSettlement(candidate: OrderSettlementCandidate) {
         checkUsable()
         candidate.balanceChanges.forEach {
             check(currentBalance(it.previous.userId, it.previous.assetId) == it.previous) { "정산 기준 잔고가 다릅니다" }
@@ -345,18 +361,41 @@ class OrderAdmissionState(
             check(currentReservation(it.previous.marketId, it.previous.orderId) == it.previous) { "정산 기준 예약이 다릅니다" }
             check(it.next.marketId == it.previous.marketId && it.next.orderId == it.previous.orderId)
         }
-        val batchTransactions = hashSetOf<String>()
-        val batchEvents = hashSetOf<String>()
-        candidate.settlements.forEach {
-            checkUnusedTransaction(it.transaction)
-            check(batchTransactions.add(it.transaction.ledgerTransactionId)) { "정산 묶음의 거래 ID가 중복됐습니다" }
-            check(batchEvents.add(it.transaction.sourceEventId)) { "정산 묶음의 사건 ID가 중복됐습니다" }
+        if (candidate.settlements.size == 1) {
+            checkUnusedTransaction(candidate.settlements[0].transaction)
+        } else if (candidate.settlements.size > 1) {
+            val batchTransactions = hashSetOf<String>()
+            val batchEvents = hashSetOf<String>()
+            candidate.settlements.forEach {
+                checkUnusedTransaction(it.transaction)
+                check(batchTransactions.add(it.transaction.ledgerTransactionId)) { "정산 묶음의 거래 ID가 중복됐습니다" }
+                check(batchEvents.add(it.transaction.sourceEventId)) { "정산 묶음의 사건 ID가 중복됐습니다" }
+            }
         }
     }
 
-    internal fun applySettlement(candidate: OrderSettlementCandidate) {
+    internal class PreparedSettlement internal constructor(
+        internal val candidate: OrderSettlementCandidate,
+    )
+
+    /** 자금 검증 뒤 정상 입구를 잠가 반영 시점까지 기준 잔고·예약·원장 이력을 보존한다. */
+    internal fun prepareSettlement(candidate: OrderSettlementCandidate): PreparedSettlement {
         validateSettlement(candidate)
+        val preparation = PreparedSettlement(candidate)
+        preparedSettlement = preparation
         isBlocked = true
+        return preparation
+    }
+
+    /** 이 소유자가 발급해 아직 사용하지 않은 검증 결과만 한 번 반영한다. 실패하면 차단을 유지한다. */
+    internal fun applySettlement(
+        preparation: PreparedSettlement,
+        beforeApply: () -> Unit,
+    ) {
+        check(isBlocked && preparedSettlement === preparation) { "이 상태의 미사용 정산 준비가 아닙니다" }
+        preparedSettlement = null
+        val candidate = preparation.candidate
+        beforeApply()
         candidate.balanceChanges.forEach {
             val key = BalanceKey(it.next.userId, it.next.assetId)
             balances[key] = it.next
@@ -379,6 +418,7 @@ class OrderAdmissionState(
     }
 
     internal fun block() {
+        preparedSettlement = null
         isBlocked = true
     }
 

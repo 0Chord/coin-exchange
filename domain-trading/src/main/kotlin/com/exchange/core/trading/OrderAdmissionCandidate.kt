@@ -1,10 +1,10 @@
 package com.exchange.core.trading
 
 import com.exchange.core.common.Amount
+import com.exchange.core.common.AssetId
 import com.exchange.core.fee.FeeRemainder
 import com.exchange.core.fee.TradingFeePolicySnapshot
 import com.exchange.core.ledger.Balance
-import com.exchange.core.ledger.LedgerPosting
 import com.exchange.core.ledger.LedgerPostingSide
 import com.exchange.core.ledger.LedgerTransaction
 import com.exchange.core.ledger.LedgerTransactionType
@@ -57,15 +57,27 @@ class OrderAdmissionCandidate internal constructor(
         require(nextBalance.available.value == Math.subtractExact(previousBalance.available.value, amount.value))
         require(nextBalance.hold.value == Math.addExact(previousBalance.hold.value, amount.value))
 
+        validateReserveTransaction(expectedAssetId, amount)
+    }
+
+    private fun validateReserveTransaction(
+        expectedAssetId: AssetId,
+        amount: Amount,
+    ) {
         // 원장의 자산별 균형만으로는 잘못된 사용자·계정·방향을 찾을 수 없다.
         val account = "USER:${order.userId.value}:${expectedAssetId.value}"
         require(reserveTransaction.transactionType == LedgerTransactionType.RESERVE)
+        val postings = reserveTransaction.postings
+        require(postings.size == 2)
+        val debit = postings[0]
+        val credit = postings[1]
         require(
-            reserveTransaction.postings ==
-                listOf(
-                    LedgerPosting("$account:AVAILABLE", expectedAssetId, LedgerPostingSide.DEBIT, amount),
-                    LedgerPosting("$account:HOLD", expectedAssetId, LedgerPostingSide.CREDIT, amount),
-                ),
+            debit.accountId == "$account:AVAILABLE" && debit.assetId == expectedAssetId && debit.side == LedgerPostingSide.DEBIT &&
+                debit.amount == amount,
+        )
+        require(
+            credit.accountId == "$account:HOLD" && credit.assetId == expectedAssetId && credit.side == LedgerPostingSide.CREDIT &&
+                credit.amount == amount,
         )
     }
 }

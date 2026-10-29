@@ -22,6 +22,16 @@ class MatchingResultState {
     private val records: MutableMap<CommandKey, MatchingCommandResult> = linkedMapOf()
     private val lastSequences: MutableMap<MarketId, Long> = linkedMapOf()
     private val submittedOrders = mutableSetOf<OrderKey>()
+    private val planToken = Any()
+
+    /** 검증을 마친 불변 결과. 발급한 상태의 같은 마켓 순번에서만 처음 등록할 수 있다. */
+    class PreparedRegistration internal constructor(
+        private val ownerToken: Any,
+        internal val baseSequence: Long,
+        internal val result: MatchingCommandResult,
+    ) {
+        internal fun belongsTo(token: Any): Boolean = ownerToken === token
+    }
 
     /** 반영 중 오류 뒤에는 같은 결과의 재전송과 정상 조회도 차단한다. */
     var isBlocked: Boolean = false
@@ -64,6 +74,19 @@ class MatchingResultState {
         return candidate
     }
 
+    /** 결과를 한 번 복사·검증한다. 준비만으로 이력이나 마켓 순번을 바꾸지 않는다. */
+    fun prepareRegistration(
+        commandId: String,
+        command: MatchingCommand,
+        expectedEventCount: Int,
+        firstEngineSequence: Long,
+        lastEngineSequence: Long,
+        events: List<MatchingEvent>,
+    ): PreparedRegistration {
+        val result = validateRegistration(commandId, command, expectedEventCount, firstEngineSequence, lastEngineSequence, events)
+        return PreparedRegistration(planToken, result.firstEngineSequence - 1, result)
+    }
+
     /** 전체 검증 뒤 등록하며, 같은 키의 재전송은 현재의 다음 순번보다 먼저 대조한다. */
     fun register(
         commandId: String,
@@ -75,13 +98,40 @@ class MatchingResultState {
     ): MatchingCommandResult {
         val candidate = validateRegistration(commandId, command, expectedEventCount, firstEngineSequence, lastEngineSequence, events)
         val key = CommandKey(command.marketId, commandId)
-        if (key in records) return candidate
+        records[key]?.let { return it }
+        return commit(candidate, key)
+    }
+
+    /** 불변 결과의 전체 검증은 재실행하지 않고 소유자·현재 순번·동일 키를 확인한 뒤 쓴다. */
+    fun register(prepared: PreparedRegistration): MatchingCommandResult {
+        checkUsable()
+        require(prepared.belongsTo(planToken)) { "matching result registration belongs to another state" }
+        val candidate = prepared.result
+        val command = candidate.command
+        val key = CommandKey(command.marketId, candidate.commandId)
+        val previous = records[key]
+        if (previous != null) {
+            if (previous !== candidate && previous != candidate) {
+                throw MatchingResultException(MatchingResultException.Reason.CONTENT_CONFLICT, "같은 명령의 결과 내용이 다릅니다")
+            }
+            return previous
+        }
+        requireResult((lastSequences[command.marketId] ?: 0L) == prepared.baseSequence, "준비한 결과의 마켓 순번이 바뀌었습니다")
+
+        return commit(candidate, key)
+    }
+
+    private fun commit(
+        candidate: MatchingCommandResult,
+        key: CommandKey,
+    ): MatchingCommandResult {
+        val command = candidate.command
         val orderKey = (command as? SubmitOrderCommand)?.let { OrderKey(it.marketId, it.orderId) }
 
         // SQL 롤백 대신, 어느 쓰기에서든 실패하면 차단 상태를 남긴다.
         isBlocked = true
         records[key] = candidate
-        lastSequences[command.marketId] = lastEngineSequence
+        lastSequences[command.marketId] = candidate.lastEngineSequence
         if (orderKey != null) submittedOrders.add(orderKey)
         isBlocked = false
         return candidate

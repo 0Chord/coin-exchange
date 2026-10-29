@@ -22,11 +22,39 @@ import com.exchange.core.matching.TradeExecuted
 import com.exchange.core.order.MarketDefinition
 import com.exchange.core.order.OrderReservation
 import com.exchange.core.order.OrderReservationStatus
-import java.nio.ByteBuffer
-import java.security.MessageDigest
 import java.time.Instant
 import java.util.Base64
 import java.util.Collections
+
+enum class TradingExecutionPhase {
+    MATCHING_CANDIDATE,
+    SETTLEMENT_INPUT_VALIDATION,
+    SETTLEMENT_CANDIDATE,
+    RESULT_VALIDATION,
+    APPLY,
+    COMPLETION,
+}
+
+/**
+ * 실행 단계의 선택적 관측 경계다. 시간·저장·집계는 호출자가 소유하며 도메인 상태에는 보관하지 않는다.
+ * 콜백 실패는 거래 결과와 차단 판정에 영향을 주지 않는다. 관측자는 실행 상태를 변경하지 않아야 한다.
+ */
+interface TradingExecutionObserver {
+    fun onPhaseStarted(
+        admissionSequence: Long,
+        phase: TradingExecutionPhase,
+    ) {}
+
+    fun onPhaseCompleted(
+        admissionSequence: Long,
+        phase: TradingExecutionPhase,
+        failure: Throwable?,
+    ) {}
+
+    companion object {
+        val NONE: TradingExecutionObserver = object : TradingExecutionObserver {}
+    }
+}
 
 /**
  * 한 실행자가 접수·매칭·정산을 순서대로 처리하는 공통 소유자.
@@ -105,9 +133,11 @@ class TradingState(
     }
 
     /** 완료를 먼저 재사용하므로 후속 이벤트가 순번을 전진시켜도 다시 계산하지 않는다. */
+    @JvmOverloads
     fun executePending(
         admissionSequence: Long,
         occurredAt: Instant,
+        observer: TradingExecutionObserver = TradingExecutionObserver.NONE,
     ): Completion {
         checkUsable()
         completions[admissionSequence]?.let { return it }
@@ -132,50 +162,95 @@ class TradingState(
                     order.price,
                     order.quantity,
                 )
-            val plan = engine.prepareSubmit(command)
-            val reservations = validateParticipants(record, plan)
-            val balances = participantBalances(reservations, original.market)
-            val executions = plan.events.filterIsInstance<TradeExecuted>().map { it.toSettlement(occurredAt) }
-            val settlement = settlementCalculator.calculate(order, original.market, executions, reservations, balances)
-            validateJointResult(record, plan, settlement, executions)
-            admission.validateSettlement(settlement)
-            engine.validate(plan)
+            val plan =
+                observedExecutionPhase(admissionSequence, TradingExecutionPhase.MATCHING_CANDIDATE, observer) {
+                    engine.prepareSubmit(command)
+                }
+            val reservations =
+                observedExecutionPhase(admissionSequence, TradingExecutionPhase.SETTLEMENT_INPUT_VALIDATION, observer) {
+                    validateParticipants(record, plan)
+                }
+            val executions = ArrayList<SettlementExecution>(plan.fills.size)
+            val settlement =
+                observedExecutionPhase(admissionSequence, TradingExecutionPhase.SETTLEMENT_CANDIDATE, observer) {
+                    val balances = participantBalances(reservations, original.market)
+                    for (event in plan.events) {
+                        if (event is TradeExecuted) executions.add(event.toSettlement(occurredAt))
+                    }
+                    settlementCalculator.calculate(order, original.market, executions, reservations, balances)
+                }
             val executionId = "EXECUTE:v1:$admissionSequence"
-            check(resultState.find(order.marketId, executionId) == null) { "전체 완료 없이 매칭 결과만 존재합니다" }
-            check(engine.lastEngineSequence(order.marketId) == resultState.lastEngineSequence(order.marketId)) {
-                "주문장과 결과 이력의 이전 순번이 다릅니다"
-            }
-            resultState.validateRegistration(
-                executionId,
-                command,
-                plan.events.size,
-                plan.firstEngineSequence,
-                plan.lastEngineSequence,
-                plan.events,
-            )
+            lateinit var preparedSettlement: OrderAdmissionState.PreparedSettlement
+            val registration =
+                observedExecutionPhase(admissionSequence, TradingExecutionPhase.RESULT_VALIDATION, observer) {
+                    validateJointResult(record, plan, settlement, executions)
+                    check(resultState.find(order.marketId, executionId) == null) { "전체 완료 없이 매칭 결과만 존재합니다" }
+                    check(engine.lastEngineSequence(order.marketId) == resultState.lastEngineSequence(order.marketId)) {
+                        "주문장과 결과 이력의 이전 순번이 다릅니다"
+                    }
+                    val preparedRegistration =
+                        resultState.prepareRegistration(
+                            executionId,
+                            command,
+                            plan.events.size,
+                            plan.firstEngineSequence,
+                            plan.lastEngineSequence,
+                            plan.events,
+                        )
+                    preparedSettlement = admission.prepareSettlement(settlement)
+                    preparedRegistration
+                }
 
             // 여기부터 실제 값이 바뀐다. 완료 기록까지 끝나기 전에 정상 사용을 허용하지 않는다.
-            isBlocked = true
-            engine.apply(plan)
-            admission.applySettlement(settlement)
             val matchingResult =
-                resultState.register(
-                    executionId,
-                    command,
-                    plan.events.size,
-                    plan.firstEngineSequence,
-                    plan.lastEngineSequence,
-                    plan.events,
-                )
-            admission.completePending(record)
-            val completion = Completion(record, executionId, occurredAt, matchingResult, settlement)
-            completions[admissionSequence] = completion
-            isBlocked = false
-            return completion
+                observedExecutionPhase(admissionSequence, TradingExecutionPhase.APPLY, observer) {
+                    isBlocked = true
+                    admission.applySettlement(preparedSettlement) { engine.apply(plan) }
+                    resultState.register(registration)
+                }
+            return observedExecutionPhase(admissionSequence, TradingExecutionPhase.COMPLETION, observer) {
+                admission.completePending(record)
+                val completion = Completion(record, executionId, occurredAt, matchingResult, settlement)
+                completions[admissionSequence] = completion
+                isBlocked = false
+                completion
+            }
         } catch (failure: Throwable) {
             isBlocked = true
             admission.block()
             throw failure
+        }
+    }
+
+    private inline fun <T> observedExecutionPhase(
+        admissionSequence: Long,
+        phase: TradingExecutionPhase,
+        observer: TradingExecutionObserver,
+        action: () -> T,
+    ): T {
+        if (observer === TradingExecutionObserver.NONE) return action()
+        try {
+            observer.onPhaseStarted(admissionSequence, phase)
+        } catch (_: Exception) {
+            // 관측 실패는 금융 상태를 변경하거나 정상 실행을 차단하지 않는다.
+        }
+        var failure: Throwable? = null
+        try {
+            return action()
+        } catch (businessFailure: Throwable) {
+            failure = businessFailure
+            throw businessFailure
+        } finally {
+            try {
+                observer.onPhaseCompleted(admissionSequence, phase, failure)
+            } catch (_: Exception) {
+                // 원래의 업무 실패 또는 성공을 그대로 유지한다.
+            } catch (observerFailure: Error) {
+                // VM 오류는 숨기지 않는다. 업무 실패가 있으면 원본을 유지하며 함께 전달한다.
+                val businessFailure = failure
+                if (businessFailure == null) throw observerFailure
+                if (observerFailure !== businessFailure) businessFailure.addSuppressed(observerFailure)
+            }
         }
     }
 
@@ -227,13 +302,11 @@ class TradingState(
             ) { "주문장 maker와 현재 예약이 다릅니다" }
             reservations.add(maker)
         }
-        val holdByOwner = linkedMapOf<Pair<UserId, AssetId>, Long>()
-        reservations.forEach {
-            val key = it.userId to it.assetId
-            holdByOwner[key] = Math.addExact(holdByOwner[key] ?: 0, it.remainingAmount.value)
-        }
-        holdByOwner.forEach { (key, required) ->
-            check(admission.currentBalance(key.first, key.second).hold.value >= required) { "현재 hold가 예약보다 작습니다" }
+        // 체결이 있으면 정산 계산기가 참여자의 예약 합계와 현재 hold를 함께 검사한다.
+        // 체결 없는 신규 대기 주문도 최초 예약을 실제로 보유하는지는 확인한다.
+        if (plan.fills.isEmpty()) {
+            settlementCalculator.validateReservation(original.market, taker)
+            check(admission.currentBalance(taker.userId, taker.assetId).hold >= taker.remainingAmount) { "현재 hold가 예약보다 작습니다" }
         }
         return reservations
     }
@@ -242,6 +315,7 @@ class TradingState(
         record: OrderAdmissionState.Record,
         current: OrderReservation,
     ) {
+        // 보관한 최초 원본의 손상도 차단한다. 검증은 비교용 분개를 만들지 않는다.
         record.candidate.validate()
         val original = record.candidate.reservation
         check(
@@ -252,16 +326,20 @@ class TradingState(
                 current.feePolicySnapshot == original.feePolicySnapshot,
         ) { "현재 예약의 원본·정책이 승인과 다릅니다" }
         check(current.status == OrderReservationStatus.ACTIVE) { "현재 예약이 활성 상태가 아닙니다" }
-        settlementCalculator.validateReservation(record.candidate.market, current)
+        // 현재 금액의 계산 검증은 이어지는 정산 계산기에서 한 번 수행한다.
     }
 
     private fun participantBalances(
         reservations: List<OrderReservation>,
         market: MarketDefinition,
-    ): List<Balance> =
-        reservations.flatMap { listOf(it.userId to market.baseAssetId, it.userId to market.quoteAssetId) }.distinct().map {
-            admission.currentBalance(it.first, it.second)
+    ): List<Balance> {
+        val keys = linkedSetOf<Pair<UserId, AssetId>>()
+        for (reservation in reservations) {
+            keys.add(reservation.userId to market.baseAssetId)
+            keys.add(reservation.userId to market.quoteAssetId)
         }
+        return keys.map { admission.currentBalance(it.first, it.second) }
+    }
 
     private fun validateJointResult(
         record: OrderAdmissionState.Record,
@@ -270,18 +348,33 @@ class TradingState(
         executions: List<SettlementExecution>,
     ) {
         check(candidate.order == record.candidate.order && candidate.market == record.candidate.market)
-        check(candidate.settlements.map { it.execution } == executions) { "정산 체결과 실제 매칭 순서가 다릅니다" }
-        val nextReservations = candidate.reservationChanges.associate { it.next.orderId to it.next }
+        check(candidate.settlements.size == executions.size) { "정산 체결과 실제 매칭 개수가 다릅니다" }
+        candidate.settlements.forEachIndexed { index, settlement ->
+            check(settlement.execution == executions[index]) { "정산 체결과 실제 매칭 순서가 다릅니다" }
+        }
         if (executions.isNotEmpty()) {
+            val nextReservations =
+                if (executions.size > 1) candidate.reservationChanges.associate { it.next.orderId to it.next } else null
+
+            fun nextReservation(orderId: OrderId): OrderReservation {
+                if (nextReservations != null) return nextReservations.getValue(orderId)
+                // associate와 동일하게 마지막 키를 선택하고, 누락된 키는 getValue의 예외로 거절한다.
+                for (index in candidate.reservationChanges.lastIndex downTo 0) {
+                    val next = candidate.reservationChanges[index].next
+                    if (next.orderId == orderId) return next
+                }
+                return emptyMap<OrderId, OrderReservation>().getValue(orderId)
+            }
+
             plan.fills.forEach {
                 check(
-                    nextReservations.getValue(it.orderId).remainingQuantity.value == it.remainingQuantity.value - it.filledQuantity.value,
+                    nextReservation(it.orderId).remainingQuantity.value == it.remainingQuantity.value - it.filledQuantity.value,
                 ) {
                     "정산 후 maker 잔량이 주문장 후보와 다릅니다"
                 }
             }
             val remaining = (plan.events.last() as? OrderEnteredBook)?.remainingQuantity?.value ?: 0L
-            check(nextReservations.getValue(record.candidate.order.orderId).remainingQuantity.value == remaining) {
+            check(nextReservation(record.candidate.order.orderId).remainingQuantity.value == remaining) {
                 "정산 후 taker 잔량이 주문장 후보와 다릅니다"
             }
         } else {
@@ -336,14 +429,11 @@ internal fun settlementTransactionId(
 ): String {
     require(engineSequence > 0) { "체결 순번은 양수여야 합니다" }
     val market = marketId.value.toByteArray(Charsets.UTF_8)
-    val bytes =
-        ByteBuffer
-            .allocate(4 + Int.SIZE_BYTES + market.size + Long.SIZE_BYTES)
-            .put(byteArrayOf(83, 84, 76, 49))
-            .putInt(market.size)
-            .put(market)
-            .putLong(engineSequence)
-            .array()
-    val digest = MessageDigest.getInstance("SHA-256").digest(bytes)
+    val bytes = ByteArray(4 + Int.SIZE_BYTES + market.size + Long.SIZE_BYTES)
+    writeTradingIdentifierInt(bytes, 0, 0x53544C31)
+    writeTradingIdentifierInt(bytes, 4, market.size)
+    market.copyInto(bytes, 4 + Int.SIZE_BYTES)
+    writeTradingIdentifierLong(bytes, 4 + Int.SIZE_BYTES + market.size, engineSequence)
+    val digest = tradingIdentifierSha256(bytes)
     return "SETTLEMENT:v1:" + Base64.getUrlEncoder().withoutPadding().encodeToString(digest)
 }

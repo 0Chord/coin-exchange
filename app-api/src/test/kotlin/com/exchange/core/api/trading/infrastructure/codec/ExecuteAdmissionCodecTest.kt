@@ -1,6 +1,7 @@
 package com.exchange.core.api.trading.infrastructure.codec
 
 import com.exchange.core.api.trading.infrastructure.codec.generated.ExecuteAdmission
+import org.agrona.concurrent.UnsafeBuffer
 import org.junit.jupiter.api.Test
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
@@ -10,6 +11,79 @@ import kotlin.test.assertFailsWith
 
 class ExecuteAdmissionCodecTest {
     private val codec = ExecuteAdmissionCodec()
+
+    @Test
+    fun `claim 직접 인코딩은 모든 varint 길이 경계에서 generated Protobuf와 같은 바이트를 쓴다`() {
+        val sequences =
+            listOf(1L, Long.MAX_VALUE) +
+                (1..8).flatMap { width ->
+                    val boundary = 1L shl (width * 7)
+                    listOf(boundary - 1, boundary)
+                }
+        sequences.forEach { sequence ->
+            val expected =
+                protobufFrame(
+                    7,
+                    ExecuteAdmission
+                        .newBuilder()
+                        .setAdmissionSequence(sequence)
+                        .build()
+                        .toByteArray(),
+                )
+            val offset = 13
+            val bytes = ByteArray(offset + expected.size + 7) { 0xA5.toByte() }
+
+            val length = codec.encodeInto(sequence, UnsafeBuffer(bytes), offset)
+
+            assertEquals(expected.size, codec.encodedLength(sequence), "sequence=$sequence")
+            assertEquals(expected.size, length)
+            assertContentEquals(expected, bytes.copyOfRange(offset, offset + length), "sequence=$sequence")
+            assertContentEquals(codec.encode(ExecuteAdmissionPayload(sequence)), bytes.copyOfRange(offset, offset + length))
+            assertContentEquals(ByteArray(offset) { 0xA5.toByte() }, bytes.copyOfRange(0, offset))
+            assertContentEquals(ByteArray(7) { 0xA5.toByte() }, bytes.copyOfRange(offset + length, bytes.size))
+            assertEquals(ExecuteAdmissionPayload(sequence), codec.decode(bytes, offset, length))
+        }
+    }
+
+    @Test
+    fun `claim 직접 인코딩은 정확한 남은 구간과 direct buffer에도 같은 명령을 쓴다`() {
+        val sequence = Long.MAX_VALUE
+        val expected = codec.encode(ExecuteAdmissionPayload(sequence))
+        val offset = 11
+        val buffer = UnsafeBuffer(ByteBuffer.allocateDirect(offset + expected.size))
+        buffer.setMemory(0, buffer.capacity(), 0xA5.toByte())
+
+        assertEquals(expected.size, codec.encodeInto(sequence, buffer, offset))
+
+        val actual = ByteArray(expected.size)
+        buffer.getBytes(offset, actual)
+        assertContentEquals(expected, actual)
+        val prefix = ByteArray(offset)
+        buffer.getBytes(0, prefix)
+        assertContentEquals(ByteArray(offset) { 0xA5.toByte() }, prefix)
+        assertEquals(ExecuteAdmissionPayload(sequence), codec.decode(actual))
+    }
+
+    @Test
+    fun `claim 출력의 비양수 순번과 잘못된 구간은 쓰기 전에 거절한다`() {
+        listOf(0L, -1L, Long.MIN_VALUE).forEach { sequence ->
+            val bytes = ByteArray(24) { 0xA5.toByte() }
+            val before = bytes.copyOf()
+            assertFailsWith<AdmissionMessageException> { codec.encodedLength(sequence) }
+            assertFailsWith<AdmissionMessageException> { codec.encodeInto(sequence, UnsafeBuffer(bytes), 0) }
+            assertContentEquals(before, bytes)
+        }
+        val sequence = Long.MAX_VALUE
+        val length = codec.encodedLength(sequence)
+        listOf(-1, Int.MAX_VALUE, 1).forEach { offset ->
+            val bytes = ByteArray(length) { 0xA5.toByte() }
+            val before = bytes.copyOf()
+            assertFailsWith<AdmissionMessageException> { codec.encodeInto(sequence, UnsafeBuffer(bytes), offset) }
+            assertContentEquals(before, bytes)
+        }
+        assertFailsWith<AdmissionMessageException> { codec.encodeInto(sequence, UnsafeBuffer(ByteArray(length - 1)), 0) }
+        assertFailsWith<AdmissionMessageException> { codec.encodeInto(sequence, UnsafeBuffer(ByteArray(0)), 0) }
+    }
 
     @Test
     fun `내부 실행은 승인 순번 하나만 kind7로 전송한다`() {

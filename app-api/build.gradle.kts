@@ -156,5 +156,50 @@ tasks.register<JavaExec>("runTradingGateway") {
     classpath = sourceSets["main"].runtimeClasspath
     mainClass.set("com.exchange.core.TradingGatewayApplicationKt")
     javaLauncher.set(javaToolchains.launcherFor(java.toolchain))
+    jvmArgs("-XX:+UseG1GC", "--add-opens=java.base/jdk.internal.misc=ALL-UNNAMED", "--add-opens=java.base/java.util.zip=ALL-UNNAMED")
+}
+
+tasks.register<JavaExec>("runHttpAeronPerformanceBaseline") {
+    group = "verification"
+    description = "실제 HTTP·Aeron 세 노드·동기화 2에서 접수와 매칭·정산 완료 관측을 따로 측정한다."
+    dependsOn(tasks.testClasses, stageFundingVerificationRuntime)
+    classpath = sourceSets["test"].runtimeClasspath
+    mainClass.set("com.exchange.core.api.trading.infrastructure.aeron.HttpAeronPerformanceBaselineKt")
+    javaLauncher.set(javaToolchains.launcherFor(java.toolchain))
+    maxHeapSize = "2g"
     jvmArgs("--add-opens=java.base/jdk.internal.misc=ALL-UNNAMED", "--add-opens=java.base/java.util.zip=ALL-UNNAMED")
+    systemProperty("fundingProjectDirectory", projectDir.absolutePath)
+    systemProperty("fundingDistributionDirectory", fundingVerificationDirectory.get().asFile.absolutePath)
+}
+
+tasks.register<JavaExec>("runTradingEngineCapacity") {
+    group = "verification"
+    description = "실제 자금 예약·매칭·정산 코어의 처리량과 비용을 외부 전송 없이 측정한다."
+    dependsOn(tasks.testClasses)
+    classpath = sourceSets["test"].runtimeClasspath
+    mainClass.set("com.exchange.core.api.trading.infrastructure.aeron.TradingEngineCapacityKt")
+    javaLauncher.set(javaToolchains.launcherFor(java.toolchain))
+    minHeapSize = "256m"
+    maxHeapSize = "768m"
+    jvmArgs("-XX:+UseG1GC", "-XX:ActiveProcessorCount=2")
+    systemProperty(
+        "engineCapacityReportDirectory",
+        layout.buildDirectory
+            .dir("reports/engine-capacity")
+            .get()
+            .asFile.absolutePath,
+    )
+}
+
+tasks.register<JavaExec>("runDirectAeronCapacityBaseline") {
+    group = "verification"
+    description = "실제 세 노드에 HTTP 없이 주문을 보내는 짧은 Aeron 접수 부하를 검증한다."
+    dependsOn(tasks.testClasses, stageFundingVerificationRuntime)
+    classpath = sourceSets["test"].runtimeClasspath
+    mainClass.set("com.exchange.core.api.trading.infrastructure.aeron.DirectAeronCapacityBaselineKt")
+    javaLauncher.set(javaToolchains.launcherFor(java.toolchain))
+    maxHeapSize = "2g"
+    jvmArgs("--add-opens=java.base/jdk.internal.misc=ALL-UNNAMED", "--add-opens=java.base/java.util.zip=ALL-UNNAMED")
+    systemProperty("fundingProjectDirectory", projectDir.absolutePath)
+    systemProperty("fundingDistributionDirectory", fundingVerificationDirectory.get().asFile.absolutePath)
 }
