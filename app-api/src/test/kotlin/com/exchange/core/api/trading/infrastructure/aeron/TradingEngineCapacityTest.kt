@@ -102,6 +102,68 @@ class TradingEngineCapacityTest {
     }
 
     @Test
+    fun `history 선택은 기본 off와 rebuildable만 허용하고 기존 계획을 유지한다`() {
+        val defaults = engineCapacityOptionsFromArgs(arrayOf("--probe", "--orders=3", "--warmup=2")).single()
+        val off = engineCapacityOptionsFromArgs(arrayOf("--probe", "--orders=3", "--warmup=2", "--history=off")).single()
+        val rebuildable =
+            engineCapacityOptionsFromArgs(arrayOf("--probe", "--orders=3", "--warmup=2", "--history=rebuildable")).single()
+
+        assertEquals("off", defaults.historyMode)
+        assertEquals(defaults, off)
+        assertEquals(defaults.copy(historyMode = "rebuildable"), rebuildable)
+        assertFailsWith<IllegalArgumentException> { engineCapacityOptionsFromArgs(arrayOf("--smoke", "--history=durable")) }
+        assertFailsWith<IllegalArgumentException> { TradingEngineCapacityOptions(historyMode = "") }
+    }
+
+    @Test
+    fun `rebuildable 선택은 실제 금융 검증과 cold 중복 검증을 유지하고 임시 이력을 정리한다`() {
+        val result = runTradingEngineCapacity(TradingEngineCapacityOptions(warmup = 2, orders = 3, historyMode = "rebuildable"))
+
+        assertTrue(result.fixedCohortComplete, result.errors.joinToString("\n"))
+        assertEquals(3L, result.latency.count)
+        val state = assertNotNull(result.stateCheck)
+        assertEquals(5L, state["actualSettlements"])
+        assertEquals(150L, state["expectedFeeRevenue"])
+        assertEquals(17, state["ledgerTransactions"])
+        assertEquals(11, state["requests"])
+        assertEquals(10, state["completions"])
+        assertEquals(true, state["duplicateAdmissionAndExecutionVerified"])
+        assertEquals(true, state["insufficientBalanceVerified"])
+        assertEquals(true, state["ledgerBalancedByAsset"])
+        val history = result.runtime["history"] as Map<*, *>
+        assertEquals("rebuildable", history["mode"])
+        assertEquals(true, history["materializationFlushed"])
+        assertEquals(true, history["storeClosed"])
+        assertEquals(true, history["temporaryDirectoryRemoved"])
+        assertEquals(false, history["durabilityClaim"])
+        assertFalse(Files.exists(Path.of(history["temporaryDirectory"] as String)))
+        assertTrue((result.runtime["cpuTimeBoundary"] as String).contains("not process CPU"))
+        assertNull(result.failureStateEvidence)
+    }
+
+    @Test
+    fun `rebuildable 측정 실패도 정리하고 다음 실행은 같은 요청 ID를 새 이력에서 처리한다`() {
+        val options = TradingEngineCapacityOptions(warmup = 1, orders = 2, historyMode = "rebuildable")
+        val failed = runTradingEngineCapacity(options, beforeMeasuredExecution = { error("test-only execution failure") })
+        val next = runTradingEngineCapacity(options)
+
+        assertEquals("MEASUREMENT_FAILURE", failed.stopReason)
+        assertTrue(failed.errors.any { it.contains("test-only execution failure") })
+        assertNotNull(failed.failureStateEvidence)
+        assertTrue(next.fixedCohortComplete, next.errors.joinToString("\n"))
+        val failedHistory = failed.runtime["history"] as Map<*, *>
+        val nextHistory = next.runtime["history"] as Map<*, *>
+        assertTrue(failedHistory["temporaryDirectory"] != nextHistory["temporaryDirectory"])
+        for (history in listOf(failedHistory, nextHistory)) {
+            assertEquals(true, history["freshStorePerRun"])
+            assertEquals(true, history["storeClosed"])
+            assertEquals(true, history["temporaryDirectoryRemoved"])
+            assertFalse(Files.exists(Path.of(history["temporaryDirectory"] as String)))
+        }
+        assertEquals(true, next.stateCheck?.get("duplicateAdmissionAndExecutionVerified"))
+    }
+
+    @Test
     fun `선택한 측정 전 GC는 금융 준비와 완료를 유지하고 별도 진단으로 표시한다`() {
         val options = engineCapacityOptionsFromArgs(arrayOf("--probe", "--orders=3", "--warmup=2", "--pre-gc", "--post-gc")).single()
         assertTrue(options.preGc)

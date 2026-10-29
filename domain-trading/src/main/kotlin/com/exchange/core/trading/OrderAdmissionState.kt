@@ -77,6 +77,7 @@ class OrderAdmissionState(
     private var durableHistoryOrdinal = 0L
     private val historyBatches = ArrayDeque<TradingHistoryBatch>()
     private var checkpointRestored = false
+    private var contextCheckInProgress = false
 
     /** 차단 여부만 진단할 수 있다. 부분 반영 가능성이 있는 잔고를 정상 조회로 내보내지 않는다. */
     var isBlocked: Boolean = false
@@ -202,11 +203,62 @@ class OrderAdmissionState(
         occurredAt: Instant,
     ): Result {
         checkUsable()
-        if (!calculator.validIdentifier(requestId)) return Result.Rejected(OrderAdmissionResult.Reason.INVALID_REQUEST_IDENTIFIER)
-        if (!calculator.validOrderIdentifiers(order)) return Result.Rejected(OrderAdmissionResult.Reason.INVALID_ORDER_IDENTIFIER)
+        invalidIdentifiers(requestId, order)?.let { return it }
 
         val key = RequestKey(order.userId, requestId)
         val previous = requestRecords[key] ?: historyRead { findRequest(order.userId, requestId) }
+        return admitResolved(requestId, order, market, feePolicySnapshot, ledgerTransactionId, occurredAt, previous)
+    }
+
+    /**
+     * 한 소유 호출 안에서 최초 요청을 한 번 조회하고 외부 문맥 검사 뒤에 같은 원본으로 판단한다.
+     * 문맥 거절의 null은 요청 이력에 남지 않는다. 문맥 검사에서 상태에 재진입할 수 없으며,
+     * 그 결과나 조회한 원본을 외부에 넘겨 다음 호출의 검증을 생략하지 않는다.
+     */
+    fun admitWithContextCheck(
+        requestId: String,
+        order: OrderAdmissionInput,
+        market: MarketDefinition,
+        feePolicySnapshot: TradingFeePolicySnapshot,
+        ledgerTransactionId: String,
+        occurredAt: Instant,
+        checkContext: (knownRequest: Boolean) -> Boolean,
+    ): Result? {
+        checkUsable()
+        val key = RequestKey(order.userId, requestId)
+        val previous = requestRecords[key] ?: historyRead { findRequest(order.userId, requestId) }
+        contextCheckInProgress = true
+        val acceptedContext =
+            try {
+                checkContext(previous != null)
+            } finally {
+                contextCheckInProgress = false
+            }
+        checkUsable()
+        if (!acceptedContext) return null
+        invalidIdentifiers(requestId, order)?.let { return it }
+        return admitResolved(requestId, order, market, feePolicySnapshot, ledgerTransactionId, occurredAt, previous)
+    }
+
+    private fun invalidIdentifiers(
+        requestId: String,
+        order: OrderAdmissionInput,
+    ): Result.Rejected? =
+        when {
+            !calculator.validIdentifier(requestId) -> Result.Rejected(OrderAdmissionResult.Reason.INVALID_REQUEST_IDENTIFIER)
+            !calculator.validOrderIdentifiers(order) -> Result.Rejected(OrderAdmissionResult.Reason.INVALID_ORDER_IDENTIFIER)
+            else -> null
+        }
+
+    private fun admitResolved(
+        requestId: String,
+        order: OrderAdmissionInput,
+        market: MarketDefinition,
+        feePolicySnapshot: TradingFeePolicySnapshot,
+        ledgerTransactionId: String,
+        occurredAt: Instant,
+        previous: RequestRecord?,
+    ): Result {
         if (previous != null) {
             return if (previous.order == order) previous.result else Result.Rejected(OrderAdmissionResult.Reason.REQUEST_CONTENT_CONFLICT)
         }
@@ -650,7 +702,22 @@ class OrderAdmissionState(
         val store = historyStore ?: return
         try {
             check(batch.ordinal == Math.addExact(lastHistoryOrdinal, 1L))
-            store.append(batch)
+            batch.admission?.let { record ->
+                val order = record.candidate.order
+                check(records[OrderKey(order.marketId, order.orderId)] === record) { "history admission is not the live original" }
+            }
+            batch.completion?.let { completion ->
+                val original = completion.admission
+                val order = original.candidate.order
+                check(records[OrderKey(order.marketId, order.orderId)] === original) { "history completion is not the live original" }
+            }
+            val reservationSequences =
+                batch.reservations.map { reservation ->
+                    checkNotNull(records[OrderKey(reservation.marketId, reservation.orderId)]) {
+                        "history reservation has no live original"
+                    }.sequence
+                }
+            store.appendPrepared(PreparedTradingHistoryBatch(store, batch, reservationSequences))
             for (reservation in batch.reservations) {
                 if (reservation.status != OrderReservationStatus.ACTIVE) {
                     terminalOrdinals[OrderKey(reservation.marketId, reservation.orderId)] = batch.ordinal
@@ -725,7 +792,10 @@ class OrderAdmissionState(
         }
     }
 
-    private fun checkUsable() = check(!isBlocked) { "반영 중 오류로 접수 상태가 차단됐습니다" }
+    private fun checkUsable() {
+        check(!isBlocked) { "반영 중 오류로 접수 상태가 차단됐습니다" }
+        check(!contextCheckInProgress) { "접수 문맥 검사에서 상태에 재진입할 수 없습니다" }
+    }
 
     private fun checkUnusedTransaction(transaction: LedgerTransaction) {
         check(

@@ -377,3 +377,115 @@ Aeron 1.53.3 소스에서 다음 순서를 확인했고 독립 리뷰에서도 �
 - 모든 primary 디스크 유실 시 성공 기록 유실 0은 아직 구현하지 않았다. 별도 장애영역의 복구 기록과 내구 위치 확인 후 응답 공개 조건이 필요하다. 로컬 sync2나 현재 snapshot을 그 보장으로 바꾸어 설명하지 않는다.
 
 근거 디렉터리: `/Users/0chord/.codex/visualizations/2026/09/23/01a0ce63-9327-7f32-a7e0-3429380284d8/issue142-performance/business-retention-20261029/bounded-history-20261029/recovery-index-20261030`의 `paired-result.json`, 실행 명령 JSON, `regression-xml/`, 전후 `control/client-summary.json`, node metrics 및 압축 원본 자료. 실행 전용 컨테이너·이미지·볼륨은 실행기 종료에서 정리하며, 원본은 SHA-256 확인 후 압축 보관한다.
+
+
+## 2026-10-30: 중복 이력 조회와 native 저장 대기 개선
+
+이번 단위는 기준 커밋 `86cdc52d4bc33c97aad02d5a84b7bc5515581da9` 위에서 실제 호출 비용을 줄이고, 같은 기존 측정기로 짧게 비교했다. **최종 선택은 r7의 제품 코드다. 세 노드 50,000 orders/s 목표는 미달이다.** 아래 수치는 HTTP/Gateway를 포함하지 않는다. 새 Goal 생성은 기존 미완료 Goal 때문에 도구에서 거절됐으며 목표를 달성한 것으로 종료하지 않았다. PR/push는 하지 않는다.
+
+### 최종 코드에서 바뀐 것
+
+| 변경 | 줄인 작업과 유지한 경계 |
+|---|---|
+| 최초 요청 조회 한 번 | 어댑터의 `hasRequest()` 다음 `admit()`가 같은 이력을 다시 읽던 경로를 `admitWithContextCheck()` 소유 호출 하나로 묶었다. 최초 결과가 현재 마켓·수수료 검증보다 우선하며, 문맥 거절은 이력을 만들지 않는다. 재진입은 차단한다. |
+| 검증한 live 결과 재사용 | `PreparedTradingHistoryBatch`는 store identity에 묶인 불변 목록과 예약별 실제 승인 순번을 전달한다. 새 승인 조회 생략은 검증된 최대 순번보다 큰 경우만 허용한다. raw append 혼합은 생략을 끄며 snapshot import는 cold 최대 순번을 복원한다. |
+| 작은 반복 작업 제거 | key hash와 encoded row 바이트 합계를 한 번 계산한다. queue에 남은 바이트와 쓰기 진행 중 pending 바이트를 구분한다. 완료 전 후속 pending 값을 지우지 않는다. |
+| native write buffer 8→16 MiB | strict shared cache 설정은 32 MiB 그대로이며 그 안의 memtable 허용량을 조정했다. `writeBufferBytes <= cacheBytes/2` 검사를 유지한다. pending64 MiB·1024 batches·open files64·background jobs2·8 GiB 누적 쓰기 제한도 그대로다. 전체 native RSS를 32 MiB로 제한했다는 뜻은 아니다. |
+
+**최종 직렬화는 여전히 업무 호출 안에서 끝난 뒤 enqueue한다.** pending에는 원본 객체 그래프 대신 완성된 byte frame을 보관하고, 기존 writer가 묶어서 원자적으로 인덱스에 기록한다. encode를 worker로 옮겼던 후보는 tail/처리량 악화로 제외했다. 과거 최초 승인·거절 결과, 원장·주문·source ID는 지우지 않는다. WAL을 끄는 범위도 이전 구현처럼 권위 있는 sync2 Archive를 가진 파생 인덱스에만 한정한다.
+
+### 엔진 단독: 조회·검증 경로의 효과
+
+기존 `TradingEngineCapacity`에 선택적인 `--history=rebuildable`을 연결했다. 기본 `off`는 그대로다. 매번 새 disposable RocksDB를 만들며, 이 시험에는 Archive가 없다. 따라서 아래는 영속성·HA 측정이 아니다. Java25.0.2/G1/Xms256m/Xmx768m/ActiveProcessorCount2, 준비 SELL20k·예열 BUY10k·측정 BUY10k를 새 JVM으로 ABBA 실행했다. ActiveProcessorCount는 JVM 인식값이며 OS CPU quota나 고정 배치를 뜻하지 않는다. 모든 엔진 표는 `--pre-gc --post-gc`를 사용한 `PRE_GC_DIAGNOSTIC`이다. 준비·예열 뒤 명시적 GC를 요청하고 나서 측정했으며, 자연 상태의 장기 GC 동작이나 지속 성능을 뜻하지 않는다.
+
+| 실행 | 완료 TPS | caller CPU μs/주문 | caller 할당 B/주문 | p95 상한 μs | p99 상한 μs |
+|---|---:|---:|---:|---:|---:|
+| 기준5 | 7,606 | 78.41 | 46,566 | 184.319 | 262.143 |
+| r6-1: 조회·owner proof | 7,651 | 35.19 | 47,576 | 53.247 | 155.647 |
+| r6-2 | 7,409 | 33.82 | 47,582 | 57.343 | 172.031 |
+| 기준6 | 7,502 | 86.36 | 46,888 | 196.607 | 327.679 |
+
+호출자 CPU와 tail은 줄었지만 TPS 증가는 확인되지 않았다. 이 시점의 저장 처리 정체가 남아 있어 조회 최적화만으로 처리량 목표를 달성하지 못했다. CPU·할당량은 caller thread만 포함하고 writer/다른 스레드/native 할당은 제외한다. 최종 flush·재무 검증·정리는 timed loop 밖이다.
+
+### 실제로 확인한 native 비용과 버퍼 조정
+
+같은 native 진단 harness를 앞에 둔 ABBA 비교다. r6/r7의 제품 class 차이는 `TradingHistoryStorageLimits` 기본 생성자의 write-buffer 상수 하나이며, 다른 Capacity class 차이는 공통 overlay가 덮는다. 각 runtime의 manifest와 실제 파일 hash를 독립 감사에서 대조했다.
+
+| 실행 | 완료 TPS | caller CPU μs/주문 | caller 할당 B/주문 | p95 상한 μs | p99 상한 μs |
+|---|---:|---:|---:|---:|---:|
+| r6-native2: buffer8 | 7,416 | 31.83 | 47,423 | 51.199 | 151.551 |
+| r7-1: buffer16 | 23,570 | 37.81 | 47,716 | 61.439 | 155.647 |
+| r7-2: buffer16 | 22,663 | 42.61 | 48,341 | 77.823 | 143.359 |
+| r6-native3: buffer8 | 7,357 | 32.39 | 47,494 | 56.319 | 167.935 |
+
+유한 10k cohort 평균 처리량은 약3.13배다. **p95와 caller CPU·할당량까지 개선됐다는 결과는 아니다.** 측정창은0.42~1.36초이며 지속 최대 TPS로 쓸 수 없다.
+
+최종 flush 뒤 native 통계를 읽었다. 저장소 전체 수명의 setup·warmup·measurement·재무검증·flush 누적이며 측정창 전용 통계가 아니다.
+
+| native 누적 | buffer8 두 실행 | buffer16 두 실행 |
+|---|---:|---:|
+| compaction CPU | 4.26 / 4.30초 | 3.56 / 3.57초 |
+| compaction 횟수 | 53 / 52 | 27 / 27 |
+| write amplification | 3.6~3.7 | 3.1 |
+| L0 지연 횟수 | 8 / 8 | 0 / 0 |
+| DB 누적 stall | 0.872 / 0.869초 | 0 / 0초 |
+| WBM 제한 stop | 31 / 35 | 11 / 8 |
+
+DB stall이0이어도 WBM stop은 남았다. 이 누적 시간을 측정창에서 빼거나 처리량 증가의 정확한 기여율로 환산하지 않는다. 단일 설정 변경에서 처리량 상승이 재현됐고 작은 memtable·반복 compaction 비용도 실제 존재한다는 범위의 근거다. [공식 WriteBufferManager 설명](https://github.com/facebook/rocksdb/wiki/write-buffer-manager), [Write Stalls 설명](https://github.com/facebook/rocksdb/wiki/Write-Stalls)
+
+### 더 큰 유한 cohort와 제외한 후보
+
+30k 비교는 준비 SELL40k·예열 BUY10k·측정 BUY30k로 동일하다. 실행 순서는 r7→r8→r6, 조건당1회다. orders만 바꿔도 harness의 준비 SELL 수와 시작 이력 크기가 달라지므로 10k 결과와 동일 초기상태의 창 길이 비교라고 표현하지 않는다.
+
+| 실행 | 완료 TPS | caller CPU μs/주문 | caller 할당 B/주문 | p95 상한 μs | p99 상한 μs | 재무 검증 |
+|---|---:|---:|---:|---:|---:|---|
+| r6: buffer8 | 4,246 | 21.01 | 46,394 | 32.255 | 118.783 | 통과 |
+| r7: buffer16, 최종 선택 | 12,929 | 28.85 | 46,778 | 60.415 | 163.839 | 통과 |
+| r8: 문자열 직접 쓰기 후보 | 12,588 | 23.67 | 38,496 | 40.959 | 135.167 | 통과 |
+
+30k에서도 버퍼 조정은 약3.05배지만 p95/p99 개선은 아니다. r7의 native 누적 DB stall1.051초·WBM stop28회·compaction CPU8.97초가 남는다. 인덱스 누적량이 늘어나는 동안 저장 작업을 따라가는 문제를 해결했다고 표시하지 않는다.
+
+| 후보 | 실제 관측과 판정 |
+|---|---|
+| r1~r3: worker에서 frame 생성, pending 원본 보관 | r3 caller 할당46.5k→19.2kB/주문이지만 p99약0.295→3.2ms. CPU를 worker로 옮긴 것은 총비용 제거가 아니다. 제외. |
+| r4: retained graph 예산과 encoded grouping 분리 | 엔진 tail은 회복했으나 세 노드 전체3,598 orders/s. fresh baseline4,165와 리더도 달라 개선 근거가 부족하다. 제외. |
+| r5: 원본과 eager bytes를 함께 보관 | 세 노드4,137 orders/s로 fresh baseline4,165보다 좋지 않고 이중 보관 비용을 남긴다. 제외. |
+| r8: frame마다1KiB 문자열 scratch/중간 복사 제거 | 10k ABBA 평균 TPS+8.73%, callerCPU−24.30%, 할당−17.94%지만 p99일관 개선 없음. 30k TPS−2.64%, 세 노드 TPS−9.93%·완료p99+20.06%. 최종 제품 코드에서 제외하고 경계 테스트는 유지. |
+| r9: L0 compaction trigger4→8 | 같은30k ABBA TPS13,030→11,525→11,558→8,927. 마지막 control 하락이 커 처리량 개선을 확정할 수 없고 p99상한139→172→176→197μs. 일관된 개선 근거가 없어 제외. |
+
+r9는 메모리/동시성/정확 ID 계약을 바꾸지 않고 반복 compaction을 줄이려던 단일 설정 시험이다. L0 파일이 더 쌓이면 cold 조회와 쓰기 대기가 나빠질 수 있어 검증 없는 기본값 변경으로 남기지 않았다. [공식 Leveled Compaction 설명](https://github.com/facebook/rocksdb/wiki/Leveled-Compaction)
+
+### 세 노드·sync2·BTC/SOL/SUI
+
+기존 동일 `DirectStreamingRun`과 관측기를 사용했다. 노드마다2CPU quota/2GiB·Xmx1536MiB, 클라이언트2CPU quota/Xmx1GiB, Java25.0.4.1/G1, 같은 Mac의 Docker VM이다. 세 노드의 Archive/Catalog/Consensus는 모두`[2,2,2]`다. 예열12k SELL+12k BUY 이후 동일 클러스터에서 측정60k SELL+BUY를 처리한다. 300초는 상한일 뿐, 실제로는5개 배치 뒤 건수 제한으로 끝났다.
+
+| 관측 | r6 buffer8 | r7 buffer16 최종 선택 | r8 제외 후보 |
+|---|---:|---:|---:|
+| 실제 전체 측정 구간 | 16.984초 | 10.069초 | 11.179초 |
+| 전체 SELL+BUY 완료율 | 3,533 orders/s | 5,959 orders/s | 5,367 orders/s |
+| BUY 접수 응답 cohort 완료율 | 1,992/s | 3,497/s | 3,177/s |
+| BUY 세 사본 완료 수신 cohort 완료율 | 1,894/s | 3,347/s | 2,956/s |
+| BUY 접수 p95 / p99 | 1,298 /1,996ms | 593 /692ms | 611 /894ms |
+| BUY 세 사본 완료 수신 p95 / p99 | 2,668 /2,810ms | 1,084 /1,110ms | 1,224 /1,332ms |
+| 리더 | node2 | node1 | node1 |
+
+조건당1회이며 r6→r7 리더도 달라 **약69% 처리량 증가를 코드만의 인과 효과로 확정하지 않는다.** r7→r8은 같은 리더에서도 더 나빴으므로 유리한 엔진 수치만 보고 채택하지 않았다. BUY cohort 분모에는 첫 BUY부터 마지막 해당 수신까지 중간 SELL 단계도 포함된다. 같은 전체 구간의 체결율은 전체 orders/s의 절반이며 두 단위를 섞지 않는다.
+
+세 실행 각각 준비 포함84,000개 명령·252,000개 노드별 완료 표식을 원자료와 전수 대조했다. ID집합·순번·로그위치·노드 role·trade/settlement 수 일치, 누락·중복·오류0이다. 이 marker 대조가 전체 재무 불변식 검사를 대신하지는 않는다. 별도 회귀와 엔진 단독 검증이 이를 확인한다.
+
+**기존 설명 정정:** orchestrator의 CPU affinity 문구와 달리 저장된 client inspection의 `CpusetCpus`는 빈 문자열이다. 2CPU quota는 확인했지만 전용 코어 고정 배치는 입증하지 못했다. 앞 절의 affinity 표현도 동일하게 정정한다. sampler 비활성 문구도 오래된 설명이며 실제 메모리·디스크 보호와250ms Aeron counters 수집이 켜져 있다. 원본을 사후 수정하지 않았다.
+
+관측기는 서비스 스레드에서 Accepted 위치와 완료 bit를 기록하는 동기 RocksDB put을 각각1회 한다. WAL/force는 없으며 동기 호출 자체를 디스크 force로 해석하지 않는다. callback 전후 ack drain 일부는 productCallbackNs와 observerNs 양쪽 밖이므로 둘을 합쳐 전체 서비스 점유라고 하지 않는다. 발생기의 pending 제한 wait0도 발생기 병목 부재나 엔진 최대치의 증거가 아니다. 측정 도구를 추가하거나 이 관측기를 변경하지 않았다.
+
+### 회귀·독립 검토와 남은 범위
+
+- 최종 확인은 도메인228개·아키텍처385개·앱 관련108개, 합계721개이며 실패·오류·skip0이다. 변경 모듈 ktlint도 통과했다. 거래 도메인은 소스가 같아 Gradle이 기존 통과 결과를 재사용했고 아키텍처·앱은 재실행했다. 앱 범위는 실제 Archive 재시작 복구·snapshot·cold exact 최초 결과·쓰기 실패 차단을 포함한다.
+- 최종 빌드의 `classes/`와 `lib/` 모든 파일은 세 노드에서 측정한 r7 runtime과 실제 SHA256가 동일하다. 제외한 r8/r9 제품 코드가 남지 않았음을 확인했다. `final-production-runtime-equivalence.json`과 최종 회귀 XML을 함께 보관한다.
+- 도메인 테스트는 비싼 maker순번1, 싼 maker순번2, taker순번3을 준비하고 정산 저장 순서의 승인 순번이`[2,3,1]`인지 확인한다. 외부 store proof·alias 변경은 공개 전에 거절한다. 실제 RocksDB cache0 테스트는20쌍 정산 후 잔고와 cold 최초 결과 frame을 대조한다.
+- 조회1회, 최초 결과 우선, 문맥 거절의 기록 미생성, 재진입·예외 뒤 상태, cold 읽기 실패 차단을 검사한다. pending byte조회/flush 후 복원·잘못된 sequence·과대 frame·CRC·NUL·surrogate·반환 배열 독립성도 확인한다.
+- 작성 대화를 상속하지 않은 독립 리뷰어가 r6 전체·r8·r9 고정 source manifest를 확인했다. 해결할 확정 결함은 발견하지 못했다. 리뷰 자체는 테스트·성능·RSS 검증을 대신하지 않는다.
+- 아직 문자열 인코딩·임의 cold ID 조회·bounded queue가 찼을 때 대기가 callback 안에 있다. 과거 기록을 삭제하거나 저장 승인을 느슨하게 만들어 수치를 높이지 않는다.
+- 현재 이력 writer의 누적 compaction/WBM stop과 관측기의 부가 쓰기 비용이 남아 있다. 단순히 GC 또는 디스크 force만의 문제라고 확정하지 않는다. 다음 단위는 권위 있는 확정 위치와 정확 ID조회·재생 계약을 유지하며 callback의 이력 작업을 분리하는 설계다. 이번 코드가 그 전환까지 끝냈다는 뜻은 아니다.
+- 실제 최종 목표인50k/100k 지속 처리량, 원격 장애영역 내구성, 전체 저장소 소실 시 성공기록 유실0은 계속 미검증이다. 유한 cohort 수치로 Goal을 완료 표시하지 않는다.
+
+근거는 `bounded-history-20261029/history-worker-20261030`의 `selected-result.json`, `independent-performance-evidence-audit-r6-r8.json`, 실행 명령·runtime manifest·회귀 XML·압축 원자료다. 이 실행에서 만든 큰 원본48개1,063,338,944B는 SHA256 복원 확인 후123,521,906B로 압축했다. 앞선16개351MB→41MB 압축과 별도다. 사용자 파일과 다른 작업 자원은 삭제하지 않았다.

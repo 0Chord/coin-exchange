@@ -20,6 +20,65 @@ class TradingHistoryCodecTest {
     private val codec = TradingHistoryCodec(1_024 * 1_024)
 
     @Test
+    fun `empty UTF16 fields keep their length prefixes and repeated encodes own independent frames`() {
+        val fixture = TradingHistoryFixture().apply { funding("seller", "BTC", 100) }
+        val original =
+            fixture.batches
+                .single()
+                .ledgerTransactions
+                .single()
+        val empty = LedgerTransaction("", "", original.transactionType, original.occurredAt, original.postings)
+        val expected = originalTransactionFrame(empty)
+        val first = codec.encodeTransaction(empty)
+        assertContentEquals(expected, first)
+        val restored = codec.decodeTransaction(first)
+        assertEquals("", restored.ledgerTransactionId)
+        assertEquals("", restored.sourceEventId)
+
+        // A later frame grows well beyond the initial buffer and must not mutate a prior result.
+        val large =
+            LedgerTransaction(
+                "가".repeat(800) + "\uD800\u0000\uDFFF",
+                "",
+                original.transactionType,
+                original.occurredAt,
+                original.postings,
+            )
+        val largeExpected = originalTransactionFrame(large)
+        val exact = TradingHistoryCodec(largeExpected.size)
+        assertContentEquals(largeExpected, exact.encodeTransaction(large))
+        assertFailsWith<IllegalStateException> { TradingHistoryCodec(largeExpected.size - 1).encodeTransaction(large) }
+        assertContentEquals(expected, first)
+        first[0] = 0
+        val next = codec.encodeTransaction(empty)
+        assertTrue(first !== next)
+        assertContentEquals(expected, next)
+    }
+
+    @Test
+    fun `eager full frames reject copied nonpositive admission sequences before encoding`() {
+        val fixture = TradingHistoryFixture().apply { completedTrade() }
+        val invalid =
+            fixture.batches
+                .mapNotNull { it.admission }
+                .first()
+                .copy(sequence = 0)
+        assertFailsWith<IllegalStateException> { codec.encodeAdmission(invalid) }
+        val original = fixture.batches.mapNotNull { it.request }.first()
+        val request =
+            TradingHistoryValues.requestRecord(
+                original.requestId,
+                original.order,
+                original.market,
+                original.feePolicySnapshot,
+                original.ledgerTransactionId,
+                original.occurredAt,
+                OrderAdmissionState.Result.Accepted(invalid),
+            )
+        assertFailsWith<IllegalStateException> { codec.encodeRequest(request) }
+    }
+
+    @Test
     fun `referenced frames restore the exact original request and completion while legacy frames stay readable`() {
         val fixture = TradingHistoryFixture().apply { completedTrade() }
         val admissions = fixture.batches.mapNotNull { it.admission }.associateBy { it.sequence }

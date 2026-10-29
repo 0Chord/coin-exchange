@@ -402,34 +402,47 @@ internal class DevelopmentFundingAdapter(
     private fun admit(command: AdmissionCommandPayload): AdmissionResultPayload {
         // 기존 결과가 있으면 새 실행 문맥보다 코어의 최초 판단이 우선한다.
         var knownRequest = false
-        val context =
-            measure(TradingNodePhase.ADMISSION_CONTEXT) {
-                knownRequest = state.hasRequest(command.order.userId, command.requestId)
-                val selected = if (knownRequest) null else markets[command.order.marketId]
-                if (!knownRequest) {
-                    if (selected == null || command.market != selected.market || command.feePolicySnapshot != selected.feePolicySnapshot) {
-                        return AdmissionResultPayload.Rejected(
-                            command.order.userId.value,
-                            command.requestId,
-                            command.order.marketId.value,
-                            command.order.orderId.value,
-                            AdmissionResultPayload.Reason.EXECUTION_CONTEXT_MISMATCH,
-                        )
-                    }
-                }
-                selected
-            }
+        val capture = callbackCapture
+        var phase = TradingNodePhase.ADMISSION_CONTEXT
+        capture?.begin(phase)
         val result =
-            measure(TradingNodePhase.ADMISSION_APPLY) {
-                state.admit(
+            try {
+                val selected = markets[command.order.marketId]
+                state.admitWithContextCheck(
                     command.requestId,
                     command.order,
-                    context?.market ?: command.market,
-                    context?.feePolicySnapshot ?: command.feePolicySnapshot,
+                    selected?.market ?: command.market,
+                    selected?.feePolicySnapshot ?: command.feePolicySnapshot,
                     command.ledgerTransactionId,
                     command.occurredAt,
-                )
+                ) { known ->
+                    knownRequest = known
+                    val acceptedContext =
+                        known ||
+                            (
+                                selected != null && command.market == selected.market &&
+                                    command.feePolicySnapshot == selected.feePolicySnapshot
+                            )
+                    if (acceptedContext) {
+                        // 한 번 조회한 최초 원본은 코어 안에 둔다. 같은 호출에서 적용 단계로 넘어간다.
+                        capture?.end(phase)
+                        phase = TradingNodePhase.ADMISSION_APPLY
+                        capture?.begin(phase)
+                    }
+                    acceptedContext
+                }
+            } finally {
+                capture?.end(phase)
             }
+        if (result == null) {
+            return AdmissionResultPayload.Rejected(
+                command.order.userId.value,
+                command.requestId,
+                command.order.marketId.value,
+                command.order.orderId.value,
+                AdmissionResultPayload.Reason.EXECUTION_CONTEXT_MISMATCH,
+            )
+        }
         callbackCapture?.sequence = (result as? OrderAdmissionState.Result.Accepted)?.record?.sequence
         if (!knownRequest && result is OrderAdmissionState.Result.Accepted) submitExecution(result.record.sequence)
         return AdmissionResultPayload.from(command, result)

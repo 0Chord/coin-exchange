@@ -26,10 +26,261 @@ import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertIs
 import kotlin.test.assertNotSame
+import kotlin.test.assertNull
 import kotlin.test.assertSame
 import kotlin.test.assertTrue
 
 class TradingHistoryRetentionTest {
+    @Test
+    fun `live owner prepares each reservation with its original admission sequence in execution order`() {
+        val store = ControlledHistoryStore(autoAcknowledge = true)
+        val state = state(store)
+        fund(state, seller, btc, 2)
+        fund(state, buyer, usdt, 200)
+        assertIs<OrderAdmissionState.Result.Rejected>(
+            state.admit("unfunded", order("U", UserId("unfunded"), Side.BUY, 100, 1), market, zeroPolicy, "unused", time),
+        )
+        val expensive = admit(state, order("expensive", seller, Side.SELL, 95, 1))
+        state.executePending(expensive.record.sequence, time)
+        val cheap = admit(state, order("cheap", seller, Side.SELL, 90, 1))
+        state.executePending(cheap.record.sequence, time)
+        assertEquals(0, state.historyRetention().stagedBatches)
+        assertEquals(2, state.historyRetention().activeOrders)
+        val taker = admit(state, order("taker", buyer, Side.BUY, 100, 2))
+        val completion = state.executePending(taker.record.sequence, time)
+
+        assertEquals(listOf(1L, 2L, 3L), listOf(expensive.record.sequence, cheap.record.sequence, taker.record.sequence))
+        assertEquals(
+            listOf(emptyList(), emptyList(), emptyList(), listOf(1L), emptyList(), listOf(2L), emptyList(), listOf(3L), listOf(2L, 3L, 1L)),
+            store.preparedBatches.map { it.reservationSequences },
+        )
+        assertEquals((1L..9L).toList(), store.preparedBatches.map { it.batch.ordinal })
+        for (prepared in store.preparedBatches) prepared.requireOwner(store)
+        val settled = store.preparedBatches.last()
+        assertSame(completion, settled.batch.completion)
+        assertEquals(listOf(OrderId("cheap"), OrderId("taker"), OrderId("expensive")), settled.batch.reservations.map { it.orderId })
+        assertEquals(listOf(OrderId("cheap"), OrderId("expensive")), completion.settlement.settlements.map { it.execution.makerOrderId })
+        assertEquals(0, state.historyRetention().activeOrders)
+        assertEquals(
+            Amount(15),
+            state
+                .snapshot()
+                .balances
+                .single { it.userId == buyer && it.assetId == usdt }
+                .available,
+        )
+        assertFalse(state.isBlocked)
+    }
+
+    @Test
+    fun `prepared transition from another store is rejected before any history is appended`() {
+        val owner = ControlledHistoryStore()
+        fund(state(owner), buyer, usdt, 100)
+        val prepared = owner.preparedBatches.single()
+        val other = ControlledHistoryStore()
+
+        assertFailsWith<IllegalArgumentException> { other.appendPrepared(prepared) }
+
+        prepared.requireOwner(owner)
+        assertEquals(1L, owner.lastOrdinal)
+        assertEquals(0L, other.lastOrdinal)
+        assertEquals(0L, other.durableOrdinal)
+        assertTrue(other.preparedBatches.isEmpty())
+        assertTrue(other.preparations().none())
+        assertTrue(other.transactions().none())
+    }
+
+    @Test
+    fun `prepared transition copies list inputs and prevents mutation through exposed aliases`() {
+        val store = ControlledHistoryStore()
+        val state = state(store)
+        fund(state, seller, btc, 1)
+        val admission = admit(state, order("S", seller, Side.SELL, 90, 1)).record
+        val reservation = admission.candidate.reservation
+        val transaction = admission.candidate.reserveTransaction
+        val reservations = mutableListOf(reservation)
+        val transactions = mutableListOf(transaction)
+        val sequences = mutableListOf(admission.sequence)
+        val prepared =
+            PreparedTradingHistoryBatch(
+                store,
+                TradingHistoryBatch(1L, admission = admission, reservations = reservations, ledgerTransactions = transactions),
+                sequences,
+            )
+
+        reservations.clear()
+        transactions.clear()
+        sequences[0] = 99L
+
+        assertEquals(listOf(reservation), prepared.batch.reservations)
+        assertEquals(listOf(transaction), prepared.batch.ledgerTransactions)
+        assertEquals(listOf(admission.sequence), prepared.reservationSequences)
+        assertFailsWith<UnsupportedOperationException> { (prepared.batch.reservations as MutableList<OrderReservation>).clear() }
+        assertFailsWith<UnsupportedOperationException> { (prepared.batch.ledgerTransactions as MutableList<LedgerTransaction>).clear() }
+        assertFailsWith<UnsupportedOperationException> { (prepared.reservationSequences as MutableList<Long>)[0] = 99L }
+        assertEquals(listOf(reservation), prepared.batch.reservations)
+        assertEquals(listOf(transaction), prepared.batch.ledgerTransactions)
+        assertEquals(listOf(admission.sequence), prepared.reservationSequences)
+    }
+
+    @Test
+    fun `context admission reads each fresh or cold request once and preserves its first result`() {
+        for (funded in listOf(false, true)) {
+            val store = ControlledHistoryStore(autoAcknowledge = true)
+            val state = state(store)
+            if (funded) fund(state, buyer, usdt, 1_000)
+            val input = order("B", buyer, Side.BUY, 100, 1)
+            val knownRequests = mutableListOf<Boolean>()
+            val first =
+                state.admitWithContextCheck("R", input, market, zeroPolicy, "reserve", time) { known ->
+                    knownRequests += known
+                    true
+                }
+            assertEquals(1, store.requestReadCount)
+            assertEquals(0, state.historyRetention().retainedRequests)
+            val ordinal = store.lastOrdinal
+            val replay =
+                state.admitWithContextCheck("R", input, market, zeroPolicy.copy(scheduleVersion = 2), "", time.plusSeconds(1)) { known ->
+                    knownRequests += known
+                    known
+                }
+            assertEquals(2, store.requestReadCount)
+            assertEquals(listOf(false, true), knownRequests)
+            assertEquals(ordinal, store.lastOrdinal)
+            if (funded) {
+                val original = assertIs<OrderAdmissionState.Result.Accepted>(first).record
+                val restored = assertIs<OrderAdmissionState.Result.Accepted>(replay).record
+                assertNotSame(original, restored)
+                assertEquals(original.sequence, restored.sequence)
+                assertEquals(original.candidate.order, restored.candidate.order)
+                assertEquals(zeroPolicy, restored.candidate.feePolicySnapshot)
+                assertEquals(original.candidate.reserveTransaction, restored.candidate.reserveTransaction)
+            } else {
+                assertEquals(OrderAdmissionResult.Reason.INSUFFICIENT_BALANCE, assertIs<OrderAdmissionState.Result.Rejected>(first).reason)
+                assertEquals(first, replay)
+            }
+            assertEquals(
+                OrderAdmissionResult.Reason.REQUEST_CONTENT_CONFLICT,
+                assertIs<OrderAdmissionState.Result.Rejected>(
+                    state.admitWithContextCheck("R", input.copy(quantity = Quantity(2)), market, zeroPolicy, "unused", time) { it },
+                ).reason,
+            )
+            assertEquals(3, store.requestReadCount)
+            assertEquals(ordinal, store.lastOrdinal)
+            assertFalse(state.isBlocked)
+        }
+    }
+
+    @Test
+    fun `context refusal records nothing and identifier checks retain their precedence`() {
+        val store = ControlledHistoryStore(autoAcknowledge = true)
+        val state = state(store)
+        fund(state, buyer, usdt, 1_000)
+        val input = order("B", buyer, Side.BUY, 100, 1)
+        val invalidOrder = input.copy(orderId = OrderId("x".repeat(65)))
+        val ordinal = store.lastOrdinal
+        assertNull(state.admitWithContextCheck("", invalidOrder, market, zeroPolicy, "reserve", time) { false })
+        assertEquals(
+            OrderAdmissionResult.Reason.INVALID_REQUEST_IDENTIFIER,
+            assertIs<OrderAdmissionState.Result.Rejected>(
+                state.admitWithContextCheck("", invalidOrder, market, zeroPolicy, "reserve", time) { true },
+            ).reason,
+        )
+        assertEquals(
+            OrderAdmissionResult.Reason.INVALID_ORDER_IDENTIFIER,
+            assertIs<OrderAdmissionState.Result.Rejected>(
+                state.admitWithContextCheck("R", invalidOrder, market, zeroPolicy, "reserve", time) { true },
+            ).reason,
+        )
+        assertEquals(ordinal, store.lastOrdinal)
+        assertEquals(0L, state.snapshot().lastAdmissionSequence)
+        assertTrue(state.snapshot().requests.isEmpty())
+        val first =
+            assertIs<OrderAdmissionState.Result.Accepted>(
+                state.admitWithContextCheck("R", input, market, zeroPolicy, "reserve", time) { true },
+            )
+        assertEquals(1L, first.record.sequence)
+        assertEquals(
+            OrderAdmissionResult.Reason.INVALID_ORDER_IDENTIFIER,
+            assertIs<OrderAdmissionState.Result.Rejected>(
+                state.admitWithContextCheck("R", invalidOrder, market, zeroPolicy, "unused", time) { it },
+            ).reason,
+        )
+        assertEquals(
+            OrderAdmissionResult.Reason.DUPLICATE_ORDER,
+            assertIs<OrderAdmissionState.Result.Rejected>(
+                state.admitWithContextCheck("other-request", input, market, zeroPolicy, "unused", time) { !it },
+            ).reason,
+        )
+        assertEquals(6, store.requestReadCount)
+        assertEquals(2, state.snapshot().requests.size)
+        assertEquals(1L, state.snapshot().lastAdmissionSequence)
+        store.readFailure = true
+        assertEquals(
+            OrderAdmissionResult.Reason.INVALID_REQUEST_IDENTIFIER,
+            assertIs<OrderAdmissionState.Result.Rejected>(state.admit("", invalidOrder, market, zeroPolicy, "unused", time)).reason,
+        )
+        assertEquals(6, store.requestReadCount, "the original domain entry still validates identifiers before history access")
+        assertFalse(state.isBlocked)
+    }
+
+    @Test
+    fun `context callback cannot reenter or retain an unchecked absence after throwing`() {
+        val store = ControlledHistoryStore(autoAcknowledge = true)
+        val state = state(store)
+        fund(state, buyer, usdt, 1_000)
+        val input = order("B", buyer, Side.BUY, 100, 1)
+        val before = state.snapshot()
+        assertFailsWith<IllegalStateException> {
+            state.admitWithContextCheck("R", input, market, zeroPolicy, "reserve", time) {
+                state.admit("R", input, market, zeroPolicy, "nested-reserve", time)
+                true
+            }
+        }
+        assertEquals(1, store.requestReadCount, "reentry must fail before another lookup or mutation")
+        assertEquals(before, state.snapshot())
+        assertFalse(state.isBlocked)
+        assertFailsWith<IllegalArgumentException> {
+            state.admitWithContextCheck("R", input, market, zeroPolicy, "reserve", time) {
+                throw IllegalArgumentException("context check failed")
+            }
+        }
+        assertEquals(before, state.snapshot())
+        val admitted =
+            assertIs<OrderAdmissionState.Result.Accepted>(
+                state.admitWithContextCheck("R", input, market, zeroPolicy, "reserve", time) { !it },
+            )
+        assertEquals(3, store.requestReadCount, "each new invocation must resolve the request again")
+        assertEquals(1L, admitted.record.sequence)
+        assertEquals(1, state.snapshot().requests.size)
+        assertFalse(state.isBlocked)
+    }
+
+    @Test
+    fun `context admission blocks on a cold lookup failure before calling external validation`() {
+        val store = ControlledHistoryStore().apply { readFailure = true }
+        val state = state(store)
+        val input = order("B", buyer, Side.BUY, 100, 1)
+        var contextChecks = 0
+        val checkContext: (Boolean) -> Boolean = {
+            contextChecks++
+            true
+        }
+        assertFailsWith<HistoryFailure> {
+            state.admitWithContextCheck("R", input, market, zeroPolicy, "reserve", time, checkContext)
+        }
+        assertTrue(state.isBlocked)
+        assertEquals(0, contextChecks)
+        assertEquals(1, store.requestReadCount)
+        store.readFailure = false
+        assertFailsWith<IllegalStateException> {
+            state.admitWithContextCheck("R", input, market, zeroPolicy, "reserve", time, checkContext)
+        }
+        assertEquals(0, contextChecks)
+        assertEquals(1, store.requestReadCount)
+        assertEquals(0L, store.lastOrdinal)
+    }
+
     @Test
     fun `full staging waits only for its oldest batch while explicit flush still acknowledges everything`() {
         val store = ControlledHistoryStore(acknowledgeRequestedOnly = true)
@@ -70,6 +321,11 @@ class TradingHistoryRetentionTest {
             val backend = ControlledHistoryStore()
             val store =
                 object : TradingHistoryStore by backend {
+                    override fun appendPrepared(prepared: PreparedTradingHistoryBatch) {
+                        prepared.requireOwner(this)
+                        backend.append(prepared.batch)
+                    }
+
                     // 1 claims success without actually advancing the durable prefix.
                     override fun awaitDurable(ordinal: Long): Long = reported
                 }
@@ -305,10 +561,13 @@ private class ControlledHistoryStore(
         private set
     var flushCount = 0
         private set
+    var requestReadCount = 0
+        private set
     var readFailure = false
     var appendFailure = false
     var flushFailure = false
     val awaitedOrdinals = mutableListOf<Long>()
+    val preparedBatches = mutableListOf<PreparedTradingHistoryBatch>()
     private val requestValues = linkedMapOf<Pair<UserId, String>, OrderAdmissionState.RequestRecord>()
     private val admissionValues = linkedMapOf<Long, OrderAdmissionState.Record>()
     private val orderValues = linkedMapOf<Pair<MarketId, OrderId>, OrderAdmissionState.Record>()
@@ -317,6 +576,11 @@ private class ControlledHistoryStore(
     private val reservationValues = linkedMapOf<Pair<MarketId, OrderId>, OrderReservation>()
     private val transactionValues = linkedMapOf<String, LedgerTransaction>()
     private val sourceValues = mutableSetOf<String>()
+
+    override fun appendPrepared(prepared: PreparedTradingHistoryBatch) {
+        super<TradingHistoryStore>.appendPrepared(prepared)
+        preparedBatches += prepared
+    }
 
     override fun append(batch: TradingHistoryBatch) {
         if (appendFailure) throw HistoryFailure()
@@ -364,6 +628,7 @@ private class ControlledHistoryStore(
         userId: UserId,
         requestId: String,
     ): OrderAdmissionState.RequestRecord? {
+        requestReadCount++
         checkReadable()
         return requestValues[userId to requestId]?.let { original ->
             val result = original.result

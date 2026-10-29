@@ -1,5 +1,8 @@
 package com.exchange.core.api.trading.infrastructure.aeron
 
+import com.exchange.core.api.trading.infrastructure.history.RocksDbTradingHistoryStore
+import com.exchange.core.api.trading.infrastructure.history.TradingHistoryCodec
+import com.exchange.core.api.trading.infrastructure.history.TradingHistoryStorageLimits
 import com.exchange.core.common.Amount
 import com.exchange.core.common.AssetId
 import com.exchange.core.common.MarketId
@@ -34,9 +37,11 @@ import com.exchange.core.trading.OrderAdmissionResult
 import com.exchange.core.trading.OrderAdmissionState
 import com.exchange.core.trading.OrderSettlementCalculator
 import com.exchange.core.trading.SettlementLedgerTransactions
+import com.exchange.core.trading.TradingHistoryStore
 import com.exchange.core.trading.TradingState
 import jdk.jfr.Configuration
 import jdk.jfr.Recording
+import org.rocksdb.RocksDB
 import tools.jackson.module.kotlin.jacksonObjectMapper
 import java.lang.management.ManagementFactory
 import java.nio.file.Files
@@ -55,8 +60,10 @@ internal data class TradingEngineCapacityOptions(
     val jfrPath: String? = null,
     val pacedRate: Int? = null,
     val preGc: Boolean = false,
+    val historyMode: String = "off",
 ) {
     init {
+        require(historyMode in setOf("off", "rebuildable")) { "history mode must be off or rebuildable" }
         require(warmup in 0..100_000 && orders in 1..2_000_000)
         require(durationSeconds == null || durationSeconds in 1..3600)
         require(maxHeapFraction in 0.10..0.75)
@@ -225,7 +232,7 @@ private const val ENGINE_CAPACITY_BUY_RESERVE = 10_020L
 private const val ENGINE_CAPACITY_HEAP_CHECK_INTERVAL = 128
 private val engineCapacityMemoryBean = ManagementFactory.getMemoryMXBean()
 
-private fun engineCapacityState(): TradingState {
+private fun engineCapacityState(historyStore: TradingHistoryStore? = null): TradingState {
     val feeReserve = TradingFeeReserveCalculator()
     val reservation = OrderReservationCalculator(BuyOrderFundingQuoteCalculator(feeReserve))
     return TradingState(
@@ -236,6 +243,7 @@ private fun engineCapacityState(): TradingState {
             feeReserve,
             SettlementLedgerTransactions(),
         ),
+        historyStore = historyStore,
     )
 }
 
@@ -255,7 +263,7 @@ private fun engineCapacityOrder(
         Quantity(ENGINE_CAPACITY_QUANTITY),
     )
 
-/** One caller owns the real state. No transport, persistence, history reset or snapshots in the timed loop. */
+/** One caller owns the real state. Optional bounded history writes remain timed; transport and snapshots are excluded. */
 internal fun runTradingEngineCapacity(
     options: TradingEngineCapacityOptions,
     nanoTime: () -> Long = System::nanoTime,
@@ -266,7 +274,116 @@ internal fun runTradingEngineCapacity(
     // Only paced runs wait. Tests advance the same fake nanoTime clock instead of sleeping.
     parkNanos: (Long) -> Unit = { LockSupport.parkNanos(it) },
 ): TradingEngineCapacityResult {
-    val state = engineCapacityState()
+    var directory: Path? = null
+    var history: RocksDbTradingHistoryStore? = null
+    var result: TradingEngineCapacityResult? = null
+    var failure: Throwable? = null
+    var flushed = false
+    var closed = false
+    var removed = false
+    var nativeStatistics: Map<String, String>? = null
+    val cleanupFailures = mutableListOf<Throwable>()
+    try {
+        if (options.historyMode == "rebuildable") {
+            val owned = Files.createTempDirectory("exchange-engine-history-")
+            directory = owned
+            // Disposable comparison only: there is no authoritative Archive in this single-JVM harness.
+            history = RocksDbTradingHistoryStore.createRebuildableIndex(owned.resolve("store"))
+        }
+        result =
+            measureTradingEngineCapacity(
+                options,
+                engineCapacityState(history),
+                nanoTime,
+                heapUsedBytes,
+                maxHeapBytes,
+                beforeMeasuredExecution,
+                parkNanos,
+            )
+    } catch (error: Throwable) {
+        failure = error
+    } finally {
+        history?.let { store ->
+            try {
+                store.flush()
+                flushed = true
+                // Cumulative setup + warmup + measurement + final flush, outside every timed boundary.
+                val database =
+                    store.javaClass
+                        .getDeclaredField("database")
+                        .apply { isAccessible = true }
+                        .get(store) as RocksDB
+                nativeStatistics =
+                    mapOf(
+                        "scope" to "whole disposable store lifetime through final flush; not measured-window-only",
+                        "columnFamily" to database.getProperty("rocksdb.cfstats"),
+                        "database" to database.getProperty("rocksdb.dbstats"),
+                    )
+            } catch (error: Throwable) {
+                cleanupFailures += error
+            }
+            try {
+                store.close()
+                closed = true
+            } catch (error: Throwable) {
+                cleanupFailures += error
+            }
+        }
+        directory?.let { owned ->
+            if (closed) {
+                try {
+                    Files.walk(owned).use { paths -> paths.sorted(Comparator.reverseOrder()).forEach(Files::delete) }
+                    removed = true
+                } catch (error: Throwable) {
+                    cleanupFailures += error
+                }
+            } else {
+                cleanupFailures += IllegalStateException("history store closure was not confirmed; retained temporary directory: $owned")
+            }
+        }
+    }
+    failure?.let { original ->
+        cleanupFailures.filter { it !== original }.forEach(original::addSuppressed)
+        throw original
+    }
+    val measured = checkNotNull(result)
+    return measured.copy(
+        runtime =
+            measured.runtime +
+                (
+                    "history" to
+                        mapOf(
+                            "mode" to options.historyMode,
+                            "nativeStatistics" to nativeStatistics,
+                            "temporaryDirectory" to directory?.toString(),
+                            "freshStorePerRun" to (directory != null),
+                            "materializationFlushed" to flushed,
+                            "storeClosed" to closed,
+                            "temporaryDirectoryRemoved" to removed,
+                            "durabilityClaim" to false,
+                            "scope" to
+                                if (history == null) {
+                                    "retained in-memory history; no persistence"
+                                } else {
+                                    "bounded disposable RocksDB index without WAL or Archive; one-run materialization comparison only; no recovery or durability guarantee"
+                                },
+                            "measurementBoundary" to
+                                "history append and capacity waits remain inside business attempts; final materialization, verification, close and directory removal are outside elapsed/CPU/allocation counters",
+                        )
+                ),
+        errors = measured.errors + cleanupFailures.map { "history cleanup: ${it.stackTraceToString()}" },
+    )
+}
+
+private fun measureTradingEngineCapacity(
+    options: TradingEngineCapacityOptions,
+    state: TradingState,
+    nanoTime: () -> Long,
+    heapUsedBytes: () -> Long,
+    maxHeapBytes: Long,
+    beforeMeasuredExecution: ((Int) -> Unit)?,
+    parkNanos: (Long) -> Unit,
+): TradingEngineCapacityResult {
     val total = options.warmup.toLong() + options.orders
     state.prepareDevelopmentBalance(
         OpeningBalance(
@@ -540,8 +657,11 @@ internal fun runTradingEngineCapacity(
     var finalSnapshotCaptureAttempted = false
     val stateCheck =
         try {
+            if (options.historyMode == "rebuildable") state.flushHistory()
             var duplicateVerified: Boolean? = null
             replayInput?.let { input ->
+                val comparison =
+                    if (options.historyMode == "rebuildable") TradingHistoryCodec(TradingHistoryStorageLimits().maximumValueBytes) else null
                 val result =
                     state.admit(
                         input.orderId.value,
@@ -551,11 +671,31 @@ internal fun runTradingEngineCapacity(
                         "unused-replay",
                         engineCapacityTime.plusSeconds(1),
                     )
-                check(result === replayAdmission) { "duplicate admission did not reuse the first result" }
                 check(
-                    state.executePending(requireNotNull(replayAdmission).record.sequence, engineCapacityTime.plusSeconds(1)) ===
-                        replayCompletion,
-                ) { "duplicate execution did not reuse the first completion for ${input.orderId.value}" }
+                    if (comparison == null) {
+                        result === replayAdmission
+                    } else {
+                        result is OrderAdmissionState.Result.Accepted &&
+                            comparison
+                                .encodeAdmission(
+                                    result.record,
+                                ).contentEquals(comparison.encodeAdmission(checkNotNull(replayAdmission).record))
+                    },
+                ) {
+                    "duplicate admission did not preserve the first result"
+                }
+                val repeatedCompletion =
+                    state.executePending(requireNotNull(replayAdmission).record.sequence, engineCapacityTime.plusSeconds(1))
+                check(
+                    if (comparison == null) {
+                        repeatedCompletion === replayCompletion
+                    } else {
+                        comparison
+                            .encodeCompletion(
+                                repeatedCompletion,
+                            ).contentEquals(comparison.encodeCompletion(checkNotNull(replayCompletion)))
+                    },
+                ) { "duplicate execution did not preserve the first completion for ${input.orderId.value}" }
                 duplicateVerified = true
             }
             val unfunded = engineCapacityOrder("REJECTED-UNFUNDED", UserId("UNFUNDED"), Side.BUY)
@@ -639,12 +779,12 @@ internal fun runTradingEngineCapacity(
                 "currentThreadAllocatedBytesPerAttempt" to allocated?.takeIf { attempts > 0 }?.toDouble()?.div(attempts),
                 "allocationUnavailableReason" to allocation.unavailableReason,
                 "allocationBoundary" to
-                    "single caller thread; measured loop including input creation, timers, histogram and heap checks; excludes final verification",
+                    "single caller thread; measured loop including input creation, timers, histogram and heap checks; excludes history writer and other threads, native allocation and final verification",
                 "currentThreadCpuTimeNs" to cpuNs,
                 "currentThreadCpuTimeNsPerAttempt" to cpuNs?.takeIf { attempts > 0 }?.toDouble()?.div(attempts),
                 "cpuTimeUnavailableReason" to cpuTime.unavailableReason,
                 "cpuTimeBoundary" to
-                    "current-thread CPU counter around the whole loop; includes boundary counter overhead; excludes JFR lifecycle and final verification; separate from elapsed wall time",
+                    "caller-thread CPU only, not process CPU; includes boundary counter overhead; excludes history writer and other threads, JFR lifecycle and final verification; separate from elapsed wall time",
                 "testOnlyFailureInjectionEnabled" to (beforeMeasuredExecution != null),
                 "profiled" to profileStarted,
                 "jfr" to
@@ -969,7 +1109,7 @@ internal fun engineCapacityOptionsFromArgs(args: Array<String>): List<TradingEng
     val flags = args.filter { '=' !in it && it !in setOf("--post-gc", "--pre-gc") }.toSet()
     require(flags.size == 1 && flags.single() in setOf("--smoke", "--probe", "--sustain", "--paced"))
     val values = args.filter { '=' in it }.associate { it.substringBefore('=') to it.substringAfter('=') }
-    require(values.keys.all { it in setOf("--orders", "--warmup", "--seconds", "--max-heap-fraction", "--jfr", "--rate") })
+    require(values.keys.all { it in setOf("--orders", "--warmup", "--seconds", "--max-heap-fraction", "--jfr", "--rate", "--history") })
     val mode = flags.single()
     require(mode in setOf("--sustain", "--paced") || "--seconds" !in values)
     require(mode == "--paced" || "--rate" !in values)
@@ -1000,6 +1140,7 @@ internal fun engineCapacityOptionsFromArgs(args: Array<String>): List<TradingEng
             values["--jfr"],
             pacedRate,
             preGc = "--pre-gc" in args,
+            historyMode = values["--history"] ?: "off",
         )
     }
 }
@@ -1079,7 +1220,7 @@ fun main(args: Array<String>) {
                 "each cohort uses a new independent TradingState; cohorts share the JVM and prior cohort garbage may affect GC; use one --orders value per fresh JVM for comparisons",
             "runs" to results,
             "limitation" to
-                "fixed input and retained in-memory history; ORDER_LIMIT or HEAP_LIMIT before requested duration does not establish 60-second sustainable capacity; proactive heap guard cannot guarantee immunity from JVM OOM",
+                "fixed input; history=off retains in-memory history, history=rebuildable uses a disposable bounded index without Archive and makes no durability claim; ORDER_LIMIT or HEAP_LIMIT before requested duration does not establish 60-second sustainable capacity; proactive heap guard cannot guarantee immunity from JVM OOM",
         )
     val directory = Path.of(System.getProperty("engineCapacityReportDirectory", "app-api/build/reports/engine-capacity"))
     Files.createDirectories(directory)

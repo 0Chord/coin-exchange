@@ -115,6 +115,19 @@ class TradingState(
     ): OrderAdmissionState.Result =
         admissionCall { admission.admit(requestId, order, market, feePolicySnapshot, ledgerTransactionId, occurredAt) }
 
+    fun admitWithContextCheck(
+        requestId: String,
+        order: OrderAdmissionInput,
+        market: MarketDefinition,
+        feePolicySnapshot: TradingFeePolicySnapshot,
+        ledgerTransactionId: String,
+        occurredAt: Instant,
+        checkContext: (knownRequest: Boolean) -> Boolean,
+    ): OrderAdmissionState.Result? =
+        admissionCall {
+            admission.admitWithContextCheck(requestId, order, market, feePolicySnapshot, ledgerTransactionId, occurredAt, checkContext)
+        }
+
     fun admit(
         order: OrderAdmissionInput,
         market: MarketDefinition,

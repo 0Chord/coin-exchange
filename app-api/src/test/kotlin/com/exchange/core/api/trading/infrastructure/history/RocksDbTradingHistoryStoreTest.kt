@@ -1,11 +1,16 @@
 package com.exchange.core.api.trading.infrastructure.history
 
+import com.exchange.core.common.Amount
+import com.exchange.core.common.AssetId
 import com.exchange.core.common.UserId
+import com.exchange.core.ledger.Balance
 import com.exchange.core.order.OrderReservationStatus
 import com.exchange.core.order.Side
 import com.exchange.core.trading.OrderAdmissionResult
 import com.exchange.core.trading.OrderAdmissionState
+import com.exchange.core.trading.PreparedTradingHistoryBatch
 import com.exchange.core.trading.TradingHistoryBatch
+import com.exchange.core.trading.TradingHistoryStore
 import com.exchange.core.trading.TradingHistoryValues
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.io.TempDir
@@ -43,6 +48,265 @@ class RocksDbTradingHistoryStoreTest {
             maximumOpenFiles = 16,
         )
     private val codec = TradingHistoryCodec(limits.maximumValueBytes)
+
+    @Test
+    fun `encoded staging groups every row once and releases all queued and pending bytes`() {
+        val fixture = TradingHistoryFixture()
+        val requests = (0 until 4).map { rejected(fixture, "user", "group-$it") }
+        // Exact existing row footprint: numeric request key + frame, request index + pointer,
+        // and per-transition metadata. The writer coalesces only metadata within its group.
+        val wireBytes =
+            requests.sumOf { request ->
+                val indexBytes = 1L + 2L * Int.SIZE_BYTES + (request.order.userId.value.length + request.requestId.length) * 2L
+                9L + codec.encodeRequest(request).size + indexBytes + 9L + 1L + Long.SIZE_BYTES + 3L * 128L
+            }
+        val groupedLimits = limits.copy(targetGroupBytes = wireBytes)
+        RocksDbTradingHistoryStore.createRebuildableIndex(directory.resolve("wire-groups"), groupedLimits).use { store ->
+            synchronized(privateField<Any>(store, "monitor")) {
+                requests.forEachIndexed { index, request -> store.append(TradingHistoryBatch(index + 1L, request = request)) }
+                assertEquals(wireBytes, privateField<Long>(store, "queuedEncodedBytes"))
+                assertEquals(wireBytes, store.retainedPendingBytes)
+                assertTrue(store.retainedPendingBytes <= groupedLimits.maximumPendingBytes)
+                assertEquals(4, store.pendingBatchCount)
+                assertEquals(0L, store.durableOrdinal)
+            }
+            assertEquals(4L, store.flush())
+            assertEquals(0L, privateField<Long>(store, "queuedEncodedBytes"))
+            assertEquals(0L, store.retainedPendingBytes)
+            assertEquals(0, store.pendingBatchCount)
+            val database = privateField<RocksDB>(store, "database")
+            // No memtable flush occurs for these tiny rows. Two rows per request plus one
+            // coalesced metadata row proves they were materialized by one native WriteBatch.
+            assertEquals(9L, database.getLongProperty("rocksdb.num-entries-active-mem-table"))
+            requests.forEach { expected ->
+                assertContentEquals(
+                    codec.encodeRequest(expected),
+                    codec.encodeRequest(assertNotNull(store.findRequest(expected.order.userId, expected.requestId))),
+                )
+            }
+        }
+    }
+
+    @Test
+    fun `owner prepared derived transitions settle with disabled admission caches and preserve every cold result`() {
+        val noIndexes = limits.copy(maximumCachedAdmissionIndexes = 0, maximumCachedAdmissionIndexBytes = 0)
+        RocksDbTradingHistoryStore.createRebuildableIndex(directory.resolve("owner-references"), noIndexes).use { store ->
+            val fixture = TradingHistoryFixture(store)
+            fixture.funding("seller", "BTC", 1_000)
+            fixture.funding("buyer", "KRW", 10_000_000)
+            repeat(20) { index ->
+                val maker = (fixture.admit("sell-$index", "seller", Side.SELL) as OrderAdmissionState.Result.Accepted).record
+                fixture.execute(maker)
+                val taker = (fixture.admit("buy-$index", "buyer", Side.BUY) as OrderAdmissionState.Result.Accepted).record
+                fixture.execute(taker)
+            }
+            assertEquals(fixture.batches.last().ordinal, store.flush())
+            assertEquals(0, store.cachedAdmissionIndexCount)
+            assertEquals(0, store.cachedAdmissionIdentityCount)
+            assertEquals(40, store.requests().count())
+            assertEquals(40, store.completions().count())
+            assertEquals(62, store.transactions().count())
+            val expectedBalances =
+                setOf(
+                    Balance(UserId("seller"), AssetId("BTC"), Amount(960), Amount.ZERO),
+                    Balance(UserId("seller"), AssetId("KRW"), Amount(39_960), Amount.ZERO),
+                    Balance(UserId("buyer"), AssetId("BTC"), Amount(40), Amount.ZERO),
+                    Balance(UserId("buyer"), AssetId("KRW"), Amount(9_959_920), Amount.ZERO),
+                )
+            assertEquals(
+                expectedBalances,
+                fixture.state
+                    .snapshot()
+                    .balances
+                    .toSet(),
+            )
+            for (batch in fixture.batches) {
+                batch.request?.let {
+                    assertContentEquals(
+                        codec.encodeRequest(it),
+                        codec.encodeRequest(assertNotNull(store.findRequest(it.order.userId, it.requestId))),
+                    )
+                }
+                batch.completion?.let {
+                    assertContentEquals(
+                        codec.encodeCompletion(it),
+                        codec.encodeCompletion(assertNotNull(store.findCompletion(it.admission.sequence))),
+                    )
+                }
+            }
+        }
+    }
+
+    @Test
+    fun `prepared transition issued to another store is rejected before any publication`() {
+        RocksDbTradingHistoryStore.create(directory.resolve("proof-source"), limits).use { source ->
+            var captured: PreparedTradingHistoryBatch? = null
+            val ownerStore =
+                object : TradingHistoryStore by source {
+                    override fun appendPrepared(prepared: PreparedTradingHistoryBatch) {
+                        prepared.requireOwner(this)
+                        captured = prepared
+                        source.append(prepared.batch)
+                    }
+                }
+            TradingHistoryFixture(ownerStore).funding("seller", "BTC", 100)
+            val target = RocksDbTradingHistoryStore.createRebuildableIndex(directory.resolve("proof-target"), limits)
+            assertFailsWith<IllegalArgumentException> { target.appendPrepared(assertNotNull(captured)) }
+            assertEquals(0, target.pendingBatchCount)
+            assertNull(privateField<RocksDB>(target, "database").get(byteArrayOf(20)))
+            assertFailsWith<IllegalStateException> { target.close() }
+            assertEquals(1L, source.flush())
+            assertNotNull(source.findPreparation("fund-seller-BTC"))
+        }
+    }
+
+    @Test
+    fun `derived admission and full accepted request reject copied nonpositive sequences before publication`() {
+        val fixture = TradingHistoryFixture().apply { completedTrade() }
+        val original = fixture.batches.mapNotNull { it.admission }.first()
+        val invalid = original.copy(sequence = 0)
+        val request = fixture.batches.mapNotNull { it.request }.first()
+        for (requestOnly in listOf(false, true)) {
+            val store = RocksDbTradingHistoryStore.createRebuildableIndex(directory.resolve("invalid-sequence-$requestOnly"), limits)
+            val batch =
+                if (requestOnly) {
+                    TradingHistoryBatch(
+                        1,
+                        request =
+                            TradingHistoryValues.requestRecord(
+                                request.requestId,
+                                request.order,
+                                request.market,
+                                request.feePolicySnapshot,
+                                request.ledgerTransactionId,
+                                request.occurredAt,
+                                OrderAdmissionState.Result.Accepted(invalid),
+                            ),
+                    )
+                } else {
+                    TradingHistoryBatch(1, admission = invalid)
+                }
+            assertFailsWith<IllegalStateException> { store.append(batch) }
+            val database = privateField<RocksDB>(store, "database")
+            assertNull(database.get(dataKey(2, 0)))
+            assertNull(database.get(dataKey(1, 1)))
+            assertNull(database.get(byteArrayOf(20)))
+            assertEquals(0, store.pendingBatchCount)
+            assertFailsWith<IllegalStateException> { store.close() }
+        }
+    }
+
+    @Test
+    fun `staged frames expose every original before writer progress and ignore mutable batch list aliases`() {
+        val fixture = TradingHistoryFixture().apply { completedTrade() }
+        val derivedLimits = limits.copy(maximumPendingBatches = 64, maximumGroupBatches = 64)
+        RocksDbTradingHistoryStore.createRebuildableIndex(directory.resolve("typed-overlay"), derivedLimits).use { store ->
+            val database = privateField<RocksDB>(store, "database")
+            // Owning the existing queue monitor prevents the real writer from claiming a group.
+            // No production delay hook is needed to exercise the entire read-your-writes interval.
+            synchronized(privateField<Any>(store, "monitor")) {
+                for (batch in fixture.batches) {
+                    val reservations = batch.reservations.toMutableList()
+                    val transactions = batch.ledgerTransactions.toMutableList()
+                    store.append(batch.copy(reservations = reservations, ledgerTransactions = transactions))
+                    reservations.clear()
+                    transactions.clear()
+                    batch.request?.let {
+                        assertContentEquals(
+                            codec.encodeRequest(it),
+                            codec.encodeRequest(assertNotNull(store.findRequest(it.order.userId, it.requestId))),
+                        )
+                    }
+                    batch.admission?.let {
+                        assertContentEquals(
+                            codec.encodeAdmission(it),
+                            codec.encodeAdmission(assertNotNull(store.findAdmission(it.sequence))),
+                        )
+                        assertContentEquals(
+                            codec.encodeAdmission(it),
+                            codec.encodeAdmission(
+                                assertNotNull(store.findAdmission(it.candidate.order.marketId, it.candidate.order.orderId)),
+                            ),
+                        )
+                    }
+                    batch.completion?.let {
+                        assertContentEquals(
+                            codec.encodeCompletion(it),
+                            codec.encodeCompletion(assertNotNull(store.findCompletion(it.admission.sequence))),
+                        )
+                    }
+                    batch.preparation?.let {
+                        assertContentEquals(
+                            codec.encodePreparation(it),
+                            codec.encodePreparation(assertNotNull(store.findPreparation(it.result.opening.preparationId))),
+                        )
+                    }
+                    for (transaction in batch.ledgerTransactions) {
+                        assertTrue(store.containsTransactionId(transaction.ledgerTransactionId))
+                        assertTrue(store.containsSourceEventId(transaction.sourceEventId))
+                    }
+                }
+                assertEquals(0L, store.durableOrdinal)
+                assertNull(database.get(byteArrayOf(20)))
+                val pendingRows = privateField<Map<Any, Any>>(store, "pendingValues").values
+                assertTrue(pendingRows.isNotEmpty())
+                for (row in pendingRows) assertTrue(privateField<ByteArray>(row, "value").isNotEmpty())
+                assertEquals(fixture.batches.size, store.pendingBatchCount)
+                assertTrue(store.retainedPendingBytes <= derivedLimits.maximumPendingBytes)
+            }
+            assertEquals(fixture.batches.last().ordinal, store.flush())
+            assertEquals(0L, store.retainedPendingBytes)
+            assertEquals(fixture.state.snapshot().reservations, store.reservations().toList())
+            val expectedTransactions = fixture.batches.flatMap { it.ledgerTransactions }.map(codec::encodeTransaction)
+            val actualTransactions = store.transactions().map(codec::encodeTransaction).toList()
+            assertEquals(expectedTransactions.size, actualTransactions.size)
+            expectedTransactions.zip(actualTransactions).forEach { (expected, actual) -> assertContentEquals(expected, actual) }
+            for (batch in fixture.batches) {
+                batch.request?.let {
+                    assertContentEquals(
+                        codec.encodeRequest(it),
+                        codec.encodeRequest(assertNotNull(store.findRequest(it.order.userId, it.requestId))),
+                    )
+                }
+            }
+        }
+    }
+
+    @Test
+    fun `derived encoding rejects changed originals and oversize values before atomic publication`() {
+        val fixture = TradingHistoryFixture().apply { completedTrade() }
+        val different =
+            TradingHistoryFixture().apply {
+                funding("seller", "BTC", 200)
+                admit("sell", "seller", Side.SELL)
+            }
+        val store = RocksDbTradingHistoryStore.createRebuildableIndex(directory.resolve("typed-original"), limits)
+        fixture.batches.forEach(store::append)
+        val last = store.flush()
+        val database = privateField<RocksDB>(store, "database")
+        assertFailsWith<IllegalStateException> {
+            store.append(
+                TradingHistoryBatch(
+                    last + 1,
+                    request = different.batches.mapNotNull { it.request }.single(),
+                    admission = different.batches.mapNotNull { it.admission }.single(),
+                ),
+            )
+        }
+        assertNull(database.get(dataKey(1, last + 1)))
+        assertEquals(last, ByteBuffer.wrap(assertNotNull(database.get(byteArrayOf(20)))).long)
+        assertFailsWith<IllegalStateException> { store.close() }
+
+        val bounded =
+            RocksDbTradingHistoryStore.createRebuildableIndex(
+                directory.resolve("typed-size"),
+                limits.copy(maximumValueBytes = 1_024),
+            )
+        val oversized = rejected(TradingHistoryFixture(), "user", "x".repeat(1_024))
+        assertFailsWith<IllegalStateException> { bounded.append(TradingHistoryBatch(1, request = oversized)) }
+        assertNull(privateField<RocksDB>(bounded, "database").get(dataKey(1, 1)))
+        assertFailsWith<IllegalStateException> { bounded.close() }
+    }
 
     @Test
     fun `canonical references preserve exact values with disabled or cleared bounded identity caches`() {

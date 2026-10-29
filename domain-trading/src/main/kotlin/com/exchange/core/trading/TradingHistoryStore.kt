@@ -5,6 +5,7 @@ import com.exchange.core.common.OrderId
 import com.exchange.core.common.UserId
 import com.exchange.core.ledger.LedgerTransaction
 import com.exchange.core.order.OrderReservation
+import java.util.Collections
 
 /**
  * Exact, lossless history for one newly created trading owner. Implementations keep bounded
@@ -18,6 +19,12 @@ interface TradingHistoryStore {
     val durableOrdinal: Long
 
     fun append(batch: TradingHistoryBatch)
+
+    /** The live owner has already checked its canonical admissions and reservation links. */
+    fun appendPrepared(prepared: PreparedTradingHistoryBatch) {
+        prepared.requireOwner(this)
+        append(prepared.batch)
+    }
 
     /** Waits until every preceding append is materialized and recoverable under the store's contract, or throws. */
     fun flush(): Long
@@ -63,6 +70,33 @@ interface TradingHistoryStore {
     fun reservations(): Sequence<OrderReservation>
 
     fun transactions(): Sequence<LedgerTransaction>
+}
+
+/**
+ * Issued only inside the domain after a transition has passed the live owner's checks.
+ * It belongs to one history generation and does not acknowledge materialization or durability.
+ * Raw callers continue to use [TradingHistoryStore.append] and its full input checks.
+ */
+class PreparedTradingHistoryBatch internal constructor(
+    private val ownerStore: TradingHistoryStore,
+    batch: TradingHistoryBatch,
+    reservationSequences: List<Long>,
+) {
+    val batch: TradingHistoryBatch =
+        batch.copy(
+            reservations = Collections.unmodifiableList(batch.reservations.toList()),
+            ledgerTransactions = Collections.unmodifiableList(batch.ledgerTransactions.toList()),
+        )
+    val reservationSequences: List<Long> = Collections.unmodifiableList(reservationSequences.toList())
+
+    init {
+        require(reservationSequences.size == batch.reservations.size)
+        require(reservationSequences.all { it > 0 })
+    }
+
+    fun requireOwner(store: TradingHistoryStore) {
+        require(ownerStore === store) { "prepared history transition belongs to a different store" }
+    }
 }
 
 /** One complete business transition; rejected requests also receive their own ordinal. */

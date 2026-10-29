@@ -6,6 +6,7 @@ import com.exchange.core.common.UserId
 import com.exchange.core.ledger.LedgerTransaction
 import com.exchange.core.order.OrderReservation
 import com.exchange.core.trading.OrderAdmissionState
+import com.exchange.core.trading.PreparedTradingHistoryBatch
 import com.exchange.core.trading.TradingHistoryBatch
 import com.exchange.core.trading.TradingHistoryStore
 import com.exchange.core.trading.TradingState
@@ -28,7 +29,7 @@ import java.util.concurrent.TimeUnit
 /** Limits cover the pending overlay, native block cache, memtables and table readers separately. */
 data class TradingHistoryStorageLimits(
     val cacheBytes: Long = 32L * 1_024 * 1_024,
-    val writeBufferBytes: Long = 8L * 1_024 * 1_024,
+    val writeBufferBytes: Long = 16L * 1_024 * 1_024,
     val maximumPendingBytes: Long = 64L * 1_024 * 1_024,
     val maximumPendingBatches: Int = 1_024,
     val maximumValueBytes: Int = 16 * 1_024 * 1_024,
@@ -71,19 +72,27 @@ class RocksDbTradingHistoryStore private constructor(
     private val filter: BloomFilter,
     private val limits: TradingHistoryStorageLimits,
     private val onFatal: (Throwable) -> Unit,
+    private val rebuildableIndex: Boolean,
 ) : TradingHistoryStore,
     AutoCloseable {
     private class Key(
         val bytes: ByteArray,
     ) {
+        private val hash = bytes.contentHashCode()
+
         override fun equals(other: Any?): Boolean = other is Key && bytes.contentEquals(other.bytes)
 
-        override fun hashCode(): Int = bytes.contentHashCode()
+        override fun hashCode(): Int = hash
     }
 
     private class Put(
         val key: Key,
         val value: ByteArray,
+    )
+
+    private class EncodedTransition(
+        val puts: List<Put>,
+        val bytes: Long,
     )
 
     private class Pending(
@@ -103,8 +112,13 @@ class RocksDbTradingHistoryStore private constructor(
     private val admissionIdentities = LinkedHashMap<Long, WeakReference<OrderAdmissionState.Record>>(16, 0.75f, true)
     private var admissionIndexBytes = 0L
     private var pendingBytes = 0L
+
+    // Grouping counts only rows still in queue; pendingBytes also includes an in-flight group.
+    private var queuedEncodedBytes = 0L
     private var pendingCount = 0
     private var appendedOrdinal = 0L
+    private var maximumAdmissionSequence = 0L
+    private var rawAppendUsed = false
     private var appendedBytes = 0L
     private var committedOrdinal = 0L
     private var failure: Throwable? = null
@@ -140,46 +154,60 @@ class RocksDbTradingHistoryStore private constructor(
     internal val cachedAdmissionIndexBytes: Long get() = synchronized(monitor) { admissionIndexBytes }
     internal val cachedAdmissionIdentityCount: Int get() = synchronized(monitor) { admissionIdentities.size }
 
-    override fun append(batch: TradingHistoryBatch) =
+    override fun append(batch: TradingHistoryBatch) = appendTransition(batch, null)
+
+    override fun appendPrepared(prepared: PreparedTradingHistoryBatch) =
         guarded {
-            synchronized(monitor) { checkOperational() }
-            val puts = encode(batch)
-            val bytes =
-                puts.fold(
-                    0L,
-                ) { total, put ->
-                    Math.addExact(
-                        total,
-                        put.key.bytes.size
-                            .toLong() + put.value.size + ENTRY_OVERHEAD_BYTES,
-                    )
-                }
-            check(bytes <= limits.maximumPendingBytes) { "one trading history transition exceeds the pending byte limit" }
+            prepared.requireOwner(this)
+            if (rebuildableIndex) appendTransition(prepared.batch, prepared) else append(prepared.batch)
+        }
+
+    private fun appendTransition(
+        batch: TradingHistoryBatch,
+        prepared: PreparedTradingHistoryBatch?,
+    ) = guarded {
+        val ownerProof =
             synchronized(monitor) {
                 checkOperational()
-                check(batch.ordinal == Math.addExact(appendedOrdinal, 1L)) { "history ordinals must be contiguous" }
-                check(bytes <= limits.maximumWrittenBytes - appendedBytes) { "trading history cumulative write byte limit exceeded" }
-                val deadline = System.nanoTime() + WAIT_NANOS
-                while (pendingCount >= limits.maximumPendingBatches || bytes > limits.maximumPendingBytes - pendingBytes) {
-                    flushRequested = true
-                    monitor.notifyAll()
-                    awaitProgress(deadline)
-                }
-                val pending = Pending(batch.ordinal, puts, bytes)
-                queue.addLast(pending)
-                for (put in puts) {
-                    knownKeys.add(put.key.bytes)
-                    pendingValues[put.key] = put
-                    cacheAdmissionIndex(put.key, put.value)
-                }
-                batch.admission?.let(::cacheAdmissionIdentity)
-                pendingBytes += bytes
-                pendingCount++
-                appendedOrdinal = batch.ordinal
-                appendedBytes += bytes
-                monitor.notifyAll()
+                // A mixed raw generation keeps the full original checks. Only transitions
+                // issued by this generation's live domain owner can reuse its references.
+                if (prepared == null) rawAppendUsed = true
+                prepared?.takeUnless { rawAppendUsed }
             }
+        val transition = encode(batch, ownerProof)
+        val puts = transition.puts
+        val bytes = transition.bytes
+        synchronized(monitor) {
+            checkOperational()
+            check(batch.ordinal == Math.addExact(appendedOrdinal, 1L)) { "history ordinals must be contiguous" }
+            check(
+                transition.bytes <= limits.maximumWrittenBytes - appendedBytes,
+            ) { "trading history cumulative write byte limit exceeded" }
+            val deadline = System.nanoTime() + WAIT_NANOS
+            while (pendingCount >= limits.maximumPendingBatches || bytes > limits.maximumPendingBytes - pendingBytes) {
+                flushRequested = true
+                monitor.notifyAll()
+                awaitProgress(deadline)
+            }
+            val pending = Pending(batch.ordinal, puts, bytes)
+            queue.addLast(pending)
+            queuedEncodedBytes += transition.bytes
+            for (put in puts) {
+                knownKeys.add(put.key.bytes)
+                pendingValues[put.key] = put
+                if (put.key.bytes[0] == ADMISSION_INDEX) cacheAdmissionIndex(put.key, put.value)
+            }
+            batch.admission?.let {
+                cacheAdmissionIdentity(it)
+                maximumAdmissionSequence = maxOf(maximumAdmissionSequence, it.sequence)
+            }
+            pendingBytes += bytes
+            pendingCount++
+            appendedOrdinal = batch.ordinal
+            appendedBytes += transition.bytes
+            monitor.notifyAll()
         }
+    }
 
     override fun flush(): Long =
         guarded {
@@ -298,15 +326,22 @@ class RocksDbTradingHistoryStore private constructor(
                 val written = checkNotNull(restoredWrittenBytes) { "history snapshot write budget is missing" }
                 check(written in restoredEntryBytes..limits.maximumWrittenBytes) { "history snapshot write budget mismatch" }
                 check(expectedOrdinal != 0L || (restoredEntryBytes == 0L && written == 0L)) { "empty history snapshot contains data" }
+                var restoredMaximumAdmissionSequence = 0L
                 database.newIterator().use { cursor ->
                     cursor.seekToFirst()
                     while (cursor.isValid) {
                         cursor.status()
-                        validateSnapshotRow(cursor.key(), cursor.value(), expectedOrdinal)
+                        val key = cursor.key()
+                        validateSnapshotRow(key, cursor.value(), expectedOrdinal)
+                        if (key[0] == ADMISSION_DATA) {
+                            restoredMaximumAdmissionSequence =
+                                maxOf(restoredMaximumAdmissionSequence, ByteBuffer.wrap(key, 1, Long.SIZE_BYTES).long)
+                        }
                         cursor.next()
                     }
                     cursor.status()
                 }
+                maximumAdmissionSequence = restoredMaximumAdmissionSequence
                 appendedOrdinal = expectedOrdinal
                 committedOrdinal = expectedOrdinal
                 appendedBytes = written
@@ -562,7 +597,10 @@ class RocksDbTradingHistoryStore private constructor(
 
     override fun transactions(): Sequence<LedgerTransaction> = scan(TRANSACTION_DATA, codec::decodeTransaction)
 
-    private fun encode(batch: TradingHistoryBatch): List<Put> {
+    private fun encode(
+        batch: TradingHistoryBatch,
+        ownerProof: PreparedTradingHistoryBatch?,
+    ): EncodedTransition {
         val puts = ArrayList<Put>()
         var encodedBytes = 0L
 
@@ -591,7 +629,13 @@ class RocksDbTradingHistoryStore private constructor(
             val value = codec.encodeAdmission(it)
             // References require one immutable original per admission sequence. Validate before
             // publishing any key from this transition; identical re-registration is harmless.
-            val previous = read(target)
+            val previous =
+                if (ownerProof != null && it.sequence > maximumAdmissionSequence) {
+                    // The high-water mark includes every validated imported cold admission.
+                    null
+                } else {
+                    read(target)
+                }
             check(previous == null || previous.contentEquals(value)) { "history admission sequence changed its original value" }
             put(target, value)
             put(key(ADMISSION_INDEX, it.candidate.order.marketId.value, it.candidate.order.orderId.value), target)
@@ -600,7 +644,7 @@ class RocksDbTradingHistoryStore private constructor(
         batch.completion?.let {
             val target = numberKey(COMPLETION_DATA, batch.ordinal)
             val value =
-                if (it.admission === batch.admission || canReferenceAdmission(it.admission)) {
+                if (ownerProof != null || it.admission === batch.admission || canReferenceAdmission(it.admission)) {
                     referencedCompletion = it
                     codec.encodeReferencedCompletion(it)
                 } else {
@@ -615,9 +659,9 @@ class RocksDbTradingHistoryStore private constructor(
             put(target, codec.encodePreparation(it))
             put(key(PREPARATION_INDEX, it.result.opening.preparationId), target)
         }
-        batch.reservations.forEach { reservation ->
+        batch.reservations.forEachIndexed { index, reservation ->
             val sequence =
-                (batch.admission ?: referencedCompletion?.admission)
+                ownerProof?.reservationSequences?.get(index) ?: (batch.admission ?: referencedCompletion?.admission)
                     ?.takeIf {
                         it.candidate.order.marketId == reservation.marketId && it.candidate.order.orderId == reservation.orderId
                     }?.sequence ?: run {
@@ -628,6 +672,7 @@ class RocksDbTradingHistoryStore private constructor(
                     check(target.size == 9 && target[0] == ADMISSION_DATA) { "invalid reservation admission index" }
                     ByteBuffer.wrap(target, 1, Long.SIZE_BYTES).long.also { check(it > 0) }
                 }
+            check(sequence > 0) { "reservation history admission sequence must be positive" }
             put(numberKey(RESERVATION_DATA, sequence), codec.encodeReservation(reservation))
         }
         batch.ledgerTransactions.forEachIndexed { index, transaction ->
@@ -638,7 +683,7 @@ class RocksDbTradingHistoryStore private constructor(
         }
         // The durable ordinal is committed atomically with every row and secondary index in the group.
         put(byteArrayOf(METADATA), ByteBuffer.allocate(Long.SIZE_BYTES).putLong(batch.ordinal).array())
-        return puts
+        return EncodedTransition(puts, encodedBytes)
     }
 
     private fun canReferenceAdmission(record: OrderAdmissionState.Record): Boolean {
@@ -764,7 +809,7 @@ class RocksDbTradingHistoryStore private constructor(
                         // instead of turning each notification into a one-transition WAL sync.
                         val groupDeadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(1)
                         while (!flushRequested && !stopping && failure == null &&
-                            queue.size < limits.maximumGroupBatches && pendingBytes < limits.targetGroupBytes
+                            queue.size < limits.maximumGroupBatches && queuedEncodedBytes < limits.targetGroupBytes
                         ) {
                             val remaining = groupDeadline - System.nanoTime()
                             if (remaining <= 0) break
@@ -778,6 +823,7 @@ class RocksDbTradingHistoryStore private constructor(
                             val pending = queue.removeFirst()
                             selected.add(pending)
                             bytes += pending.bytes
+                            queuedEncodedBytes -= pending.bytes
                         }
                         flushRequested = false
                         selected
@@ -793,7 +839,7 @@ class RocksDbTradingHistoryStore private constructor(
                 }
                 synchronized(monitor) {
                     for (pending in group) {
-                        for (put in pending.puts) if (pendingValues[put.key] === put) pendingValues.remove(put.key)
+                        for (put in pending.puts) pendingValues.remove(put.key, put)
                         pendingBytes -= pending.bytes
                         pendingCount--
                     }
@@ -883,6 +929,7 @@ class RocksDbTradingHistoryStore private constructor(
                 admissionIdentities.clear()
                 admissionIndexBytes = 0
                 queue.clear()
+                queuedEncodedBytes = 0
                 pendingBytes = 0
                 pendingCount = 0
                 for (resource in listOf(database, writeOptions, options, buffers, cache, filter)) {
@@ -976,7 +1023,7 @@ class RocksDbTradingHistoryStore private constructor(
                         .also(resources::add)
                 val writes = WriteOptions().setSync(!rebuildable).setDisableWAL(rebuildable).also(resources::add)
                 val database = RocksDB.open(options, directory.toString()).also(resources::add)
-                return RocksDbTradingHistoryStore(database, options, writes, cache, buffers, filter, limits, onFatal)
+                return RocksDbTradingHistoryStore(database, options, writes, cache, buffers, filter, limits, onFatal, rebuildable)
             } catch (error: Throwable) {
                 resources.asReversed().forEach {
                     try {

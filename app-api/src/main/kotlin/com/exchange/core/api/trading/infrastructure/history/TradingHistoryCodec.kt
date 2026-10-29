@@ -360,6 +360,7 @@ internal class TradingHistoryCodec(
         }
 
         fun record(value: OrderAdmissionState.Record) {
+            check(value.sequence > 0) { "history admission sequence must be positive" }
             out.writeLong(value.sequence)
             candidate(value.candidate)
         }
