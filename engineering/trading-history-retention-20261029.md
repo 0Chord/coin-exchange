@@ -489,3 +489,71 @@ r9는 메모리/동시성/정확 ID 계약을 바꾸지 않고 반복 compaction
 - 실제 최종 목표인50k/100k 지속 처리량, 원격 장애영역 내구성, 전체 저장소 소실 시 성공기록 유실0은 계속 미검증이다. 유한 cohort 수치로 Goal을 완료 표시하지 않는다.
 
 근거는 `bounded-history-20261029/history-worker-20261030`의 `selected-result.json`, `independent-performance-evidence-audit-r6-r8.json`, 실행 명령·runtime manifest·회귀 XML·압축 원자료다. 이 실행에서 만든 큰 원본48개1,063,338,944B는 SHA256 복원 확인 후123,521,906B로 압축했다. 앞선16개351MB→41MB 압축과 별도다. 사용자 파일과 다른 작업 자원은 삭제하지 않았다.
+
+
+## 2026-10-30: 메모리 경계 재확인과 이력 저장 후보의 제외
+
+기준은 `55778a1ffbce6cadeceef4d48d35c35d4f2a0608`이다. **이번 단위에서 추가로 채택한 제품 최적화는 없다.** 이력 엔진 단독으로 빨라진 후보도 세 노드에서 효과가 확인되지 않아 모두 기준 코드로 되돌렸다. 남긴 코드는 그룹 경계와 부분 체결 이력 복원을 보호하는 테스트 두 개뿐이다. 50k/100k 목표는 계속 미달이다.
+
+### 이전 7만 TPS의 정확한 경계
+
+이전 `core-cost-steps-20261027/final-summary.json`의 73,256 TPS는 RocksDB·Aeron·디스크·복제를 제외하고 모든 이력을 JVM 메모리에 보관한 결과다. 100k BUY·10k warmup, Java25.0.2/G1/Xms256m/Xmx2g/ActiveProcessorCount2, 명시적 전후 GC 없음이었다. 이전 최종 세 실행은 75,357 /73,130 /73,256 TPS다.
+
+현재 제품 코드로 같은 입력·JVM 옵션·메모리 전용 경계를 두 번 실행하면 37,340 /79,640 TPS였다. caller CPU는 10.49 /8.09μs, caller 할당은 10,048 /9,805B/주문이다. 메모리 전용은 과거 이력을 지운다는 뜻이 아니라 이력 전체를 heap에 계속 보관한다는 뜻이다. 두 실행 모두 100k BUY 완료와 잔고·예약·원장·수수료·최초 결과 검증을 통과했다. 소스 버전은 과거와 다르므로 동일 바이너리의 회귀 시험은 아니다. 이 두 수치의 큰 변동을 GC만의 영향이라고 확정하거나 좋은 79,640만 골라 현재 지속 최대치라고 쓰지 않는다.
+
+반면 앞 절의 12,929 TPS는 실제 RocksDB 이력 인코딩·인덱스·쓰기 대기를 포함하는 단일 JVM 시험이었다. 서로 다른 범위의 결과를 같은 ‘엔진 단독’ 수치로 비교하지 않는다. 독립 감사 `memory-scope-audit.json`에 원래 실행 명령·현재 runtime hash·재무 결과를 연결했다.
+
+### 후보 1: 같은 writer 그룹의 중복 예약 쓰기 축약 — 제외
+
+동일한 원자적 writer 그룹 안에서 같은 주문의 예약 값이 여러 번 갱신되면 최신 행만 쓰고, 요청·승인·완료 원문과 모든 원장은 유지하는 변경을 시험했다. 그룹 밖의 후속 값으로 앞 그룹 쓰기를 생략하지 않도록 제한했다.
+
+실제 native 쓰기 수 검사에서 기대36/실제38의 실패를 확인한 뒤 구현했고 관련 회귀와 독립 소스 검토를 통과했다. 그러나 30k BUY ABBA에서 기준 12,747 /12,460 TPS, 후보 11,822 /13,448 TPS로 평균 차이는 약+0.25%뿐이었다. caller CPU와 p95/p99는 나빠졌다. 전체 수명 native ingest는 약351.27→342.32MB 줄었지만 이를 유효한 처리량 개선이라고 볼 수 없어 제품 변경을 제거했다. 이 Red 검사는 이 제외 후보에 대한 것이며 다음 CF 후보의 TDD 근거로 사용하지 않는다.
+
+### 후보 2: 완료 원문만 별도 Column Family — 제외
+
+완료 원문(prefix3)은 불변 순차 키이고 예약 최신값·ID 인덱스는 갱신/임의 키다. 한 저장 영역에서 섞일 때의 compaction 비용을 줄이려고 같은 RocksDB 안에서 완료 원문만 별도 Column Family(CF)에 넣었다. 서버를 나누거나 새로운 DB 서비스를 추가한 변경이 아니다. 원문·정확 ID·원자적 WriteBatch·WAL 선택·기존 byte schema는 그대로 유지했다. cache32MiB/WBM16MiB/open files64/jobs2/pending64MiB·1024 batches 등 한도도 늘리지 않았다.
+
+기존 키 범위가 섞여 compaction 비용을 만든다는 구조적 근거는 있지만, 모든 과거 이력을 매번 전부 다시 썼다고 주장하지 않는다. [공식 CF 설명](https://github.com/facebook/rocksdb/wiki/Column-Families), [Leveled Compaction](https://github.com/facebook/rocksdb/wiki/Leveled-Compaction), [Trivial Move](https://github.com/facebook/rocksdb/wiki/Compaction-Trivial-Move)
+
+같은 공통 harness·새 JVM·disposable index로 실행했다. 조건은 Java25.0.2/G1/Xms256m/Xmx768m/ActiveProcessorCount2, 준비 SELL40k·warmup BUY10k·측정 BUY30k이며 `--pre-gc --post-gc` 진단이다. Archive·복제·HA를 포함하지 않으며 최종 flush·재무 검증은 timed loop 밖이다. CPU·할당은 caller만 포함하고 native/worker 비용을 포함하지 않는다. percentile은 histogram bucket의 상한이다.
+
+| 순서 | 이력 포함 엔진 완료 TPS | caller CPU μs | caller 할당 B | p95 상한 μs | p99 상한 μs |
+|---|---:|---:|---:|---:|---:|
+| A1 기준 | 12,020 | 28.94 | 46,773 | 54.271 | 159.743 |
+| B1 완료 CF | 18,467 | 28.71 | 47,013 | 83.967 | 167.935 |
+| B2 완료 CF | 19,404 | 27.08 | 46,882 | 54.271 | 151.551 |
+| A2 기준 | 13,302 | 30.31 | 46,992 | 63.487 | 163.839 |
+
+단순 TPS 평균은 12,661→18,935, 약+49.55%다. p95/p99의 일관된 개선은 없다. 전체 수명(setup·warmup·measurement·최종 flush) 통계에서 완료 CF의 write amplification은1.0, compaction CPU는0.67/0.63초였다. 기준 전체 CF의 CPU9.08/8.80초에 비해 후보의 두 CF 합계는7.18/5.63초다. 후보의 기본 CF만 보고 전체 compaction이 감소했다고 계산하지 않았다. DB 누적 stall은 기준1.202/1.421초→후보0/0초였지만 WBM stop은29/29→48/51회로 남았고 SST 파일 수도 늘었다. 누적값을 timed loop 전용 비용으로 환산하지 않는다.
+
+### 세 노드에서의 판정
+
+같은 기존 `DirectStreamingRun`으로 A→B→B→A를 사전에 정하고 짧게 실행했다. 세 Docker 노드의 Archive/Catalog/Consensus는 모두 `[2,2,2]`, 각2CPU quota/2GiB/Xmx1536MiB, 클라이언트2CPU quota/Xmx1GiB, Java25.0.4.1/G1이다. BTC/SOL/SUI, 12k SELL+12k BUY 예열, 측정60k SELL+BUY(30k 체결)다. 입력 정책은 동일하다. 설정 원문 SHA 차이는 `feePolicy` JSON 키 순서 차이이고 파싱한 문서는 같았다.
+
+| 순서 | 전체 SELL+BUY 완료 orders/s | BUY ACK cohort /s | BUY 세 사본 완료 수신 cohort /s | ACK p95/p99 ms | 세 사본 완료 수신 p95/p99 ms |
+|---|---:|---:|---:|---:|---:|
+| A1 기준 | 5,587 | 3,302 | 3,229 | 700 /935 | 1,197 /1,233 |
+| B1 완료 CF | 5,086 | 3,051 | 2,932 | 897 /1,053 | 1,309 /1,387 |
+| B2 완료 CF | 4,901 | 2,716 | 2,676 | 1,101 /1,405 | 1,729 /1,870 |
+| A2 기준 | 4,981 | 3,049 | 2,791 | 1,070 /1,454 | 1,724 /1,794 |
+
+기준 평균5,284→후보4,993 orders/s(약−5.50%)로 개선 근거가 없다. 리더/기동/실행 순서에 따른 변동이 있고 각 조건 두 번뿐이므로 코드가 정확히5.50% 느려졌다고 인과 효과를 확정하지 않는다. 양쪽 뒤 실행의 지연도 함께 커졌다. **엔진 단독의 +49.55%만 보고 후보를 제품에 남기지 않았다.** 추가 좋은 결과가 나올 때까지 반복 측정하지 않고 이 네 실행으로 후보를 제외했다.
+
+각 실행은 건수 제한으로 약10.7~12.2초 뒤 끝났으며 300초는 상한이었다. 장기 지속 최대 TPS·HTTP/API 성능이 아니다. 전체 orders/s는 SELL과 BUY를 함께 세며 해당 창의 체결율은 그 절반이다. BUY cohort 분모에는 첫 BUY부터 마지막 해당 수신까지 중간 SELL 준비 단계도 포함된다. 응답/완료 p99는 과부하 cohort의 관측값이지 한 주문의 순수 계산 시간은 아니다.
+
+앞 절과 동일하게 전용 CPU 고정은 입증되지 않았고 250ms counters·메모리/디스크 보호 및 테스트 관측기의 부가 쓰기는 켜져 있다. CF 변경만으로 복제·Archive·observer 비용까지 줄어드는 것은 아니다. GC, force, 네트워크 중 하나를 유일 원인이라고 확정하지 않는다. 세 노드에서 개선을 채택하려면 계산 절감과 별개로 공통 이력 저장·복제 경로의 총작업 감소가 재현돼야 한다.
+
+### 정합성과 최종 변경 범위
+
+CF 후보는 관련 회귀113개를 통과했다. 이전 커밋의 실제 `exportSnapshot`으로 만든11,106B fixture(SHA256 `cfb9818edfe1c4ae160cdcfa20aedd55bad237c33a9c5e235d3f216a5e3cfac8`)로 구형 snapshot 복원·원문/최신 예약·후속 ordinal을 검사했다. 두 CF 병합 순서와 잘못 배치된 행의 차단도 검사했다. 작성 대화를 받지 않은 별도 리뷰가 고정 manifest650파일을 대조했고 확정 결함0건이었다. 단, completion CF의 반복 SST/reader 한도를 직접 밟은 검증은 없으므로 native 전체 메모리 경계까지 입증했다고 하지 않는다. 제품 후보·해당 CF 전용 테스트·fixture·추가 통계 코드는 최종 소스에서 모두 제거했다.
+
+최종으로 남긴 두 테스트는 다음 계약을 검사한다.
+
+- Given 한 transition씩 쓰는 그룹에 같은 주문의 예약 갱신 여러 개가 대기하면, When writer가 각 그룹을 저장할 때, Then 후속 그룹에 최신값이 있다는 이유로 앞 그룹의44개 native Put·metadata를 생략하지 않는다.
+- Given maker3개에 BUY1개·BUY2개를 순서대로 체결하면, When 이력 snapshot을 내보내 새 저장소로 복원할 때, Then maker 최신 예약은 SETTLED/잔량0이고, 각 체결 시점의 완료 원문·요청 최초 결과·승인·모든 원장·정확 ID가 byte 단위로 그대로다.
+
+세 노드 타이밍 cohort는 원본금액/전체 completion payload의 재무 감사 실행을 포함하지 않는다(`fullFinancialAudit=NOT_RUN`). 전체 raw ID·노드 표식·순번·로그 위치·체결 수 대조와 별도 금융 회귀/엔진 재무 검증을 구분한다. 모든 marker가 같다는 사실만으로 전체 재무 불변식을 검증했다고 표시하지 않는다.
+
+근거 폴더는 `bounded-history-20261029/history-group-20261030`이다. 제외 후보 패치·고정 runtime·manifest·native 통계·실행 명령·원본·회귀 XML을 보존한다. 새 측정 플랫폼을 추가하지 않았고 PR/push는 하지 않는다. 현재 제품 코드는 계속 `55778a1`과 같다. 이 기록은 추가 성능 개선의 성공 보고가 아니다.
+
+최종 원복 후 앱 관련110개·아키텍처385개를 다시 실행해 실패·오류·skip0을 확인했고 앱 ktlint도 통과했다. 도메인 소스·금융 규칙은 바뀌지 않았다. 최종 distribution의 `classes/`·`lib/` 전 파일 SHA256를 기준 r7 distribution과 대조한 결과 동일했다(`final-production-equivalence.json`). 독립 원본 감사는 네 실행 합계336,000개 raw행, 수신 표식1,008,000개와 별도 발신 표식1,008,000개를 대조해 ID·순번·로그 위치·trade/settlement 건수 불일치·중복·누락0을 확인했다. 리더는 A1/B1/B2/A2에서 node1/2/0/2였다. 각 창의 총시간을 합쳐 계산한 pooled orders/s는 기준5,266.54→후보4,991.75(−5.22%)이며 앞 표의 단순 TPS 평균과 계산 방식이 다르다. 둘 다 세 노드 개선 근거가 없다는 판정은 같다.
