@@ -47,13 +47,12 @@ class OrderSettlementCalculator(
         reservations: List<OrderReservation>,
         balances: List<Balance>,
     ): OrderSettlementCandidate {
-        require(order.marketId == market.marketId && order.quantity.value > 0)
-        require(order.orderType == OrderType.LIMIT && order.timeInForce == TimeInForce.GTC)
+        validateOrder(order, market)
         val trades = executions.toList()
         val initialReservations = uniqueIndex(reservations) { it.orderKey() }
         val initialBalances = uniqueIndex(balances) { BalanceKey(it.userId, it.assetId) }
         validateExecutions(order, trades)
-        if (trades.isEmpty()) return OrderSettlementCandidate(order, market, emptyList(), emptyList(), emptyList())
+        if (trades.isEmpty()) return emptyCandidate(order, market)
         if (trades.size == 1) return calculateSingle(order, market, trades.single(), initialReservations, initialBalances)
 
         val orderKeys = linkedSetOf<OrderKey>()
@@ -65,7 +64,7 @@ class OrderSettlementCalculator(
         val outstanding = linkedMapOf<BalanceKey, Long>()
         for (key in orderKeys) {
             val reservation = requireNotNull(initialReservations[key]) { "settlement reservation is missing" }
-            validateReservation(market, reservation)
+            validateInitialReservation(market, reservation)
             require(reservation.status == OrderReservationStatus.ACTIVE) { "settlement reservation must be active" }
             workingReservations[key] = reservation
             val balanceKey = reservation.balanceKey()
@@ -149,6 +148,28 @@ class OrderSettlementCalculator(
         )
     }
 
+    /** bounded 소유자가 해당 예약 하나와 현재 잔고 키 두 개를 이미 검사한 상태다. */
+    internal fun calculateEmpty(
+        order: OrderAdmissionInput,
+        market: MarketDefinition,
+    ): OrderSettlementCandidate {
+        validateOrder(order, market)
+        return emptyCandidate(order, market)
+    }
+
+    private fun validateOrder(
+        order: OrderAdmissionInput,
+        market: MarketDefinition,
+    ) {
+        require(order.marketId == market.marketId && order.quantity.value > 0)
+        require(order.orderType == OrderType.LIMIT && order.timeInForce == TimeInForce.GTC)
+    }
+
+    private fun emptyCandidate(
+        order: OrderAdmissionInput,
+        market: MarketDefinition,
+    ) = OrderSettlementCandidate(order, market, emptyList(), emptyList(), emptyList())
+
     /** 한 체결의 두 예약은 반대 방향이므로 같은 사용자여도 서로 다른 자산에 묶인다. */
     private fun calculateSingle(
         order: OrderAdmissionInput,
@@ -161,9 +182,9 @@ class OrderSettlementCalculator(
             requireNotNull(initialReservations[OrderKey(market.marketId, trade.makerOrderId)]) { "settlement reservation is missing" }
         val taker =
             requireNotNull(initialReservations[OrderKey(market.marketId, trade.takerOrderId)]) { "settlement reservation is missing" }
-        validateReservation(market, maker)
+        validateInitialReservation(market, maker)
         require(maker.status == OrderReservationStatus.ACTIVE) { "settlement reservation must be active" }
-        validateReservation(market, taker)
+        validateInitialReservation(market, taker)
         require(taker.status == OrderReservationStatus.ACTIVE) { "settlement reservation must be active" }
         validateOriginal(order, taker)
         val makerKey = maker.balanceKey()
@@ -322,6 +343,17 @@ class OrderSettlementCalculator(
         }
     }
 
+    private fun validateInitialReservation(
+        market: MarketDefinition,
+        reservation: OrderReservation,
+    ) {
+        try {
+            validateReservation(market, reservation)
+        } catch (failure: IllegalArgumentException) {
+            throw InitialReservationValidationFailure(failure)
+        }
+    }
+
     internal fun validateReservation(
         market: MarketDefinition,
         reservation: OrderReservation,
@@ -398,3 +430,8 @@ class OrderSettlementCalculator(
         return result
     }
 }
+
+/** 공개 API의 인자 오류 계약을 유지하면서 기존 예약의 손상을 구분한다. */
+internal class InitialReservationValidationFailure(
+    failure: IllegalArgumentException,
+) : IllegalArgumentException(failure.message, failure)
