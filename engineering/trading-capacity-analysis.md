@@ -806,3 +806,216 @@ service stack sample 610개 중 TradingNodeMetrics.recordCompleted가 top frame�
 
 
 2026-10-29 후속 기록: [완료 이력의 디스크 이관·보관 한도 및 재측정](trading-history-retention-20261029.md)에서 기능 검증과 성능 회귀를 구분한다. 이전 측정의 조건·결과는 그대로 보존한다.
+
+
+## 첨부 Aeron 진단 분석의 사실 대조 — 2026-10-30
+
+사용자가 제공한 Gemini 분석을 공식 문서·Aeron1.53.3 소스·실제 선택 코드에 대조했다. 이 단계에서는 새 부하 시험·설정 변경·기능 구현을 시작하지 않았다. 두 서브 에이전트가 각각 pinned 카운터/현재 설정과 공개 레퍼런스 원문을 확인했고 root가 주요 원문을 다시 읽었다.
+
+| 첨부 주장 | 판정과 근거 |
+|---|---|
+| 우리는 자금3+매칭3의 두 Raft 그룹이다 | 현재 코드와 다르다. 실제는 하나의 세 노드 거래 클러스터다. 접수와 내부 Execute를 두 메시지로 합의하지만 다른 클러스터 사이 호출은 아니다. Kafka도 없다. |
+| Hydra가 risk+matching을 clustered engine에 함께 배치 | 공식 예시는 확인된다. 업계 유일 표준·항상 단일 ClusteredService·반드시 한 번 합의라는 구현 계약으로 일반화하지 않는다. |
+| Open Exchange 800k/148k | 실제 원저자 수치다. offer 수락량이며 완료 ACK/정산 TPS와 다르다. tmpfs Archive·Linux·i7-13700K·32GB·독립 Driver/코어 배치 조건이다. |
+| 4.4k→120k의 원인은 두 클러스터의 직렬 연결 | 원문은 느린 session의 inline egress 대기와 필요 없는 balance event fan-out을 원인으로 지목한다. 분리 자체가 원인이라는 근거가 아니다. |
+| 120k는 검증된 지속 완료량 | 릴리스에는120k라 적혀 있으나 직접 연결 PR21은120k에서 generator window-bound/backlog를 명시하고80k가 방어 가능한 값이라 적는다. 확정120k 완료TPS로 재인용하지 않는다. |
+| Stream100/101/102 | log/ingress/egress 기본값은 맞다. override 가능하며 channel·session·member와 함께 대응시킨다. |
+| Counter35/92가 backpressure 고정 번호 | 공식 client 문서 예제 화면의 동적 counter instance 번호다. 다른 실행의 고정 type ID처럼 사용하면 틀린 counter를 읽는다. 실제 snd-bpe type은13이다. |
+| container max cycle=callback 한 건의 시간 | 틀리다. DutyCycleTracker는 반복 작업 시작 간격을 잰다. poll batch·idle·GC·선점 등을 포함할 수 있으며 원인 특정 지표가 아니다. |
+| NAK가 증가하면 반드시 SO_RCVBUF 부족 | gap/재전송 징후일 뿐이다. OS drop·재정렬·네트워크·송수신 스케줄링을 더 대조해야 한다. |
+| max.sessions 기본10 | 맞다. 하지만 우리 Gateway/직접 client는 요청마다 연결하지 않고 고정 연결에 correlation과 in-flight를 pipeline한다. |
+| 로컬에서는 무조건SHARED, 성능은 무조건DEDICATED | 코어 예산에 따른 선택이다. SHARED+Backoff는 현재 실제 설정이다. spare core 없이 BusySpin만 켜는 처방도, 개발 설정 결과를 최적 구성의 상한으로 보는 결론도 부적절하다. |
+| Archive/cluster도 tmpfs로 옮기면 해결 | 디스크 비용 격리용 비교로는 가능하지만 영속성 조건이 달라진다. sync2를 써도 tmpfs를 물리 디스크 내구성으로 부르면 안 된다. Driver만 tmpfs로 옮기는 경우와도 구분한다. |
+
+현재 코드에서 직접 확인한 점검 대상:
+
+- DevelopmentFundingAdapter.sendReply는 금융 서비스 callback 안에서 최대100회/100ms 예산으로 session.offer를 재시도한다. submitBoundedExecution도 최대1000회/1초 예산의 내부 제출 루프다. 실제로 그 예산 전체를 소비한다는 뜻은 아니지만, 기다리는 동안 다음 금융 callback으로 돌아가지 못한다. session별 egress pressure·재시도 소요와 함께 대조할 필요가 있다. 내부 Cluster.offer는 공식 IPC 재입력 패턴이므로 다른 클러스터 client 호출과 혼동하거나 follower 제출을 임의 제거하지 않는다.
+- node Driver는 runRoot/driver, Archive와cluster는같은runRoot하위에 있다. Docker에서는 /records volume이므로 shm_size1g만으로 Driver가 /dev/shm에 있다고 볼 수 없다. Driver의 휘발 버퍼 경로와 Archive의 영속 기록 경로를 분리해 평가할 가치가 있다. 아직 이 변경의 효과를 측정하지 않았다.
+- node socket/send/receive window는192KiB다. 기존 코드에는 Docker 실제 상한212,992B에 맞췄다는 근거가 있다. 공식2~4MB 권고와 차이가 있으나 현재 원인의 확정은 아니다. 커널 상한과 실제 socket 적용값을 함께 바꾸고 확인해야 하며, window확대의 기존 기각 실험도 무시하지 않는다.
+- 최근 HA 전후 비교는 BUY1000건 예열+5000건 측정, in-flight256의 짧은 cohort다. ACK256건마다 control 응답도 기다린다. 이 결과만으로 정상상태·발생기 비제한·최대 지속TPS를 입증하지 않는다. 제한된 발생기의 결과를 엔진 상한으로 받아들이게 설명해서는 안 된다.
+- 기존 진단에는 실제NAK/재전송, 팔로워 기록 보고 대기와 commit 뒤 서비스 소비 대기가 따로 관측돼 있다. 원인을 완전히 분리하지 않은 채 하드웨어·GC·디스크 중 하나로 단정하지 않는다.
+
+공식 및 원저자 근거:
+
+- [Adaptive 통합 clustered engine 예시](https://weareadaptive.com/trading-resources/blog/building-fault-tolerant-low-latency-exchanges/)
+- [Open Exchange baseline와 metric semantics](https://github.com/openexch/match/blob/main/docs/perf/2026-07-02-performance-baseline.md)
+- [assets 릴리스](https://github.com/openexch/assets/releases/tag/v0.5.0-beta), [직접 측정PR21](https://github.com/openexch/assets/pull/21)
+- [matching committed RTT 후속PR161](https://github.com/openexch/match/pull/161):50k offered에서p50약308μs/p99약615μs. HTTP·자금hold 제외이며80만 부하의지연이 아니다. 우리 수백ms를 Aeron의 당연한 한계로 설명할 근거는 없다.
+- [공식 Best Practices](https://github.com/aeron-io/aeron/wiki/Best-Practices-Guide), [공식 Cluster Clients](https://aeron.io/docs/aeron-cluster/cluster-clients/)
+- [1.53.3 DutyCycleTracker](https://github.com/aeron-io/aeron/blob/1.53.3/aeron-driver/src/main/java/io/aeron/driver/DutyCycleTracker.java), [공식 Cluster 내부offer 계약](https://github.com/aeron-io/aeron/blob/1.53.3/aeron-cluster/src/main/java/io/aeron/cluster/service/Cluster.java), [카운터 정의](https://github.com/aeron-io/aeron/blob/1.53.3/aeron-client/src/main/java/io/aeron/AeronCounters.java)
+
+2026-10-30 구현 재개: Proto 재생성·컴파일·구조 385건, 핵심 도메인 검사, H02/H03 실제 장애 시험과 H04 codec 연속성 검사를 실행했다. 아래 제안은 당시 기록이며 승인 뒤의 구현·비교 근거는 마지막 실행 절에 별도로 남긴다.
+
+## 첨부 대조 뒤의 개선 순서 — 제안, 미구현
+
+사용자 요청은 분석 자료를 바탕으로 실제 개선할 지점과 순서를 확인하는 것이다. 이번 단계에서는 제품 코드 수정·빌드·부하 시험·티켓 발급을 하지 않았다. 아래는 제안이며 사용자의 구현 승인이나 실행 성공으로 기록하지 않는다.
+
+유지할 기존 합의는 세 노드, Archive/catalog/Consensus sync2, 접수와 실행의 두 단계 확정, 같은 token의 최초 결과 재사용, 금융 불변식과 장애 뒤 복구다. Kafka·클러스터 분리·off-heap 전환을 선행 작업으로 추가하지 않는다.
+
+### 실행 재개 전 기준선
+
+직전 구조 수정 후 새 Proto 생성·컴파일과 추가 H02/H03/H04 시험은 아직 실행하지 않았다. 먼저 이 초안의 필수 검사를 끝내 실행물을 고정한다. 이전 성공한 HA/DR 결과를 최신 미빌드 소스 전체의 통과로 대신하지 않는다. 발생기 변경 효과와 제품 최적화 효과도 별도로 비교한다.
+
+### 1. 기존 메트릭에 빠진 bounded 경로 연결
+
+`DevelopmentFundingAdapter.onBoundedMessage`에는 decode·응답 encode/전송과 `submitBoundedExecution`의 시도 횟수·결과/시간을 기존 wire2와 같은 phase/capture에 연결하지 않은 부분이 있다. ADMISSION_APPLY와 EXECUTION_TOTAL만으로 나머지 비용이 0이라고 판정하면 안 된다.
+
+새 계측 framework 없이 기존 DECODE, EXECUTION_ENCODE/OFFER, REPLY_ENCODE/OFFER와 attempt/result 카운터를 재사용한다. 양수 offer, BACK_PRESSURED, ADMIN_ACTION, 기한·종단 오류, 중복 receipt에서 Execute를 다시 제출하지 않는 경우를 검사한다. telemetry 불량·dropped sample·timingErrors도 함께 표시한다. 요청 원자료를 전수 JSONL로 추가하지 않는다.
+
+내부 Execute는 로컬 IPC 기본 stream105, 클라이언트 응답은 egress102, 복제 로그는100이다. 각 channel/session의 위치와 카운터를 대응시키며, 서로 다른 JVM의 nanoTime을 직접 빼지 않는다.
+
+### 2. 같은 발생기의 ACK 대기와 관찰 누적 정리
+
+현재 maxInFlight는 접수 응답을 못 받은 수다. 정산 미완료량이나 엔진 포화를 뜻하지 않는다. accepted, executed, 관측 완료를 따로 센다.
+
+- receipt ACK 하나만 진행 중으로 두고, 추가로 확인된 연속 prefix를 합쳐 기존 poll loop에서 전송하는 후보를 검토한다. 현재처럼 ACK 응답을 기다리는 동안 신규 주문 송신까지 중단하지 않는다. 응답 구멍·미래 순번을 ACK하지 않으며 서버가 확인한 floor만 전진시킨다.
+- marker collector는 같은 스레드 구조에서 멤버 도착 mask와 완료 count를 한 번만 갱신한다. drain의 반복 전수 조회를 없애고, latency를 측정 배열에 반영한 marker는 회수한다. 접수 응답보다 먼저 도착하는 marker와 순서가 바뀐 실행도 유한 공간에서 처리한다. 누락·중복·다른 ID/위치/노드 검사를 제거하지 않는다.
+- 먼저 기존 5,000건에서 ACK 변경만 비교한다. 이후 정상상태 용량은 별도 workload로 분리한다. 예열 20~30초와 측정 10~15초는 실행 전 고정할 제안값이다. 시간만 지났다고 JIT 수렴을 주장하지 않는다.
+- 최근 기본 active 한도는 8,192이고 preload는 6,000건이다. 요청 수만 늘리는 대신 BTC/SOL/SUI에 큰 SELL maker를 한 건씩 두고 BUY가 부분 체결하는 시나리오를 사용할 수 있다. 기존 maker 전량 체결과 업무가 다르므로 새 bounded 경로의 같은 시나리오 전후 비교에만 사용한다. 수량·자금 overflow와 마지막 잔량·예약·수수료를 검증한다.
+- 합계6,000·wire index6,000·marker sequence12,100이라는 도구의 제한도 함께 다룬다. 과거 프로토콜의 32,768창을 그대로 넣지 않는다. 새 request window는 채널당4,096이며 pending/active 한도도 별도다.
+- 창은 256→512→1,024처럼 유한 단계로 확인한다. 더 큰 창에서 완료율은 늘지 않고 backlog/p99만 오르면 확대를 중단한다. 접수 미응답과 금융 미완료량에는 각각 유한 상한을 둔다. transport 역압, capacity refusal, 정상 금융 거절을 구분한다.
+
+이 작업은 엔진을 빠르게 만들었다는 주장이 아니라 발생기가 엔진 상한을 가리고 있는지 확인하기 위한 최소 수정이다.
+
+### 3. 제품 후보는 실제 기여가 큰 항목부터 하나씩
+
+| 후보 | 최소 변경 | 유지할 경계·채택 조건 |
+|---|---|---|
+| 재시도 idle 상태 | 재시도 시작 시 `cluster.idleStrategy().reset()`을 한 번 호출하는 후보 | 매 반복 reset이나 무한 busy-spin은 금지. BP가 거의 없으면 효과도 거의 없으므로 큰 개선으로 취급하지 않는다. |
+| 느린 client 응답 | reply_offer 대기가 callback의 큰 비중일 때만 응답 재시도 예산 축소를 평가 | 결과 미확인과 같은 token 재확인을 유지한다. unknown·재전송·응답 실패가 늘어 TPS/p99만 좋아진 후보는 기각한다. 응답 QoS 조정은 적용 전에 허용 범위를 구체화한다. |
+| Driver 저장 경로 | 새 개발 실행에서 Driver만 `/dev/shm/노드별고유경로`로 분리 | Archive와 cluster는 기존 영속 volume에 둔다. sync2·quorum은 그대로다. shm 용량·수명을 확인하고 Driver 신규/Archive 기존 상태로 재기동을 검증한다. |
+| 복제·네트워크 | NAK/재전송·sender/receiver/Archive 위치와 스레드 대기를 대조한 뒤 커널 상한·실제 소켓 버퍼·수신 창을 평가 | publication window와 receiver window를 구분한다. 과거 pub-wnd4m·ingress20 기각 실험을 반복하지 않는다. 요청한 설정값을 실제 적용값으로 간주하지 않는다. |
+| 금융 CPU·할당 | 새 bounded execute의 수수료 Map 세 개, maker/taker 임시 목록, 반복 key/index 중 실제 비용이 큰 부분만 축소 | 현재 SPOT quote 수수료 규칙을 확인한 뒤 최소 누계를 검토한다. BigInteger·actualFee와 원장 CREDIT 대조·다중 체결·자산 보존·0/overflow·복원 검증을 유지한다. 이전 기각 cache 후보를 다시 개선으로 소개하지 않는다. |
+
+`doBackgroundWork`로 전송 루프를 옮기는 처방은 제외한다. Aeron1.53.3은 여기서 Cluster.offer와 ClientSession.offer를 호출하면 오류를 낸다. 별도 thread가 해당 객체를 공유하는 방식도 header/role/순서의 소유권을 깨뜨릴 수 있다. 내부 Execute는 모든 사본의 같은 순서 제출과 PendingServiceMessageTracker 계약을 유지한다. 이를 비동기 queue로 옮기는 일은 별도 복구·재생 설계이며 작은 최적화로 끼워 넣지 않는다. [공식 callback 계약](https://github.com/aeron-io/aeron/blob/1.53.3/aeron-cluster/src/main/java/io/aeron/cluster/service/ClusteredService.java), [실제 호출 검사](https://github.com/aeron-io/aeron/blob/1.53.3/aeron-cluster/src/main/java/io/aeron/cluster/service/ClusteredServiceAgent.java)
+
+### 비교와 완료 기준
+
+같은 시나리오·예열·부하·프로토콜·heap·CPU·수수료·마켓·sync2에서 한 항목만 바꾸고 짧게 교차 비교한다. 접수 receipt, leader 실행, 세 사본 실행 관측의 TPS와 p95/p99를 나누고 측정 창 전체와 drain을 보고한다. 미확인 응답·거절·관찰 누락을 분모에서 숨기지 않는다.
+
+금융 값·hold·수수료·순번·복구 결과가 일치해야 한다. 발생기가 실제로 더 보낼 수 있다는 근거와 적체가 증가하지 않는 구간을 확인하기 전에는 최대 지속 TPS라고 부르지 않는다. 별도 p99 SLO가 없으면 관측 처리량과 지연으로 표시한다. 목표50k는 유지하되 달성을 미리 확정하지 않는다. 원격 보호 gate를 포함한 수치와 LOCAL_QUORUM 수치는 분리한다.
+
+다음 첫 변경의 권장은 누락된 기존 메트릭 연결과 같은 발생기의 ACK/관찰 대기 최소 수정이다. 새 기준선을 고정한 뒤 실제 기여가 큰 제품 후보 하나를 선택한다.
+
+
+## 2026-10-30 승인 뒤 구현·비교
+
+코드 위치는 `/Users/0chord/.codex/worktrees/issue148-http-aeron/exchange-core`, 브랜치는 `test/http-trading-performance/142`다. 원격 PR/push는 하지 않았다.
+
+구현한 내용:
+
+- wire3도 기존 DECODE/FUNDING_APPLY/EXECUTION_ENCODE·OFFER/REPLY_ENCODE·OFFER 시간·시도 계측을 사용한다. 역압·ADMIN_ACTION 뒤 같은 명령 재시도, 중복 접수 시 Execute 미제출, 팔로워의 외부 미응답, 실패 때 예약 보존을 회귀 검사했다.
+- 테스트 발생기는 확인된 연속 receipt prefix만 ACK한다. ACK 한 건을 기다리는 동안 다음 prefix를 합치고, 접수 미응답과 세 노드 실행 미완료에 각각 유한 credit을 둔다. 같은 실행물에서 `--ack-mode sync|async`로 대조한다. marker는 멤버 mask·완료 큐를 사용하고 소비 뒤 회수한다. 다른 ID/position, 누락·cap은 측정 실패다.
+- `FUNDING_DRIVER_ROOT=/dev/shm` 선택 시 노드별 Driver만 휘발 경로에 놓는다. Archive/cluster는 영속 root, sync=[2,2,2]다. 기본 경로와 복구 identity는 유지한다. 디렉터리 중첩·직접 심링크·파일은 거절한다.
+- SPOT quote 수수료는 임시 Map 세 개와 체결별 maker/taker 목록 없이 BigInteger 두 합계로 actualFee와 원장 CREDIT을 대조한다. 중복 원장 ID·비음수·누계 bit 한도와 검증 후 반영 경계는 그대로다.
+- 시간제 `partial-maker`는 큰 SELL 세 건을 BTC/SOL/SUI에 두고 BUY가 계속 부분 체결한다. 기존 full-maker 6,000건 준비와 다른 업무다. 예열 20~30초·측정 10~15초·명시적 총 표본 cap, checked 자금·수량, 실제 체결 수 기준 잔고/fee/잔량 hold/ACK floor를 검증한다. 표본 한도 도달은 성공 결과로 쓰지 않는다.
+
+### 고정한 실행물과 비교 조건
+
+`build/ha-improvement-20261030/metrics-harness-baseline`의 707파일 manifest SHA는 `c232ca395850c1c3db845223b2157c405da021da75b95ae78f0098eb0b6978df`다. fee 후보 source manifest SHA는 `402948452f978a9b7536e086303f5a3bfdc97efeb91d0c8f58ab459bd3877e81`이다. baseline 전체 실행물을 보존하고 fee 후보에는 domain-trading JAR 하나만 교체했다. 새 test 클래스를 옛 Settings 생성자에 덮어쓰는 비교는 하지 않았다.
+
+아래는 동일 유한 full-maker 시나리오: SELL 6,000건 준비, BUY 예열 1,000건·측정 5,000건, BTC/SOL/SUI·동일 수수료, 각 노드 2CPU/2GiB·heap1GiB, 클라이언트 2CPU/2GiB, 접수 창256·완료 창1,024, 세 노드 sync2, LOCAL_QUORUM. HTTP·원격 보호 gate와 최대 지속 TPS를 뜻하지 않는다. 모든 비교는 금융 값과 세 사본 상태 SHA·관찰 누락을 검사하고 해당 Docker 프로젝트/volume/image를 종료 뒤 회수했다.
+
+ACK/Driver 각 세 실행의 중앙값:
+
+| 설정 | 접수 TPS | 세 사본 완료 관측 TPS | 완료 p95 / p99 |
+|---|---:|---:|---:|
+| sync ACK·기존 Driver 경로 | 4,388 | 4,312 | 195.45 / 206.42ms |
+| async ACK·기존 Driver 경로 | 6,338 | 5,875 | 150.96 / 156.46ms |
+| async ACK·Driver shm | 6,998 | 6,668 | 214.24 / 223.41ms |
+
+shm의 처리량 중앙값은 높지만 tail은 이 비교에서 좋아지지 않았다. 실행별 변동도 크므로 기본값을 강제 변경하거나 일률적인 지연 개선으로 소개하지 않는다. 이것은 발생기·배치 경로 비교이며 엔진 금융 계산 최적화와 구분한다. 근거: `engineering/results/ha-improvement-20261030/ack-driver-comparison.json`.
+
+수수료 후보는 그 뒤 같은 async ACK·Driver shm 조건에서 before/after/after/before/before/after 순으로 비교했다:
+
+| 항목 | 변경 전 중앙값 | 변경 후 중앙값 |
+|---|---:|---:|
+| 엔진 단독 TPS | 37,610 | 37,974 |
+| 엔진 단독 CPU/주문 | 26.08μs | 25.71μs |
+| 엔진 단독 할당/주문 | 13,943B | 13,001B |
+| 엔진 단독 p95 / p99 | 40.50 / 86.71μs | 36.92 / 81.33μs |
+| 세 노드 접수 TPS | 7,256 | 7,947 |
+| 세 노드 접수 p95 / p99 | 62.66 / 76.30ms | 49.73 / 64.91ms |
+| leader 완료 관측 TPS | 7,139 | 7,676 |
+| leader 완료 p95 / p99 | 106.11 / 118.93ms | 81.58 / 94.29ms |
+| 세 사본 완료 관측 TPS | 7,027 | 7,466 |
+| 세 사본 완료 p95 / p99 | 146.75 / 150.74ms | 127.14 / 135.30ms |
+
+엔진 CPU/TPS 차이는 작다. 할당 감소를 확인했고 금융 검증·복구 형식은 유지했다. 수만 TPS 달성이나 임의 부하에서 같은 개선률을 보장하는 결과는 아니다. 각 실행과 고정 조건은 `fee-engine-comparison.json`, `fee-three-node-comparison.json`에 남긴다.
+
+### 조건부 후보의 판단
+
+기존 메트릭을 연결한 9회에서 전송 실패를 숨기지 않았고 operational meters는 valid였다. 내부 제출 시도는 약 12,000건당 12,011회이며, ingress 발생기 역압은 0회다. reply_offer 누계도 전체 callback의 일부다. 이 근거로 재시도 횟수·시간을 줄이거나 idle을 매번 reset하지 않았다. 응답 미확인율을 늘리는 QoS 변경, 전송을 doBackgroundWork/별도 스레드로 옮기는 변경도 하지 않았다. NAK·소켓 overflow가 병목이라는 근거 없이 OS 전역 설정을 바꾸지 않았다.
+
+### 장애·회귀 확인
+
+- 구조 검사385건, domain-matching153건, domain-trading265건 통과. 새 수수료 다중 마켓/무체결/재전송/복원 사례 포함.
+- `ha-fault-468b4d28`: 실제 3 JVM에서 H03 genesis 로그만으로 전체 재시작, 리더 종료·동일 요청, 원래 volume 팔로워 복귀, H01 확정 접수/Execute 미전송, H05 불완전 Snapshot, H02 실행 확정/공개 접수 응답 전 종료, Snapshot+tail 전체 재시작·maker 후속 체결·H06 잘못된 lineage root READY 거절까지 9개 결과 true.
+- `remote-811c0cf0`: 별도 네 번째 ClusterBackup/Archive에 대한 공개 성공 gate, 원래 세 프로세스·root 전부 제거, 단일 promotion authority, 네 번째 기록만으로 Snapshot+tail 금융 상태, 중복 예약 방지·maker 후속 체결까지 6개 true.
+- 최종 H09 포함 `ha-fault-05b05453`는 새 세 JVM이 매번 이전 Driver 파일을 삭제한 새 경로로 시작하면서 기존 Archive·cluster의 identity와 금융 상태를 복구했다. 10개 검사 true와 boot별 경로 근거를 별도 보존했다. 최신 partial 도구도 다시 컴파일하고 사용했다.
+- 최초 고정본과 별도 fee 고정본, 최종 snapshot-7(709파일, manifest SHA `52d245565d1b9ea23cc2ac0d5cbc72ac01df9758d27d6d1ce72536e180191bbf`)을 작성 대화 상속이 없는 독립 리뷰로 대조했다. 시간제 TPS 분모와 Docker volume 디스크 guard 지적2건을 수정하고 재검토해 최종 확인된 미해결 결함은 없다. 읽기 검토는 실제 실행을 대신하지 않는다.
+
+물리적으로 다른 AZ/기기의 디스크를 모두 잃는 재해 실증, 교차 사본 상태 불일치 자동 탐지 및 Gateway 영구 fencing, 실운영 Snapshot 주기·retention/운영 배포는 이 로컬 검증의 보장으로 확대하지 않는다.
+
+
+### 최종 시간제 전후 비교
+
+동일 partial-maker·세 노드 sync2·BTC/SOL/SUI·LOCAL_QUORUM·Driver shm·접수 창256·금융 미완료 창1,024에서 예열20초 뒤 측정10초를 실행했다. 총 BUY cap200만 건은 안전 상한이며 실제 건수로 잔고·fee·3개 maker의 잔량 hold를 검증한다. 같은 새 도구/제품을 고정하고 domain-trading 수수료 집계 JAR 하나만 교체했다. before→after→after→before→before→after 순서의 각3회 중앙값이다.
+
+| 경계 | 변경 전 TPS | 변경 후 TPS | 변경 전 p95 / p99 | 변경 후 p95 / p99 |
+|---|---:|---:|---:|---:|
+| 접수 receipt | 30,988 | 35,147 | 13.84 / 21.21ms | 11.71 / 16.37ms |
+| leader 매칭·정산 완료 관측 | 30,973 | 35,136 | 24.52 / 34.58ms | 20.82 / 28.46ms |
+| 세 사본 매칭·정산 완료 관측 | 30,960 | 35,133 | 29.69 / 46.61ms | 25.08 / 39.25ms |
+| 최종 ACK 포함 cohort | 30,960 | 35,132 | 별도 단계별 latency 사용 | 별도 단계별 latency 사용 |
+
+시간제 TPS는 실제 phase 시작부터 송신 창 전체와 해당 경계의 마지막 관측까지를 포함한다. 최종 ACK까지의 전체 cohort TPS도 별도로 보고한다. 첫 요청부터 마지막 응답까지의 짧은 span은 RawSpan 보조 필드로만 남겼다. 고정10초 중 ACK 대기로 송신을 쉬었어도 그 시간을 빼 TPS를 높이지 않는다.
+
+6회 모두 돈·예약·수수료·노드별 state SHA·정확한 Inbox floor가 일치했다. 각 노드 current live maker3건, pending/미퇴역 receipt0건이다. 기존 운영 metric의 drop/degraded/failure0, metrics.valid=true를 확인했다. 원본과 압축 요약은 `engineering/results/ha-improvement-20261030/duration-comparison.json`이다.
+
+디스크 guard는 실행 중2초마다 해당 고유 Docker project의 세 `/records/<runId>` 실제 할당량 합계와 host 여유를 읽는다. 2GiB cap 전에256MiB 여유를 둔1.75GiB에서 중단하고, host8GiB 미만도 중단한다. client·컨테이너·volume 회수 실패는 성공으로 바꾸지 않는다. 이6회의 기록 peak는 약663MiB, host 여유 최저는 약80.63GiB였다. du/exec 검사 중 경과 합계도 run별로 공개한다. polling/headroom은 파일시스템 hard quota가 아니며 관측 작업이 처리량에 영향을 줄 수 있다. 그 시간을 성능 분모에서 빼지 않았다.
+
+이 수치는 큰 maker의 부분 체결·같은 Mac Docker에 대한 짧은 관측값이다. 여러 maker를 소진하는 이전 유한 cohort, 엔진 단독, HTTP, 원격 보호 gate 성능과 구분한다. 50k TPS 달성·절대 최대 용량·장기 자원 안정성을 증명하지 않는다.
+
+### 최종 검사와 정리
+
+앱 전체1,373건에서 발견한 실패13건은 업무 값 대신 객체 참조를 비교한10건, 기존300만 상한과 다른 오래된 테스트1건, 다른 테스트의 heap 사용량에 영향받은 작은 fixture2건이었다. 정산 후보 전체 필드·원장·시각을 값으로 비교하고 작은 fixture에만 이미 존재하던 heap 입력을 주입했다. 금융 계산/실제 CLI의 heap 차단은 바꾸지 않았다. 영향83건과 TempDir 변경16건 재검사 모두 통과했다. 원본 전체 실행과 클래스별 수정 재검사의 범위·결과는 `full-app-initial.json`·`affected-app-retest.json`에 구분해 남겼다. 전체 실행의 opt-in skip2건 중 remote는 별도6개 실제 장애 검사로 실행했고 SavedArchiveThreeCopyReplay는 이번에 미실행이다.
+
+Python guard6건은 live 예산 실패·timeout에서 client kill/reap과 cleanup 계속 시도를 확인한다. 실제 recording 읽기가 금융 상태를 바꾸지 않는 기존 시험, 메모리 부족 차단의 synthetic 시퀀스, 실제 GC 카운터 검사는 유지했다. 변경4모듈 형식 검사와 최종 실제 구조9건도 통과했다.
+
+수정한 native 시험2개는 이제 JUnit TempDir 하위에서 실행한다. 이번 전체/재검사에서 남은 닫힌 임시 root32개 약2.1GiB를 확인 후 회수했고 이름·할당량을 `owned-temp-cleanup.json`에 기록했다. 다른 프로젝트/작업 폴더·전체 Docker cache를 삭제하지 않았다.
+
+
+### 유한 창 확대 확인
+
+제품을 더 바꾸지 않고 새 partial-maker 조건에서 접수 창만512·1,024로 각 한 번 확인했다. 금융 미완료 창은1,024, 예열20초·측정10초·cap200만·나머지 설정은 같다.
+
+| 접수 창 | 접수 TPS | 세 사본 완료 관측 TPS | 완료 p95 / p99 |
+|---|---:|---:|---:|
+| 256, 변경 후3회 중앙값 | 35,147 | 35,133 | 25.08 / 39.25ms |
+| 512, 단일 실행 | 40,458 | 40,424 | 38.05 / 52.83ms |
+| 1,024, 단일 실행 | 38,906 | 38,868 | 45.26 / 61.60ms |
+
+1,024에서 처리량은512보다 줄고 tail은 더 늘어 확대를 중단했다. 512의 단일 실행40,424를 통계적으로 확인된 엔진 최대 지속 TPS라고 하지 않는다. 기본 창256을 임의로 올리지 않고 사용자가 throughput/latency를 비교할 근거로 남겼다. 추가 두 실행도 금융·사본·ACK floor·cleanup을 검증했다. `window-screen.json`에 원자료가 있다.
+
+### 재현 명령과 검증 범위
+
+실행 폴더·브랜치는 위에 명시한 worktree다. 다음은 최종 새 코드의 단일 시간제 관측 명령이며, 변경 전후 비교는 보관한 두 실행물의 domain-trading JAR를 구분해야 한다.
+
+```bash
+cd /Users/0chord/.codex/worktrees/issue148-http-aeron/exchange-core
+./gradlew :app-api:stageFundingVerificationRuntime --no-daemon --max-workers=1 \
+  -Pkotlin.compiler.execution.strategy=in-process \
+  '-Dorg.gradle.jvmargs=-Xmx3g -XX:MaxMetaspaceSize=768m -XX:ActiveProcessorCount=3'
+python3 app-api/src/test/scripts/ha-trading-probe.py \
+  --project "$PWD/app-api" --distribution "$PWD/app-api/build/aeron-verification" \
+  --mode bounded --workload partial-maker --max-samples 2000000 \
+  --warmup-seconds 20 --measure-seconds 10 --in-flight 256 \
+  --execution-in-flight 1024 --ack-mode async --driver-root /dev/shm
+```
+
+엔진 단독 비교는 fresh JVM/G1/Xms256m/Xmx1g/ActiveProcessorCount3에서 같은1000예열+5000측정을 사용했다. 이전 legacy→bounded 표의 ActiveProcessorCount2와 숫자를 섞지 않는다. 실제3노드와remote장애는 각각 `RUN_HA_TRADING_FAULT_TESTS=true` / `RUN_REMOTE_TRADING_RECOVERY_TESTS=true`로 해당 테스트를 실행했다. Python 디스크 guard 검사는 `python3 -m unittest discover -s app-api/src/test/scripts -p 'test_ha_trading_probe.py' -v`다.
+
+`validation-matrix.json`은 최초 앱 전체 실행과 수정 클래스/임시폴더 영향 재실행을 클래스별로 합친 근거다. 최종 클래스 행렬1,375건 중 실패0·skip2이며, 이것을 ‘최종 전체 suite를 처음부터 두 번 실행했다’고 표현하지 않는다. skip은 실행 통과로 세지 않는다. 별도 remote 실제 실행·구조/도메인·Python 결과는 각각 보존한다. 최종 고정 코드709파일은 독립 리뷰 대상과 같고, 그 뒤에는 위 실행 결과 문서만 갱신했다.
+
+최종 독립 결과 검증자도 원본 summary/control 상태와 압축 JSON을 대조해 위 중앙값·금융 값·실행물 차이·정리 결과를 확인했다. 앱 classes407개·test classes806개는 전후 동일하고 runtime JAR123개 중 domain-trading 하나만 달랐다. 검증 범위와 미검증은 `independent-verification.json`에 기록한다. 코드 수정 없이 문서·근거만 갱신했으며 PR/push는 수행하지 않았다.

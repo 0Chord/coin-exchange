@@ -1,0 +1,23 @@
+{
+  "relatedTests": 40,
+  "architectureTests": 385,
+  "testFailures": 0,
+  "skips": 0,
+  "sourceMatchesFinalReview": true,
+  "reviewSnapshotFileCount": 521,
+  "sourceChangedThisTurn": [
+    "app-api/src/main/kotlin/com/exchange/core/api/trading/infrastructure/aeron/DevelopmentFundingAdapter.kt",
+    "app-api/src/main/kotlin/com/exchange/core/api/trading/infrastructure/aeron/TradingNodeTelemetry.kt",
+    "app-api/src/test/kotlin/com/exchange/core/api/trading/infrastructure/aeron/BoundedAdapterTelemetryTest.kt",
+    "app-api/src/test/kotlin/com/exchange/core/api/trading/infrastructure/aeron/TradingNodeMetricHandoffTest.kt"
+  ],
+  "runtimeProductClassesChanged": [
+    "classes/com/exchange/core/api/trading/infrastructure/aeron/DevelopmentFundingAdapter.class",
+    "classes/com/exchange/core/api/trading/infrastructure/aeron/TradingNodeMetricHandoff$Companion.class",
+    "classes/com/exchange/core/api/trading/infrastructure/aeron/TradingNodeMetricHandoff.class"
+  ],
+  "measurementRuns": 6,
+  "allRunsIncluded": true,
+  "measurementIndependentStatus": "VALID_WITH_LIMITATIONS",
+  "performanceStabilizationComplete": false
+}

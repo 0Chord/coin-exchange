@@ -1,0 +1,37 @@
+{
+  "implementationDirectory": "/Users/0chord/.codex/worktrees/issue148-http-aeron/exchange-core",
+  "branch": "test/http-trading-performance/142",
+  "scope": "direct Aeron; no HTTP Gateway",
+  "wire": "Protobuf bounded wire3",
+  "nodes": 3,
+  "archiveCatalogConsensusSync": [
+    2,
+    2,
+    2
+  ],
+  "markets": [
+    "BTC-USDT",
+    "SOL-USDT",
+    "SUI-USDT"
+  ],
+  "warmupSeconds": 20,
+  "measureSeconds": 600,
+  "inFlight": 512,
+  "executionInFlight": 1024,
+  "maxSamples": 64000000,
+  "jvmHeapMiB": 1024,
+  "nodeCpuLimit": 2,
+  "nodeMemoryLimitMiB": 2048,
+  "driverRoot": "/dev/shm",
+  "diskAllocatedCapGiB": 24,
+  "diskEarlyStopGiB": 23,
+  "hostFreeReserveGiB": 8,
+  "productRuntime": "final selected A; exact staged product classes/libs from final-runtime-manifest, prior verified 600-second test-client overlay only",
+  "excludedPendingCandidates": [
+    "metrics conditional wake (rejected)",
+    "client decode-once (rejected)"
+  ],
+  "limitation": "one host; one 600-second run; chunk drain/aggregation pauses included in whole-cohort TPS; no HTTP Gateway, remote durability gate or fault injection",
+  "imageTag": "exchange-sustained-final-a:20261031",
+  "sourceManifest": "/Users/0chord/.codex/worktrees/issue148-http-aeron/exchange-core/build/candidate-validation-20261031/final-source-manifest.json"
+}

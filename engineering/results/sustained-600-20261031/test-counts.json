@@ -1,0 +1,35 @@
+[
+  {
+    "name": "com.exchange.core.api.trading.infrastructure.aeron.HaTradingProbeFlowTest",
+    "tests": "18",
+    "skipped": "0",
+    "failures": "0",
+    "errors": "0",
+    "timestamp": "2026-10-31T03:37:52.046Z",
+    "hostname": "0Chord.local",
+    "time": "0.072",
+    "simpleName": "HaTradingProbeFlowTest"
+  },
+  {
+    "name": "com.exchange.core.api.trading.infrastructure.aeron.HaTradingProbeMarkerTest",
+    "tests": "1",
+    "skipped": "0",
+    "failures": "0",
+    "errors": "0",
+    "timestamp": "2026-10-31T03:37:52.119Z",
+    "hostname": "0Chord.local",
+    "time": "0.001",
+    "simpleName": "HaTradingProbeMarkerTest"
+  },
+  {
+    "name": "com.exchange.core.api.trading.infrastructure.aeron.HaTradingProbeMetricsTest",
+    "tests": "5",
+    "skipped": "0",
+    "failures": "0",
+    "errors": "0",
+    "timestamp": "2026-10-31T03:37:52.120Z",
+    "hostname": "0Chord.local",
+    "time": "0.013",
+    "simpleName": "HaTradingProbeMetricsTest"
+  }
+]

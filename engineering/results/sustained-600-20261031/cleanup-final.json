@@ -1,0 +1,13 @@
+{
+  "ownedComposeProject": "ha142-d27c6c2ecb",
+  "containersRemoved": true,
+  "namedVolumesRemoved": true,
+  "networkRemoved": true,
+  "createdImageTagsRemoved": [
+    "exchange-sustained600:20261031",
+    "exchange-full-progress-base:20261031"
+  ],
+  "duplicateRuntimeRemoved": true,
+  "baselineAndOverlayPreserved": true,
+  "finalHostFreeGiB": 77.09510040283203
+}

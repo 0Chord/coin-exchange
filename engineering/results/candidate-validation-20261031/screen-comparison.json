@@ -1,0 +1,102 @@
+{
+  "base": {
+    "allReplicasTps": 33917.44272246283,
+    "allReplicasP95Ms": 61.2904165,
+    "allReplicasP99Ms": 96.21279200000001,
+    "cpuNsPerOrder": 14699.386328395503,
+    "allocatedBytesPerOrder": 11258.54538808707,
+    "pairs": [
+      {
+        "block": 1,
+        "tpsRatio": 1.0
+      },
+      {
+        "block": 2,
+        "tpsRatio": 1.0
+      },
+      {
+        "block": 3,
+        "tpsRatio": 1.0
+      },
+      {
+        "block": 4,
+        "tpsRatio": 1.0
+      }
+    ]
+  },
+  "domain": {
+    "allReplicasTps": 45677.9046192628,
+    "allReplicasP95Ms": 35.202729000000005,
+    "allReplicasP99Ms": 60.803520999999996,
+    "cpuNsPerOrder": 11416.401833333446,
+    "allocatedBytesPerOrder": 11205.231451850656,
+    "pairs": [
+      {
+        "block": 1,
+        "tpsRatio": 2.54548435504028
+      },
+      {
+        "block": 2,
+        "tpsRatio": 1.7003622216691943
+      },
+      {
+        "block": 3,
+        "tpsRatio": 0.7868239748837299
+      },
+      {
+        "block": 4,
+        "tpsRatio": 1.064242099745554
+      }
+    ]
+  },
+  "wake": {
+    "allReplicasTps": 38338.04230120811,
+    "allReplicasP95Ms": 46.4691875,
+    "allReplicasP99Ms": 78.9845205,
+    "cpuNsPerOrder": 13026.993174094148,
+    "allocatedBytesPerOrder": 11254.166812130194,
+    "pairs": [
+      {
+        "block": 1,
+        "tpsRatio": 2.465638494899687
+      },
+      {
+        "block": 2,
+        "tpsRatio": 1.143345512301085
+      },
+      {
+        "block": 3,
+        "tpsRatio": 0.9242587754117602
+      },
+      {
+        "block": 4,
+        "tpsRatio": 0.9001556651117735
+      }
+    ]
+  },
+  "client": {
+    "allReplicasTps": 44692.197919086146,
+    "allReplicasP95Ms": 36.3478125,
+    "allReplicasP99Ms": 51.0815835,
+    "cpuNsPerOrder": 11272.953821914809,
+    "allocatedBytesPerOrder": 11257.06281074497,
+    "pairs": [
+      {
+        "block": 1,
+        "tpsRatio": 2.350934423655468
+      },
+      {
+        "block": 2,
+        "tpsRatio": 1.7786403071614731
+      },
+      {
+        "block": 3,
+        "tpsRatio": 0.7894424637979756
+      },
+      {
+        "block": 4,
+        "tpsRatio": 1.0590440816608722
+      }
+    ]
+  }
+}

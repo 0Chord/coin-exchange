@@ -1,0 +1,355 @@
+{
+  "scope": "3 Docker voting nodes on one Apple M1 Pro 16GiB host, LOCAL_QUORUM, sync2, direct Aeron (not HTTP or remote durable success), 20s warmup +10s offering per run, matched triplets ABC/CAB/BCA",
+  "variants": {
+    "p0-protobuf": {
+      "admissionTps": {
+        "median": 26031.462464540884,
+        "min": 24271.69975519884,
+        "max": 28503.143775696888
+      },
+      "admissionP95Ns": {
+        "median": 17992708,
+        "min": 15305416,
+        "max": 21265041
+      },
+      "admissionP99Ns": {
+        "median": 27392166,
+        "min": 25350167,
+        "max": 40722208
+      },
+      "leaderCompletionTps": {
+        "median": 26014.128584743085,
+        "min": 24255.292162034944,
+        "max": 28485.27966463781
+      },
+      "leaderCompletionP95Ns": {
+        "median": 31485417,
+        "min": 26938792,
+        "max": 38163792
+      },
+      "leaderCompletionP99Ns": {
+        "median": 52681750,
+        "min": 42022459,
+        "max": 61925292
+      },
+      "allReplicasTps": {
+        "median": 26014.128584743085,
+        "min": 24251.77073023137,
+        "max": 28482.89900074083
+      },
+      "allReplicasP95Ns": {
+        "median": 37589084,
+        "min": 35569708,
+        "max": 50468958
+      },
+      "allReplicasP99Ns": {
+        "median": 54738333,
+        "min": 54129875,
+        "max": 79450083
+      },
+      "cohortTpsIncludingAck": {
+        "median": 26010.113812390584,
+        "min": 24251.570337933557,
+        "max": 28482.61404195395
+      },
+      "serviceThreadCpuNsPerOrderAverageNode": {
+        "median": 18267.33215201279,
+        "min": 17265.636358323194,
+        "max": 20120.414311477838
+      },
+      "serviceThreadAllocatedBytesPerOrderAverageNode": {
+        "median": 13057.033428309478,
+        "min": 13038.369045562113,
+        "max": 13102.361037373159
+      },
+      "raw": [
+        {
+          "orders": 285169,
+          "admissionTps": 28503.143775696888,
+          "admissionP95Ns": 15305416,
+          "admissionP99Ns": 25350167,
+          "leaderCompletionTps": 28485.27966463781,
+          "leaderCompletionP95Ns": 26938792,
+          "leaderCompletionP99Ns": 42022459,
+          "allReplicasTps": 28482.89900074083,
+          "allReplicasP95Ns": 35569708,
+          "allReplicasP99Ns": 54129875,
+          "cohortTpsIncludingAck": 28482.61404195395,
+          "group": 1,
+          "summary": "/Users/0chord/.codex/worktrees/issue148-http-aeron/exchange-core/app-api/build/reports/ha-trading/ha142-5d64934938/summary.json"
+        },
+        {
+          "orders": 242868,
+          "admissionTps": 24271.69975519884,
+          "admissionP95Ns": 21265041,
+          "admissionP99Ns": 40722208,
+          "leaderCompletionTps": 24255.292162034944,
+          "leaderCompletionP95Ns": 38163792,
+          "leaderCompletionP99Ns": 61925292,
+          "allReplicasTps": 24251.77073023137,
+          "allReplicasP95Ns": 50468958,
+          "allReplicasP99Ns": 79450083,
+          "cohortTpsIncludingAck": 24251.570337933557,
+          "group": 2,
+          "summary": "/Users/0chord/.codex/worktrees/issue148-http-aeron/exchange-core/app-api/build/reports/ha-trading/ha142-fbb60b929b/summary.json"
+        },
+        {
+          "orders": 260443,
+          "admissionTps": 26031.462464540884,
+          "admissionP95Ns": 17992708,
+          "admissionP99Ns": 27392166,
+          "leaderCompletionTps": 26014.128584743085,
+          "leaderCompletionP95Ns": 31485417,
+          "leaderCompletionP99Ns": 52681750,
+          "allReplicasTps": 26014.128584743085,
+          "allReplicasP95Ns": 37589084,
+          "allReplicasP99Ns": 54738333,
+          "cohortTpsIncludingAck": 26010.113812390584,
+          "group": 3,
+          "summary": "/Users/0chord/.codex/worktrees/issue148-http-aeron/exchange-core/app-api/build/reports/ha-trading/ha142-96fa54fc25/summary.json"
+        }
+      ]
+    },
+    "p3-protobuf": {
+      "admissionTps": {
+        "median": 28364.910046794677,
+        "min": 25662.504199700707,
+        "max": 29980.960509753844
+      },
+      "admissionP95Ns": {
+        "median": 16352042,
+        "min": 13801584,
+        "max": 20496708
+      },
+      "admissionP99Ns": {
+        "median": 24016208,
+        "min": 23939083,
+        "max": 34182084
+      },
+      "leaderCompletionTps": {
+        "median": 28334.643516108925,
+        "min": 25631.856462838587,
+        "max": 29938.52815609051
+      },
+      "leaderCompletionP95Ns": {
+        "median": 28262875,
+        "min": 25224291,
+        "max": 37239334
+      },
+      "leaderCompletionP99Ns": {
+        "median": 40043459,
+        "min": 37224792,
+        "max": 57742458
+      },
+      "allReplicasTps": {
+        "median": 28325.919223733596,
+        "min": 25613.916986802167,
+        "max": 29906.056372985033
+      },
+      "allReplicasP95Ns": {
+        "median": 35977000,
+        "min": 31641667,
+        "max": 41470041
+      },
+      "allReplicasP99Ns": {
+        "median": 49538292,
+        "min": 44941250,
+        "max": 71385167
+      },
+      "cohortTpsIncludingAck": {
+        "median": 28323.657848973824,
+        "min": 25612.085973680987,
+        "max": 29905.565089335792
+      },
+      "serviceThreadCpuNsPerOrderAverageNode": {
+        "median": 16513.89548924277,
+        "min": 15401.64261467144,
+        "max": 16731.14967259242
+      },
+      "serviceThreadAllocatedBytesPerOrderAverageNode": {
+        "median": 11625.027241967828,
+        "min": 11609.032154666043,
+        "max": 11630.36138669673
+      },
+      "raw": [
+        {
+          "orders": 283840,
+          "admissionTps": 28364.910046794677,
+          "admissionP95Ns": 16352042,
+          "admissionP99Ns": 24016208,
+          "leaderCompletionTps": 28334.643516108925,
+          "leaderCompletionP95Ns": 28262875,
+          "leaderCompletionP99Ns": 40043459,
+          "allReplicasTps": 28325.919223733596,
+          "allReplicasP95Ns": 35977000,
+          "allReplicasP99Ns": 49538292,
+          "cohortTpsIncludingAck": 28323.657848973824,
+          "group": 1,
+          "summary": "/Users/0chord/.codex/worktrees/issue148-http-aeron/exchange-core/app-api/build/reports/ha-trading/ha142-2f3d0336a5/summary.json"
+        },
+        {
+          "orders": 257070,
+          "admissionTps": 25662.504199700707,
+          "admissionP95Ns": 20496708,
+          "admissionP99Ns": 34182084,
+          "leaderCompletionTps": 25631.856462838587,
+          "leaderCompletionP95Ns": 37239334,
+          "leaderCompletionP99Ns": 57742458,
+          "allReplicasTps": 25613.916986802167,
+          "allReplicasP95Ns": 41470041,
+          "allReplicasP99Ns": 71385167,
+          "cohortTpsIncludingAck": 25612.085973680987,
+          "group": 2,
+          "summary": "/Users/0chord/.codex/worktrees/issue148-http-aeron/exchange-core/app-api/build/reports/ha-trading/ha142-a97bda45bc/summary.json"
+        },
+        {
+          "orders": 301361,
+          "admissionTps": 29980.960509753844,
+          "admissionP95Ns": 13801584,
+          "admissionP99Ns": 23939083,
+          "leaderCompletionTps": 29938.52815609051,
+          "leaderCompletionP95Ns": 25224291,
+          "leaderCompletionP99Ns": 37224792,
+          "allReplicasTps": 29906.056372985033,
+          "allReplicasP95Ns": 31641667,
+          "allReplicasP99Ns": 44941250,
+          "cohortTpsIncludingAck": 29905.565089335792,
+          "group": 3,
+          "summary": "/Users/0chord/.codex/worktrees/issue148-http-aeron/exchange-core/app-api/build/reports/ha-trading/ha142-9c3efe1237/summary.json"
+        }
+      ]
+    },
+    "p3-sbe": {
+      "admissionTps": {
+        "median": 28176.500544522496,
+        "min": 25093.699139045864,
+        "max": 31030.505604245387
+      },
+      "admissionP95Ns": {
+        "median": 16857333,
+        "min": 14576834,
+        "max": 19364375
+      },
+      "admissionP99Ns": {
+        "median": 29089333,
+        "min": 21870167,
+        "max": 33228958
+      },
+      "leaderCompletionTps": {
+        "median": 28156.12810651405,
+        "min": 25083.988048253646,
+        "max": 31019.361182446875
+      },
+      "leaderCompletionP95Ns": {
+        "median": 29007375,
+        "min": 24608291,
+        "max": 33668500
+      },
+      "leaderCompletionP99Ns": {
+        "median": 51277583,
+        "min": 36143291,
+        "max": 52946959
+      },
+      "allReplicasTps": {
+        "median": 28156.12810651405,
+        "min": 25083.148738578857,
+        "max": 31019.361182446875
+      },
+      "allReplicasP95Ns": {
+        "median": 35083916,
+        "min": 32131708,
+        "max": 44246625
+      },
+      "allReplicasP99Ns": {
+        "median": 58391917,
+        "min": 44905083,
+        "max": 65023417
+      },
+      "cohortTpsIncludingAck": {
+        "median": 28148.629142211033,
+        "min": 25082.816622014656,
+        "max": 31018.86928632834
+      },
+      "serviceThreadCpuNsPerOrderAverageNode": {
+        "median": 15275.270832002838,
+        "min": 14574.250678505774,
+        "max": 16425.17340664562
+      },
+      "serviceThreadAllocatedBytesPerOrderAverageNode": {
+        "median": 10821.266157833757,
+        "min": 10821.260744751977,
+        "max": 10831.93040269647
+      },
+      "raw": [
+        {
+          "orders": 310609,
+          "admissionTps": 31030.505604245387,
+          "admissionP95Ns": 14576834,
+          "admissionP99Ns": 21870167,
+          "leaderCompletionTps": 31019.361182446875,
+          "leaderCompletionP95Ns": 24608291,
+          "leaderCompletionP99Ns": 36143291,
+          "allReplicasTps": 31019.361182446875,
+          "allReplicasP95Ns": 32131708,
+          "allReplicasP99Ns": 44905083,
+          "cohortTpsIncludingAck": 31018.86928632834,
+          "group": 1,
+          "summary": "/Users/0chord/.codex/worktrees/issue148-http-aeron/exchange-core/app-api/build/reports/ha-trading/ha142-2695f9dd3a/summary.json"
+        },
+        {
+          "orders": 281850,
+          "admissionTps": 28176.500544522496,
+          "admissionP95Ns": 16857333,
+          "admissionP99Ns": 29089333,
+          "leaderCompletionTps": 28156.12810651405,
+          "leaderCompletionP95Ns": 29007375,
+          "leaderCompletionP99Ns": 51277583,
+          "allReplicasTps": 28156.12810651405,
+          "allReplicasP95Ns": 35083916,
+          "allReplicasP99Ns": 58391917,
+          "cohortTpsIncludingAck": 28148.629142211033,
+          "group": 2,
+          "summary": "/Users/0chord/.codex/worktrees/issue148-http-aeron/exchange-core/app-api/build/reports/ha-trading/ha142-5703329fac/summary.json"
+        },
+        {
+          "orders": 251163,
+          "admissionTps": 25093.699139045864,
+          "admissionP95Ns": 19364375,
+          "admissionP99Ns": 33228958,
+          "leaderCompletionTps": 25083.988048253646,
+          "leaderCompletionP95Ns": 33668500,
+          "leaderCompletionP99Ns": 52946959,
+          "allReplicasTps": 25083.148738578857,
+          "allReplicasP95Ns": 44246625,
+          "allReplicasP99Ns": 65023417,
+          "cohortTpsIncludingAck": 25082.816622014656,
+          "group": 3,
+          "summary": "/Users/0chord/.codex/worktrees/issue148-http-aeron/exchange-core/app-api/build/reports/ha-trading/ha142-7242a4c100/summary.json"
+        }
+      ]
+    }
+  },
+  "paired": [
+    {
+      "group": 1,
+      "domainAll3TpsChangePercent": -0.5511369365988728,
+      "sbeAll3TpsChangePercent": 9.508753934652582
+    },
+    {
+      "group": 2,
+      "domainAll3TpsChangePercent": 5.616687835799139,
+      "sbeAll3TpsChangePercent": 9.925116572454673
+    },
+    {
+      "group": 3,
+      "domainAll3TpsChangePercent": 14.960823214061092,
+      "sbeAll3TpsChangePercent": -16.12685930319734
+    }
+  ],
+  "validation": {
+    "all9FinancialAndReplicaVerified": true,
+    "all9CleanupSucceeded": true,
+    "maxAllocatedMiB": 650.3203125,
+    "sampleCapReached": false
+  }
+}

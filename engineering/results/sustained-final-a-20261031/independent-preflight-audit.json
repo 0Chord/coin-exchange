@@ -1,0 +1,66 @@
+{
+  "auditedAt": "2026-10-31T14:11:52.968784+09:00",
+  "scope": "Independent read-only static and SHA256 audit; no product changes, builds, tests, Docker commands or application termination performed.",
+  "finalSource": {
+    "entries": 595,
+    "mismatches": [],
+    "manifestSha256": "95f2bf92dbbf38cbde417567fe3ecf27e0cfec72b16377f931411265629b9e4d"
+  },
+  "currentFinalRuntime": {
+    "entries": 1344,
+    "mismatches": [],
+    "manifestSha256": "c294ed1725147c5f95b103259a62996a9a3ed3b9edb6d9fdf760d82dfe45c91b"
+  },
+  "stagedSustainedFinalARuntime": {
+    "entries": 1345,
+    "mismatches": [],
+    "manifestSha256": "10c92026e2bd4846ebcfb26e8c540fe333b0494b7a1c442d8c7d9745c51239ff"
+  },
+  "stagedChangedOrAddedPaths": [
+    "test-classes/com/exchange/core/api/trading/infrastructure/aeron/HaProbeAckCoordinator.class",
+    "test-classes/com/exchange/core/api/trading/infrastructure/aeron/HaProbeAcknowledgement.class",
+    "test-classes/com/exchange/core/api/trading/infrastructure/aeron/HaProbeAdmission.class",
+    "test-classes/com/exchange/core/api/trading/infrastructure/aeron/HaProbeCompletion.class",
+    "test-classes/com/exchange/core/api/trading/infrastructure/aeron/HaProbeConnection$close$1$1.class",
+    "test-classes/com/exchange/core/api/trading/infrastructure/aeron/HaProbeConnection.class",
+    "test-classes/com/exchange/core/api/trading/infrastructure/aeron/HaProbeGateDwell.class",
+    "test-classes/com/exchange/core/api/trading/infrastructure/aeron/HaProbeLatencies.class",
+    "test-classes/com/exchange/core/api/trading/infrastructure/aeron/HaProbeMarkerCollector$Arrival.class",
+    "test-classes/com/exchange/core/api/trading/infrastructure/aeron/HaProbeMarkerCollector.class",
+    "test-classes/com/exchange/core/api/trading/infrastructure/aeron/HaProbeMarkerReceiver.class",
+    "test-classes/com/exchange/core/api/trading/infrastructure/aeron/HaProbePhase.class",
+    "test-classes/com/exchange/core/api/trading/infrastructure/aeron/HaProbeRunPlan$Companion.class",
+    "test-classes/com/exchange/core/api/trading/infrastructure/aeron/HaProbeRunPlan.class",
+    "test-classes/com/exchange/core/api/trading/infrastructure/aeron/HaProbeThroughput.class",
+    "test-classes/com/exchange/core/api/trading/infrastructure/aeron/HaProbeWire$DefaultImpls.class",
+    "test-classes/com/exchange/core/api/trading/infrastructure/aeron/HaProbeWire.class",
+    "test-classes/com/exchange/core/api/trading/infrastructure/aeron/HaTradingProbeClientKt$runHaTradingProbeClient$1$1$phase$3.class",
+    "test-classes/com/exchange/core/api/trading/infrastructure/aeron/HaTradingProbeClientKt$runHaTradingProbeClient$1$1$phase$4.class",
+    "test-classes/com/exchange/core/api/trading/infrastructure/aeron/HaTradingProbeClientKt.class"
+  ],
+  "stagedProductClassesAndLibrariesUnchanged": true,
+  "stagedChangesExactlyPriorClientOverlay": true,
+  "controllerByteIdenticalToPriorVerified600": true,
+  "controllerSha256": "6eb60828fd95594ba2cb0a21e320ac173f8a5082296782263415536c21917b52",
+  "compatibility": {
+    "entrypoint": "BoundedHaTradingClientKt.main -> runHaTradingProbeClient(HaProbeWire,TradingEngineProbeOptions,int) unchanged descriptor",
+    "wireABI": "HaProbeWire, Connection, Acknowledgement, Admission, Completion descriptors unchanged; RunPlan only adds two getters. Verified by javap, no runtime execution.",
+    "histogramDependency": "lib/HdrHistogram-2.2.2.jar exists in final runtime manifest",
+    "excludedC": "BoundedHaTradingClient.kt/current class retained; overlay source uses separate acknowledgement/admission decoding, so decode-once C is not reintroduced."
+  },
+  "contracts": {
+    "duration": "Global 600-second deadline starts before sample-array allocation (client-source lines1087-1090); whole-cohort TPS includes chunk preparation, aggregation, drain gaps and final ACK (lines1163,1179-1188,haProbeThroughput lines618-625).",
+    "boundedMemory": "Five Long arrays bounded at <=1,000,000 measured orders per chunk; warmup <=2,000,000; phase summary retains scalar/percentile metadata; callback cleared at every sustained chunk; collector limited by maxExecutionInFlight+64.",
+    "financial": "Controller lines492-520 independently checks funded capacity minus actual BUY debit, seller net9990/BUY, fee30/BUY, per-market BUY allocation, seller remaining hold and exact live maker rows, exact ACK floors, pending0/retained0, admission sequence and state fingerprint across all three nodes.",
+    "interval": "HA_INTERVAL orders count admissions; real now-previousInterval denominator includes observed chunk gaps; final completion TPS uses whole cohort. Gate dwell is only offering loops, explicitly excludes chunk preparation/aggregation/drain.",
+    "guard": "600 profile cap24GiB/earlyStop23GiB; sample512; 2-second poll; host reserve8GiB; reads allocated du -sk of exact three owned roots; timeout aborts exact unique client and reaps process; cleanup always attempted."
+  },
+  "limitations": [
+    "Prior 600 result is not proof of current final A result; the new run must finish and its own raw output/financial state/cleanup must be audited.",
+    "Guard limitation text still says 256MiB headroom from short profile; actual 600 profile numeric headroom is1GiB. Report should use numeric settings.",
+    "Disk guard is periodic polling, not filesystem hard quota. Startup and final post-client CAPTURE loops are outside live-client guard cadence.",
+    "Overlay changes throughput helper method signature; suitable for selected performance main path. Existing separately compiled general test bodies are not evidence of test-suite binary compatibility for this overlaid distribution.",
+    "Percentiles are HdrHistogram3 significant-digit quantized whole-run values. Without saved individual latency samples, independent audit can verify formula/source/event consistency but cannot recompute percentile samples."
+  ],
+  "preflightVerdict": "No blocker found for the authorized final A600-second direct-Aeron test; final outcome remains unverified until its own evidence is available."
+}

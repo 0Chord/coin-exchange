@@ -1,0 +1,54 @@
+{
+  "classes/com/exchange/core/api/trading/infrastructure/aeron/TradingNodeCallbackCapture.class": {
+    "expected": "759eed0a57aea853d5bbab57a74321dca5cef22b90e6b3075ef38f94d63a45ab",
+    "actual": "af18eceba19ee57de1258c02a9444f18a71c66a23f66c9b3c5e703da574b5e2d"
+  },
+  "classes/com/exchange/core/api/trading/infrastructure/aeron/TradingNodeMetrics.class": {
+    "expected": "fca865f2aae9273692cac8bedbfe481dd1df9a92d0dfc80352e52afcc947fbfb",
+    "actual": "d861a39af8a2b8d9a1bb4632adaa7a11f23c823626c2e8cf14bec60f308a91d3"
+  },
+  "test-classes/com/exchange/core/api/trading/infrastructure/aeron/BoundedAdapterTelemetryTest$Fixture.class": {
+    "expected": "0acdb903e7880ced18aa3ba75238e55c8ca188dd31df59a0606fc896ae8ad4fb",
+    "actual": "365fdb28753b2c327ce2bcf2b75fe6bb795ff0fe0cb4a99d2a3f6ab8bb41216e"
+  },
+  "test-classes/com/exchange/core/api/trading/infrastructure/aeron/BoundedAdapterTelemetryTest.class": {
+    "expected": "a5d9ded8b2088ef98d01911c3025311fc6d38d6e657d4df3a972107f9ca1fc53",
+    "actual": "bceb726b272ece8cb8cf9f61139852d2e8345c1e789f086ee8df7d71fb313e44"
+  },
+  "test-classes/com/exchange/core/api/trading/infrastructure/aeron/TradingNodeMetricHandoffTest$fallback drain \uae30\ud55c \ucd08\uacfc\ub3c4 recorder\uc758 \uad00\uce21 \uc2e4\ud328\ub85c \ub0a8\ub294\ub2e4$registry$1$newTimer$1.class": {
+    "expected": "8076e8343007145ab14659f9391d020cad320f716e7e6974576931672b8c7983",
+    "actual": "bd8b9f8f05b056ed2f77148d7578992ccf168218d1b01fe009ea42c76a364eca"
+  },
+  "test-classes/com/exchange/core/api/trading/infrastructure/aeron/TradingNodeMetricHandoffTest$fallback drain \uae30\ud55c \ucd08\uacfc\ub3c4 recorder\uc758 \uad00\uce21 \uc2e4\ud328\ub85c \ub0a8\ub294\ub2e4$registry$1.class": {
+    "expected": "3cb70aa3f31ecb31e4f4a72956337bda6c08b74feca204d0e2734b1fc113012d",
+    "actual": "f5985193ac1b853a7df7b4c4d2c44779f5e0abd6bc2085f68e34cac3242d9713"
+  },
+  "test-classes/com/exchange/core/api/trading/infrastructure/aeron/TradingNodeMetricHandoffTest$full fallback\uc758 \uc624\ub958\ub3c4 \uc55e\uc11c \uc218\ub77d\ud55c \uc815\uc0c1 \ud45c\ubcf8\uc744 \uc0dd\ub7b5\ud558\uc9c0 \uc54a\ub294\ub2e4$registry$1$newCounter$1.class": {
+    "expected": "256550abd4202adaf99d1befc686495a01b3ab081352ff2afee4ef05aefdb6eb",
+    "actual": "d511d299f38a667eed63f74e30f63f19df8c43048edb801bd29119c22898666c"
+  },
+  "test-classes/com/exchange/core/api/trading/infrastructure/aeron/TradingNodeMetricHandoffTest$full fallback\uc758 \uc624\ub958\ub3c4 \uc55e\uc11c \uc218\ub77d\ud55c \uc815\uc0c1 \ud45c\ubcf8\uc744 \uc0dd\ub7b5\ud558\uc9c0 \uc54a\ub294\ub2e4$registry$1$newTimer$1.class": {
+    "expected": "090d93d34d7946451c0dff35da76d15d63c8d89003c12864701a7007794c377e",
+    "actual": "77cb8953d59024d4cdd6e91ebb8b6a7ad0e5e3e2a584873d2db542196a5c0e79"
+  },
+  "test-classes/com/exchange/core/api/trading/infrastructure/aeron/TradingNodeMetricHandoffTest$full fallback\uc758 \uc624\ub958\ub3c4 \uc55e\uc11c \uc218\ub77d\ud55c \uc815\uc0c1 \ud45c\ubcf8\uc744 \uc0dd\ub7b5\ud558\uc9c0 \uc54a\ub294\ub2e4$registry$1.class": {
+    "expected": "a581833732f4d0aebdce3944d5dfe4d467c10323159d5bc8469e718a1fc30855",
+    "actual": "a6d1f5c1737a84499ea39d5d36de4dc15af4602a38d6d249e2190aa8109be4af"
+  },
+  "test-classes/com/exchange/core/api/trading/infrastructure/aeron/TradingNodeMetricHandoffTest$worker Error\ub294 \ub2e4\uc74c \uba85\ub839\uc744 \uae30\ub2e4\ub9ac\uc9c0 \uc54a\uace0 \uc18c\uc720 \ub178\ub4dc\uc5d0 \uc989\uc2dc \ud1b5\uc9c0\ud55c\ub2e4$registry$1$newTimer$1.class": {
+    "expected": "de573b2c37bc5526047699df2c38471179982d917c336273193586e016ad5605",
+    "actual": "4947da828f4909ae2e6460f5246d719e0b262979ab04c2edc2cf310f6d8d2f50"
+  },
+  "test-classes/com/exchange/core/api/trading/infrastructure/aeron/TradingNodeMetricHandoffTest$worker Error\ub294 \ub2e4\uc74c \uba85\ub839\uc744 \uae30\ub2e4\ub9ac\uc9c0 \uc54a\uace0 \uc18c\uc720 \ub178\ub4dc\uc5d0 \uc989\uc2dc \ud1b5\uc9c0\ud55c\ub2e4$registry$1.class": {
+    "expected": "619b89edb301ede2cca194634c058c49bb8e57a404529636c87cf940d3594e28",
+    "actual": "26139cfd8e454311132ae204198f010549adf66184cf2a95b15f9c93d07d6b27"
+  },
+  "test-classes/com/exchange/core/api/trading/infrastructure/aeron/TradingNodeMetricHandoffTest.class": {
+    "expected": "abf323739eb392c2ce03743583246ab3de11e12a8952e45f15a9545173069846",
+    "actual": "3fe1b8257984a81fa1f782cee3e170bdbb40d15a8e47d02d0ac2855a51ca9cc2"
+  },
+  "test-classes/com/exchange/core/api/trading/infrastructure/aeron/TradingNodeMetricHandoffTestKt.class": {
+    "expected": "00da09d8274353f4e75698cc867779eef9fa17430863aa51083914d152ecfcd5",
+    "actual": "d0890ed58a71da60bcd20d9bb8a344662f691d282707a97ec9bc062427ae7a36"
+  }
+}

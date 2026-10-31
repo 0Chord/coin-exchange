@@ -1,0 +1,1149 @@
+{
+  "status": "VALID_WITH_LIMITATIONS",
+  "verificationType": "저장 원문의 독립 재계산. 빌드·테스트·부하·제품 수정 없음.",
+  "scope": {
+    "nodes": 3,
+    "sync": [
+      2,
+      2,
+      2
+    ],
+    "wire": "protobuf",
+    "markets": [
+      "BTC",
+      "SOL",
+      "SUI"
+    ],
+    "admissionWindow": 512,
+    "executionWindow": 1024,
+    "warmupSeconds": 20,
+    "measureSeconds": 10,
+    "workload": "partial-maker",
+    "ackMode": "async"
+  },
+  "inputAggregate": {
+    "path": "/Users/0chord/.codex/worktrees/issue148-http-aeron/exchange-core/build/service-progress-fix-20261031/paired-runs.json",
+    "sha256": "1fa8396db857628b199faa459d8f17d10fb8525290eef060ba8178b27174f395"
+  },
+  "validationErrors": [],
+  "wholeCohortAndFinancialValidation": {
+    "runs": 6,
+    "finalNodeStates": 18,
+    "allChecksPassed": true,
+    "normalizedComposeEqual": true,
+    "maximumAllocatedBytes": 986517504,
+    "minimumObservedHostFreeBytes": 83255463936,
+    "copiedSummariesEqualOriginals": true,
+    "validMetricsAndZeroDropsDegradedFailuresFallbacks": true
+  },
+  "runtimeIsolation": {
+    "beforeManifestEntries": 1344,
+    "afterManifestEntries": 1344,
+    "changedFiles": [
+      "classes/com/exchange/core/api/trading/infrastructure/aeron/DevelopmentFundingAdapter.class",
+      "classes/com/exchange/core/api/trading/infrastructure/aeron/TradingNodeMetricHandoff$Companion.class",
+      "classes/com/exchange/core/api/trading/infrastructure/aeron/TradingNodeMetricHandoff.class"
+    ],
+    "testClassesAndLibrariesIdentical": true,
+    "original520SourceManifestPreserved": true,
+    "original520SnapshotPath": "/Users/0chord/.codex/worktrees/issue148-http-aeron/exchange-core/build/regression-fix-20261030/source-v2",
+    "beforeSourceManifestScope": {
+      "entries": 4,
+      "allMatchOriginal520Manifest": true,
+      "note": "네 파일의 부분 manifest다. 원래 520개 manifest를 대체하지 않으며 네 항목은 원본과 일치한다."
+    }
+  },
+  "normalization": {
+    "serviceCpuAndAllocation": "같은 노드의 측정 끝−시작 counter / 측정 주문 수. 실행 안에서 세 노드를 산술평균한 뒤 구성별 세 실행의 중앙값.",
+    "executionOfferWall": "각 노드 execution_offer.totalNs / 측정 주문 수의 세 노드 평균, 이후 실행 중앙값. Local offer와 retry idle을 포함한 벽시간이며 순수 CPU가 아님.",
+    "executionExtraOffers": "offerAttempts.execution − 측정 주문 수. 노드 평균 원시 횟수와 주문당 정규화를 함께 보존.",
+    "percentiles": "실행별 percentile 세 개의 중앙값. Pooled percentile 또는 같은 요청의 가산 가능한 단계별 기여도가 아님."
+  },
+  "runs": [
+    {
+      "number": 1,
+      "label": "before",
+      "runId": "ha142-06400d7048",
+      "copiedSummary": "/Users/0chord/.codex/worktrees/issue148-http-aeron/exchange-core/build/service-progress-fix-20261031/run-1-before.json",
+      "originalSummary": "/Users/0chord/.codex/worktrees/issue148-http-aeron/exchange-core/app-api/build/reports/ha-trading/ha142-06400d7048/summary.json",
+      "inputSha256": "5f8bce9730a52531952a97f5d996f0c2bbb85795305f51e1951899ad3d14a0ac",
+      "orders": 464579,
+      "warmupOrders": 581036,
+      "totalBuys": 1045615,
+      "leaderMember": 2,
+      "metrics": {
+        "admissionTps": 46416.53433654713,
+        "admissionP95Ns": 16054167,
+        "admissionP99Ns": 34809334,
+        "leaderCompletionTps": 46390.689530855074,
+        "leaderCompletionP95Ns": 28385792,
+        "leaderCompletionP99Ns": 57121000,
+        "allReplicasTps": 46390.689530855074,
+        "allReplicasP95Ns": 32915833,
+        "allReplicasP99Ns": 63052500,
+        "cohortTpsIncludingAck": 46385.54143127079,
+        "serviceCpuNsPerOrder": 10700.187013762281,
+        "allocatedBytesPerOrder": 11244.875611395837,
+        "executionOfferWallNsPerOrder": 490.51489269496324,
+        "executionExtraOffersPerNode": 464.0,
+        "executionExtraOffersPerOrder": 0.000998753710348509,
+        "executionOffersPerOrder": 1.0009987537103484
+      },
+      "nodes": [
+        {
+          "member": 0,
+          "roleAtStart": "FOLLOWER",
+          "roleAtEnd": "FOLLOWER",
+          "serviceCpuNsPerOrder": 10362.903895785217,
+          "allocatedBytesPerOrder": 11033.792900669208,
+          "executionOfferWallNsPerOrder": 488.54562517892543,
+          "executionOfferAttempts": 465043.0,
+          "executionExtraOffers": 464.0,
+          "executionOfferCount": 464579
+        },
+        {
+          "member": 1,
+          "roleAtStart": "FOLLOWER",
+          "roleAtEnd": "FOLLOWER",
+          "serviceCpuNsPerOrder": 10305.170496298799,
+          "allocatedBytesPerOrder": 10961.793210627256,
+          "executionOfferWallNsPerOrder": 510.30135455971964,
+          "executionOfferAttempts": 465051.0,
+          "executionExtraOffers": 472.0,
+          "executionOfferCount": 464579
+        },
+        {
+          "member": 2,
+          "roleAtStart": "LEADER",
+          "roleAtEnd": "LEADER",
+          "serviceCpuNsPerOrder": 11432.486649202827,
+          "allocatedBytesPerOrder": 11739.040722891048,
+          "executionOfferWallNsPerOrder": 472.6976983462447,
+          "executionOfferAttempts": 465035.0,
+          "executionExtraOffers": 456.0,
+          "executionOfferCount": 464579
+        }
+      ],
+      "validationErrors": [],
+      "finalCaptureAttempt": 0,
+      "financialStateSha256": "eb2b98cb6157f252c1713e6eddb9d4c5b7c6412b4f09baae2b0ac2fbc6234e7b",
+      "diskPeakAllocatedBytes": 807002112,
+      "minimumHostFreeBytes": 84517158912,
+      "hostWindow": {
+        "scope": "호스트 전체의 부팅·예열·측정·drain·CAPTURE·정리 전후 창. 측정 10초 또는 요청별 근거가 아님.",
+        "pageSizeBytes": 16384,
+        "counterDeltasPages": {
+          "Pageins": 28647,
+          "Pageouts": 335,
+          "Swapins": 3138,
+          "Swapouts": 70620,
+          "Compressions": 1731530,
+          "Decompressions": 1400536
+        },
+        "swapBefore": "vm.swapusage: total = 18432.00M  used = 17027.81M  free = 1404.19M  (encrypted)",
+        "swapAfter": "vm.swapusage: total = 18432.00M  used = 18091.25M  free = 340.75M  (encrypted)",
+        "sourceFiles": [
+          {
+            "path": "/Users/0chord/.codex/worktrees/issue148-http-aeron/exchange-core/build/service-progress-fix-20261031/run-1-before-vm-stat-before.txt",
+            "sha256": "1838901ba1eb3019def4a1dc107858231d91475447d2cfaa0036fec184b98222"
+          },
+          {
+            "path": "/Users/0chord/.codex/worktrees/issue148-http-aeron/exchange-core/build/service-progress-fix-20261031/run-1-before-vm-stat-after.txt",
+            "sha256": "4fcddbe702d23dcbc14d5b0863322a10b76f23d9456c37dd5f920434f5536990"
+          },
+          {
+            "path": "/Users/0chord/.codex/worktrees/issue148-http-aeron/exchange-core/build/service-progress-fix-20261031/run-1-before-swap-before.txt",
+            "sha256": "e09e87656f41def03b2e7bf490a8f74a5fc5e37ed52c5131a2557525f0389416"
+          },
+          {
+            "path": "/Users/0chord/.codex/worktrees/issue148-http-aeron/exchange-core/build/service-progress-fix-20261031/run-1-before-swap-after.txt",
+            "sha256": "96f595f512a7d4136c20f00ce664fda83d260a19d6722df8f27ddf1f5e42b0f2"
+          }
+        ]
+      }
+    },
+    {
+      "number": 2,
+      "label": "after",
+      "runId": "ha142-109027bb58",
+      "copiedSummary": "/Users/0chord/.codex/worktrees/issue148-http-aeron/exchange-core/build/service-progress-fix-20261031/run-2-after.json",
+      "originalSummary": "/Users/0chord/.codex/worktrees/issue148-http-aeron/exchange-core/app-api/build/reports/ha-trading/ha142-109027bb58/summary.json",
+      "inputSha256": "2f489abca866cbf58b2d72a4fb2cd53788bc49c7ca7c2b5c86bdc2e61df2f81d",
+      "orders": 494589,
+      "warmupOrders": 784581,
+      "totalBuys": 1279170,
+      "leaderMember": 2,
+      "metrics": {
+        "admissionTps": 49426.05471604054,
+        "admissionP95Ns": 16550291,
+        "admissionP99Ns": 25757167,
+        "leaderCompletionTps": 49392.4151075002,
+        "leaderCompletionP95Ns": 29071833,
+        "leaderCompletionP99Ns": 44845750,
+        "allReplicasTps": 49384.83856012361,
+        "allReplicasP95Ns": 32815458,
+        "allReplicasP99Ns": 51072375,
+        "cohortTpsIncludingAck": 49384.42949024723,
+        "serviceCpuNsPerOrder": 10532.559422065593,
+        "allocatedBytesPerOrder": 11243.450757430244,
+        "executionOfferWallNsPerOrder": 158.29087181477954,
+        "executionExtraOffersPerNode": 560.6666666666666,
+        "executionExtraOffersPerOrder": 0.0011336011651425055,
+        "executionOffersPerOrder": 1.0011336011651424
+      },
+      "nodes": [
+        {
+          "member": 0,
+          "roleAtStart": "FOLLOWER",
+          "roleAtEnd": "FOLLOWER",
+          "serviceCpuNsPerOrder": 10126.735271103886,
+          "allocatedBytesPerOrder": 10993.788571925377,
+          "executionOfferWallNsPerOrder": 144.92861143292714,
+          "executionOfferAttempts": 495142.0,
+          "executionExtraOffers": 553.0,
+          "executionOfferCount": 494589
+        },
+        {
+          "member": 1,
+          "roleAtStart": "FOLLOWER",
+          "roleAtEnd": "FOLLOWER",
+          "serviceCpuNsPerOrder": 10409.453238951937,
+          "allocatedBytesPerOrder": 11033.788571925377,
+          "executionOfferWallNsPerOrder": 157.17848152708612,
+          "executionOfferAttempts": 495202.0,
+          "executionExtraOffers": 613.0,
+          "executionOfferCount": 494589
+        },
+        {
+          "member": 2,
+          "roleAtStart": "LEADER",
+          "roleAtEnd": "LEADER",
+          "serviceCpuNsPerOrder": 11061.489756140958,
+          "allocatedBytesPerOrder": 11702.775128439978,
+          "executionOfferWallNsPerOrder": 172.76552248432537,
+          "executionOfferAttempts": 495105.0,
+          "executionExtraOffers": 516.0,
+          "executionOfferCount": 494589
+        }
+      ],
+      "validationErrors": [],
+      "finalCaptureAttempt": 0,
+      "financialStateSha256": "f63e7aa0024b81de626b1a9463472f5febbcce18b33839ce43122bf79293a0c1",
+      "diskPeakAllocatedBytes": 986517504,
+      "minimumHostFreeBytes": 84279291904,
+      "hostWindow": {
+        "scope": "호스트 전체의 부팅·예열·측정·drain·CAPTURE·정리 전후 창. 측정 10초 또는 요청별 근거가 아님.",
+        "pageSizeBytes": 16384,
+        "counterDeltasPages": {
+          "Pageins": 12794,
+          "Pageouts": 204,
+          "Swapins": 1805,
+          "Swapouts": 6496,
+          "Compressions": 1087708,
+          "Decompressions": 1040311
+        },
+        "swapBefore": "vm.swapusage: total = 18432.00M  used = 18091.25M  free = 340.75M  (encrypted)",
+        "swapAfter": "vm.swapusage: total = 18432.00M  used = 18160.75M  free = 271.25M  (encrypted)",
+        "sourceFiles": [
+          {
+            "path": "/Users/0chord/.codex/worktrees/issue148-http-aeron/exchange-core/build/service-progress-fix-20261031/run-2-after-vm-stat-before.txt",
+            "sha256": "1978a0ded2f3f07ef1ba93e1ecf049f2f48b5747cf30fbf3fc164c1a60024642"
+          },
+          {
+            "path": "/Users/0chord/.codex/worktrees/issue148-http-aeron/exchange-core/build/service-progress-fix-20261031/run-2-after-vm-stat-after.txt",
+            "sha256": "8e48671a93ce2e2336f40e77e60350b9cafebb4fb6eeb923f85412f4b03e80d1"
+          },
+          {
+            "path": "/Users/0chord/.codex/worktrees/issue148-http-aeron/exchange-core/build/service-progress-fix-20261031/run-2-after-swap-before.txt",
+            "sha256": "96f595f512a7d4136c20f00ce664fda83d260a19d6722df8f27ddf1f5e42b0f2"
+          },
+          {
+            "path": "/Users/0chord/.codex/worktrees/issue148-http-aeron/exchange-core/build/service-progress-fix-20261031/run-2-after-swap-after.txt",
+            "sha256": "efec0de99aa180ea6bd8bc8c7f9360b8792312346a831fb5989f173f90b28cdd"
+          }
+        ]
+      }
+    },
+    {
+      "number": 3,
+      "label": "after",
+      "runId": "ha142-3332665e00",
+      "copiedSummary": "/Users/0chord/.codex/worktrees/issue148-http-aeron/exchange-core/build/service-progress-fix-20261031/run-3-after.json",
+      "originalSummary": "/Users/0chord/.codex/worktrees/issue148-http-aeron/exchange-core/app-api/build/reports/ha-trading/ha142-3332665e00/summary.json",
+      "inputSha256": "554373128516c1586a2b7109c9de9ae86d611aa8fa816722db3c53ef950f3ccd",
+      "orders": 486056,
+      "warmupOrders": 709329,
+      "totalBuys": 1195385,
+      "leaderMember": 0,
+      "metrics": {
+        "admissionTps": 48565.55525199075,
+        "admissionP95Ns": 16574875,
+        "admissionP99Ns": 23720917,
+        "leaderCompletionTps": 48540.81720207435,
+        "leaderCompletionP95Ns": 27925375,
+        "leaderCompletionP99Ns": 41380417,
+        "allReplicasTps": 48536.92427586068,
+        "allReplicasP95Ns": 31882500,
+        "allReplicasP99Ns": 43833333,
+        "cohortTpsIncludingAck": 48530.227078284785,
+        "serviceCpuNsPerOrder": 10508.753042173466,
+        "allocatedBytesPerOrder": 11232.355739530698,
+        "executionOfferWallNsPerOrder": 161.73650361275244,
+        "executionExtraOffersPerNode": 555.6666666666666,
+        "executionExtraOffersPerOrder": 0.0011432153222399614,
+        "executionOffersPerOrder": 1.00114321532224
+      },
+      "nodes": [
+        {
+          "member": 0,
+          "roleAtStart": "LEADER",
+          "roleAtEnd": "LEADER",
+          "serviceCpuNsPerOrder": 11344.250890843854,
+          "allocatedBytesPerOrder": 11669.474480306795,
+          "executionOfferWallNsPerOrder": 179.68410430073902,
+          "executionOfferAttempts": 486586.0,
+          "executionExtraOffers": 530.0,
+          "executionOfferCount": 486056
+        },
+        {
+          "member": 1,
+          "roleAtStart": "FOLLOWER",
+          "roleAtEnd": "FOLLOWER",
+          "serviceCpuNsPerOrder": 10073.946423868854,
+          "allocatedBytesPerOrder": 11017.79636914265,
+          "executionOfferWallNsPerOrder": 154.9728508649209,
+          "executionOfferAttempts": 486643.0,
+          "executionExtraOffers": 587.0,
+          "executionOfferCount": 486056
+        },
+        {
+          "member": 2,
+          "roleAtStart": "FOLLOWER",
+          "roleAtEnd": "FOLLOWER",
+          "serviceCpuNsPerOrder": 10108.061811807693,
+          "allocatedBytesPerOrder": 11009.79636914265,
+          "executionOfferWallNsPerOrder": 150.5525556725974,
+          "executionOfferAttempts": 486606.0,
+          "executionExtraOffers": 550.0,
+          "executionOfferCount": 486056
+        }
+      ],
+      "validationErrors": [],
+      "finalCaptureAttempt": 0,
+      "financialStateSha256": "f4654c8c85cb38e5eef7c0d9bfb07f1a3b02c91f8261cbc814b41db6e8991fec",
+      "diskPeakAllocatedBytes": 922116096,
+      "minimumHostFreeBytes": 83255463936,
+      "hostWindow": {
+        "scope": "호스트 전체의 부팅·예열·측정·drain·CAPTURE·정리 전후 창. 측정 10초 또는 요청별 근거가 아님.",
+        "pageSizeBytes": 16384,
+        "counterDeltasPages": {
+          "Pageins": 52689,
+          "Pageouts": 335,
+          "Swapins": 2505,
+          "Swapouts": 10776,
+          "Compressions": 1333678,
+          "Decompressions": 1293254
+        },
+        "swapBefore": "vm.swapusage: total = 18432.00M  used = 18160.75M  free = 271.25M  (encrypted)",
+        "swapAfter": "vm.swapusage: total = 19456.00M  used = 18289.12M  free = 1166.88M  (encrypted)",
+        "sourceFiles": [
+          {
+            "path": "/Users/0chord/.codex/worktrees/issue148-http-aeron/exchange-core/build/service-progress-fix-20261031/run-3-after-vm-stat-before.txt",
+            "sha256": "c4201169c7b5e04b4faac8f9746e22b5e4139a1be6db21e432f771a6f5d6ab5f"
+          },
+          {
+            "path": "/Users/0chord/.codex/worktrees/issue148-http-aeron/exchange-core/build/service-progress-fix-20261031/run-3-after-vm-stat-after.txt",
+            "sha256": "82390baf00860d7bf4104a9d50a3a84d2edb2b5aa217410305f535c74d87f204"
+          },
+          {
+            "path": "/Users/0chord/.codex/worktrees/issue148-http-aeron/exchange-core/build/service-progress-fix-20261031/run-3-after-swap-before.txt",
+            "sha256": "efec0de99aa180ea6bd8bc8c7f9360b8792312346a831fb5989f173f90b28cdd"
+          },
+          {
+            "path": "/Users/0chord/.codex/worktrees/issue148-http-aeron/exchange-core/build/service-progress-fix-20261031/run-3-after-swap-after.txt",
+            "sha256": "b367e0c15211651a0e12b09b54cc3d8b660e0c07849ceba9c81321dc8d26a7ac"
+          }
+        ]
+      }
+    },
+    {
+      "number": 4,
+      "label": "before",
+      "runId": "ha142-bfb703bb26",
+      "copiedSummary": "/Users/0chord/.codex/worktrees/issue148-http-aeron/exchange-core/build/service-progress-fix-20261031/run-4-before.json",
+      "originalSummary": "/Users/0chord/.codex/worktrees/issue148-http-aeron/exchange-core/app-api/build/reports/ha-trading/ha142-bfb703bb26/summary.json",
+      "inputSha256": "7855435ecfe26471530a76946d77c582e5dc8507508255b303fbcf3c6c1aa4c5",
+      "orders": 449433,
+      "warmupOrders": 639055,
+      "totalBuys": 1088488,
+      "leaderMember": 0,
+      "metrics": {
+        "admissionTps": 44923.3164062688,
+        "admissionP95Ns": 17112792,
+        "admissionP99Ns": 31263916,
+        "leaderCompletionTps": 44901.66098799288,
+        "leaderCompletionP95Ns": 30011166,
+        "leaderCompletionP99Ns": 54761083,
+        "allReplicasTps": 44901.66098799288,
+        "allReplicasP95Ns": 39619125,
+        "allReplicasP99Ns": 71464542,
+        "cohortTpsIncludingAck": 44900.372603649004,
+        "serviceCpuNsPerOrder": 11627.135148806014,
+        "allocatedBytesPerOrder": 11242.428885581017,
+        "executionOfferWallNsPerOrder": 506.79007401177336,
+        "executionExtraOffersPerNode": 443.3333333333333,
+        "executionExtraOffersPerOrder": 0.0009864280845717456,
+        "executionOffersPerOrder": 1.0009864280845717
+      },
+      "nodes": [
+        {
+          "member": 0,
+          "roleAtStart": "LEADER",
+          "roleAtEnd": "LEADER",
+          "serviceCpuNsPerOrder": 12289.990305562787,
+          "allocatedBytesPerOrder": 11699.73476802994,
+          "executionOfferWallNsPerOrder": 521.0615531124773,
+          "executionOfferAttempts": 449871.0,
+          "executionExtraOffers": 438.0,
+          "executionOfferCount": 449433
+        },
+        {
+          "member": 1,
+          "roleAtStart": "FOLLOWER",
+          "roleAtEnd": "FOLLOWER",
+          "serviceCpuNsPerOrder": 11361.053064639224,
+          "allocatedBytesPerOrder": 11033.776157959028,
+          "executionOfferWallNsPerOrder": 474.36289502550994,
+          "executionOfferAttempts": 449883.0,
+          "executionExtraOffers": 450.0,
+          "executionOfferCount": 449433
+        },
+        {
+          "member": 2,
+          "roleAtStart": "FOLLOWER",
+          "roleAtEnd": "FOLLOWER",
+          "serviceCpuNsPerOrder": 11230.362076216032,
+          "allocatedBytesPerOrder": 10993.775730754083,
+          "executionOfferWallNsPerOrder": 524.9457738973329,
+          "executionOfferAttempts": 449875.0,
+          "executionExtraOffers": 442.0,
+          "executionOfferCount": 449433
+        }
+      ],
+      "validationErrors": [],
+      "finalCaptureAttempt": 0,
+      "financialStateSha256": "1e59e5afbfbc85fbbbe82b7d71f16ae3faf05ceea70745eef40cc6626cd15973",
+      "diskPeakAllocatedBytes": 839958528,
+      "minimumHostFreeBytes": 83329081344,
+      "hostWindow": {
+        "scope": "호스트 전체의 부팅·예열·측정·drain·CAPTURE·정리 전후 창. 측정 10초 또는 요청별 근거가 아님.",
+        "pageSizeBytes": 16384,
+        "counterDeltasPages": {
+          "Pageins": 25730,
+          "Pageouts": 499,
+          "Swapins": 2323,
+          "Swapouts": 3420,
+          "Compressions": 1533035,
+          "Decompressions": 1488943
+        },
+        "swapBefore": "vm.swapusage: total = 19456.00M  used = 18289.12M  free = 1166.88M  (encrypted)",
+        "swapAfter": "vm.swapusage: total = 19456.00M  used = 18310.56M  free = 1145.44M  (encrypted)",
+        "sourceFiles": [
+          {
+            "path": "/Users/0chord/.codex/worktrees/issue148-http-aeron/exchange-core/build/service-progress-fix-20261031/run-4-before-vm-stat-before.txt",
+            "sha256": "519f943080160b9d7d3c550515e1e557b6d9ac79d9451874ea6b9a6e9d96b618"
+          },
+          {
+            "path": "/Users/0chord/.codex/worktrees/issue148-http-aeron/exchange-core/build/service-progress-fix-20261031/run-4-before-vm-stat-after.txt",
+            "sha256": "ff7bbe50b991d711fa9e8e203ab4853254dca4119bf0cc92547f84a95508ab38"
+          },
+          {
+            "path": "/Users/0chord/.codex/worktrees/issue148-http-aeron/exchange-core/build/service-progress-fix-20261031/run-4-before-swap-before.txt",
+            "sha256": "b367e0c15211651a0e12b09b54cc3d8b660e0c07849ceba9c81321dc8d26a7ac"
+          },
+          {
+            "path": "/Users/0chord/.codex/worktrees/issue148-http-aeron/exchange-core/build/service-progress-fix-20261031/run-4-before-swap-after.txt",
+            "sha256": "455538b2b255ccbcec6cf62b52742d4dd6040fa51a725440040ea3c7bc3488c6"
+          }
+        ]
+      }
+    },
+    {
+      "number": 5,
+      "label": "before",
+      "runId": "ha142-04451a82fe",
+      "copiedSummary": "/Users/0chord/.codex/worktrees/issue148-http-aeron/exchange-core/build/service-progress-fix-20261031/run-5-before.json",
+      "originalSummary": "/Users/0chord/.codex/worktrees/issue148-http-aeron/exchange-core/app-api/build/reports/ha-trading/ha142-04451a82fe/summary.json",
+      "inputSha256": "548d7ce023762fd86c5dbb70c0461a4373184b6d9b3dedc08464f67666d42f7e",
+      "orders": 402872,
+      "warmupOrders": 590265,
+      "totalBuys": 993137,
+      "leaderMember": 2,
+      "metrics": {
+        "admissionTps": 40266.6376562543,
+        "admissionP95Ns": 20118625,
+        "admissionP99Ns": 37693542,
+        "leaderCompletionTps": 40231.48406946225,
+        "leaderCompletionP95Ns": 35213583,
+        "leaderCompletionP99Ns": 66667708,
+        "allReplicasTps": 40226.69936195055,
+        "allReplicasP95Ns": 37768875,
+        "allReplicasP99Ns": 68655000,
+        "cohortTpsIncludingAck": 40218.59225774112,
+        "serviceCpuNsPerOrder": 11193.681939507667,
+        "allocatedBytesPerOrder": 11250.07974079443,
+        "executionOfferWallNsPerOrder": 481.3722902890579,
+        "executionExtraOffersPerNode": 399.3333333333333,
+        "executionExtraOffersPerOrder": 0.000991216399584318,
+        "executionOffersPerOrder": 1.0009912163995842
+      },
+      "nodes": [
+        {
+          "member": 0,
+          "roleAtStart": "FOLLOWER",
+          "roleAtEnd": "FOLLOWER",
+          "serviceCpuNsPerOrder": 10738.183353521714,
+          "allocatedBytesPerOrder": 11033.689211461706,
+          "executionOfferWallNsPerOrder": 473.29462211322704,
+          "executionOfferAttempts": 403278.0,
+          "executionExtraOffers": 406.0,
+          "executionOfferCount": 402872
+        },
+        {
+          "member": 1,
+          "roleAtStart": "FOLLOWER",
+          "roleAtEnd": "FOLLOWER",
+          "serviceCpuNsPerOrder": 10811.119772533211,
+          "allocatedBytesPerOrder": 11017.689211461706,
+          "executionOfferWallNsPerOrder": 458.8793512579678,
+          "executionOfferAttempts": 403265.0,
+          "executionExtraOffers": 393.0,
+          "executionOfferCount": 402872
+        },
+        {
+          "member": 2,
+          "roleAtStart": "LEADER",
+          "roleAtEnd": "LEADER",
+          "serviceCpuNsPerOrder": 12031.742692468079,
+          "allocatedBytesPerOrder": 11698.860799459879,
+          "executionOfferWallNsPerOrder": 511.94289749597885,
+          "executionOfferAttempts": 403271.0,
+          "executionExtraOffers": 399.0,
+          "executionOfferCount": 402872
+        }
+      ],
+      "validationErrors": [],
+      "finalCaptureAttempt": 0,
+      "financialStateSha256": "a6230e93fed23adcee977d0f91842fa943d7c58ff0deac57e8b56a460ff6c1d1",
+      "diskPeakAllocatedBytes": 766623744,
+      "minimumHostFreeBytes": 83413057536,
+      "hostWindow": {
+        "scope": "호스트 전체의 부팅·예열·측정·drain·CAPTURE·정리 전후 창. 측정 10초 또는 요청별 근거가 아님.",
+        "pageSizeBytes": 16384,
+        "counterDeltasPages": {
+          "Pageins": 24970,
+          "Pageouts": 326,
+          "Swapins": 2561,
+          "Swapouts": 9668,
+          "Compressions": 1209495,
+          "Decompressions": 1176510
+        },
+        "swapBefore": "vm.swapusage: total = 19456.00M  used = 18310.56M  free = 1145.44M  (encrypted)",
+        "swapAfter": "vm.swapusage: total = 19456.00M  used = 18421.62M  free = 1034.38M  (encrypted)",
+        "sourceFiles": [
+          {
+            "path": "/Users/0chord/.codex/worktrees/issue148-http-aeron/exchange-core/build/service-progress-fix-20261031/run-5-before-vm-stat-before.txt",
+            "sha256": "1eb65836bbb88501f8e7dfefe1a297e5fc7ba35a152c83cbb0dd2544b9eb4f5b"
+          },
+          {
+            "path": "/Users/0chord/.codex/worktrees/issue148-http-aeron/exchange-core/build/service-progress-fix-20261031/run-5-before-vm-stat-after.txt",
+            "sha256": "489251e086a79704f0fe646849dce11e8d941fb44916a20e72cf07e2d0e83c71"
+          },
+          {
+            "path": "/Users/0chord/.codex/worktrees/issue148-http-aeron/exchange-core/build/service-progress-fix-20261031/run-5-before-swap-before.txt",
+            "sha256": "455538b2b255ccbcec6cf62b52742d4dd6040fa51a725440040ea3c7bc3488c6"
+          },
+          {
+            "path": "/Users/0chord/.codex/worktrees/issue148-http-aeron/exchange-core/build/service-progress-fix-20261031/run-5-before-swap-after.txt",
+            "sha256": "019851b3b50b210285ce833cf24d79939d305ab42a7a7d875e44ad39560f02f4"
+          }
+        ]
+      }
+    },
+    {
+      "number": 6,
+      "label": "after",
+      "runId": "ha142-484cd0d42d",
+      "copiedSummary": "/Users/0chord/.codex/worktrees/issue148-http-aeron/exchange-core/build/service-progress-fix-20261031/run-6-after.json",
+      "originalSummary": "/Users/0chord/.codex/worktrees/issue148-http-aeron/exchange-core/app-api/build/reports/ha-trading/ha142-484cd0d42d/summary.json",
+      "inputSha256": "1704bbbdbbdefb242006aeefa800a0047cc0c1430a9b0978be233b5f6fc88d9c",
+      "orders": 396517,
+      "warmupOrders": 572010,
+      "totalBuys": 968527,
+      "leaderMember": 2,
+      "metrics": {
+        "admissionTps": 39540.65795050726,
+        "admissionP95Ns": 21010166,
+        "admissionP99Ns": 37160916,
+        "leaderCompletionTps": 39435.659935715885,
+        "leaderCompletionP95Ns": 39724333,
+        "leaderCompletionP99Ns": 69277959,
+        "allReplicasTps": 39432.37611850329,
+        "allReplicasP95Ns": 44479541,
+        "allReplicasP99Ns": 73443167,
+        "cohortTpsIncludingAck": 39423.73486300591,
+        "serviceCpuNsPerOrder": 10323.827082655556,
+        "allocatedBytesPerOrder": 11239.45998448154,
+        "executionOfferWallNsPerOrder": 153.99450633053985,
+        "executionExtraOffersPerNode": 458.3333333333333,
+        "executionExtraOffersPerOrder": 0.0011558983179367679,
+        "executionOffersPerOrder": 1.0011558983179367
+      },
+      "nodes": [
+        {
+          "member": 0,
+          "roleAtStart": "FOLLOWER",
+          "roleAtEnd": "FOLLOWER",
+          "serviceCpuNsPerOrder": 10000.765023946009,
+          "allocatedBytesPerOrder": 11009.727280293153,
+          "executionOfferWallNsPerOrder": 141.99326888884966,
+          "executionOfferAttempts": 396970.0,
+          "executionExtraOffers": 453.0,
+          "executionOfferCount": 396517
+        },
+        {
+          "member": 1,
+          "roleAtStart": "FOLLOWER",
+          "roleAtEnd": "FOLLOWER",
+          "serviceCpuNsPerOrder": 10112.513740898878,
+          "allocatedBytesPerOrder": 11009.726796076839,
+          "executionOfferWallNsPerOrder": 158.81702423855722,
+          "executionOfferAttempts": 396992.0,
+          "executionExtraOffers": 475.0,
+          "executionOfferCount": 396517
+        },
+        {
+          "member": 2,
+          "roleAtStart": "LEADER",
+          "roleAtEnd": "LEADER",
+          "serviceCpuNsPerOrder": 10858.202483121782,
+          "allocatedBytesPerOrder": 11698.925877074627,
+          "executionOfferWallNsPerOrder": 161.17322586421264,
+          "executionOfferAttempts": 396964.0,
+          "executionExtraOffers": 447.0,
+          "executionOfferCount": 396517
+        }
+      ],
+      "validationErrors": [],
+      "finalCaptureAttempt": 0,
+      "financialStateSha256": "ca2ddb91886a9b180da2f9525aac5a9ab3a27b451bb02a3f317c3c5e854530e7",
+      "diskPeakAllocatedBytes": 747724800,
+      "minimumHostFreeBytes": 83440017408,
+      "hostWindow": {
+        "scope": "호스트 전체의 부팅·예열·측정·drain·CAPTURE·정리 전후 창. 측정 10초 또는 요청별 근거가 아님.",
+        "pageSizeBytes": 16384,
+        "counterDeltasPages": {
+          "Pageins": 101740,
+          "Pageouts": 468,
+          "Swapins": 6627,
+          "Swapouts": 67056,
+          "Compressions": 1408142,
+          "Decompressions": 1269318
+        },
+        "swapBefore": "vm.swapusage: total = 19456.00M  used = 18421.62M  free = 1034.38M  (encrypted)",
+        "swapAfter": "vm.swapusage: total = 19456.00M  used = 19421.38M  free = 34.62M  (encrypted)",
+        "sourceFiles": [
+          {
+            "path": "/Users/0chord/.codex/worktrees/issue148-http-aeron/exchange-core/build/service-progress-fix-20261031/run-6-after-vm-stat-before.txt",
+            "sha256": "a9fb01397991187f6c0e5b5a3e7844c39441007a84f5d70efe962b1a06d9a359"
+          },
+          {
+            "path": "/Users/0chord/.codex/worktrees/issue148-http-aeron/exchange-core/build/service-progress-fix-20261031/run-6-after-vm-stat-after.txt",
+            "sha256": "0dee1e0079571115c40c47e48131cb920bcf1b128dfa931b7929ecc3bf826b87"
+          },
+          {
+            "path": "/Users/0chord/.codex/worktrees/issue148-http-aeron/exchange-core/build/service-progress-fix-20261031/run-6-after-swap-before.txt",
+            "sha256": "019851b3b50b210285ce833cf24d79939d305ab42a7a7d875e44ad39560f02f4"
+          },
+          {
+            "path": "/Users/0chord/.codex/worktrees/issue148-http-aeron/exchange-core/build/service-progress-fix-20261031/run-6-after-swap-after.txt",
+            "sha256": "f8eb07f6a97c8e0e219ef8951b1e626c5e7a9a00c9cf2d842be33651b07393bc"
+          }
+        ]
+      }
+    }
+  ],
+  "medians": {
+    "before": {
+      "admissionTps": 44923.3164062688,
+      "admissionP95Ns": 17112792,
+      "admissionP99Ns": 34809334,
+      "leaderCompletionTps": 44901.66098799288,
+      "leaderCompletionP95Ns": 30011166,
+      "leaderCompletionP99Ns": 57121000,
+      "allReplicasTps": 44901.66098799288,
+      "allReplicasP95Ns": 37768875,
+      "allReplicasP99Ns": 68655000,
+      "cohortTpsIncludingAck": 44900.372603649004,
+      "serviceCpuNsPerOrder": 11193.681939507667,
+      "allocatedBytesPerOrder": 11244.875611395837,
+      "executionOfferWallNsPerOrder": 490.51489269496324,
+      "executionExtraOffersPerNode": 443.3333333333333,
+      "executionExtraOffersPerOrder": 0.000991216399584318,
+      "executionOffersPerOrder": 1.0009912163995842
+    },
+    "after": {
+      "admissionTps": 48565.55525199075,
+      "admissionP95Ns": 16574875,
+      "admissionP99Ns": 25757167,
+      "leaderCompletionTps": 48540.81720207435,
+      "leaderCompletionP95Ns": 29071833,
+      "leaderCompletionP99Ns": 44845750,
+      "allReplicasTps": 48536.92427586068,
+      "allReplicasP95Ns": 32815458,
+      "allReplicasP99Ns": 51072375,
+      "cohortTpsIncludingAck": 48530.227078284785,
+      "serviceCpuNsPerOrder": 10508.753042173466,
+      "allocatedBytesPerOrder": 11239.45998448154,
+      "executionOfferWallNsPerOrder": 158.29087181477954,
+      "executionExtraOffersPerNode": 555.6666666666666,
+      "executionExtraOffersPerOrder": 0.0011432153222399614,
+      "executionOffersPerOrder": 1.00114321532224
+    }
+  },
+  "medianChanges": {
+    "admissionTps": {
+      "before": 44923.3164062688,
+      "after": 48565.55525199075,
+      "delta": 3642.2388457219495,
+      "percent": 8.1076802362118
+    },
+    "admissionP95Ns": {
+      "before": 17112792,
+      "after": 16574875,
+      "delta": -537917,
+      "percent": -3.14336199493338
+    },
+    "admissionP99Ns": {
+      "before": 34809334,
+      "after": 25757167,
+      "delta": -9052167,
+      "percent": -26.004999118914483
+    },
+    "leaderCompletionTps": {
+      "before": 44901.66098799288,
+      "after": 48540.81720207435,
+      "delta": 3639.1562140814713,
+      "percent": 8.104725157170956
+    },
+    "leaderCompletionP95Ns": {
+      "before": 30011166,
+      "after": 29071833,
+      "delta": -939333,
+      "percent": -3.1299450344581703
+    },
+    "leaderCompletionP99Ns": {
+      "before": 57121000,
+      "after": 44845750,
+      "delta": -12275250,
+      "percent": -21.489907389576512
+    },
+    "allReplicasTps": {
+      "before": 44901.66098799288,
+      "after": 48536.92427586068,
+      "delta": 3635.2632878677978,
+      "percent": 8.096055263612412
+    },
+    "allReplicasP95Ns": {
+      "before": 37768875,
+      "after": 32815458,
+      "delta": -4953417,
+      "percent": -13.11507689863678
+    },
+    "allReplicasP99Ns": {
+      "before": 68655000,
+      "after": 51072375,
+      "delta": -17582625,
+      "percent": -25.61011579637317
+    },
+    "cohortTpsIncludingAck": {
+      "before": 44900.372603649004,
+      "after": 48530.227078284785,
+      "delta": 3629.85447463578,
+      "percent": 8.084241319504738
+    },
+    "serviceCpuNsPerOrder": {
+      "before": 11193.681939507667,
+      "after": 10508.753042173466,
+      "delta": -684.9288973342009,
+      "percent": -6.1188883250002934
+    },
+    "allocatedBytesPerOrder": {
+      "before": 11244.875611395837,
+      "after": 11239.45998448154,
+      "delta": -5.4156269142968085,
+      "percent": -0.04816084322718517
+    },
+    "executionOfferWallNsPerOrder": {
+      "before": 490.51489269496324,
+      "after": 158.29087181477954,
+      "delta": -332.22402088018373,
+      "percent": -67.72965017532792
+    },
+    "executionExtraOffersPerNode": {
+      "before": 443.3333333333333,
+      "after": 555.6666666666666,
+      "delta": 112.33333333333331,
+      "percent": 25.33834586466166
+    },
+    "executionExtraOffersPerOrder": {
+      "before": 0.000991216399584318,
+      "after": 0.0011432153222399614,
+      "delta": 0.0001519989226556435,
+      "percent": 15.334585133920964
+    },
+    "executionOffersPerOrder": {
+      "before": 1.0009912163995842,
+      "after": 1.00114321532224,
+      "delta": 0.00015199892265571613,
+      "percent": 0.015184840802340283
+    }
+  },
+  "pairs": [
+    {
+      "pair": 1,
+      "beforeRun": 1,
+      "afterRun": 2,
+      "chronologicalOrder": "before-after",
+      "beforeLeader": 2,
+      "afterLeader": 2,
+      "sameLeaderWithinPair": true,
+      "changes": {
+        "admissionTps": {
+          "before": 46416.53433654713,
+          "after": 49426.05471604054,
+          "delta": 3009.520379493413,
+          "percent": 6.483724867678875
+        },
+        "admissionP95Ns": {
+          "before": 16054167,
+          "after": 16550291,
+          "delta": 496124,
+          "percent": 3.0903129386906203
+        },
+        "admissionP99Ns": {
+          "before": 34809334,
+          "after": 25757167,
+          "delta": -9052167,
+          "percent": -26.004999118914483
+        },
+        "leaderCompletionTps": {
+          "before": 46390.689530855074,
+          "after": 49392.4151075002,
+          "delta": 3001.725576645127,
+          "percent": 6.4705345124233205
+        },
+        "leaderCompletionP95Ns": {
+          "before": 28385792,
+          "after": 29071833,
+          "delta": 686041,
+          "percent": 2.4168464279594515
+        },
+        "leaderCompletionP99Ns": {
+          "before": 57121000,
+          "after": 44845750,
+          "delta": -12275250,
+          "percent": -21.489907389576512
+        },
+        "allReplicasTps": {
+          "before": 46390.689530855074,
+          "after": 49384.83856012361,
+          "delta": 2994.149029268534,
+          "percent": 6.454202469392234
+        },
+        "allReplicasP95Ns": {
+          "before": 32915833,
+          "after": 32815458,
+          "delta": -100375,
+          "percent": -0.3049444320610051
+        },
+        "allReplicasP99Ns": {
+          "before": 63052500,
+          "after": 51072375,
+          "delta": -11980125,
+          "percent": -19.0002378969906
+        },
+        "cohortTpsIncludingAck": {
+          "before": 46385.54143127079,
+          "after": 49384.42949024723,
+          "delta": 2998.888058976445,
+          "percent": 6.465135398753263
+        },
+        "serviceCpuNsPerOrder": {
+          "before": 10700.187013762281,
+          "after": 10532.559422065593,
+          "delta": -167.6275916966879,
+          "percent": -1.566585625850181
+        },
+        "allocatedBytesPerOrder": {
+          "before": 11244.875611395837,
+          "after": 11243.450757430244,
+          "delta": -1.4248539655927743,
+          "percent": -0.012671140302777939
+        },
+        "executionOfferWallNsPerOrder": {
+          "before": 490.51489269496324,
+          "after": 158.29087181477954,
+          "delta": -332.22402088018373,
+          "percent": -67.72965017532792
+        },
+        "executionExtraOffersPerNode": {
+          "before": 464.0,
+          "after": 560.6666666666666,
+          "delta": 96.66666666666663,
+          "percent": 20.833333333333325
+        },
+        "executionExtraOffersPerOrder": {
+          "before": 0.000998753710348509,
+          "after": 0.0011336011651425055,
+          "delta": 0.00013484745479399652,
+          "percent": 13.50157234929743
+        },
+        "executionOffersPerOrder": {
+          "before": 1.0009987537103484,
+          "after": 1.0011336011651424,
+          "delta": 0.00013484745479397375,
+          "percent": 0.013471290977551398
+        }
+      }
+    },
+    {
+      "pair": 2,
+      "beforeRun": 4,
+      "afterRun": 3,
+      "chronologicalOrder": "after-before",
+      "beforeLeader": 0,
+      "afterLeader": 0,
+      "sameLeaderWithinPair": true,
+      "changes": {
+        "admissionTps": {
+          "before": 44923.3164062688,
+          "after": 48565.55525199075,
+          "delta": 3642.2388457219495,
+          "percent": 8.1076802362118
+        },
+        "admissionP95Ns": {
+          "before": 17112792,
+          "after": 16574875,
+          "delta": -537917,
+          "percent": -3.14336199493338
+        },
+        "admissionP99Ns": {
+          "before": 31263916,
+          "after": 23720917,
+          "delta": -7542999,
+          "percent": -24.126852822915723
+        },
+        "leaderCompletionTps": {
+          "before": 44901.66098799288,
+          "after": 48540.81720207435,
+          "delta": 3639.1562140814713,
+          "percent": 8.104725157170956
+        },
+        "leaderCompletionP95Ns": {
+          "before": 30011166,
+          "after": 27925375,
+          "delta": -2085791,
+          "percent": -6.950049858109475
+        },
+        "leaderCompletionP99Ns": {
+          "before": 54761083,
+          "after": 41380417,
+          "delta": -13380666,
+          "percent": -24.434626320301224
+        },
+        "allReplicasTps": {
+          "before": 44901.66098799288,
+          "after": 48536.92427586068,
+          "delta": 3635.2632878677978,
+          "percent": 8.096055263612412
+        },
+        "allReplicasP95Ns": {
+          "before": 39619125,
+          "after": 31882500,
+          "delta": -7736625,
+          "percent": -19.52750092284976
+        },
+        "allReplicasP99Ns": {
+          "before": 71464542,
+          "after": 43833333,
+          "delta": -27631209,
+          "percent": -38.66422176189137
+        },
+        "cohortTpsIncludingAck": {
+          "before": 44900.372603649004,
+          "after": 48530.227078284785,
+          "delta": 3629.85447463578,
+          "percent": 8.084241319504738
+        },
+        "serviceCpuNsPerOrder": {
+          "before": 11627.135148806014,
+          "after": 10508.753042173466,
+          "delta": -1118.3821066325472,
+          "percent": -9.61872458107097
+        },
+        "allocatedBytesPerOrder": {
+          "before": 11242.428885581017,
+          "after": 11232.355739530698,
+          "delta": -10.073146050319338,
+          "percent": -0.08959937530259587
+        },
+        "executionOfferWallNsPerOrder": {
+          "before": 506.79007401177336,
+          "after": 161.73650361275244,
+          "delta": -345.05357039902094,
+          "percent": -68.0860948336184
+        },
+        "executionExtraOffersPerNode": {
+          "before": 443.3333333333333,
+          "after": 555.6666666666666,
+          "delta": 112.33333333333331,
+          "percent": 25.33834586466166
+        },
+        "executionExtraOffersPerOrder": {
+          "before": 0.0009864280845717456,
+          "after": 0.0011432153222399614,
+          "delta": 0.00015678723766821587,
+          "percent": 15.894441786527658
+        },
+        "executionOffersPerOrder": {
+          "before": 1.0009864280845717,
+          "after": 1.00114321532224,
+          "delta": 0.00015678723766821,
+          "percent": 0.015663273074362216
+        }
+      }
+    },
+    {
+      "pair": 3,
+      "beforeRun": 5,
+      "afterRun": 6,
+      "chronologicalOrder": "before-after",
+      "beforeLeader": 2,
+      "afterLeader": 2,
+      "sameLeaderWithinPair": true,
+      "changes": {
+        "admissionTps": {
+          "before": 40266.6376562543,
+          "after": 39540.65795050726,
+          "delta": -725.9797057470423,
+          "percent": -1.8029310317502545
+        },
+        "admissionP95Ns": {
+          "before": 20118625,
+          "after": 21010166,
+          "delta": 891541,
+          "percent": 4.431421133402513
+        },
+        "admissionP99Ns": {
+          "before": 37693542,
+          "after": 37160916,
+          "delta": -532626,
+          "percent": -1.4130431149187328
+        },
+        "leaderCompletionTps": {
+          "before": 40231.48406946225,
+          "after": 39435.659935715885,
+          "delta": -795.8241337463623,
+          "percent": -1.9781127943784504
+        },
+        "leaderCompletionP95Ns": {
+          "before": 35213583,
+          "after": 39724333,
+          "delta": 4510750,
+          "percent": 12.809687670805904
+        },
+        "leaderCompletionP99Ns": {
+          "before": 66667708,
+          "after": 69277959,
+          "delta": 2610251,
+          "percent": 3.9153153427743392
+        },
+        "allReplicasTps": {
+          "before": 40226.69936195055,
+          "after": 39432.37611850329,
+          "delta": -794.3232434472593,
+          "percent": -1.9746169982779893
+        },
+        "allReplicasP95Ns": {
+          "before": 37768875,
+          "after": 44479541,
+          "delta": 6710666,
+          "percent": 17.767714818087654
+        },
+        "allReplicasP99Ns": {
+          "before": 68655000,
+          "after": 73443167,
+          "delta": 4788167,
+          "percent": 6.974243682179004
+        },
+        "cohortTpsIncludingAck": {
+          "before": 40218.59225774112,
+          "after": 39423.73486300591,
+          "delta": -794.8573947352052,
+          "percent": -1.9763431540352205
+        },
+        "serviceCpuNsPerOrder": {
+          "before": 11193.681939507667,
+          "after": 10323.827082655556,
+          "delta": -869.854856852111,
+          "percent": -7.7709449093956495
+        },
+        "allocatedBytesPerOrder": {
+          "before": 11250.07974079443,
+          "after": 11239.45998448154,
+          "delta": -10.619756312889876,
+          "percent": -0.09439716479858751
+        },
+        "executionOfferWallNsPerOrder": {
+          "before": 481.3722902890579,
+          "after": 153.99450633053985,
+          "delta": -327.3777839585181,
+          "percent": -68.00927069606185
+        },
+        "executionExtraOffersPerNode": {
+          "before": 399.3333333333333,
+          "after": 458.3333333333333,
+          "delta": 59.0,
+          "percent": 14.774624373956602
+        },
+        "executionExtraOffersPerOrder": {
+          "before": 0.000991216399584318,
+          "after": 0.0011558983179367679,
+          "delta": 0.00016468191835244993,
+          "percent": 16.614123658719926
+        },
+        "executionOffersPerOrder": {
+          "before": 1.0009912163995842,
+          "after": 1.0011558983179367,
+          "delta": 0.000164681918352505,
+          "percent": 0.016451884457580057
+        }
+      }
+    }
+  ],
+  "leaderAssessment": "실행별 리더는 2,2,0,0,2,2다. 각 실행 안의 역할은 불변이며 모든 before/after 쌍의 리더가 같다. 이 차이로 측정을 무효화하거나 실행을 제외하지 않는다. 특정 고정 리더·다른 호스트에서의 일반성은 입증하지 않는다.",
+  "limits": [
+    "느린 마지막 after를 포함해 여섯 실행을 모두 보존했다. 앞 두 쌍은 완료 처리량과 tail이 개선됐으나 마지막 쌍은 완료 TPS와 p95/p99가 악화됐다.",
+    "시간에 따라 host 압박이 달라지는 같은 호스트 Docker의 짧은 세 쌍이다. 안정적인 인과적 개선율·최대 지속 용량을 확정하지 않는다.",
+    "vm_stat/swap 전후는 호스트 전체의 부팅·예열·측정·drain·CAPTURE·정리 범위다. 10초 또는 특정 JVM·요청에 귀속하거나 마지막 실행 제외의 사유로 쓰지 않는다.",
+    "Execution offer 벽시간은 감소했으나 주문당 추가 시도는 늘었다. 재시도 횟수가 줄어서 phase 시간이 감소한 것은 아니며, 순수 CPU 절약으로 환산하지 않는다.",
+    "서비스 CPU·할당 checkpoint에는 CAPTURE와 경계 제어 비용이 포함되며 서버 전체 CPU를 나타내지 않는다.",
+    "직접 Aeron 완료에는 marker 관측 비용이 포함된다. HTTP 성능·장시간 용량·원격 장애 RPO0는 측정하지 않았다."
+  ],
+  "rootComparisonCrossCheck": {
+    "path": "/Users/0chord/.codex/worktrees/issue148-http-aeron/exchange-core/build/service-progress-fix-20261031/comparison-summary.json",
+    "numericComparisons": 116,
+    "mismatches": []
+  }
+}

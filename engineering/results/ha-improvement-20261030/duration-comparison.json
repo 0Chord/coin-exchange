@@ -1,0 +1,4868 @@
+[
+  {
+    "variant": "before",
+    "runId": "ha142-adcfdc6f03",
+    "success": true,
+    "measurement": {
+      "kind": "HA_PERFORMANCE",
+      "mode": "bounded-wire3-no-history-index",
+      "scope": "three-node direct Aeron; sync2; duration window; partial maker; actual TCP completion observation",
+      "workload": "partial-maker",
+      "warmup": 501094,
+      "orders": 306896,
+      "sellPreparation": 3,
+      "maxSamples": 2000000,
+      "warmupSeconds": 20,
+      "measureSeconds": 10,
+      "actualTotalBuys": 807990,
+      "expectedBuyerQuoteAvailable": 11943941200,
+      "expectedMakerRemaining": [
+        39733700000000,
+        397337000000000,
+        397336000000000
+      ],
+      "expectedBuyerAckFloor": 807990,
+      "expectedSellerAckFloor": 3,
+      "maxInFlight": 256,
+      "maxExecutionInFlight": 1024,
+      "maxObservedUnanswered": 256,
+      "ackMode": "async",
+      "maxObservedFinancialIncomplete": 1024,
+      "asyncAckRequests": 1186,
+      "backpressuredOffers": 3,
+      "completionCollectorPeakEntries": 1024,
+      "completionCollectorRetained": 0,
+      "completionReceiveBufferBytes": 212992,
+      "throughputSemantics": "phase start -> max(actual offering stop, last correlated observation); cohort also includes final ACK",
+      "rawSpanSemantics": "first send attempt -> last correlated observation; excludes remaining offering-window time",
+      "admissionTps": 30674.07238579537,
+      "admissionElapsedNs": 10005062130,
+      "admissionRawSpanTps": 30674.21546073027,
+      "admissionRawSpanNs": 10005015463,
+      "admissionP95Ns": 13835792,
+      "admissionP99Ns": 23553000,
+      "leaderCompletionTps": 30655.883877186832,
+      "leaderCompletionElapsedNs": 10010998255,
+      "leaderCompletionRawSpanTps": 30656.026782496112,
+      "leaderCompletionRawSpanNs": 10010951588,
+      "leaderCompletionP95Ns": 24740750,
+      "leaderCompletionP99Ns": 37200167,
+      "allReplicasTps": 30654.222587058415,
+      "allReplicasElapsedNs": 10011540796,
+      "allReplicasRawSpanTps": 30654.36547687956,
+      "allReplicasRawSpanNs": 10011494129,
+      "allReplicasP95Ns": 29694292,
+      "allReplicasP99Ns": 46605542,
+      "cohortElapsedIncludingAckNs": 10012142088,
+      "cohortTpsIncludingAck": 30652.38160850999,
+      "phaseElapsedIncludingAckNs": 10012142088,
+      "offeringWindowNs": 10000000000,
+      "actualOfferingWindowNs": 10000000130,
+      "sendStoppedNsFromFirstAttempt": 9999953463,
+      "drainAfterSendNs": 12141958,
+      "completionValid": true,
+      "sampleCapReached": false,
+      "malformedCompletionFrames": 0
+    },
+    "financialAndReplicaStateVerified": true,
+    "stateSha256": "d0118fbe2376ab110a8c29f53bf52f2cef6dd831fa394b92e9165f889363a378",
+    "nodes": [
+      {
+        "member": 0,
+        "role": "FOLLOWER",
+        "sync": [
+          2,
+          2,
+          2
+        ],
+        "liveOrders": 3,
+        "pending": 0,
+        "retainedReceipts": 0,
+        "feeRevenue": "24239700",
+        "metrics": {
+          "valid": true,
+          "failure": null,
+          "scope": "cumulative operational meters; external observation, outside financial state",
+          "maxSemantics": "Micrometer timer window maximum; do not subtract checkpoints",
+          "phases": [
+            {
+              "phase": "callback",
+              "count": 1619116,
+              "totalNs": 15803163900.0,
+              "maxNs": 26960833.0
+            },
+            {
+              "phase": "decode",
+              "count": 1619116,
+              "totalNs": 1592020166.0,
+              "maxNs": 24101041.0
+            },
+            {
+              "phase": "funding_apply",
+              "count": 4,
+              "totalNs": 3588166.0,
+              "maxNs": 3144375.0
+            },
+            {
+              "phase": "admission_context",
+              "count": 0,
+              "totalNs": 0.0,
+              "maxNs": 0.0
+            },
+            {
+              "phase": "admission_apply",
+              "count": 807993,
+              "totalNs": 3185303126.0,
+              "maxNs": 19069500.0
+            },
+            {
+              "phase": "execution_encode",
+              "count": 807993,
+              "totalNs": 380016314.0,
+              "maxNs": 8471875.0
+            },
+            {
+              "phase": "execution_offer",
+              "count": 807993,
+              "totalNs": 472518395.0,
+              "maxNs": 7586250.0
+            },
+            {
+              "phase": "reply_encode",
+              "count": 0,
+              "totalNs": 0.0,
+              "maxNs": 0.0
+            },
+            {
+              "phase": "reply_offer",
+              "count": 0,
+              "totalNs": 0.0,
+              "maxNs": 0.0
+            },
+            {
+              "phase": "execution_total",
+              "count": 807993,
+              "totalNs": 9130003154.0,
+              "maxNs": 26928959.0
+            },
+            {
+              "phase": "matching_candidate",
+              "count": 0,
+              "totalNs": 0.0,
+              "maxNs": 0.0
+            },
+            {
+              "phase": "settlement_input_validation",
+              "count": 0,
+              "totalNs": 0.0,
+              "maxNs": 0.0
+            },
+            {
+              "phase": "settlement_candidate",
+              "count": 0,
+              "totalNs": 0.0,
+              "maxNs": 0.0
+            },
+            {
+              "phase": "result_validation",
+              "count": 0,
+              "totalNs": 0.0,
+              "maxNs": 0.0
+            },
+            {
+              "phase": "execution_apply",
+              "count": 0,
+              "totalNs": 0.0,
+              "maxNs": 0.0
+            },
+            {
+              "phase": "completion",
+              "count": 0,
+              "totalNs": 0.0,
+              "maxNs": 0.0
+            }
+          ],
+          "offerAttempts": {
+            "execution": 808783.0,
+            "reply": 0.0
+          },
+          "callbacks": {
+            "unknown": 3126.0,
+            "funding": 4.0,
+            "admission": 807993.0,
+            "execution": 807993.0,
+            "malformed": 0.0
+          },
+          "droppedSamples": 0.0,
+          "degraded": 0.0,
+          "observationFailures": 0.0,
+          "handoffFallbacks": 0.0
+        },
+        "receiptFloors": [
+          [
+            "BUYER",
+            0,
+            1,
+            807990,
+            807990
+          ],
+          [
+            "SELLER",
+            0,
+            1,
+            3,
+            3
+          ]
+        ],
+        "liveMakers": [
+          [
+            "SELLER",
+            "BTC-USDT",
+            "SELL",
+            "RESTING",
+            66666700000000,
+            39733700000000,
+            39733700000000
+          ],
+          [
+            "SELLER",
+            "SOL-USDT",
+            "SELL",
+            "RESTING",
+            666667000000000,
+            397337000000000,
+            397337000000000
+          ],
+          [
+            "SELLER",
+            "SUI-USDT",
+            "SELL",
+            "RESTING",
+            666666000000000,
+            397336000000000,
+            397336000000000
+          ]
+        ]
+      },
+      {
+        "member": 1,
+        "role": "FOLLOWER",
+        "sync": [
+          2,
+          2,
+          2
+        ],
+        "liveOrders": 3,
+        "pending": 0,
+        "retainedReceipts": 0,
+        "feeRevenue": "24239700",
+        "metrics": {
+          "valid": true,
+          "failure": null,
+          "scope": "cumulative operational meters; external observation, outside financial state",
+          "maxSemantics": "Micrometer timer window maximum; do not subtract checkpoints",
+          "phases": [
+            {
+              "phase": "callback",
+              "count": 1619116,
+              "totalNs": 15738948687.0,
+              "maxNs": 34286083.0
+            },
+            {
+              "phase": "decode",
+              "count": 1619116,
+              "totalNs": 1537712588.0,
+              "maxNs": 34148250.0
+            },
+            {
+              "phase": "funding_apply",
+              "count": 4,
+              "totalNs": 6219252.0,
+              "maxNs": 5802125.0
+            },
+            {
+              "phase": "admission_context",
+              "count": 0,
+              "totalNs": 0.0,
+              "maxNs": 0.0
+            },
+            {
+              "phase": "admission_apply",
+              "count": 807993,
+              "totalNs": 3116996449.0,
+              "maxNs": 14636917.0
+            },
+            {
+              "phase": "execution_encode",
+              "count": 807993,
+              "totalNs": 358948493.0,
+              "maxNs": 18445625.0
+            },
+            {
+              "phase": "execution_offer",
+              "count": 807993,
+              "totalNs": 492360729.0,
+              "maxNs": 4745668.0
+            },
+            {
+              "phase": "reply_encode",
+              "count": 0,
+              "totalNs": 0.0,
+              "maxNs": 0.0
+            },
+            {
+              "phase": "reply_offer",
+              "count": 0,
+              "totalNs": 0.0,
+              "maxNs": 0.0
+            },
+            {
+              "phase": "execution_total",
+              "count": 807993,
+              "totalNs": 9138938984.0,
+              "maxNs": 27786625.0
+            },
+            {
+              "phase": "matching_candidate",
+              "count": 0,
+              "totalNs": 0.0,
+              "maxNs": 0.0
+            },
+            {
+              "phase": "settlement_input_validation",
+              "count": 0,
+              "totalNs": 0.0,
+              "maxNs": 0.0
+            },
+            {
+              "phase": "settlement_candidate",
+              "count": 0,
+              "totalNs": 0.0,
+              "maxNs": 0.0
+            },
+            {
+              "phase": "result_validation",
+              "count": 0,
+              "totalNs": 0.0,
+              "maxNs": 0.0
+            },
+            {
+              "phase": "execution_apply",
+              "count": 0,
+              "totalNs": 0.0,
+              "maxNs": 0.0
+            },
+            {
+              "phase": "completion",
+              "count": 0,
+              "totalNs": 0.0,
+              "maxNs": 0.0
+            }
+          ],
+          "offerAttempts": {
+            "execution": 808788.0,
+            "reply": 0.0
+          },
+          "callbacks": {
+            "unknown": 3126.0,
+            "funding": 4.0,
+            "admission": 807993.0,
+            "execution": 807993.0,
+            "malformed": 0.0
+          },
+          "droppedSamples": 0.0,
+          "degraded": 0.0,
+          "observationFailures": 0.0,
+          "handoffFallbacks": 0.0
+        },
+        "receiptFloors": [
+          [
+            "BUYER",
+            0,
+            1,
+            807990,
+            807990
+          ],
+          [
+            "SELLER",
+            0,
+            1,
+            3,
+            3
+          ]
+        ],
+        "liveMakers": [
+          [
+            "SELLER",
+            "BTC-USDT",
+            "SELL",
+            "RESTING",
+            66666700000000,
+            39733700000000,
+            39733700000000
+          ],
+          [
+            "SELLER",
+            "SOL-USDT",
+            "SELL",
+            "RESTING",
+            666667000000000,
+            397337000000000,
+            397337000000000
+          ],
+          [
+            "SELLER",
+            "SUI-USDT",
+            "SELL",
+            "RESTING",
+            666666000000000,
+            397336000000000,
+            397336000000000
+          ]
+        ]
+      },
+      {
+        "member": 2,
+        "role": "LEADER",
+        "sync": [
+          2,
+          2,
+          2
+        ],
+        "liveOrders": 3,
+        "pending": 0,
+        "retainedReceipts": 0,
+        "feeRevenue": "24239700",
+        "metrics": {
+          "valid": true,
+          "failure": null,
+          "scope": "cumulative operational meters; external observation, outside financial state",
+          "maxSemantics": "Micrometer timer window maximum; do not subtract checkpoints",
+          "phases": [
+            {
+              "phase": "callback",
+              "count": 1619116,
+              "totalNs": 17194396513.0,
+              "maxNs": 27033959.0
+            },
+            {
+              "phase": "decode",
+              "count": 1619116,
+              "totalNs": 1634912540.0,
+              "maxNs": 17436458.0
+            },
+            {
+              "phase": "funding_apply",
+              "count": 4,
+              "totalNs": 6175332.0,
+              "maxNs": 5889125.0
+            },
+            {
+              "phase": "admission_context",
+              "count": 0,
+              "totalNs": 0.0,
+              "maxNs": 0.0
+            },
+            {
+              "phase": "admission_apply",
+              "count": 807993,
+              "totalNs": 3343591887.0,
+              "maxNs": 19201459.0
+            },
+            {
+              "phase": "execution_encode",
+              "count": 807993,
+              "totalNs": 368040930.0,
+              "maxNs": 9466875.0
+            },
+            {
+              "phase": "execution_offer",
+              "count": 807993,
+              "totalNs": 471871298.0,
+              "maxNs": 6537002.0
+            },
+            {
+              "phase": "reply_encode",
+              "count": 811123,
+              "totalNs": 605769598.0,
+              "maxNs": 4022334.0
+            },
+            {
+              "phase": "reply_offer",
+              "count": 811123,
+              "totalNs": 521235766.0,
+              "maxNs": 3320125.0
+            },
+            {
+              "phase": "execution_total",
+              "count": 807993,
+              "totalNs": 9056541416.0,
+              "maxNs": 27030667.0
+            },
+            {
+              "phase": "matching_candidate",
+              "count": 0,
+              "totalNs": 0.0,
+              "maxNs": 0.0
+            },
+            {
+              "phase": "settlement_input_validation",
+              "count": 0,
+              "totalNs": 0.0,
+              "maxNs": 0.0
+            },
+            {
+              "phase": "settlement_candidate",
+              "count": 0,
+              "totalNs": 0.0,
+              "maxNs": 0.0
+            },
+            {
+              "phase": "result_validation",
+              "count": 0,
+              "totalNs": 0.0,
+              "maxNs": 0.0
+            },
+            {
+              "phase": "execution_apply",
+              "count": 0,
+              "totalNs": 0.0,
+              "maxNs": 0.0
+            },
+            {
+              "phase": "completion",
+              "count": 0,
+              "totalNs": 0.0,
+              "maxNs": 0.0
+            }
+          ],
+          "offerAttempts": {
+            "execution": 808782.0,
+            "reply": 811132.0
+          },
+          "callbacks": {
+            "unknown": 3126.0,
+            "funding": 4.0,
+            "admission": 807993.0,
+            "execution": 807993.0,
+            "malformed": 0.0
+          },
+          "droppedSamples": 0.0,
+          "degraded": 0.0,
+          "observationFailures": 0.0,
+          "handoffFallbacks": 0.0
+        },
+        "receiptFloors": [
+          [
+            "BUYER",
+            0,
+            1,
+            807990,
+            807990
+          ],
+          [
+            "SELLER",
+            0,
+            1,
+            3,
+            3
+          ]
+        ],
+        "liveMakers": [
+          [
+            "SELLER",
+            "BTC-USDT",
+            "SELL",
+            "RESTING",
+            66666700000000,
+            39733700000000,
+            39733700000000
+          ],
+          [
+            "SELLER",
+            "SOL-USDT",
+            "SELL",
+            "RESTING",
+            666667000000000,
+            397337000000000,
+            397337000000000
+          ],
+          [
+            "SELLER",
+            "SUI-USDT",
+            "SELL",
+            "RESTING",
+            666666000000000,
+            397336000000000,
+            397336000000000
+          ]
+        ]
+      }
+    ],
+    "diskGuard": {
+      "allocatedCapBytes": 2147483648,
+      "minimumHostFreeBytes": 8589934592,
+      "earlyStopAllocatedBytes": 1879048192,
+      "intervalSeconds": 2.0,
+      "checks": 16,
+      "guardElapsedSeconds": 7.417574958992191,
+      "clientRunningGuardElapsedSeconds": 6.262945292983204,
+      "peakAllocatedBytes": 624721920,
+      "minimumObservedHostFreeBytes": 86579097600,
+      "samples": [
+        {
+          "phase": "before-client",
+          "hostFreeBytes": 87352233984,
+          "allocatedBytesByNode": {
+            "0": 1093632,
+            "1": 1093632,
+            "2": 1093632
+          },
+          "allocatedBytes": 3280896,
+          "passed": true,
+          "elapsedSeconds": 0.3993684999877587
+        },
+        {
+          "phase": "client-running",
+          "hostFreeBytes": 87302742016,
+          "allocatedBytesByNode": {
+            "0": 1433600,
+            "1": 1507328,
+            "2": 1654784
+          },
+          "allocatedBytes": 4595712,
+          "passed": true,
+          "elapsedSeconds": 0.49929645902011544
+        },
+        {
+          "phase": "client-running",
+          "hostFreeBytes": 87291486208,
+          "allocatedBytesByNode": {
+            "0": 5402624,
+            "1": 5664768,
+            "2": 6045696
+          },
+          "allocatedBytes": 17113088,
+          "passed": true,
+          "elapsedSeconds": 0.5231280000298284
+        },
+        {
+          "phase": "client-running",
+          "hostFreeBytes": 87251644416,
+          "allocatedBytesByNode": {
+            "0": 18997248,
+            "1": 19873792,
+            "2": 20803584
+          },
+          "allocatedBytes": 59674624,
+          "passed": true,
+          "elapsedSeconds": 0.4051031669951044
+        },
+        {
+          "phase": "client-running",
+          "hostFreeBytes": 87195680768,
+          "allocatedBytesByNode": {
+            "0": 37691392,
+            "1": 38498304,
+            "2": 39264256
+          },
+          "allocatedBytes": 115453952,
+          "passed": true,
+          "elapsedSeconds": 0.438303500006441
+        },
+        {
+          "phase": "client-running",
+          "hostFreeBytes": 87134601216,
+          "allocatedBytesByNode": {
+            "0": 57511936,
+            "1": 58351616,
+            "2": 59285504
+          },
+          "allocatedBytes": 175149056,
+          "passed": true,
+          "elapsedSeconds": 0.47177179099526256
+        },
+        {
+          "phase": "client-running",
+          "hostFreeBytes": 87072612352,
+          "allocatedBytesByNode": {
+            "0": 78536704,
+            "1": 79613952,
+            "2": 80613376
+          },
+          "allocatedBytes": 238764032,
+          "passed": true,
+          "elapsedSeconds": 0.41971916699549183
+        },
+        {
+          "phase": "client-running",
+          "hostFreeBytes": 86925770752,
+          "allocatedBytesByNode": {
+            "0": 96067584,
+            "1": 97157120,
+            "2": 98033664
+          },
+          "allocatedBytes": 291258368,
+          "passed": true,
+          "elapsedSeconds": 0.5778950829990208
+        },
+        {
+          "phase": "client-running",
+          "hostFreeBytes": 86868865024,
+          "allocatedBytesByNode": {
+            "0": 114917376,
+            "1": 115748864,
+            "2": 116596736
+          },
+          "allocatedBytes": 347262976,
+          "passed": true,
+          "elapsedSeconds": 0.60892020794563
+        },
+        {
+          "phase": "client-running",
+          "hostFreeBytes": 86810415104,
+          "allocatedBytesByNode": {
+            "0": 134823936,
+            "1": 135970816,
+            "2": 136945664
+          },
+          "allocatedBytes": 407740416,
+          "passed": true,
+          "elapsedSeconds": 0.4741172919748351
+        },
+        {
+          "phase": "client-running",
+          "hostFreeBytes": 86745702400,
+          "allocatedBytesByNode": {
+            "0": 155648000,
+            "1": 156471296,
+            "2": 157188096
+          },
+          "allocatedBytes": 469307392,
+          "passed": true,
+          "elapsedSeconds": 0.5227217500214465
+        },
+        {
+          "phase": "client-running",
+          "hostFreeBytes": 86688522240,
+          "allocatedBytesByNode": {
+            "0": 175427584,
+            "1": 176574464,
+            "2": 177868800
+          },
+          "allocatedBytes": 529870848,
+          "passed": true,
+          "elapsedSeconds": 0.4626554590067826
+        },
+        {
+          "phase": "client-running",
+          "hostFreeBytes": 86622547968,
+          "allocatedBytesByNode": {
+            "0": 196947968,
+            "1": 197906432,
+            "2": 198856704
+          },
+          "allocatedBytes": 593711104,
+          "passed": true,
+          "elapsedSeconds": 0.45329570898320526
+        },
+        {
+          "phase": "client-running",
+          "hostFreeBytes": 86579097600,
+          "allocatedBytesByNode": {
+            "0": 208240640,
+            "1": 208240640,
+            "2": 208240640
+          },
+          "allocatedBytes": 624721920,
+          "passed": true,
+          "elapsedSeconds": 0.4060177080100402
+        },
+        {
+          "phase": "client-finished",
+          "hostFreeBytes": 86728146944,
+          "allocatedBytesByNode": {
+            "0": 208240640,
+            "1": 208240640,
+            "2": 208240640
+          },
+          "allocatedBytes": 624721920,
+          "passed": true,
+          "elapsedSeconds": 0.3910329579957761
+        },
+        {
+          "phase": "final-verified-state",
+          "hostFreeBytes": 86728069120,
+          "allocatedBytesByNode": {
+            "0": 208240640,
+            "1": 208240640,
+            "2": 208240640
+          },
+          "allocatedBytes": 624721920,
+          "passed": true,
+          "elapsedSeconds": 0.36422820802545175
+        }
+      ],
+      "limitation": "polling guard with 256 MiB headroom, not a filesystem hard quota; du/exec can perturb throughput",
+      "project": "ha142-adcfdc6f03",
+      "recordingRoot": "/records/ha142-adcfdc6f03",
+      "allocationMethod": "du -sk allocated 1 KiB blocks from this project's three node roots",
+      "clientReaped": true,
+      "clientExitCode": 0
+    },
+    "ownedProjectCleanupSucceeded": true
+  },
+  {
+    "variant": "after",
+    "runId": "ha142-bd859f478c",
+    "success": true,
+    "measurement": {
+      "kind": "HA_PERFORMANCE",
+      "mode": "bounded-wire3-no-history-index",
+      "scope": "three-node direct Aeron; sync2; duration window; partial maker; actual TCP completion observation",
+      "workload": "partial-maker",
+      "warmup": 468211,
+      "orders": 351647,
+      "sellPreparation": 3,
+      "maxSamples": 2000000,
+      "warmupSeconds": 20,
+      "measureSeconds": 10,
+      "actualTotalBuys": 819858,
+      "expectedBuyerQuoteAvailable": 11825023840,
+      "expectedMakerRemaining": [
+        39338100000000,
+        393381000000000,
+        393380000000000
+      ],
+      "expectedBuyerAckFloor": 819858,
+      "expectedSellerAckFloor": 3,
+      "maxInFlight": 256,
+      "maxExecutionInFlight": 1024,
+      "maxObservedUnanswered": 256,
+      "ackMode": "async",
+      "maxObservedFinancialIncomplete": 1024,
+      "asyncAckRequests": 1359,
+      "backpressuredOffers": 3,
+      "completionCollectorPeakEntries": 1024,
+      "completionCollectorRetained": 0,
+      "completionReceiveBufferBytes": 212992,
+      "throughputSemantics": "phase start -> max(actual offering stop, last correlated observation); cohort also includes final ACK",
+      "rawSpanSemantics": "first send attempt -> last correlated observation; excludes remaining offering-window time",
+      "admissionTps": 35147.01883877661,
+      "admissionElapsedNs": 10005030629,
+      "admissionRawSpanTps": 35147.50889999415,
+      "admissionRawSpanNs": 10004891129,
+      "admissionP95Ns": 11539958,
+      "admissionP99Ns": 16365125,
+      "leaderCompletionTps": 35135.64353955991,
+      "leaderCompletionElapsedNs": 10008269796,
+      "leaderCompletionRawSpanTps": 35136.13328361088,
+      "leaderCompletionRawSpanNs": 10008130296,
+      "leaderCompletionP95Ns": 20048625,
+      "leaderCompletionP99Ns": 28370625,
+      "allReplicasTps": 35132.620242846206,
+      "allReplicasElapsedNs": 10009131046,
+      "allReplicasRawSpanTps": 35133.10990261875,
+      "allReplicasRawSpanNs": 10008991546,
+      "allReplicasP95Ns": 24772541,
+      "allReplicasP99Ns": 32765833,
+      "cohortElapsedIncludingAckNs": 10009234713,
+      "cohortTpsIncludingAck": 35132.25636953849,
+      "phaseElapsedIncludingAckNs": 10009234713,
+      "offeringWindowNs": 10000000000,
+      "actualOfferingWindowNs": 10000000004,
+      "sendStoppedNsFromFirstAttempt": 9999860504,
+      "drainAfterSendNs": 9234709,
+      "completionValid": true,
+      "sampleCapReached": false,
+      "malformedCompletionFrames": 0
+    },
+    "financialAndReplicaStateVerified": true,
+    "stateSha256": "5083d3eb4b8bcc9d69c7a67e18ae442ddab50199cc6035b2621dec1978776f8e",
+    "nodes": [
+      {
+        "member": 0,
+        "role": "LEADER",
+        "sync": [
+          2,
+          2,
+          2
+        ],
+        "liveOrders": 3,
+        "pending": 0,
+        "retainedReceipts": 0,
+        "feeRevenue": "24595740",
+        "metrics": {
+          "valid": true,
+          "failure": null,
+          "scope": "cumulative operational meters; external observation, outside financial state",
+          "maxSemantics": "Micrometer timer window maximum; do not subtract checkpoints",
+          "phases": [
+            {
+              "phase": "callback",
+              "count": 1642900,
+              "totalNs": 16026613303.0,
+              "maxNs": 59254500.0
+            },
+            {
+              "phase": "decode",
+              "count": 1642900,
+              "totalNs": 1497872847.0,
+              "maxNs": 17625208.0
+            },
+            {
+              "phase": "funding_apply",
+              "count": 4,
+              "totalNs": 3244584.0,
+              "maxNs": 2981958.0
+            },
+            {
+              "phase": "admission_context",
+              "count": 0,
+              "totalNs": 0.0,
+              "maxNs": 0.0
+            },
+            {
+              "phase": "admission_apply",
+              "count": 819861,
+              "totalNs": 3490315382.0,
+              "maxNs": 59239542.0
+            },
+            {
+              "phase": "execution_encode",
+              "count": 819861,
+              "totalNs": 381045016.0,
+              "maxNs": 7303667.0
+            },
+            {
+              "phase": "execution_offer",
+              "count": 819861,
+              "totalNs": 461659432.0,
+              "maxNs": 3911291.0
+            },
+            {
+              "phase": "reply_encode",
+              "count": 823039,
+              "totalNs": 598986202.0,
+              "maxNs": 6481167.0
+            },
+            {
+              "phase": "reply_offer",
+              "count": 823039,
+              "totalNs": 567540478.0,
+              "maxNs": 7050958.0
+            },
+            {
+              "phase": "execution_total",
+              "count": 819861,
+              "totalNs": 7889338089.0,
+              "maxNs": 55423750.0
+            },
+            {
+              "phase": "matching_candidate",
+              "count": 0,
+              "totalNs": 0.0,
+              "maxNs": 0.0
+            },
+            {
+              "phase": "settlement_input_validation",
+              "count": 0,
+              "totalNs": 0.0,
+              "maxNs": 0.0
+            },
+            {
+              "phase": "settlement_candidate",
+              "count": 0,
+              "totalNs": 0.0,
+              "maxNs": 0.0
+            },
+            {
+              "phase": "result_validation",
+              "count": 0,
+              "totalNs": 0.0,
+              "maxNs": 0.0
+            },
+            {
+              "phase": "execution_apply",
+              "count": 0,
+              "totalNs": 0.0,
+              "maxNs": 0.0
+            },
+            {
+              "phase": "completion",
+              "count": 0,
+              "totalNs": 0.0,
+              "maxNs": 0.0
+            }
+          ],
+          "offerAttempts": {
+            "execution": 820661.0,
+            "reply": 823048.0
+          },
+          "callbacks": {
+            "unknown": 3174.0,
+            "funding": 4.0,
+            "admission": 819861.0,
+            "execution": 819861.0,
+            "malformed": 0.0
+          },
+          "droppedSamples": 0.0,
+          "degraded": 0.0,
+          "observationFailures": 0.0,
+          "handoffFallbacks": 0.0
+        },
+        "receiptFloors": [
+          [
+            "BUYER",
+            0,
+            1,
+            819858,
+            819858
+          ],
+          [
+            "SELLER",
+            0,
+            1,
+            3,
+            3
+          ]
+        ],
+        "liveMakers": [
+          [
+            "SELLER",
+            "BTC-USDT",
+            "SELL",
+            "RESTING",
+            66666700000000,
+            39338100000000,
+            39338100000000
+          ],
+          [
+            "SELLER",
+            "SOL-USDT",
+            "SELL",
+            "RESTING",
+            666667000000000,
+            393381000000000,
+            393381000000000
+          ],
+          [
+            "SELLER",
+            "SUI-USDT",
+            "SELL",
+            "RESTING",
+            666666000000000,
+            393380000000000,
+            393380000000000
+          ]
+        ]
+      },
+      {
+        "member": 1,
+        "role": "FOLLOWER",
+        "sync": [
+          2,
+          2,
+          2
+        ],
+        "liveOrders": 3,
+        "pending": 0,
+        "retainedReceipts": 0,
+        "feeRevenue": "24595740",
+        "metrics": {
+          "valid": true,
+          "failure": null,
+          "scope": "cumulative operational meters; external observation, outside financial state",
+          "maxSemantics": "Micrometer timer window maximum; do not subtract checkpoints",
+          "phases": [
+            {
+              "phase": "callback",
+              "count": 1642900,
+              "totalNs": 15360635701.0,
+              "maxNs": 103077875.0
+            },
+            {
+              "phase": "decode",
+              "count": 1642900,
+              "totalNs": 1671278701.0,
+              "maxNs": 102675166.0
+            },
+            {
+              "phase": "funding_apply",
+              "count": 4,
+              "totalNs": 3355999.0,
+              "maxNs": 3111083.0
+            },
+            {
+              "phase": "admission_context",
+              "count": 0,
+              "totalNs": 0.0,
+              "maxNs": 0.0
+            },
+            {
+              "phase": "admission_apply",
+              "count": 819861,
+              "totalNs": 3360437690.0,
+              "maxNs": 23326125.0
+            },
+            {
+              "phase": "execution_encode",
+              "count": 819861,
+              "totalNs": 335478779.0,
+              "maxNs": 4142916.0
+            },
+            {
+              "phase": "execution_offer",
+              "count": 819861,
+              "totalNs": 492032890.0,
+              "maxNs": 3675291.0
+            },
+            {
+              "phase": "reply_encode",
+              "count": 0,
+              "totalNs": 0.0,
+              "maxNs": 0.0
+            },
+            {
+              "phase": "reply_offer",
+              "count": 0,
+              "totalNs": 0.0,
+              "maxNs": 0.0
+            },
+            {
+              "phase": "execution_total",
+              "count": 819861,
+              "totalNs": 8443046988.0,
+              "maxNs": 26730666.0
+            },
+            {
+              "phase": "matching_candidate",
+              "count": 0,
+              "totalNs": 0.0,
+              "maxNs": 0.0
+            },
+            {
+              "phase": "settlement_input_validation",
+              "count": 0,
+              "totalNs": 0.0,
+              "maxNs": 0.0
+            },
+            {
+              "phase": "settlement_candidate",
+              "count": 0,
+              "totalNs": 0.0,
+              "maxNs": 0.0
+            },
+            {
+              "phase": "result_validation",
+              "count": 0,
+              "totalNs": 0.0,
+              "maxNs": 0.0
+            },
+            {
+              "phase": "execution_apply",
+              "count": 0,
+              "totalNs": 0.0,
+              "maxNs": 0.0
+            },
+            {
+              "phase": "completion",
+              "count": 0,
+              "totalNs": 0.0,
+              "maxNs": 0.0
+            }
+          ],
+          "offerAttempts": {
+            "execution": 820661.0,
+            "reply": 0.0
+          },
+          "callbacks": {
+            "unknown": 3174.0,
+            "funding": 4.0,
+            "admission": 819861.0,
+            "execution": 819861.0,
+            "malformed": 0.0
+          },
+          "droppedSamples": 0.0,
+          "degraded": 0.0,
+          "observationFailures": 0.0,
+          "handoffFallbacks": 0.0
+        },
+        "receiptFloors": [
+          [
+            "BUYER",
+            0,
+            1,
+            819858,
+            819858
+          ],
+          [
+            "SELLER",
+            0,
+            1,
+            3,
+            3
+          ]
+        ],
+        "liveMakers": [
+          [
+            "SELLER",
+            "BTC-USDT",
+            "SELL",
+            "RESTING",
+            66666700000000,
+            39338100000000,
+            39338100000000
+          ],
+          [
+            "SELLER",
+            "SOL-USDT",
+            "SELL",
+            "RESTING",
+            666667000000000,
+            393381000000000,
+            393381000000000
+          ],
+          [
+            "SELLER",
+            "SUI-USDT",
+            "SELL",
+            "RESTING",
+            666666000000000,
+            393380000000000,
+            393380000000000
+          ]
+        ]
+      },
+      {
+        "member": 2,
+        "role": "FOLLOWER",
+        "sync": [
+          2,
+          2,
+          2
+        ],
+        "liveOrders": 3,
+        "pending": 0,
+        "retainedReceipts": 0,
+        "feeRevenue": "24595740",
+        "metrics": {
+          "valid": true,
+          "failure": null,
+          "scope": "cumulative operational meters; external observation, outside financial state",
+          "maxSemantics": "Micrometer timer window maximum; do not subtract checkpoints",
+          "phases": [
+            {
+              "phase": "callback",
+              "count": 1642900,
+              "totalNs": 15917005379.0,
+              "maxNs": 61404625.0
+            },
+            {
+              "phase": "decode",
+              "count": 1642900,
+              "totalNs": 1579396817.0,
+              "maxNs": 16390583.0
+            },
+            {
+              "phase": "funding_apply",
+              "count": 4,
+              "totalNs": 6706875.0,
+              "maxNs": 6332125.0
+            },
+            {
+              "phase": "admission_context",
+              "count": 0,
+              "totalNs": 0.0,
+              "maxNs": 0.0
+            },
+            {
+              "phase": "admission_apply",
+              "count": 819861,
+              "totalNs": 3465280687.0,
+              "maxNs": 61382542.0
+            },
+            {
+              "phase": "execution_encode",
+              "count": 819861,
+              "totalNs": 424680475.0,
+              "maxNs": 16746791.0
+            },
+            {
+              "phase": "execution_offer",
+              "count": 819861,
+              "totalNs": 462435836.0,
+              "maxNs": 4208292.0
+            },
+            {
+              "phase": "reply_encode",
+              "count": 0,
+              "totalNs": 0.0,
+              "maxNs": 0.0
+            },
+            {
+              "phase": "reply_offer",
+              "count": 0,
+              "totalNs": 0.0,
+              "maxNs": 0.0
+            },
+            {
+              "phase": "execution_total",
+              "count": 819861,
+              "totalNs": 8832177804.0,
+              "maxNs": 44948000.0
+            },
+            {
+              "phase": "matching_candidate",
+              "count": 0,
+              "totalNs": 0.0,
+              "maxNs": 0.0
+            },
+            {
+              "phase": "settlement_input_validation",
+              "count": 0,
+              "totalNs": 0.0,
+              "maxNs": 0.0
+            },
+            {
+              "phase": "settlement_candidate",
+              "count": 0,
+              "totalNs": 0.0,
+              "maxNs": 0.0
+            },
+            {
+              "phase": "result_validation",
+              "count": 0,
+              "totalNs": 0.0,
+              "maxNs": 0.0
+            },
+            {
+              "phase": "execution_apply",
+              "count": 0,
+              "totalNs": 0.0,
+              "maxNs": 0.0
+            },
+            {
+              "phase": "completion",
+              "count": 0,
+              "totalNs": 0.0,
+              "maxNs": 0.0
+            }
+          ],
+          "offerAttempts": {
+            "execution": 820661.0,
+            "reply": 0.0
+          },
+          "callbacks": {
+            "unknown": 3174.0,
+            "funding": 4.0,
+            "admission": 819861.0,
+            "execution": 819861.0,
+            "malformed": 0.0
+          },
+          "droppedSamples": 0.0,
+          "degraded": 0.0,
+          "observationFailures": 0.0,
+          "handoffFallbacks": 0.0
+        },
+        "receiptFloors": [
+          [
+            "BUYER",
+            0,
+            1,
+            819858,
+            819858
+          ],
+          [
+            "SELLER",
+            0,
+            1,
+            3,
+            3
+          ]
+        ],
+        "liveMakers": [
+          [
+            "SELLER",
+            "BTC-USDT",
+            "SELL",
+            "RESTING",
+            66666700000000,
+            39338100000000,
+            39338100000000
+          ],
+          [
+            "SELLER",
+            "SOL-USDT",
+            "SELL",
+            "RESTING",
+            666667000000000,
+            393381000000000,
+            393381000000000
+          ],
+          [
+            "SELLER",
+            "SUI-USDT",
+            "SELL",
+            "RESTING",
+            666666000000000,
+            393380000000000,
+            393380000000000
+          ]
+        ]
+      }
+    ],
+    "diskGuard": {
+      "allocatedCapBytes": 2147483648,
+      "minimumHostFreeBytes": 8589934592,
+      "earlyStopAllocatedBytes": 1879048192,
+      "intervalSeconds": 2.0,
+      "checks": 15,
+      "guardElapsedSeconds": 7.054553248977754,
+      "clientRunningGuardElapsedSeconds": 5.944015914981719,
+      "peakAllocatedBytes": 633851904,
+      "minimumObservedHostFreeBytes": 86904836096,
+      "samples": [
+        {
+          "phase": "before-client",
+          "hostFreeBytes": 87351279616,
+          "allocatedBytesByNode": {
+            "0": 1093632,
+            "1": 1093632,
+            "2": 1093632
+          },
+          "allocatedBytes": 3280896,
+          "passed": true,
+          "elapsedSeconds": 0.3659451670246199
+        },
+        {
+          "phase": "client-running",
+          "hostFreeBytes": 87302057984,
+          "allocatedBytesByNode": {
+            "0": 1392640,
+            "1": 1519616,
+            "2": 1658880
+          },
+          "allocatedBytes": 4571136,
+          "passed": true,
+          "elapsedSeconds": 0.5182659170241095
+        },
+        {
+          "phase": "client-running",
+          "hostFreeBytes": 87472648192,
+          "allocatedBytesByNode": {
+            "0": 4665344,
+            "1": 4980736,
+            "2": 5382144
+          },
+          "allocatedBytes": 15028224,
+          "passed": true,
+          "elapsedSeconds": 0.5056926250108518
+        },
+        {
+          "phase": "client-running",
+          "hostFreeBytes": 87551664128,
+          "allocatedBytesByNode": {
+            "0": 8970240,
+            "1": 9404416,
+            "2": 10088448
+          },
+          "allocatedBytes": 28463104,
+          "passed": true,
+          "elapsedSeconds": 0.8775566659751348
+        },
+        {
+          "phase": "client-running",
+          "hostFreeBytes": 87499784192,
+          "allocatedBytesByNode": {
+            "0": 26927104,
+            "1": 27967488,
+            "2": 28798976
+          },
+          "allocatedBytes": 83693568,
+          "passed": true,
+          "elapsedSeconds": 0.46719812497030944
+        },
+        {
+          "phase": "client-running",
+          "hostFreeBytes": 87441764352,
+          "allocatedBytesByNode": {
+            "0": 46268416,
+            "1": 47255552,
+            "2": 48340992
+          },
+          "allocatedBytes": 141864960,
+          "passed": true,
+          "elapsedSeconds": 0.42694024997763336
+        },
+        {
+          "phase": "client-running",
+          "hostFreeBytes": 87378370560,
+          "allocatedBytesByNode": {
+            "0": 67686400,
+            "1": 68722688,
+            "2": 69718016
+          },
+          "allocatedBytes": 206127104,
+          "passed": true,
+          "elapsedSeconds": 0.4312014580355026
+        },
+        {
+          "phase": "client-running",
+          "hostFreeBytes": 87236014080,
+          "allocatedBytesByNode": {
+            "0": 86118400,
+            "1": 86999040,
+            "2": 87957504
+          },
+          "allocatedBytes": 261074944,
+          "passed": true,
+          "elapsedSeconds": 0.5088516249670647
+        },
+        {
+          "phase": "client-running",
+          "hostFreeBytes": 87171112960,
+          "allocatedBytesByNode": {
+            "0": 108097536,
+            "1": 108843008,
+            "2": 109989888
+          },
+          "allocatedBytes": 326930432,
+          "passed": true,
+          "elapsedSeconds": 0.49416954099433497
+        },
+        {
+          "phase": "client-running",
+          "hostFreeBytes": 87107960832,
+          "allocatedBytesByNode": {
+            "0": 128872448,
+            "1": 130138112,
+            "2": 131162112
+          },
+          "allocatedBytes": 390172672,
+          "passed": true,
+          "elapsedSeconds": 0.4736393339699134
+        },
+        {
+          "phase": "client-running",
+          "hostFreeBytes": 87039418368,
+          "allocatedBytesByNode": {
+            "0": 151683072,
+            "1": 152596480,
+            "2": 153473024
+          },
+          "allocatedBytes": 457752576,
+          "passed": true,
+          "elapsedSeconds": 0.3713739580125548
+        },
+        {
+          "phase": "client-running",
+          "hostFreeBytes": 86975832064,
+          "allocatedBytesByNode": {
+            "0": 172863488,
+            "1": 173879296,
+            "2": 174923776
+          },
+          "allocatedBytes": 521666560,
+          "passed": true,
+          "elapsedSeconds": 0.3931833330425434
+        },
+        {
+          "phase": "client-running",
+          "hostFreeBytes": 86904836096,
+          "allocatedBytesByNode": {
+            "0": 196599808,
+            "1": 197558272,
+            "2": 198545408
+          },
+          "allocatedBytes": 592703488,
+          "passed": true,
+          "elapsedSeconds": 0.47594308300176635
+        },
+        {
+          "phase": "client-finished",
+          "hostFreeBytes": 86991319040,
+          "allocatedBytesByNode": {
+            "0": 211283968,
+            "1": 211283968,
+            "2": 211283968
+          },
+          "allocatedBytes": 633851904,
+          "passed": true,
+          "elapsedSeconds": 0.37146212498191744
+        },
+        {
+          "phase": "final-verified-state",
+          "hostFreeBytes": 86991216640,
+          "allocatedBytesByNode": {
+            "0": 211283968,
+            "1": 211283968,
+            "2": 211283968
+          },
+          "allocatedBytes": 633851904,
+          "passed": true,
+          "elapsedSeconds": 0.37313004198949784
+        }
+      ],
+      "limitation": "polling guard with 256 MiB headroom, not a filesystem hard quota; du/exec can perturb throughput",
+      "project": "ha142-bd859f478c",
+      "recordingRoot": "/records/ha142-bd859f478c",
+      "allocationMethod": "du -sk allocated 1 KiB blocks from this project's three node roots",
+      "clientReaped": true,
+      "clientExitCode": 0
+    },
+    "ownedProjectCleanupSucceeded": true
+  },
+  {
+    "variant": "after",
+    "runId": "ha142-55016ca291",
+    "success": true,
+    "measurement": {
+      "kind": "HA_PERFORMANCE",
+      "mode": "bounded-wire3-no-history-index",
+      "scope": "three-node direct Aeron; sync2; duration window; partial maker; actual TCP completion observation",
+      "workload": "partial-maker",
+      "warmup": 518950,
+      "orders": 325714,
+      "sellPreparation": 3,
+      "maxSamples": 2000000,
+      "warmupSeconds": 20,
+      "measureSeconds": 10,
+      "actualTotalBuys": 844664,
+      "expectedBuyerQuoteAvailable": 11576467720,
+      "expectedMakerRemaining": [
+        38511200000000,
+        385112000000000,
+        385112000000000
+      ],
+      "expectedBuyerAckFloor": 844664,
+      "expectedSellerAckFloor": 3,
+      "maxInFlight": 256,
+      "maxExecutionInFlight": 1024,
+      "maxObservedUnanswered": 256,
+      "ackMode": "async",
+      "maxObservedFinancialIncomplete": 1024,
+      "asyncAckRequests": 1258,
+      "backpressuredOffers": 3,
+      "completionCollectorPeakEntries": 1024,
+      "completionCollectorRetained": 0,
+      "completionReceiveBufferBytes": 212992,
+      "throughputSemantics": "phase start -> max(actual offering stop, last correlated observation); cohort also includes final ACK",
+      "rawSpanSemantics": "first send attempt -> last correlated observation; excludes remaining offering-window time",
+      "admissionTps": 32543.751625940517,
+      "admissionElapsedNs": 10008495755,
+      "admissionRawSpanTps": 32544.04237473676,
+      "admissionRawSpanNs": 10008406339,
+      "admissionP95Ns": 13835041,
+      "admissionP99Ns": 23253042,
+      "leaderCompletionTps": 32530.10369697081,
+      "leaderCompletionElapsedNs": 10012694796,
+      "leaderCompletionRawSpanTps": 32530.39420195346,
+      "leaderCompletionRawSpanNs": 10012605380,
+      "leaderCompletionP95Ns": 24011042,
+      "leaderCompletionP99Ns": 39328334,
+      "allReplicasTps": 32529.014950498717,
+      "allReplicasElapsedNs": 10013029921,
+      "allReplicasRawSpanTps": 32529.305436035844,
+      "allReplicasRawSpanNs": 10012940505,
+      "allReplicasP95Ns": 29619208,
+      "allReplicasP99Ns": 41905333,
+      "cohortElapsedIncludingAckNs": 10013085963,
+      "cohortTpsIncludingAck": 32528.832889637302,
+      "phaseElapsedIncludingAckNs": 10013085963,
+      "offeringWindowNs": 10000000000,
+      "actualOfferingWindowNs": 10000012463,
+      "sendStoppedNsFromFirstAttempt": 9999923047,
+      "drainAfterSendNs": 13073500,
+      "completionValid": true,
+      "sampleCapReached": false,
+      "malformedCompletionFrames": 0
+    },
+    "financialAndReplicaStateVerified": true,
+    "stateSha256": "188636a73b3650e1176ea0974378b52ab7e9d46fbe2660df9c9f46f37d0f281b",
+    "nodes": [
+      {
+        "member": 0,
+        "role": "FOLLOWER",
+        "sync": [
+          2,
+          2,
+          2
+        ],
+        "liveOrders": 3,
+        "pending": 0,
+        "retainedReceipts": 0,
+        "feeRevenue": "25339920",
+        "metrics": {
+          "valid": true,
+          "failure": null,
+          "scope": "cumulative operational meters; external observation, outside financial state",
+          "maxSemantics": "Micrometer timer window maximum; do not subtract checkpoints",
+          "phases": [
+            {
+              "phase": "callback",
+              "count": 1692604,
+              "totalNs": 15836807640.0,
+              "maxNs": 45755833.0
+            },
+            {
+              "phase": "decode",
+              "count": 1692604,
+              "totalNs": 1589143014.0,
+              "maxNs": 25895000.0
+            },
+            {
+              "phase": "funding_apply",
+              "count": 4,
+              "totalNs": 4135210.0,
+              "maxNs": 3847417.0
+            },
+            {
+              "phase": "admission_context",
+              "count": 0,
+              "totalNs": 0.0,
+              "maxNs": 0.0
+            },
+            {
+              "phase": "admission_apply",
+              "count": 844667,
+              "totalNs": 3415887439.0,
+              "maxNs": 45726583.0
+            },
+            {
+              "phase": "execution_encode",
+              "count": 844667,
+              "totalNs": 383586896.0,
+              "maxNs": 3923041.0
+            },
+            {
+              "phase": "execution_offer",
+              "count": 844667,
+              "totalNs": 538122619.0,
+              "maxNs": 10228167.0
+            },
+            {
+              "phase": "reply_encode",
+              "count": 0,
+              "totalNs": 0.0,
+              "maxNs": 0.0
+            },
+            {
+              "phase": "reply_offer",
+              "count": 0,
+              "totalNs": 0.0,
+              "maxNs": 0.0
+            },
+            {
+              "phase": "execution_total",
+              "count": 844667,
+              "totalNs": 8783916735.0,
+              "maxNs": 26395083.0
+            },
+            {
+              "phase": "matching_candidate",
+              "count": 0,
+              "totalNs": 0.0,
+              "maxNs": 0.0
+            },
+            {
+              "phase": "settlement_input_validation",
+              "count": 0,
+              "totalNs": 0.0,
+              "maxNs": 0.0
+            },
+            {
+              "phase": "settlement_candidate",
+              "count": 0,
+              "totalNs": 0.0,
+              "maxNs": 0.0
+            },
+            {
+              "phase": "result_validation",
+              "count": 0,
+              "totalNs": 0.0,
+              "maxNs": 0.0
+            },
+            {
+              "phase": "execution_apply",
+              "count": 0,
+              "totalNs": 0.0,
+              "maxNs": 0.0
+            },
+            {
+              "phase": "completion",
+              "count": 0,
+              "totalNs": 0.0,
+              "maxNs": 0.0
+            }
+          ],
+          "offerAttempts": {
+            "execution": 845511.0,
+            "reply": 0.0
+          },
+          "callbacks": {
+            "unknown": 3266.0,
+            "funding": 4.0,
+            "admission": 844667.0,
+            "execution": 844667.0,
+            "malformed": 0.0
+          },
+          "droppedSamples": 0.0,
+          "degraded": 0.0,
+          "observationFailures": 0.0,
+          "handoffFallbacks": 0.0
+        },
+        "receiptFloors": [
+          [
+            "BUYER",
+            0,
+            1,
+            844664,
+            844664
+          ],
+          [
+            "SELLER",
+            0,
+            1,
+            3,
+            3
+          ]
+        ],
+        "liveMakers": [
+          [
+            "SELLER",
+            "BTC-USDT",
+            "SELL",
+            "RESTING",
+            66666700000000,
+            38511200000000,
+            38511200000000
+          ],
+          [
+            "SELLER",
+            "SOL-USDT",
+            "SELL",
+            "RESTING",
+            666667000000000,
+            385112000000000,
+            385112000000000
+          ],
+          [
+            "SELLER",
+            "SUI-USDT",
+            "SELL",
+            "RESTING",
+            666666000000000,
+            385112000000000,
+            385112000000000
+          ]
+        ]
+      },
+      {
+        "member": 1,
+        "role": "LEADER",
+        "sync": [
+          2,
+          2,
+          2
+        ],
+        "liveOrders": 3,
+        "pending": 0,
+        "retainedReceipts": 0,
+        "feeRevenue": "25339920",
+        "metrics": {
+          "valid": true,
+          "failure": null,
+          "scope": "cumulative operational meters; external observation, outside financial state",
+          "maxSemantics": "Micrometer timer window maximum; do not subtract checkpoints",
+          "phases": [
+            {
+              "phase": "callback",
+              "count": 1692604,
+              "totalNs": 17208658137.0,
+              "maxNs": 52975208.0
+            },
+            {
+              "phase": "decode",
+              "count": 1692604,
+              "totalNs": 1665812132.0,
+              "maxNs": 18761000.0
+            },
+            {
+              "phase": "funding_apply",
+              "count": 4,
+              "totalNs": 3756833.0,
+              "maxNs": 3301708.0
+            },
+            {
+              "phase": "admission_context",
+              "count": 0,
+              "totalNs": 0.0,
+              "maxNs": 0.0
+            },
+            {
+              "phase": "admission_apply",
+              "count": 844667,
+              "totalNs": 3588128342.0,
+              "maxNs": 52905083.0
+            },
+            {
+              "phase": "execution_encode",
+              "count": 844667,
+              "totalNs": 383690483.0,
+              "maxNs": 6054625.0
+            },
+            {
+              "phase": "execution_offer",
+              "count": 844667,
+              "totalNs": 475655517.0,
+              "maxNs": 2875667.0
+            },
+            {
+              "phase": "reply_encode",
+              "count": 847937,
+              "totalNs": 646711435.0,
+              "maxNs": 16085667.0
+            },
+            {
+              "phase": "reply_offer",
+              "count": 847937,
+              "totalNs": 563557064.0,
+              "maxNs": 6195292.0
+            },
+            {
+              "phase": "execution_total",
+              "count": 844667,
+              "totalNs": 8650890048.0,
+              "maxNs": 24036167.0
+            },
+            {
+              "phase": "matching_candidate",
+              "count": 0,
+              "totalNs": 0.0,
+              "maxNs": 0.0
+            },
+            {
+              "phase": "settlement_input_validation",
+              "count": 0,
+              "totalNs": 0.0,
+              "maxNs": 0.0
+            },
+            {
+              "phase": "settlement_candidate",
+              "count": 0,
+              "totalNs": 0.0,
+              "maxNs": 0.0
+            },
+            {
+              "phase": "result_validation",
+              "count": 0,
+              "totalNs": 0.0,
+              "maxNs": 0.0
+            },
+            {
+              "phase": "execution_apply",
+              "count": 0,
+              "totalNs": 0.0,
+              "maxNs": 0.0
+            },
+            {
+              "phase": "completion",
+              "count": 0,
+              "totalNs": 0.0,
+              "maxNs": 0.0
+            }
+          ],
+          "offerAttempts": {
+            "execution": 845491.0,
+            "reply": 847946.0
+          },
+          "callbacks": {
+            "unknown": 3266.0,
+            "funding": 4.0,
+            "admission": 844667.0,
+            "execution": 844667.0,
+            "malformed": 0.0
+          },
+          "droppedSamples": 0.0,
+          "degraded": 0.0,
+          "observationFailures": 0.0,
+          "handoffFallbacks": 0.0
+        },
+        "receiptFloors": [
+          [
+            "BUYER",
+            0,
+            1,
+            844664,
+            844664
+          ],
+          [
+            "SELLER",
+            0,
+            1,
+            3,
+            3
+          ]
+        ],
+        "liveMakers": [
+          [
+            "SELLER",
+            "BTC-USDT",
+            "SELL",
+            "RESTING",
+            66666700000000,
+            38511200000000,
+            38511200000000
+          ],
+          [
+            "SELLER",
+            "SOL-USDT",
+            "SELL",
+            "RESTING",
+            666667000000000,
+            385112000000000,
+            385112000000000
+          ],
+          [
+            "SELLER",
+            "SUI-USDT",
+            "SELL",
+            "RESTING",
+            666666000000000,
+            385112000000000,
+            385112000000000
+          ]
+        ]
+      },
+      {
+        "member": 2,
+        "role": "FOLLOWER",
+        "sync": [
+          2,
+          2,
+          2
+        ],
+        "liveOrders": 3,
+        "pending": 0,
+        "retainedReceipts": 0,
+        "feeRevenue": "25339920",
+        "metrics": {
+          "valid": true,
+          "failure": null,
+          "scope": "cumulative operational meters; external observation, outside financial state",
+          "maxSemantics": "Micrometer timer window maximum; do not subtract checkpoints",
+          "phases": [
+            {
+              "phase": "callback",
+              "count": 1692604,
+              "totalNs": 15360112464.0,
+              "maxNs": 37549500.0
+            },
+            {
+              "phase": "decode",
+              "count": 1692604,
+              "totalNs": 1584604579.0,
+              "maxNs": 30774125.0
+            },
+            {
+              "phase": "funding_apply",
+              "count": 4,
+              "totalNs": 7513250.0,
+              "maxNs": 7181500.0
+            },
+            {
+              "phase": "admission_context",
+              "count": 0,
+              "totalNs": 0.0,
+              "maxNs": 0.0
+            },
+            {
+              "phase": "admission_apply",
+              "count": 844667,
+              "totalNs": 3378939397.0,
+              "maxNs": 17818167.0
+            },
+            {
+              "phase": "execution_encode",
+              "count": 844667,
+              "totalNs": 346453906.0,
+              "maxNs": 6109375.0
+            },
+            {
+              "phase": "execution_offer",
+              "count": 844667,
+              "totalNs": 500547280.0,
+              "maxNs": 6246167.0
+            },
+            {
+              "phase": "reply_encode",
+              "count": 0,
+              "totalNs": 0.0,
+              "maxNs": 0.0
+            },
+            {
+              "phase": "reply_offer",
+              "count": 0,
+              "totalNs": 0.0,
+              "maxNs": 0.0
+            },
+            {
+              "phase": "execution_total",
+              "count": 844667,
+              "totalNs": 8453173685.0,
+              "maxNs": 37546750.0
+            },
+            {
+              "phase": "matching_candidate",
+              "count": 0,
+              "totalNs": 0.0,
+              "maxNs": 0.0
+            },
+            {
+              "phase": "settlement_input_validation",
+              "count": 0,
+              "totalNs": 0.0,
+              "maxNs": 0.0
+            },
+            {
+              "phase": "settlement_candidate",
+              "count": 0,
+              "totalNs": 0.0,
+              "maxNs": 0.0
+            },
+            {
+              "phase": "result_validation",
+              "count": 0,
+              "totalNs": 0.0,
+              "maxNs": 0.0
+            },
+            {
+              "phase": "execution_apply",
+              "count": 0,
+              "totalNs": 0.0,
+              "maxNs": 0.0
+            },
+            {
+              "phase": "completion",
+              "count": 0,
+              "totalNs": 0.0,
+              "maxNs": 0.0
+            }
+          ],
+          "offerAttempts": {
+            "execution": 845492.0,
+            "reply": 0.0
+          },
+          "callbacks": {
+            "unknown": 3266.0,
+            "funding": 4.0,
+            "admission": 844667.0,
+            "execution": 844667.0,
+            "malformed": 0.0
+          },
+          "droppedSamples": 0.0,
+          "degraded": 0.0,
+          "observationFailures": 0.0,
+          "handoffFallbacks": 0.0
+        },
+        "receiptFloors": [
+          [
+            "BUYER",
+            0,
+            1,
+            844664,
+            844664
+          ],
+          [
+            "SELLER",
+            0,
+            1,
+            3,
+            3
+          ]
+        ],
+        "liveMakers": [
+          [
+            "SELLER",
+            "BTC-USDT",
+            "SELL",
+            "RESTING",
+            66666700000000,
+            38511200000000,
+            38511200000000
+          ],
+          [
+            "SELLER",
+            "SOL-USDT",
+            "SELL",
+            "RESTING",
+            666667000000000,
+            385112000000000,
+            385112000000000
+          ],
+          [
+            "SELLER",
+            "SUI-USDT",
+            "SELL",
+            "RESTING",
+            666666000000000,
+            385112000000000,
+            385112000000000
+          ]
+        ]
+      }
+    ],
+    "diskGuard": {
+      "allocatedCapBytes": 2147483648,
+      "minimumHostFreeBytes": 8589934592,
+      "earlyStopAllocatedBytes": 1879048192,
+      "intervalSeconds": 2.0,
+      "checks": 16,
+      "guardElapsedSeconds": 7.664674333063886,
+      "clientRunningGuardElapsedSeconds": 6.5331148750847206,
+      "peakAllocatedBytes": 652922880,
+      "minimumObservedHostFreeBytes": 86857437184,
+      "samples": [
+        {
+          "phase": "before-client",
+          "hostFreeBytes": 87638196224,
+          "allocatedBytesByNode": {
+            "0": 1093632,
+            "1": 1093632,
+            "2": 1093632
+          },
+          "allocatedBytes": 3280896,
+          "passed": true,
+          "elapsedSeconds": 0.37190016597742215
+        },
+        {
+          "phase": "client-running",
+          "hostFreeBytes": 87589531648,
+          "allocatedBytesByNode": {
+            "0": 1208320,
+            "1": 1253376,
+            "2": 1298432
+          },
+          "allocatedBytes": 3760128,
+          "passed": true,
+          "elapsedSeconds": 0.6232115000020713
+        },
+        {
+          "phase": "client-running",
+          "hostFreeBytes": 87583481856,
+          "allocatedBytesByNode": {
+            "0": 3473408,
+            "1": 3670016,
+            "2": 3952640
+          },
+          "allocatedBytes": 11096064,
+          "passed": true,
+          "elapsedSeconds": 0.6242683750460856
+        },
+        {
+          "phase": "client-running",
+          "hostFreeBytes": 87556530176,
+          "allocatedBytesByNode": {
+            "0": 13008896,
+            "1": 13864960,
+            "2": 14856192
+          },
+          "allocatedBytes": 41730048,
+          "passed": true,
+          "elapsedSeconds": 0.45728587498888373
+        },
+        {
+          "phase": "client-running",
+          "hostFreeBytes": 87498317824,
+          "allocatedBytesByNode": {
+            "0": 32108544,
+            "1": 33177600,
+            "2": 34091008
+          },
+          "allocatedBytes": 99377152,
+          "passed": true,
+          "elapsedSeconds": 0.4077320419601165
+        },
+        {
+          "phase": "client-running",
+          "hostFreeBytes": 87433883648,
+          "allocatedBytesByNode": {
+            "0": 54022144,
+            "1": 54841344,
+            "2": 55816192
+          },
+          "allocatedBytes": 164679680,
+          "passed": true,
+          "elapsedSeconds": 0.45176412496948615
+        },
+        {
+          "phase": "client-running",
+          "hostFreeBytes": 87367000064,
+          "allocatedBytesByNode": {
+            "0": 75898880,
+            "1": 76808192,
+            "2": 78073856
+          },
+          "allocatedBytes": 230780928,
+          "passed": true,
+          "elapsedSeconds": 0.45094020798569545
+        },
+        {
+          "phase": "client-running",
+          "hostFreeBytes": 87213723648,
+          "allocatedBytesByNode": {
+            "0": 96219136,
+            "1": 97128448,
+            "2": 98193408
+          },
+          "allocatedBytes": 291540992,
+          "passed": true,
+          "elapsedSeconds": 0.475785167014692
+        },
+        {
+          "phase": "client-running",
+          "hostFreeBytes": 87148998656,
+          "allocatedBytesByNode": {
+            "0": 119156736,
+            "1": 120233984,
+            "2": 121294848
+          },
+          "allocatedBytes": 360685568,
+          "passed": true,
+          "elapsedSeconds": 0.444629583042115
+        },
+        {
+          "phase": "client-running",
+          "hostFreeBytes": 87117357056,
+          "allocatedBytesByNode": {
+            "0": 135225344,
+            "1": 136155136,
+            "2": 136892416
+          },
+          "allocatedBytes": 408272896,
+          "passed": true,
+          "elapsedSeconds": 0.5213377079926431
+        },
+        {
+          "phase": "client-running",
+          "hostFreeBytes": 87054462976,
+          "allocatedBytesByNode": {
+            "0": 156360704,
+            "1": 157642752,
+            "2": 158486528
+          },
+          "allocatedBytes": 472489984,
+          "passed": true,
+          "elapsedSeconds": 0.5183931249775924
+        },
+        {
+          "phase": "client-running",
+          "hostFreeBytes": 86986928128,
+          "allocatedBytesByNode": {
+            "0": 179245056,
+            "1": 180375552,
+            "2": 181452800
+          },
+          "allocatedBytes": 541073408,
+          "passed": true,
+          "elapsedSeconds": 0.5412072500330396
+        },
+        {
+          "phase": "client-running",
+          "hostFreeBytes": 86923104256,
+          "allocatedBytesByNode": {
+            "0": 199663616,
+            "1": 200577024,
+            "2": 201306112
+          },
+          "allocatedBytes": 601546752,
+          "passed": true,
+          "elapsedSeconds": 0.5443892500479706
+        },
+        {
+          "phase": "client-running",
+          "hostFreeBytes": 86857437184,
+          "allocatedBytesByNode": {
+            "0": 217640960,
+            "1": 217640960,
+            "2": 217640960
+          },
+          "allocatedBytes": 652922880,
+          "passed": true,
+          "elapsedSeconds": 0.4721706670243293
+        },
+        {
+          "phase": "client-finished",
+          "hostFreeBytes": 87006351360,
+          "allocatedBytesByNode": {
+            "0": 217640960,
+            "1": 217640960,
+            "2": 217640960
+          },
+          "allocatedBytes": 652922880,
+          "passed": true,
+          "elapsedSeconds": 0.3973324170219712
+        },
+        {
+          "phase": "final-verified-state",
+          "hostFreeBytes": 87006285824,
+          "allocatedBytesByNode": {
+            "0": 217640960,
+            "1": 217640960,
+            "2": 217640960
+          },
+          "allocatedBytes": 652922880,
+          "passed": true,
+          "elapsedSeconds": 0.3623268749797717
+        }
+      ],
+      "limitation": "polling guard with 256 MiB headroom, not a filesystem hard quota; du/exec can perturb throughput",
+      "project": "ha142-55016ca291",
+      "recordingRoot": "/records/ha142-55016ca291",
+      "allocationMethod": "du -sk allocated 1 KiB blocks from this project's three node roots",
+      "clientReaped": true,
+      "clientExitCode": 0
+    },
+    "ownedProjectCleanupSucceeded": true
+  },
+  {
+    "variant": "before",
+    "runId": "ha142-ea86099550",
+    "success": true,
+    "measurement": {
+      "kind": "HA_PERFORMANCE",
+      "mode": "bounded-wire3-no-history-index",
+      "scope": "three-node direct Aeron; sync2; duration window; partial maker; actual TCP completion observation",
+      "workload": "partial-maker",
+      "warmup": 502690,
+      "orders": 310012,
+      "sellPreparation": 3,
+      "maxSamples": 2000000,
+      "warmupSeconds": 20,
+      "measureSeconds": 10,
+      "actualTotalBuys": 812702,
+      "expectedBuyerQuoteAvailable": 11896726960,
+      "expectedMakerRemaining": [
+        39576600000000,
+        395766000000000,
+        395766000000000
+      ],
+      "expectedBuyerAckFloor": 812702,
+      "expectedSellerAckFloor": 3,
+      "maxInFlight": 256,
+      "maxExecutionInFlight": 1024,
+      "maxObservedUnanswered": 256,
+      "ackMode": "async",
+      "maxObservedFinancialIncomplete": 1024,
+      "asyncAckRequests": 1198,
+      "backpressuredOffers": 3,
+      "completionCollectorPeakEntries": 1024,
+      "completionCollectorRetained": 0,
+      "completionReceiveBufferBytes": 212992,
+      "throughputSemantics": "phase start -> max(actual offering stop, last correlated observation); cohort also includes final ACK",
+      "rawSpanSemantics": "first send attempt -> last correlated observation; excludes remaining offering-window time",
+      "admissionTps": 30988.280713073847,
+      "admissionElapsedNs": 10004169088,
+      "admissionRawSpanTps": 30988.597826636666,
+      "admissionRawSpanNs": 10004066713,
+      "admissionP95Ns": 13957916,
+      "admissionP99Ns": 21210667,
+      "leaderCompletionTps": 30972.563656555725,
+      "leaderCompletionElapsedNs": 10009245713,
+      "leaderCompletionRawSpanTps": 30972.880448522556,
+      "leaderCompletionRawSpanNs": 10009143338,
+      "leaderCompletionP95Ns": 24518667,
+      "leaderCompletionP99Ns": 34581417,
+      "allReplicasTps": 30960.47638197873,
+      "allReplicasElapsedNs": 10013153421,
+      "allReplicasRawSpanTps": 30960.792926731676,
+      "allReplicasRawSpanNs": 10013051046,
+      "allReplicasP95Ns": 30703792,
+      "allReplicasP99Ns": 48225166,
+      "cohortElapsedIncludingAckNs": 10013249879,
+      "cohortTpsIncludingAck": 30960.17813858453,
+      "phaseElapsedIncludingAckNs": 10013249879,
+      "offeringWindowNs": 10000000000,
+      "actualOfferingWindowNs": 10000000046,
+      "sendStoppedNsFromFirstAttempt": 9999897671,
+      "drainAfterSendNs": 13249833,
+      "completionValid": true,
+      "sampleCapReached": false,
+      "malformedCompletionFrames": 0
+    },
+    "financialAndReplicaStateVerified": true,
+    "stateSha256": "2fbb75e3ad39eb8fc5d77bbad2e2f3592b37a7830fc7f96a6db99dad69edd5ca",
+    "nodes": [
+      {
+        "member": 0,
+        "role": "FOLLOWER",
+        "sync": [
+          2,
+          2,
+          2
+        ],
+        "liveOrders": 3,
+        "pending": 0,
+        "retainedReceipts": 0,
+        "feeRevenue": "24381060",
+        "metrics": {
+          "valid": true,
+          "failure": null,
+          "scope": "cumulative operational meters; external observation, outside financial state",
+          "maxSemantics": "Micrometer timer window maximum; do not subtract checkpoints",
+          "phases": [
+            {
+              "phase": "callback",
+              "count": 1628558,
+              "totalNs": 15891845501.0,
+              "maxNs": 40274583.0
+            },
+            {
+              "phase": "decode",
+              "count": 1628558,
+              "totalNs": 1536036568.0,
+              "maxNs": 9483583.0
+            },
+            {
+              "phase": "funding_apply",
+              "count": 4,
+              "totalNs": 3018458.0,
+              "maxNs": 2795125.0
+            },
+            {
+              "phase": "admission_context",
+              "count": 0,
+              "totalNs": 0.0,
+              "maxNs": 0.0
+            },
+            {
+              "phase": "admission_apply",
+              "count": 812705,
+              "totalNs": 3237304211.0,
+              "maxNs": 35428125.0
+            },
+            {
+              "phase": "execution_encode",
+              "count": 812705,
+              "totalNs": 340526328.0,
+              "maxNs": 5066250.0
+            },
+            {
+              "phase": "execution_offer",
+              "count": 812705,
+              "totalNs": 475247098.0,
+              "maxNs": 5406790.0
+            },
+            {
+              "phase": "reply_encode",
+              "count": 0,
+              "totalNs": 0.0,
+              "maxNs": 0.0
+            },
+            {
+              "phase": "reply_offer",
+              "count": 0,
+              "totalNs": 0.0,
+              "maxNs": 0.0
+            },
+            {
+              "phase": "execution_total",
+              "count": 812705,
+              "totalNs": 9254712347.0,
+              "maxNs": 40258542.0
+            },
+            {
+              "phase": "matching_candidate",
+              "count": 0,
+              "totalNs": 0.0,
+              "maxNs": 0.0
+            },
+            {
+              "phase": "settlement_input_validation",
+              "count": 0,
+              "totalNs": 0.0,
+              "maxNs": 0.0
+            },
+            {
+              "phase": "settlement_candidate",
+              "count": 0,
+              "totalNs": 0.0,
+              "maxNs": 0.0
+            },
+            {
+              "phase": "result_validation",
+              "count": 0,
+              "totalNs": 0.0,
+              "maxNs": 0.0
+            },
+            {
+              "phase": "execution_apply",
+              "count": 0,
+              "totalNs": 0.0,
+              "maxNs": 0.0
+            },
+            {
+              "phase": "completion",
+              "count": 0,
+              "totalNs": 0.0,
+              "maxNs": 0.0
+            }
+          ],
+          "offerAttempts": {
+            "execution": 813498.0,
+            "reply": 0.0
+          },
+          "callbacks": {
+            "unknown": 3144.0,
+            "funding": 4.0,
+            "admission": 812705.0,
+            "execution": 812705.0,
+            "malformed": 0.0
+          },
+          "droppedSamples": 0.0,
+          "degraded": 0.0,
+          "observationFailures": 0.0,
+          "handoffFallbacks": 0.0
+        },
+        "receiptFloors": [
+          [
+            "BUYER",
+            0,
+            1,
+            812702,
+            812702
+          ],
+          [
+            "SELLER",
+            0,
+            1,
+            3,
+            3
+          ]
+        ],
+        "liveMakers": [
+          [
+            "SELLER",
+            "BTC-USDT",
+            "SELL",
+            "RESTING",
+            66666700000000,
+            39576600000000,
+            39576600000000
+          ],
+          [
+            "SELLER",
+            "SOL-USDT",
+            "SELL",
+            "RESTING",
+            666667000000000,
+            395766000000000,
+            395766000000000
+          ],
+          [
+            "SELLER",
+            "SUI-USDT",
+            "SELL",
+            "RESTING",
+            666666000000000,
+            395766000000000,
+            395766000000000
+          ]
+        ]
+      },
+      {
+        "member": 1,
+        "role": "FOLLOWER",
+        "sync": [
+          2,
+          2,
+          2
+        ],
+        "liveOrders": 3,
+        "pending": 0,
+        "retainedReceipts": 0,
+        "feeRevenue": "24381060",
+        "metrics": {
+          "valid": true,
+          "failure": null,
+          "scope": "cumulative operational meters; external observation, outside financial state",
+          "maxSemantics": "Micrometer timer window maximum; do not subtract checkpoints",
+          "phases": [
+            {
+              "phase": "callback",
+              "count": 1628558,
+              "totalNs": 15783543527.0,
+              "maxNs": 37260958.0
+            },
+            {
+              "phase": "decode",
+              "count": 1628558,
+              "totalNs": 1509379114.0,
+              "maxNs": 7799084.0
+            },
+            {
+              "phase": "funding_apply",
+              "count": 4,
+              "totalNs": 3746291.0,
+              "maxNs": 3355834.0
+            },
+            {
+              "phase": "admission_context",
+              "count": 0,
+              "totalNs": 0.0,
+              "maxNs": 0.0
+            },
+            {
+              "phase": "admission_apply",
+              "count": 812705,
+              "totalNs": 3266743254.0,
+              "maxNs": 16193500.0
+            },
+            {
+              "phase": "execution_encode",
+              "count": 812705,
+              "totalNs": 308847439.0,
+              "maxNs": 5859416.0
+            },
+            {
+              "phase": "execution_offer",
+              "count": 812705,
+              "totalNs": 491185464.0,
+              "maxNs": 6240458.0
+            },
+            {
+              "phase": "reply_encode",
+              "count": 0,
+              "totalNs": 0.0,
+              "maxNs": 0.0
+            },
+            {
+              "phase": "reply_offer",
+              "count": 0,
+              "totalNs": 0.0,
+              "maxNs": 0.0
+            },
+            {
+              "phase": "execution_total",
+              "count": 812705,
+              "totalNs": 9168304802.0,
+              "maxNs": 37255084.0
+            },
+            {
+              "phase": "matching_candidate",
+              "count": 0,
+              "totalNs": 0.0,
+              "maxNs": 0.0
+            },
+            {
+              "phase": "settlement_input_validation",
+              "count": 0,
+              "totalNs": 0.0,
+              "maxNs": 0.0
+            },
+            {
+              "phase": "settlement_candidate",
+              "count": 0,
+              "totalNs": 0.0,
+              "maxNs": 0.0
+            },
+            {
+              "phase": "result_validation",
+              "count": 0,
+              "totalNs": 0.0,
+              "maxNs": 0.0
+            },
+            {
+              "phase": "execution_apply",
+              "count": 0,
+              "totalNs": 0.0,
+              "maxNs": 0.0
+            },
+            {
+              "phase": "completion",
+              "count": 0,
+              "totalNs": 0.0,
+              "maxNs": 0.0
+            }
+          ],
+          "offerAttempts": {
+            "execution": 813501.0,
+            "reply": 0.0
+          },
+          "callbacks": {
+            "unknown": 3144.0,
+            "funding": 4.0,
+            "admission": 812705.0,
+            "execution": 812705.0,
+            "malformed": 0.0
+          },
+          "droppedSamples": 0.0,
+          "degraded": 0.0,
+          "observationFailures": 0.0,
+          "handoffFallbacks": 0.0
+        },
+        "receiptFloors": [
+          [
+            "BUYER",
+            0,
+            1,
+            812702,
+            812702
+          ],
+          [
+            "SELLER",
+            0,
+            1,
+            3,
+            3
+          ]
+        ],
+        "liveMakers": [
+          [
+            "SELLER",
+            "BTC-USDT",
+            "SELL",
+            "RESTING",
+            66666700000000,
+            39576600000000,
+            39576600000000
+          ],
+          [
+            "SELLER",
+            "SOL-USDT",
+            "SELL",
+            "RESTING",
+            666667000000000,
+            395766000000000,
+            395766000000000
+          ],
+          [
+            "SELLER",
+            "SUI-USDT",
+            "SELL",
+            "RESTING",
+            666666000000000,
+            395766000000000,
+            395766000000000
+          ]
+        ]
+      },
+      {
+        "member": 2,
+        "role": "LEADER",
+        "sync": [
+          2,
+          2,
+          2
+        ],
+        "liveOrders": 3,
+        "pending": 0,
+        "retainedReceipts": 0,
+        "feeRevenue": "24381060",
+        "metrics": {
+          "valid": true,
+          "failure": null,
+          "scope": "cumulative operational meters; external observation, outside financial state",
+          "maxSemantics": "Micrometer timer window maximum; do not subtract checkpoints",
+          "phases": [
+            {
+              "phase": "callback",
+              "count": 1628558,
+              "totalNs": 17726213547.0,
+              "maxNs": 25560833.0
+            },
+            {
+              "phase": "decode",
+              "count": 1628558,
+              "totalNs": 1622367284.0,
+              "maxNs": 20192708.0
+            },
+            {
+              "phase": "funding_apply",
+              "count": 4,
+              "totalNs": 3666791.0,
+              "maxNs": 3384958.0
+            },
+            {
+              "phase": "admission_context",
+              "count": 0,
+              "totalNs": 0.0,
+              "maxNs": 0.0
+            },
+            {
+              "phase": "admission_apply",
+              "count": 812705,
+              "totalNs": 3528917112.0,
+              "maxNs": 25487083.0
+            },
+            {
+              "phase": "execution_encode",
+              "count": 812705,
+              "totalNs": 366659550.0,
+              "maxNs": 5130416.0
+            },
+            {
+              "phase": "execution_offer",
+              "count": 812705,
+              "totalNs": 447245047.0,
+              "maxNs": 2781292.0
+            },
+            {
+              "phase": "reply_encode",
+              "count": 815853,
+              "totalNs": 616226893.0,
+              "maxNs": 4383500.0
+            },
+            {
+              "phase": "reply_offer",
+              "count": 815853,
+              "totalNs": 705874115.0,
+              "maxNs": 6438458.0
+            },
+            {
+              "phase": "execution_total",
+              "count": 812705,
+              "totalNs": 9281754336.0,
+              "maxNs": 23755625.0
+            },
+            {
+              "phase": "matching_candidate",
+              "count": 0,
+              "totalNs": 0.0,
+              "maxNs": 0.0
+            },
+            {
+              "phase": "settlement_input_validation",
+              "count": 0,
+              "totalNs": 0.0,
+              "maxNs": 0.0
+            },
+            {
+              "phase": "settlement_candidate",
+              "count": 0,
+              "totalNs": 0.0,
+              "maxNs": 0.0
+            },
+            {
+              "phase": "result_validation",
+              "count": 0,
+              "totalNs": 0.0,
+              "maxNs": 0.0
+            },
+            {
+              "phase": "execution_apply",
+              "count": 0,
+              "totalNs": 0.0,
+              "maxNs": 0.0
+            },
+            {
+              "phase": "completion",
+              "count": 0,
+              "totalNs": 0.0,
+              "maxNs": 0.0
+            }
+          ],
+          "offerAttempts": {
+            "execution": 813498.0,
+            "reply": 815862.0
+          },
+          "callbacks": {
+            "unknown": 3144.0,
+            "funding": 4.0,
+            "admission": 812705.0,
+            "execution": 812705.0,
+            "malformed": 0.0
+          },
+          "droppedSamples": 0.0,
+          "degraded": 0.0,
+          "observationFailures": 0.0,
+          "handoffFallbacks": 0.0
+        },
+        "receiptFloors": [
+          [
+            "BUYER",
+            0,
+            1,
+            812702,
+            812702
+          ],
+          [
+            "SELLER",
+            0,
+            1,
+            3,
+            3
+          ]
+        ],
+        "liveMakers": [
+          [
+            "SELLER",
+            "BTC-USDT",
+            "SELL",
+            "RESTING",
+            66666700000000,
+            39576600000000,
+            39576600000000
+          ],
+          [
+            "SELLER",
+            "SOL-USDT",
+            "SELL",
+            "RESTING",
+            666667000000000,
+            395766000000000,
+            395766000000000
+          ],
+          [
+            "SELLER",
+            "SUI-USDT",
+            "SELL",
+            "RESTING",
+            666666000000000,
+            395766000000000,
+            395766000000000
+          ]
+        ]
+      }
+    ],
+    "diskGuard": {
+      "allocatedCapBytes": 2147483648,
+      "minimumHostFreeBytes": 8589934592,
+      "earlyStopAllocatedBytes": 1879048192,
+      "intervalSeconds": 2.0,
+      "checks": 16,
+      "guardElapsedSeconds": 7.675962791079655,
+      "clientRunningGuardElapsedSeconds": 6.388719959068112,
+      "peakAllocatedBytes": 628346880,
+      "minimumObservedHostFreeBytes": 86894964736,
+      "samples": [
+        {
+          "phase": "before-client",
+          "hostFreeBytes": 87657811968,
+          "allocatedBytesByNode": {
+            "0": 1093632,
+            "1": 1093632,
+            "2": 1093632
+          },
+          "allocatedBytes": 3280896,
+          "passed": true,
+          "elapsedSeconds": 0.4098344999947585
+        },
+        {
+          "phase": "client-running",
+          "hostFreeBytes": 87608627200,
+          "allocatedBytesByNode": {
+            "0": 1286144,
+            "1": 1363968,
+            "2": 1417216
+          },
+          "allocatedBytes": 4067328,
+          "passed": true,
+          "elapsedSeconds": 0.43394037504913285
+        },
+        {
+          "phase": "client-running",
+          "hostFreeBytes": 87599489024,
+          "allocatedBytesByNode": {
+            "0": 4587520,
+            "1": 4841472,
+            "2": 5275648
+          },
+          "allocatedBytes": 14704640,
+          "passed": true,
+          "elapsedSeconds": 0.5191857080208138
+        },
+        {
+          "phase": "client-running",
+          "hostFreeBytes": 87562420224,
+          "allocatedBytesByNode": {
+            "0": 17498112,
+            "1": 18497536,
+            "2": 19308544
+          },
+          "allocatedBytes": 55304192,
+          "passed": true,
+          "elapsedSeconds": 0.5302320829941891
+        },
+        {
+          "phase": "client-running",
+          "hostFreeBytes": 87506018304,
+          "allocatedBytesByNode": {
+            "0": 36245504,
+            "1": 37199872,
+            "2": 38232064
+          },
+          "allocatedBytes": 111677440,
+          "passed": true,
+          "elapsedSeconds": 0.4214996669907123
+        },
+        {
+          "phase": "client-running",
+          "hostFreeBytes": 87440211968,
+          "allocatedBytesByNode": {
+            "0": 57884672,
+            "1": 58912768,
+            "2": 60026880
+          },
+          "allocatedBytes": 176824320,
+          "passed": true,
+          "elapsedSeconds": 0.4596040830365382
+        },
+        {
+          "phase": "client-running",
+          "hostFreeBytes": 87373905920,
+          "allocatedBytesByNode": {
+            "0": 80093184,
+            "1": 81240064,
+            "2": 82325504
+          },
+          "allocatedBytes": 243658752,
+          "passed": true,
+          "elapsedSeconds": 0.41846679197624326
+        },
+        {
+          "phase": "client-running",
+          "hostFreeBytes": 87223943168,
+          "allocatedBytesByNode": {
+            "0": 98242560,
+            "1": 99467264,
+            "2": 100470784
+          },
+          "allocatedBytes": 298180608,
+          "passed": true,
+          "elapsedSeconds": 0.5457682909909636
+        },
+        {
+          "phase": "client-running",
+          "hostFreeBytes": 87163940864,
+          "allocatedBytesByNode": {
+            "0": 118530048,
+            "1": 119513088,
+            "2": 120184832
+          },
+          "allocatedBytes": 358227968,
+          "passed": true,
+          "elapsedSeconds": 0.5206147920107469
+        },
+        {
+          "phase": "client-running",
+          "hostFreeBytes": 87120195584,
+          "allocatedBytesByNode": {
+            "0": 133058560,
+            "1": 133668864,
+            "2": 134815744
+          },
+          "allocatedBytes": 401543168,
+          "passed": true,
+          "elapsedSeconds": 0.587452250008937
+        },
+        {
+          "phase": "client-running",
+          "hostFreeBytes": 87059681280,
+          "allocatedBytesByNode": {
+            "0": 153079808,
+            "1": 154025984,
+            "2": 155348992
+          },
+          "allocatedBytes": 462454784,
+          "passed": true,
+          "elapsedSeconds": 0.441917416988872
+        },
+        {
+          "phase": "client-running",
+          "hostFreeBytes": 86993395712,
+          "allocatedBytesByNode": {
+            "0": 174907392,
+            "1": 175869952,
+            "2": 177131520
+          },
+          "allocatedBytes": 527908864,
+          "passed": true,
+          "elapsedSeconds": 0.508903082984034
+        },
+        {
+          "phase": "client-running",
+          "hostFreeBytes": 86937210880,
+          "allocatedBytesByNode": {
+            "0": 193589248,
+            "1": 194895872,
+            "2": 195915776
+          },
+          "allocatedBytes": 584400896,
+          "passed": true,
+          "elapsedSeconds": 0.5305692090187222
+        },
+        {
+          "phase": "client-running",
+          "hostFreeBytes": 86894964736,
+          "allocatedBytesByNode": {
+            "0": 209448960,
+            "1": 209448960,
+            "2": 209448960
+          },
+          "allocatedBytes": 628346880,
+          "passed": true,
+          "elapsedSeconds": 0.470566208998207
+        },
+        {
+          "phase": "client-finished",
+          "hostFreeBytes": 87043813376,
+          "allocatedBytesByNode": {
+            "0": 209448960,
+            "1": 209448960,
+            "2": 209448960
+          },
+          "allocatedBytes": 628346880,
+          "passed": true,
+          "elapsedSeconds": 0.3889061660156585
+        },
+        {
+          "phase": "final-verified-state",
+          "hostFreeBytes": 87043731456,
+          "allocatedBytesByNode": {
+            "0": 209448960,
+            "1": 209448960,
+            "2": 209448960
+          },
+          "allocatedBytes": 628346880,
+          "passed": true,
+          "elapsedSeconds": 0.48850216600112617
+        }
+      ],
+      "limitation": "polling guard with 256 MiB headroom, not a filesystem hard quota; du/exec can perturb throughput",
+      "project": "ha142-ea86099550",
+      "recordingRoot": "/records/ha142-ea86099550",
+      "allocationMethod": "du -sk allocated 1 KiB blocks from this project's three node roots",
+      "clientReaped": true,
+      "clientExitCode": 0
+    },
+    "ownedProjectCleanupSucceeded": true
+  },
+  {
+    "variant": "before",
+    "runId": "ha142-42d2292cac",
+    "success": true,
+    "measurement": {
+      "kind": "HA_PERFORMANCE",
+      "mode": "bounded-wire3-no-history-index",
+      "scope": "three-node direct Aeron; sync2; duration window; partial maker; actual TCP completion observation",
+      "workload": "partial-maker",
+      "warmup": 535699,
+      "orders": 331148,
+      "sellPreparation": 3,
+      "maxSamples": 2000000,
+      "warmupSeconds": 20,
+      "measureSeconds": 10,
+      "actualTotalBuys": 866847,
+      "expectedBuyerQuoteAvailable": 11354194060,
+      "expectedMakerRemaining": [
+        37771800000000,
+        377718000000000,
+        377717000000000
+      ],
+      "expectedBuyerAckFloor": 866847,
+      "expectedSellerAckFloor": 3,
+      "maxInFlight": 256,
+      "maxExecutionInFlight": 1024,
+      "maxObservedUnanswered": 256,
+      "ackMode": "async",
+      "maxObservedFinancialIncomplete": 1024,
+      "asyncAckRequests": 1280,
+      "backpressuredOffers": 2,
+      "completionCollectorPeakEntries": 1024,
+      "completionCollectorRetained": 0,
+      "completionReceiveBufferBytes": 212992,
+      "throughputSemantics": "phase start -> max(actual offering stop, last correlated observation); cohort also includes final ACK",
+      "rawSpanSemantics": "first send attempt -> last correlated observation; excludes remaining offering-window time",
+      "admissionTps": 33030.97397772384,
+      "admissionElapsedNs": 10025378005,
+      "admissionRawSpanTps": 33031.22863642325,
+      "admissionRawSpanNs": 10025300713,
+      "admissionP95Ns": 12854084,
+      "admissionP99Ns": 17915625,
+      "leaderCompletionTps": 32930.64263568053,
+      "leaderCompletionElapsedNs": 10055922797,
+      "leaderCompletionRawSpanTps": 32930.8957496757,
+      "leaderCompletionRawSpanNs": 10055845505,
+      "leaderCompletionP95Ns": 22073417,
+      "leaderCompletionP99Ns": 32123459,
+      "allReplicasTps": 32930.189363993486,
+      "allReplicasElapsedNs": 10056061213,
+      "allReplicasRawSpanTps": 32930.44247102073,
+      "allReplicasRawSpanNs": 10055983921,
+      "allReplicasP95Ns": 27734500,
+      "allReplicasP99Ns": 36926834,
+      "cohortElapsedIncludingAckNs": 10059214255,
+      "cohortTpsIncludingAck": 32919.867457381246,
+      "phaseElapsedIncludingAckNs": 10059214255,
+      "offeringWindowNs": 10000000000,
+      "actualOfferingWindowNs": 10000000005,
+      "sendStoppedNsFromFirstAttempt": 9999922713,
+      "drainAfterSendNs": 59214250,
+      "completionValid": true,
+      "sampleCapReached": false,
+      "malformedCompletionFrames": 0
+    },
+    "financialAndReplicaStateVerified": true,
+    "stateSha256": "0a7d029b0de5d8694ee6e9b98187dc8a699bb1182cf4a41f10a5627362c887a7",
+    "nodes": [
+      {
+        "member": 0,
+        "role": "FOLLOWER",
+        "sync": [
+          2,
+          2,
+          2
+        ],
+        "liveOrders": 3,
+        "pending": 0,
+        "retainedReceipts": 0,
+        "feeRevenue": "26005410",
+        "metrics": {
+          "valid": true,
+          "failure": null,
+          "scope": "cumulative operational meters; external observation, outside financial state",
+          "maxSemantics": "Micrometer timer window maximum; do not subtract checkpoints",
+          "phases": [
+            {
+              "phase": "callback",
+              "count": 1737059,
+              "totalNs": 16188019108.0,
+              "maxNs": 34003500.0
+            },
+            {
+              "phase": "decode",
+              "count": 1737059,
+              "totalNs": 1618808928.0,
+              "maxNs": 22151708.0
+            },
+            {
+              "phase": "funding_apply",
+              "count": 4,
+              "totalNs": 3638332.0,
+              "maxNs": 3322375.0
+            },
+            {
+              "phase": "admission_context",
+              "count": 0,
+              "totalNs": 0.0,
+              "maxNs": 0.0
+            },
+            {
+              "phase": "admission_apply",
+              "count": 866850,
+              "totalNs": 3314725561.0,
+              "maxNs": 15998208.0
+            },
+            {
+              "phase": "execution_encode",
+              "count": 866850,
+              "totalNs": 364865230.0,
+              "maxNs": 5029667.0
+            },
+            {
+              "phase": "execution_offer",
+              "count": 866850,
+              "totalNs": 528407097.0,
+              "maxNs": 5887916.0
+            },
+            {
+              "phase": "reply_encode",
+              "count": 0,
+              "totalNs": 0.0,
+              "maxNs": 0.0
+            },
+            {
+              "phase": "reply_offer",
+              "count": 0,
+              "totalNs": 0.0,
+              "maxNs": 0.0
+            },
+            {
+              "phase": "execution_total",
+              "count": 866850,
+              "totalNs": 9242308088.0,
+              "maxNs": 33996250.0
+            },
+            {
+              "phase": "matching_candidate",
+              "count": 0,
+              "totalNs": 0.0,
+              "maxNs": 0.0
+            },
+            {
+              "phase": "settlement_input_validation",
+              "count": 0,
+              "totalNs": 0.0,
+              "maxNs": 0.0
+            },
+            {
+              "phase": "settlement_candidate",
+              "count": 0,
+              "totalNs": 0.0,
+              "maxNs": 0.0
+            },
+            {
+              "phase": "result_validation",
+              "count": 0,
+              "totalNs": 0.0,
+              "maxNs": 0.0
+            },
+            {
+              "phase": "execution_apply",
+              "count": 0,
+              "totalNs": 0.0,
+              "maxNs": 0.0
+            },
+            {
+              "phase": "completion",
+              "count": 0,
+              "totalNs": 0.0,
+              "maxNs": 0.0
+            }
+          ],
+          "offerAttempts": {
+            "execution": 867696.0,
+            "reply": 0.0
+          },
+          "callbacks": {
+            "unknown": 3355.0,
+            "funding": 4.0,
+            "admission": 866850.0,
+            "execution": 866850.0,
+            "malformed": 0.0
+          },
+          "droppedSamples": 0.0,
+          "degraded": 0.0,
+          "observationFailures": 0.0,
+          "handoffFallbacks": 0.0
+        },
+        "receiptFloors": [
+          [
+            "BUYER",
+            0,
+            1,
+            866847,
+            866847
+          ],
+          [
+            "SELLER",
+            0,
+            1,
+            3,
+            3
+          ]
+        ],
+        "liveMakers": [
+          [
+            "SELLER",
+            "BTC-USDT",
+            "SELL",
+            "RESTING",
+            66666700000000,
+            37771800000000,
+            37771800000000
+          ],
+          [
+            "SELLER",
+            "SOL-USDT",
+            "SELL",
+            "RESTING",
+            666667000000000,
+            377718000000000,
+            377718000000000
+          ],
+          [
+            "SELLER",
+            "SUI-USDT",
+            "SELL",
+            "RESTING",
+            666666000000000,
+            377717000000000,
+            377717000000000
+          ]
+        ]
+      },
+      {
+        "member": 1,
+        "role": "FOLLOWER",
+        "sync": [
+          2,
+          2,
+          2
+        ],
+        "liveOrders": 3,
+        "pending": 0,
+        "retainedReceipts": 0,
+        "feeRevenue": "26005410",
+        "metrics": {
+          "valid": true,
+          "failure": null,
+          "scope": "cumulative operational meters; external observation, outside financial state",
+          "maxSemantics": "Micrometer timer window maximum; do not subtract checkpoints",
+          "phases": [
+            {
+              "phase": "callback",
+              "count": 1737059,
+              "totalNs": 16589947632.0,
+              "maxNs": 24528750.0
+            },
+            {
+              "phase": "decode",
+              "count": 1737059,
+              "totalNs": 1700123287.0,
+              "maxNs": 24305916.0
+            },
+            {
+              "phase": "funding_apply",
+              "count": 4,
+              "totalNs": 3414541.0,
+              "maxNs": 3168166.0
+            },
+            {
+              "phase": "admission_context",
+              "count": 0,
+              "totalNs": 0.0,
+              "maxNs": 0.0
+            },
+            {
+              "phase": "admission_apply",
+              "count": 866850,
+              "totalNs": 3398509807.0,
+              "maxNs": 18631125.0
+            },
+            {
+              "phase": "execution_encode",
+              "count": 866850,
+              "totalNs": 286567322.0,
+              "maxNs": 11961917.0
+            },
+            {
+              "phase": "execution_offer",
+              "count": 866850,
+              "totalNs": 499925701.0,
+              "maxNs": 3817291.0
+            },
+            {
+              "phase": "reply_encode",
+              "count": 0,
+              "totalNs": 0.0,
+              "maxNs": 0.0
+            },
+            {
+              "phase": "reply_offer",
+              "count": 0,
+              "totalNs": 0.0,
+              "maxNs": 0.0
+            },
+            {
+              "phase": "execution_total",
+              "count": 866850,
+              "totalNs": 9594491767.0,
+              "maxNs": 20362959.0
+            },
+            {
+              "phase": "matching_candidate",
+              "count": 0,
+              "totalNs": 0.0,
+              "maxNs": 0.0
+            },
+            {
+              "phase": "settlement_input_validation",
+              "count": 0,
+              "totalNs": 0.0,
+              "maxNs": 0.0
+            },
+            {
+              "phase": "settlement_candidate",
+              "count": 0,
+              "totalNs": 0.0,
+              "maxNs": 0.0
+            },
+            {
+              "phase": "result_validation",
+              "count": 0,
+              "totalNs": 0.0,
+              "maxNs": 0.0
+            },
+            {
+              "phase": "execution_apply",
+              "count": 0,
+              "totalNs": 0.0,
+              "maxNs": 0.0
+            },
+            {
+              "phase": "completion",
+              "count": 0,
+              "totalNs": 0.0,
+              "maxNs": 0.0
+            }
+          ],
+          "offerAttempts": {
+            "execution": 867696.0,
+            "reply": 0.0
+          },
+          "callbacks": {
+            "unknown": 3355.0,
+            "funding": 4.0,
+            "admission": 866850.0,
+            "execution": 866850.0,
+            "malformed": 0.0
+          },
+          "droppedSamples": 0.0,
+          "degraded": 0.0,
+          "observationFailures": 0.0,
+          "handoffFallbacks": 0.0
+        },
+        "receiptFloors": [
+          [
+            "BUYER",
+            0,
+            1,
+            866847,
+            866847
+          ],
+          [
+            "SELLER",
+            0,
+            1,
+            3,
+            3
+          ]
+        ],
+        "liveMakers": [
+          [
+            "SELLER",
+            "BTC-USDT",
+            "SELL",
+            "RESTING",
+            66666700000000,
+            37771800000000,
+            37771800000000
+          ],
+          [
+            "SELLER",
+            "SOL-USDT",
+            "SELL",
+            "RESTING",
+            666667000000000,
+            377718000000000,
+            377718000000000
+          ],
+          [
+            "SELLER",
+            "SUI-USDT",
+            "SELL",
+            "RESTING",
+            666666000000000,
+            377717000000000,
+            377717000000000
+          ]
+        ]
+      },
+      {
+        "member": 2,
+        "role": "LEADER",
+        "sync": [
+          2,
+          2,
+          2
+        ],
+        "liveOrders": 3,
+        "pending": 0,
+        "retainedReceipts": 0,
+        "feeRevenue": "26005410",
+        "metrics": {
+          "valid": true,
+          "failure": null,
+          "scope": "cumulative operational meters; external observation, outside financial state",
+          "maxSemantics": "Micrometer timer window maximum; do not subtract checkpoints",
+          "phases": [
+            {
+              "phase": "callback",
+              "count": 1737059,
+              "totalNs": 17786356082.0,
+              "maxNs": 32006792.0
+            },
+            {
+              "phase": "decode",
+              "count": 1737059,
+              "totalNs": 1619124237.0,
+              "maxNs": 15878875.0
+            },
+            {
+              "phase": "funding_apply",
+              "count": 4,
+              "totalNs": 3798707.0,
+              "maxNs": 3511333.0
+            },
+            {
+              "phase": "admission_context",
+              "count": 0,
+              "totalNs": 0.0,
+              "maxNs": 0.0
+            },
+            {
+              "phase": "admission_apply",
+              "count": 866850,
+              "totalNs": 3465353128.0,
+              "maxNs": 31941750.0
+            },
+            {
+              "phase": "execution_encode",
+              "count": 866850,
+              "totalNs": 365156451.0,
+              "maxNs": 10374750.0
+            },
+            {
+              "phase": "execution_offer",
+              "count": 866850,
+              "totalNs": 485895168.0,
+              "maxNs": 5582583.0
+            },
+            {
+              "phase": "reply_encode",
+              "count": 870209,
+              "totalNs": 591497871.0,
+              "maxNs": 13696958.0
+            },
+            {
+              "phase": "reply_offer",
+              "count": 870209,
+              "totalNs": 560374200.0,
+              "maxNs": 6486125.0
+            },
+            {
+              "phase": "execution_total",
+              "count": 866850,
+              "totalNs": 9507771890.0,
+              "maxNs": 25236417.0
+            },
+            {
+              "phase": "matching_candidate",
+              "count": 0,
+              "totalNs": 0.0,
+              "maxNs": 0.0
+            },
+            {
+              "phase": "settlement_input_validation",
+              "count": 0,
+              "totalNs": 0.0,
+              "maxNs": 0.0
+            },
+            {
+              "phase": "settlement_candidate",
+              "count": 0,
+              "totalNs": 0.0,
+              "maxNs": 0.0
+            },
+            {
+              "phase": "result_validation",
+              "count": 0,
+              "totalNs": 0.0,
+              "maxNs": 0.0
+            },
+            {
+              "phase": "execution_apply",
+              "count": 0,
+              "totalNs": 0.0,
+              "maxNs": 0.0
+            },
+            {
+              "phase": "completion",
+              "count": 0,
+              "totalNs": 0.0,
+              "maxNs": 0.0
+            }
+          ],
+          "offerAttempts": {
+            "execution": 867696.0,
+            "reply": 870218.0
+          },
+          "callbacks": {
+            "unknown": 3355.0,
+            "funding": 4.0,
+            "admission": 866850.0,
+            "execution": 866850.0,
+            "malformed": 0.0
+          },
+          "droppedSamples": 0.0,
+          "degraded": 0.0,
+          "observationFailures": 0.0,
+          "handoffFallbacks": 0.0
+        },
+        "receiptFloors": [
+          [
+            "BUYER",
+            0,
+            1,
+            866847,
+            866847
+          ],
+          [
+            "SELLER",
+            0,
+            1,
+            3,
+            3
+          ]
+        ],
+        "liveMakers": [
+          [
+            "SELLER",
+            "BTC-USDT",
+            "SELL",
+            "RESTING",
+            66666700000000,
+            37771800000000,
+            37771800000000
+          ],
+          [
+            "SELLER",
+            "SOL-USDT",
+            "SELL",
+            "RESTING",
+            666667000000000,
+            377718000000000,
+            377718000000000
+          ],
+          [
+            "SELLER",
+            "SUI-USDT",
+            "SELL",
+            "RESTING",
+            666666000000000,
+            377717000000000,
+            377717000000000
+          ]
+        ]
+      }
+    ],
+    "diskGuard": {
+      "allocatedCapBytes": 2147483648,
+      "minimumHostFreeBytes": 8589934592,
+      "earlyStopAllocatedBytes": 1879048192,
+      "intervalSeconds": 2.0,
+      "checks": 16,
+      "guardElapsedSeconds": 7.204488457005937,
+      "clientRunningGuardElapsedSeconds": 5.990254540985916,
+      "peakAllocatedBytes": 669990912,
+      "minimumObservedHostFreeBytes": 86861844480,
+      "samples": [
+        {
+          "phase": "before-client",
+          "hostFreeBytes": 87670013952,
+          "allocatedBytesByNode": {
+            "0": 1093632,
+            "1": 1093632,
+            "2": 1093632
+          },
+          "allocatedBytes": 3280896,
+          "passed": true,
+          "elapsedSeconds": 0.41592250001849607
+        },
+        {
+          "phase": "client-running",
+          "hostFreeBytes": 87620608000,
+          "allocatedBytesByNode": {
+            "0": 1314816,
+            "1": 1368064,
+            "2": 1437696
+          },
+          "allocatedBytes": 4120576,
+          "passed": true,
+          "elapsedSeconds": 0.43980220798403025
+        },
+        {
+          "phase": "client-running",
+          "hostFreeBytes": 87613927424,
+          "allocatedBytesByNode": {
+            "0": 3694592,
+            "1": 3993600,
+            "2": 4300800
+          },
+          "allocatedBytes": 11988992,
+          "passed": true,
+          "elapsedSeconds": 0.5005608340143226
+        },
+        {
+          "phase": "client-running",
+          "hostFreeBytes": 87591718912,
+          "allocatedBytesByNode": {
+            "0": 15163392,
+            "1": 16039936,
+            "2": 16875520
+          },
+          "allocatedBytes": 48078848,
+          "passed": true,
+          "elapsedSeconds": 0.4948687079595402
+        },
+        {
+          "phase": "client-running",
+          "hostFreeBytes": 87533899776,
+          "allocatedBytesByNode": {
+            "0": 34373632,
+            "1": 35176448,
+            "2": 36036608
+          },
+          "allocatedBytes": 105586688,
+          "passed": true,
+          "elapsedSeconds": 0.43144224997377023
+        },
+        {
+          "phase": "client-running",
+          "hostFreeBytes": 87481344000,
+          "allocatedBytesByNode": {
+            "0": 51945472,
+            "1": 52948992,
+            "2": 54099968
+          },
+          "allocatedBytes": 158994432,
+          "passed": true,
+          "elapsedSeconds": 0.5032610420021228
+        },
+        {
+          "phase": "client-running",
+          "hostFreeBytes": 87414603776,
+          "allocatedBytesByNode": {
+            "0": 74072064,
+            "1": 75010048,
+            "2": 76292096
+          },
+          "allocatedBytes": 225374208,
+          "passed": true,
+          "elapsedSeconds": 0.4447314999997616
+        },
+        {
+          "phase": "client-running",
+          "hostFreeBytes": 87259254784,
+          "allocatedBytesByNode": {
+            "0": 95588352,
+            "1": 96456704,
+            "2": 97419264
+          },
+          "allocatedBytes": 289464320,
+          "passed": true,
+          "elapsedSeconds": 0.48398333304794505
+        },
+        {
+          "phase": "client-running",
+          "hostFreeBytes": 87191781376,
+          "allocatedBytesByNode": {
+            "0": 117682176,
+            "1": 118530048,
+            "2": 119463936
+          },
+          "allocatedBytes": 355676160,
+          "passed": true,
+          "elapsedSeconds": 0.4163947919732891
+        },
+        {
+          "phase": "client-running",
+          "hostFreeBytes": 87124484096,
+          "allocatedBytesByNode": {
+            "0": 140009472,
+            "1": 140988416,
+            "2": 141975552
+          },
+          "allocatedBytes": 422973440,
+          "passed": true,
+          "elapsedSeconds": 0.4220682920422405
+        },
+        {
+          "phase": "client-running",
+          "hostFreeBytes": 87060672512,
+          "allocatedBytesByNode": {
+            "0": 161267712,
+            "1": 162312192,
+            "2": 162951168
+          },
+          "allocatedBytes": 486531072,
+          "passed": true,
+          "elapsedSeconds": 0.5275863750139251
+        },
+        {
+          "phase": "client-running",
+          "hostFreeBytes": 86996074496,
+          "allocatedBytesByNode": {
+            "0": 182415360,
+            "1": 183443456,
+            "2": 184471552
+          },
+          "allocatedBytes": 550330368,
+          "passed": true,
+          "elapsedSeconds": 0.4114373330376111
+        },
+        {
+          "phase": "client-running",
+          "hostFreeBytes": 86931619840,
+          "allocatedBytesByNode": {
+            "0": 203694080,
+            "1": 204726272,
+            "2": 205619200
+          },
+          "allocatedBytes": 614039552,
+          "passed": true,
+          "elapsedSeconds": 0.4387125409557484
+        },
+        {
+          "phase": "client-running",
+          "hostFreeBytes": 86861844480,
+          "allocatedBytesByNode": {
+            "0": 223330304,
+            "1": 223330304,
+            "2": 223330304
+          },
+          "allocatedBytes": 669990912,
+          "passed": true,
+          "elapsedSeconds": 0.4754053329816088
+        },
+        {
+          "phase": "client-finished",
+          "hostFreeBytes": 87009038336,
+          "allocatedBytesByNode": {
+            "0": 223330304,
+            "1": 223330304,
+            "2": 223330304
+          },
+          "allocatedBytes": 669990912,
+          "passed": true,
+          "elapsedSeconds": 0.3877014999743551
+        },
+        {
+          "phase": "final-verified-state",
+          "hostFreeBytes": 87008911360,
+          "allocatedBytesByNode": {
+            "0": 223330304,
+            "1": 223330304,
+            "2": 223330304
+          },
+          "allocatedBytes": 669990912,
+          "passed": true,
+          "elapsedSeconds": 0.4106099160271697
+        }
+      ],
+      "limitation": "polling guard with 256 MiB headroom, not a filesystem hard quota; du/exec can perturb throughput",
+      "project": "ha142-42d2292cac",
+      "recordingRoot": "/records/ha142-42d2292cac",
+      "allocationMethod": "du -sk allocated 1 KiB blocks from this project's three node roots",
+      "clientReaped": true,
+      "clientExitCode": 0
+    },
+    "ownedProjectCleanupSucceeded": true
+  },
+  {
+    "variant": "after",
+    "runId": "ha142-668cfde05f",
+    "success": true,
+    "measurement": {
+      "kind": "HA_PERFORMANCE",
+      "mode": "bounded-wire3-no-history-index",
+      "scope": "three-node direct Aeron; sync2; duration window; partial maker; actual TCP completion observation",
+      "workload": "partial-maker",
+      "warmup": 544925,
+      "orders": 354647,
+      "sellPreparation": 3,
+      "maxSamples": 2000000,
+      "warmupSeconds": 20,
+      "measureSeconds": 10,
+      "actualTotalBuys": 899572,
+      "expectedBuyerQuoteAvailable": 11026289560,
+      "expectedMakerRemaining": [
+        36680900000000,
+        366810000000000,
+        366809000000000
+      ],
+      "expectedBuyerAckFloor": 899572,
+      "expectedSellerAckFloor": 3,
+      "maxInFlight": 256,
+      "maxExecutionInFlight": 1024,
+      "maxObservedUnanswered": 256,
+      "ackMode": "async",
+      "maxObservedFinancialIncomplete": 1024,
+      "asyncAckRequests": 1370,
+      "backpressuredOffers": 2,
+      "completionCollectorPeakEntries": 1024,
+      "completionCollectorRetained": 0,
+      "completionReceiveBufferBytes": 212992,
+      "throughputSemantics": "phase start -> max(actual offering stop, last correlated observation); cohort also includes final ACK",
+      "rawSpanSemantics": "first send attempt -> last correlated observation; excludes remaining offering-window time",
+      "admissionTps": 35430.383883973984,
+      "admissionElapsedNs": 10009685505,
+      "admissionRawSpanTps": 35430.821325009434,
+      "admissionRawSpanNs": 10009561922,
+      "admissionP95Ns": 11710000,
+      "admissionP99Ns": 16278083,
+      "leaderCompletionTps": 35412.717212039126,
+      "leaderCompletionElapsedNs": 10014679130,
+      "leaderCompletionRawSpanTps": 35413.15421693771,
+      "leaderCompletionRawSpanNs": 10014555547,
+      "leaderCompletionP95Ns": 20823958,
+      "leaderCompletionP99Ns": 28456167,
+      "allReplicasTps": 35411.92337963616,
+      "allReplicasElapsedNs": 10014903630,
+      "allReplicasRawSpanTps": 35412.36036494252,
+      "allReplicasRawSpanNs": 10014780047,
+      "allReplicasP95Ns": 25075333,
+      "allReplicasP99Ns": 39253333,
+      "cohortElapsedIncludingAckNs": 10015024838,
+      "cohortTpsIncludingAck": 35411.49480272512,
+      "phaseElapsedIncludingAckNs": 10015024838,
+      "offeringWindowNs": 10000000000,
+      "actualOfferingWindowNs": 10000006130,
+      "sendStoppedNsFromFirstAttempt": 9999882547,
+      "drainAfterSendNs": 15018708,
+      "completionValid": true,
+      "sampleCapReached": false,
+      "malformedCompletionFrames": 0
+    },
+    "financialAndReplicaStateVerified": true,
+    "stateSha256": "68c5f59155ae0bbfe07ee9a9e846f5d8356a94c5bf986c64081537dead1a2fe6",
+    "nodes": [
+      {
+        "member": 0,
+        "role": "LEADER",
+        "sync": [
+          2,
+          2,
+          2
+        ],
+        "liveOrders": 3,
+        "pending": 0,
+        "retainedReceipts": 0,
+        "feeRevenue": "26987160",
+        "metrics": {
+          "valid": true,
+          "failure": null,
+          "scope": "cumulative operational meters; external observation, outside financial state",
+          "maxSemantics": "Micrometer timer window maximum; do not subtract checkpoints",
+          "phases": [
+            {
+              "phase": "callback",
+              "count": 1802633,
+              "totalNs": 17310673550.0,
+              "maxNs": 23102791.0
+            },
+            {
+              "phase": "decode",
+              "count": 1802633,
+              "totalNs": 1707415038.0,
+              "maxNs": 13215917.0
+            },
+            {
+              "phase": "funding_apply",
+              "count": 4,
+              "totalNs": 3294666.0,
+              "maxNs": 3017166.0
+            },
+            {
+              "phase": "admission_context",
+              "count": 0,
+              "totalNs": 0.0,
+              "maxNs": 0.0
+            },
+            {
+              "phase": "admission_apply",
+              "count": 899575,
+              "totalNs": 3554936780.0,
+              "maxNs": 15415958.0
+            },
+            {
+              "phase": "execution_encode",
+              "count": 899575,
+              "totalNs": 358194589.0,
+              "maxNs": 7245625.0
+            },
+            {
+              "phase": "execution_offer",
+              "count": 899575,
+              "totalNs": 502094076.0,
+              "maxNs": 4228958.0
+            },
+            {
+              "phase": "reply_encode",
+              "count": 903058,
+              "totalNs": 648798162.0,
+              "maxNs": 15850916.0
+            },
+            {
+              "phase": "reply_offer",
+              "count": 903058,
+              "totalNs": 597685257.0,
+              "maxNs": 4248834.0
+            },
+            {
+              "phase": "execution_total",
+              "count": 899575,
+              "totalNs": 8695702921.0,
+              "maxNs": 21022916.0
+            },
+            {
+              "phase": "matching_candidate",
+              "count": 0,
+              "totalNs": 0.0,
+              "maxNs": 0.0
+            },
+            {
+              "phase": "settlement_input_validation",
+              "count": 0,
+              "totalNs": 0.0,
+              "maxNs": 0.0
+            },
+            {
+              "phase": "settlement_candidate",
+              "count": 0,
+              "totalNs": 0.0,
+              "maxNs": 0.0
+            },
+            {
+              "phase": "result_validation",
+              "count": 0,
+              "totalNs": 0.0,
+              "maxNs": 0.0
+            },
+            {
+              "phase": "execution_apply",
+              "count": 0,
+              "totalNs": 0.0,
+              "maxNs": 0.0
+            },
+            {
+              "phase": "completion",
+              "count": 0,
+              "totalNs": 0.0,
+              "maxNs": 0.0
+            }
+          ],
+          "offerAttempts": {
+            "execution": 900453.0,
+            "reply": 903068.0
+          },
+          "callbacks": {
+            "unknown": 3479.0,
+            "funding": 4.0,
+            "admission": 899575.0,
+            "execution": 899575.0,
+            "malformed": 0.0
+          },
+          "droppedSamples": 0.0,
+          "degraded": 0.0,
+          "observationFailures": 0.0,
+          "handoffFallbacks": 0.0
+        },
+        "receiptFloors": [
+          [
+            "BUYER",
+            0,
+            1,
+            899572,
+            899572
+          ],
+          [
+            "SELLER",
+            0,
+            1,
+            3,
+            3
+          ]
+        ],
+        "liveMakers": [
+          [
+            "SELLER",
+            "BTC-USDT",
+            "SELL",
+            "RESTING",
+            66666700000000,
+            36680900000000,
+            36680900000000
+          ],
+          [
+            "SELLER",
+            "SOL-USDT",
+            "SELL",
+            "RESTING",
+            666667000000000,
+            366810000000000,
+            366810000000000
+          ],
+          [
+            "SELLER",
+            "SUI-USDT",
+            "SELL",
+            "RESTING",
+            666666000000000,
+            366809000000000,
+            366809000000000
+          ]
+        ]
+      },
+      {
+        "member": 1,
+        "role": "FOLLOWER",
+        "sync": [
+          2,
+          2,
+          2
+        ],
+        "liveOrders": 3,
+        "pending": 0,
+        "retainedReceipts": 0,
+        "feeRevenue": "26987160",
+        "metrics": {
+          "valid": true,
+          "failure": null,
+          "scope": "cumulative operational meters; external observation, outside financial state",
+          "maxSemantics": "Micrometer timer window maximum; do not subtract checkpoints",
+          "phases": [
+            {
+              "phase": "callback",
+              "count": 1802633,
+              "totalNs": 16265533999.0,
+              "maxNs": 31182250.0
+            },
+            {
+              "phase": "decode",
+              "count": 1802633,
+              "totalNs": 1640520360.0,
+              "maxNs": 18579500.0
+            },
+            {
+              "phase": "funding_apply",
+              "count": 4,
+              "totalNs": 3867501.0,
+              "maxNs": 3511792.0
+            },
+            {
+              "phase": "admission_context",
+              "count": 0,
+              "totalNs": 0.0,
+              "maxNs": 0.0
+            },
+            {
+              "phase": "admission_apply",
+              "count": 899575,
+              "totalNs": 3590431192.0,
+              "maxNs": 24440208.0
+            },
+            {
+              "phase": "execution_encode",
+              "count": 899575,
+              "totalNs": 397674085.0,
+              "maxNs": 7088291.0
+            },
+            {
+              "phase": "execution_offer",
+              "count": 899575,
+              "totalNs": 516956826.0,
+              "maxNs": 3446166.0
+            },
+            {
+              "phase": "reply_encode",
+              "count": 0,
+              "totalNs": 0.0,
+              "maxNs": 0.0
+            },
+            {
+              "phase": "reply_offer",
+              "count": 0,
+              "totalNs": 0.0,
+              "maxNs": 0.0
+            },
+            {
+              "phase": "execution_total",
+              "count": 899575,
+              "totalNs": 8991881194.0,
+              "maxNs": 31147791.0
+            },
+            {
+              "phase": "matching_candidate",
+              "count": 0,
+              "totalNs": 0.0,
+              "maxNs": 0.0
+            },
+            {
+              "phase": "settlement_input_validation",
+              "count": 0,
+              "totalNs": 0.0,
+              "maxNs": 0.0
+            },
+            {
+              "phase": "settlement_candidate",
+              "count": 0,
+              "totalNs": 0.0,
+              "maxNs": 0.0
+            },
+            {
+              "phase": "result_validation",
+              "count": 0,
+              "totalNs": 0.0,
+              "maxNs": 0.0
+            },
+            {
+              "phase": "execution_apply",
+              "count": 0,
+              "totalNs": 0.0,
+              "maxNs": 0.0
+            },
+            {
+              "phase": "completion",
+              "count": 0,
+              "totalNs": 0.0,
+              "maxNs": 0.0
+            }
+          ],
+          "offerAttempts": {
+            "execution": 900453.0,
+            "reply": 0.0
+          },
+          "callbacks": {
+            "unknown": 3479.0,
+            "funding": 4.0,
+            "admission": 899575.0,
+            "execution": 899575.0,
+            "malformed": 0.0
+          },
+          "droppedSamples": 0.0,
+          "degraded": 0.0,
+          "observationFailures": 0.0,
+          "handoffFallbacks": 0.0
+        },
+        "receiptFloors": [
+          [
+            "BUYER",
+            0,
+            1,
+            899572,
+            899572
+          ],
+          [
+            "SELLER",
+            0,
+            1,
+            3,
+            3
+          ]
+        ],
+        "liveMakers": [
+          [
+            "SELLER",
+            "BTC-USDT",
+            "SELL",
+            "RESTING",
+            66666700000000,
+            36680900000000,
+            36680900000000
+          ],
+          [
+            "SELLER",
+            "SOL-USDT",
+            "SELL",
+            "RESTING",
+            666667000000000,
+            366810000000000,
+            366810000000000
+          ],
+          [
+            "SELLER",
+            "SUI-USDT",
+            "SELL",
+            "RESTING",
+            666666000000000,
+            366809000000000,
+            366809000000000
+          ]
+        ]
+      },
+      {
+        "member": 2,
+        "role": "FOLLOWER",
+        "sync": [
+          2,
+          2,
+          2
+        ],
+        "liveOrders": 3,
+        "pending": 0,
+        "retainedReceipts": 0,
+        "feeRevenue": "26987160",
+        "metrics": {
+          "valid": true,
+          "failure": null,
+          "scope": "cumulative operational meters; external observation, outside financial state",
+          "maxSemantics": "Micrometer timer window maximum; do not subtract checkpoints",
+          "phases": [
+            {
+              "phase": "callback",
+              "count": 1802633,
+              "totalNs": 15594273823.0,
+              "maxNs": 35193459.0
+            },
+            {
+              "phase": "decode",
+              "count": 1802633,
+              "totalNs": 1583155206.0,
+              "maxNs": 7372125.0
+            },
+            {
+              "phase": "funding_apply",
+              "count": 4,
+              "totalNs": 4058542.0,
+              "maxNs": 3759833.0
+            },
+            {
+              "phase": "admission_context",
+              "count": 0,
+              "totalNs": 0.0,
+              "maxNs": 0.0
+            },
+            {
+              "phase": "admission_apply",
+              "count": 899575,
+              "totalNs": 3388847131.0,
+              "maxNs": 16374792.0
+            },
+            {
+              "phase": "execution_encode",
+              "count": 899575,
+              "totalNs": 386392574.0,
+              "maxNs": 4246834.0
+            },
+            {
+              "phase": "execution_offer",
+              "count": 899575,
+              "totalNs": 524206427.0,
+              "maxNs": 5026084.0
+            },
+            {
+              "phase": "reply_encode",
+              "count": 0,
+              "totalNs": 0.0,
+              "maxNs": 0.0
+            },
+            {
+              "phase": "reply_offer",
+              "count": 0,
+              "totalNs": 0.0,
+              "maxNs": 0.0
+            },
+            {
+              "phase": "execution_total",
+              "count": 899575,
+              "totalNs": 8556362399.0,
+              "maxNs": 35188583.0
+            },
+            {
+              "phase": "matching_candidate",
+              "count": 0,
+              "totalNs": 0.0,
+              "maxNs": 0.0
+            },
+            {
+              "phase": "settlement_input_validation",
+              "count": 0,
+              "totalNs": 0.0,
+              "maxNs": 0.0
+            },
+            {
+              "phase": "settlement_candidate",
+              "count": 0,
+              "totalNs": 0.0,
+              "maxNs": 0.0
+            },
+            {
+              "phase": "result_validation",
+              "count": 0,
+              "totalNs": 0.0,
+              "maxNs": 0.0
+            },
+            {
+              "phase": "execution_apply",
+              "count": 0,
+              "totalNs": 0.0,
+              "maxNs": 0.0
+            },
+            {
+              "phase": "completion",
+              "count": 0,
+              "totalNs": 0.0,
+              "maxNs": 0.0
+            }
+          ],
+          "offerAttempts": {
+            "execution": 900453.0,
+            "reply": 0.0
+          },
+          "callbacks": {
+            "unknown": 3479.0,
+            "funding": 4.0,
+            "admission": 899575.0,
+            "execution": 899575.0,
+            "malformed": 0.0
+          },
+          "droppedSamples": 0.0,
+          "degraded": 0.0,
+          "observationFailures": 0.0,
+          "handoffFallbacks": 0.0
+        },
+        "receiptFloors": [
+          [
+            "BUYER",
+            0,
+            1,
+            899572,
+            899572
+          ],
+          [
+            "SELLER",
+            0,
+            1,
+            3,
+            3
+          ]
+        ],
+        "liveMakers": [
+          [
+            "SELLER",
+            "BTC-USDT",
+            "SELL",
+            "RESTING",
+            66666700000000,
+            36680900000000,
+            36680900000000
+          ],
+          [
+            "SELLER",
+            "SOL-USDT",
+            "SELL",
+            "RESTING",
+            666667000000000,
+            366810000000000,
+            366810000000000
+          ],
+          [
+            "SELLER",
+            "SUI-USDT",
+            "SELL",
+            "RESTING",
+            666666000000000,
+            366809000000000,
+            366809000000000
+          ]
+        ]
+      }
+    ],
+    "diskGuard": {
+      "allocatedCapBytes": 2147483648,
+      "minimumHostFreeBytes": 8589934592,
+      "earlyStopAllocatedBytes": 1879048192,
+      "intervalSeconds": 2.0,
+      "checks": 16,
+      "guardElapsedSeconds": 7.1129604140878655,
+      "clientRunningGuardElapsedSeconds": 5.9961325820186175,
+      "peakAllocatedBytes": 695156736,
+      "minimumObservedHostFreeBytes": 86846586880,
+      "samples": [
+        {
+          "phase": "before-client",
+          "hostFreeBytes": 87677730816,
+          "allocatedBytesByNode": {
+            "0": 1093632,
+            "1": 1093632,
+            "2": 1093632
+          },
+          "allocatedBytes": 3280896,
+          "passed": true,
+          "elapsedSeconds": 0.38096129102632403
+        },
+        {
+          "phase": "client-running",
+          "hostFreeBytes": 87628746752,
+          "allocatedBytesByNode": {
+            "0": 1310720,
+            "1": 1355776,
+            "2": 1445888
+          },
+          "allocatedBytes": 4112384,
+          "passed": true,
+          "elapsedSeconds": 0.5231586669688113
+        },
+        {
+          "phase": "client-running",
+          "hostFreeBytes": 87619170304,
+          "allocatedBytesByNode": {
+            "0": 4550656,
+            "1": 4808704,
+            "2": 5222400
+          },
+          "allocatedBytes": 14581760,
+          "passed": true,
+          "elapsedSeconds": 0.45996191597077996
+        },
+        {
+          "phase": "client-running",
+          "hostFreeBytes": 87587414016,
+          "allocatedBytesByNode": {
+            "0": 15962112,
+            "1": 17137664,
+            "2": 18030592
+          },
+          "allocatedBytes": 51130368,
+          "passed": true,
+          "elapsedSeconds": 0.4140598750091158
+        },
+        {
+          "phase": "client-running",
+          "hostFreeBytes": 87528394752,
+          "allocatedBytesByNode": {
+            "0": 35299328,
+            "1": 36167680,
+            "2": 37203968
+          },
+          "allocatedBytes": 108670976,
+          "passed": true,
+          "elapsedSeconds": 0.4911579579929821
+        },
+        {
+          "phase": "client-running",
+          "hostFreeBytes": 87461625856,
+          "allocatedBytesByNode": {
+            "0": 57974784,
+            "1": 59027456,
+            "2": 60043264
+          },
+          "allocatedBytes": 177045504,
+          "passed": true,
+          "elapsedSeconds": 0.4159122090204619
+        },
+        {
+          "phase": "client-running",
+          "hostFreeBytes": 87394226176,
+          "allocatedBytesByNode": {
+            "0": 80306176,
+            "1": 81227776,
+            "2": 82407424
+          },
+          "allocatedBytes": 243941376,
+          "passed": true,
+          "elapsedSeconds": 0.45800879201851785
+        },
+        {
+          "phase": "client-running",
+          "hostFreeBytes": 87230877696,
+          "allocatedBytesByNode": {
+            "0": 102551552,
+            "1": 103731200,
+            "2": 104550400
+          },
+          "allocatedBytes": 310833152,
+          "passed": true,
+          "elapsedSeconds": 0.4473480830201879
+        },
+        {
+          "phase": "client-running",
+          "hostFreeBytes": 87165255680,
+          "allocatedBytesByNode": {
+            "0": 124076032,
+            "1": 125042688,
+            "2": 126005248
+          },
+          "allocatedBytes": 375123968,
+          "passed": true,
+          "elapsedSeconds": 0.5354204580071382
+        },
+        {
+          "phase": "client-running",
+          "hostFreeBytes": 87111004160,
+          "allocatedBytesByNode": {
+            "0": 142163968,
+            "1": 143101952,
+            "2": 144048128
+          },
+          "allocatedBytes": 429314048,
+          "passed": true,
+          "elapsedSeconds": 0.5018418330000713
+        },
+        {
+          "phase": "client-running",
+          "hostFreeBytes": 87058948096,
+          "allocatedBytesByNode": {
+            "0": 163414016,
+            "1": 164409344,
+            "2": 165609472
+          },
+          "allocatedBytes": 493432832,
+          "passed": true,
+          "elapsedSeconds": 0.46659591695060953
+        },
+        {
+          "phase": "client-running",
+          "hostFreeBytes": 86990143488,
+          "allocatedBytesByNode": {
+            "0": 186400768,
+            "1": 187490304,
+            "2": 188780544
+          },
+          "allocatedBytes": 562671616,
+          "passed": true,
+          "elapsedSeconds": 0.4619175000116229
+        },
+        {
+          "phase": "client-running",
+          "hostFreeBytes": 86916247552,
+          "allocatedBytesByNode": {
+            "0": 210554880,
+            "1": 211582976,
+            "2": 212647936
+          },
+          "allocatedBytes": 634785792,
+          "passed": true,
+          "elapsedSeconds": 0.40844770800322294
+        },
+        {
+          "phase": "client-running",
+          "hostFreeBytes": 86846586880,
+          "allocatedBytesByNode": {
+            "0": 231718912,
+            "1": 231718912,
+            "2": 231718912
+          },
+          "allocatedBytes": 695156736,
+          "passed": true,
+          "elapsedSeconds": 0.41230166604509577
+        },
+        {
+          "phase": "client-finished",
+          "hostFreeBytes": 86994321408,
+          "allocatedBytesByNode": {
+            "0": 231718912,
+            "1": 231718912,
+            "2": 231718912
+          },
+          "allocatedBytes": 695156736,
+          "passed": true,
+          "elapsedSeconds": 0.3739340410102159
+        },
+        {
+          "phase": "final-verified-state",
+          "hostFreeBytes": 86995279872,
+          "allocatedBytesByNode": {
+            "0": 231718912,
+            "1": 231718912,
+            "2": 231718912
+          },
+          "allocatedBytes": 695156736,
+          "passed": true,
+          "elapsedSeconds": 0.36193250003270805
+        }
+      ],
+      "limitation": "polling guard with 256 MiB headroom, not a filesystem hard quota; du/exec can perturb throughput",
+      "project": "ha142-668cfde05f",
+      "recordingRoot": "/records/ha142-668cfde05f",
+      "allocationMethod": "du -sk allocated 1 KiB blocks from this project's three node roots",
+      "clientReaped": true,
+      "clientExitCode": 0
+    },
+    "ownedProjectCleanupSucceeded": true
+  }
+]

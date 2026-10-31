@@ -1,0 +1,38 @@
+{
+  "finalSourceFilesVerified": 595,
+  "regressionJvmTests": 887,
+  "pythonTests": 13,
+  "faultJvmTests": 2,
+  "faultChecks": {
+    "ha-trading-faults/ha-fault-86be4120": {
+      "H03GenesisLogOnlyAllProcessRestart": true,
+      "leaderCrashAndDuplicateReservation": true,
+      "originalVolumeFollowerRejoin": true,
+      "H01CommittedAdmissionBeforeAnyExecutionOfferCrash": true,
+      "H05PartialSnapshotNeverBecomesRecoveryState": true,
+      "H02ExecutionCommittedBeforePublicAdmissionReceiptCrash": true,
+      "snapshotAndCommittedTailRestart": true,
+      "oldReceiptAndActiveMakerSurviveRestart": true,
+      "H09ThreeBoundedJvmsRecoverWithoutPreviousDriverFiles": true,
+      "H06MismatchedSnapshotRootNeverBecomesReady": true
+    },
+    "remote-trading-recovery/remote-f75e9ba9": {
+      "admissionPublicSuccessWaitedForRemotePrefix": true,
+      "completionPublicSuccessWaitedForRemotePrefix": true,
+      "allOriginalProcessesStoppedAndAllThreeRootsRemoved": true,
+      "durableAuthorityConsumedOnceAndSameTargetRetrySafe": true,
+      "fourthOnlySnapshotAndTailFinancialStateExact": true,
+      "oldReceiptNoDoubleReservationAndActiveMakerLateFill": true
+    }
+  },
+  "selected": "domain",
+  "rejected": [
+    "wake",
+    "client"
+  ],
+  "allShortPerformanceRuns": 28,
+  "finalFailures": 0,
+  "finalSkipped": 0,
+  "regressionFreshJvmTests": 455,
+  "regressionUnchangedUpToDateJvmTests": 432
+}

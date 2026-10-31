@@ -1,0 +1,32 @@
+[
+  {
+    "variant": "domain",
+    "removedRuntime": "/Users/0chord/.codex/worktrees/issue148-http-aeron/exchange-core/build/candidate-validation-20261031/runtimes/domain",
+    "logicalBytes": 174406472,
+    "overlayVerified": true
+  },
+  {
+    "variant": "wake",
+    "removedRuntime": "/Users/0chord/.codex/worktrees/issue148-http-aeron/exchange-core/build/candidate-validation-20261031/runtimes/wake",
+    "logicalBytes": 174406376,
+    "overlayVerified": true
+  },
+  {
+    "variant": "client",
+    "removedRuntime": "/Users/0chord/.codex/worktrees/issue148-http-aeron/exchange-core/build/candidate-validation-20261031/runtimes/client",
+    "logicalBytes": 174418097,
+    "overlayVerified": true
+  },
+  {
+    "variant": "combined",
+    "removedRuntime": "/Users/0chord/.codex/worktrees/issue148-http-aeron/exchange-core/build/candidate-validation-20261031/runtimes/combined",
+    "logicalBytes": 174418324,
+    "overlayVerified": true
+  },
+  {
+    "variant": "all-three",
+    "removedRuntime": "/Users/0chord/.codex/worktrees/issue148-http-aeron/exchange-core/build/candidate-validation-20261031/runtimes/all-three",
+    "logicalBytes": 174418455,
+    "overlayVerified": true
+  }
+]

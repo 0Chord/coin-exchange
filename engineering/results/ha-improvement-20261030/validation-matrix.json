@@ -1,0 +1,35 @@
+{
+  "scope": "Class-level matrix: full app run followed by changed-class reruns, not a second full suite run",
+  "fullAppInitial": {
+    "tests": 1373,
+    "failures": 13,
+    "errors": 0,
+    "skipped": 2
+  },
+  "correctedClassRetest": {
+    "tests": 83,
+    "failures": 0,
+    "errors": 0,
+    "skipped": 0
+  },
+  "tempDirectoryClassRetest": {
+    "tests": 16,
+    "failures": 0,
+    "errors": 0,
+    "skipped": 0
+  },
+  "classMatrixLatest": {
+    "tests": 1375,
+    "failures": 0,
+    "errors": 0,
+    "skipped": 2
+  },
+  "separatelyExecutedRemoteRecovery": "remote-811c0cf0; 6 checks true; do not count skipped invocation as executed",
+  "savedArchiveThreeCopyReplay": "not executed in this final matrix",
+  "sourceManifest": "52d245565d1b9ea23cc2ac0d5cbc72ac01df9758d27d6d1ce72536e180191bbf",
+  "pythonDiskGuard": "6 passed",
+  "domainTrading": "265 passed",
+  "domainMatching": "153 passed",
+  "architecture": "385 passed initially; 9 production rules repeated after final product change",
+  "format": "ktlintCheck passed for app-api, domain-trading, domain-matching, architecture-tests"
+}

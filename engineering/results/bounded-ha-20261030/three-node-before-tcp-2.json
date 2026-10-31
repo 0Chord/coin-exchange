@@ -1,0 +1,209 @@
+{
+  "runId": "ha142-211a1f9b5c",
+  "mode": "legacy",
+  "success": true,
+  "commands": [
+    {
+      "arguments": [
+        "docker",
+        "build",
+        "-f",
+        "/Users/0chord/.codex/worktrees/ha-baseline-142/exchange-core/app-api/src/test/docker/aeron-funding/Dockerfile",
+        "-t",
+        "exchange-ha-trading:ha142-211a1f9b5c",
+        "/Users/0chord/.codex/worktrees/ha-baseline-142/exchange-core/app-api/build/aeron-verification"
+      ],
+      "exitCode": 0,
+      "elapsedSeconds": 3.2058716249885038
+    },
+    {
+      "arguments": [
+        "docker",
+        "compose",
+        "-p",
+        "ha142-211a1f9b5c",
+        "-f",
+        "/Users/0chord/.codex/worktrees/ha-baseline-142/exchange-core/app-api/src/test/docker/aeron-funding/compose.yml",
+        "-f",
+        "/Users/0chord/.codex/worktrees/ha-baseline-142/exchange-core/app-api/build/reports/ha-trading/ha142-211a1f9b5c/probe.compose.yml",
+        "up",
+        "-d",
+        "node0",
+        "node1",
+        "node2"
+      ],
+      "exitCode": 0,
+      "elapsedSeconds": 0.9264437920064665
+    },
+    {
+      "arguments": [
+        "docker",
+        "compose",
+        "-p",
+        "ha142-211a1f9b5c",
+        "-f",
+        "/Users/0chord/.codex/worktrees/ha-baseline-142/exchange-core/app-api/src/test/docker/aeron-funding/compose.yml",
+        "-f",
+        "/Users/0chord/.codex/worktrees/ha-baseline-142/exchange-core/app-api/build/reports/ha-trading/ha142-211a1f9b5c/probe.compose.yml",
+        "logs",
+        "--no-color",
+        "--no-log-prefix",
+        "node0",
+        "node1",
+        "node2"
+      ],
+      "exitCode": 0,
+      "elapsedSeconds": 0.16837987495819107
+    },
+    {
+      "arguments": [
+        "docker",
+        "compose",
+        "-p",
+        "ha142-211a1f9b5c",
+        "-f",
+        "/Users/0chord/.codex/worktrees/ha-baseline-142/exchange-core/app-api/src/test/docker/aeron-funding/compose.yml",
+        "-f",
+        "/Users/0chord/.codex/worktrees/ha-baseline-142/exchange-core/app-api/build/reports/ha-trading/ha142-211a1f9b5c/probe.compose.yml",
+        "logs",
+        "--no-color",
+        "--no-log-prefix",
+        "node0",
+        "node1",
+        "node2"
+      ],
+      "exitCode": 0,
+      "elapsedSeconds": 0.09724412497598678
+    },
+    {
+      "arguments": [
+        "docker",
+        "compose",
+        "-p",
+        "ha142-211a1f9b5c",
+        "-f",
+        "/Users/0chord/.codex/worktrees/ha-baseline-142/exchange-core/app-api/src/test/docker/aeron-funding/compose.yml",
+        "-f",
+        "/Users/0chord/.codex/worktrees/ha-baseline-142/exchange-core/app-api/build/reports/ha-trading/ha142-211a1f9b5c/probe.compose.yml",
+        "logs",
+        "--no-color",
+        "--no-log-prefix",
+        "node0",
+        "node1",
+        "node2"
+      ],
+      "exitCode": 0,
+      "elapsedSeconds": 0.10478804202284664
+    },
+    {
+      "arguments": [
+        "docker",
+        "compose",
+        "-p",
+        "ha142-211a1f9b5c",
+        "-f",
+        "/Users/0chord/.codex/worktrees/ha-baseline-142/exchange-core/app-api/src/test/docker/aeron-funding/compose.yml",
+        "-f",
+        "/Users/0chord/.codex/worktrees/ha-baseline-142/exchange-core/app-api/build/reports/ha-trading/ha142-211a1f9b5c/probe.compose.yml",
+        "logs",
+        "--no-color",
+        "--no-log-prefix",
+        "node0",
+        "node1",
+        "node2"
+      ],
+      "exitCode": 0,
+      "elapsedSeconds": 0.09582404099637643
+    },
+    {
+      "arguments": [
+        "docker",
+        "compose",
+        "-p",
+        "ha142-211a1f9b5c",
+        "-f",
+        "/Users/0chord/.codex/worktrees/ha-baseline-142/exchange-core/app-api/src/test/docker/aeron-funding/compose.yml",
+        "-f",
+        "/Users/0chord/.codex/worktrees/ha-baseline-142/exchange-core/app-api/build/reports/ha-trading/ha142-211a1f9b5c/probe.compose.yml",
+        "run",
+        "--rm",
+        "--use-aliases",
+        "--name",
+        "ha142-211a1f9b5c-client",
+        "client"
+      ],
+      "exitCode": 0,
+      "elapsedSeconds": 5.149263333005365
+    },
+    {
+      "arguments": [
+        "docker",
+        "compose",
+        "-p",
+        "ha142-211a1f9b5c",
+        "-f",
+        "/Users/0chord/.codex/worktrees/ha-baseline-142/exchange-core/app-api/src/test/docker/aeron-funding/compose.yml",
+        "-f",
+        "/Users/0chord/.codex/worktrees/ha-baseline-142/exchange-core/app-api/build/reports/ha-trading/ha142-211a1f9b5c/probe.compose.yml",
+        "logs",
+        "--no-color",
+        "--no-log-prefix"
+      ],
+      "exitCode": 0,
+      "elapsedSeconds": 0.11731645802501589
+    },
+    {
+      "arguments": [
+        "docker",
+        "compose",
+        "-p",
+        "ha142-211a1f9b5c",
+        "-f",
+        "/Users/0chord/.codex/worktrees/ha-baseline-142/exchange-core/app-api/src/test/docker/aeron-funding/compose.yml",
+        "-f",
+        "/Users/0chord/.codex/worktrees/ha-baseline-142/exchange-core/app-api/build/reports/ha-trading/ha142-211a1f9b5c/probe.compose.yml",
+        "down",
+        "--volumes",
+        "--remove-orphans"
+      ],
+      "exitCode": 0,
+      "elapsedSeconds": 0.5023568340111524
+    },
+    {
+      "arguments": [
+        "docker",
+        "image",
+        "rm",
+        "exchange-ha-trading:ha142-211a1f9b5c"
+      ],
+      "exitCode": 0,
+      "elapsedSeconds": 0.06382762501016259
+    }
+  ],
+  "measurement": {
+    "kind": "HA_PERFORMANCE",
+    "mode": "legacy-wire2-rocksdb-rebuildable",
+    "scope": "three-node direct Aeron; sync2; finite cohort; actual TCP completion observation",
+    "warmup": 1000,
+    "orders": 5000,
+    "sellPreparation": 6000,
+    "maxInFlight": 256,
+    "completionReceiveBufferBytes": 212992,
+    "admissionTps": 4264.499011129632,
+    "admissionP95Ns": 118509500,
+    "admissionP99Ns": 132771208,
+    "leaderCompletionTps": 4197.558363076049,
+    "leaderCompletionP95Ns": 200835958,
+    "leaderCompletionP99Ns": 234965125,
+    "allReplicasTps": 3769.193556214739,
+    "allReplicasP95Ns": 347672750,
+    "allReplicasP99Ns": 359728417,
+    "cohortElapsedIncludingAckNs": 1326628917,
+    "completionValid": true,
+    "malformedCompletionFrames": 0
+  },
+  "financialAndReplicaStateVerified": true,
+  "stateSha256": "a57e9ab4bc4f3ce31cd6920dfe976b3d886296583438b73af46b56537599606a",
+  "reportBytes": 14335,
+  "limitation": "finite cohort; same-host Docker CPU/IO; not maximum sustainable TPS or remote disaster RPO0"
+}

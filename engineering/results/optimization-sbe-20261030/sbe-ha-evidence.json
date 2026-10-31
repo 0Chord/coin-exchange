@@ -1,0 +1,28 @@
+{
+  "ha-trading-faults": {
+    "report": "/Users/0chord/.codex/worktrees/issue148-http-aeron/exchange-core/app-api/build/reports/ha-trading-faults/ha-fault-3f2fb366",
+    "checks": {
+      "H03GenesisLogOnlyAllProcessRestart": true,
+      "leaderCrashAndDuplicateReservation": true,
+      "originalVolumeFollowerRejoin": true,
+      "H01CommittedAdmissionBeforeAnyExecutionOfferCrash": true,
+      "H05PartialSnapshotNeverBecomesRecoveryState": true,
+      "H02ExecutionCommittedBeforePublicAdmissionReceiptCrash": true,
+      "snapshotAndCommittedTailRestart": true,
+      "oldReceiptAndActiveMakerSurviveRestart": true,
+      "H09ThreeBoundedJvmsRecoverWithoutPreviousDriverFiles": true,
+      "H06MismatchedSnapshotRootNeverBecomesReady": true
+    }
+  },
+  "remote-trading-recovery": {
+    "report": "/Users/0chord/.codex/worktrees/issue148-http-aeron/exchange-core/app-api/build/reports/remote-trading-recovery/remote-819f7014",
+    "checks": {
+      "admissionPublicSuccessWaitedForRemotePrefix": true,
+      "completionPublicSuccessWaitedForRemotePrefix": true,
+      "allOriginalProcessesStoppedAndAllThreeRootsRemoved": true,
+      "durableAuthorityConsumedOnceAndSameTargetRetrySafe": true,
+      "fourthOnlySnapshotAndTailFinancialStateExact": true,
+      "oldReceiptNoDoubleReservationAndActiveMakerLateFill": true
+    }
+  }
+}

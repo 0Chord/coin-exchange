@@ -1,0 +1,419 @@
+{
+  "scope": "same-node native JFR commit exit to callback event begin; intersections are not independent additive CPU costs",
+  "members": {
+    "0": {
+      "ADMISSION": {
+        "distributions": {
+          "gapNs": {
+            "count": 2647,
+            "p50": 15411542,
+            "p95": 46225125,
+            "p99": 47294375,
+            "max": 47389459
+          },
+          "otherCallbackEventWallNs": {
+            "count": 2647,
+            "p50": 15040270,
+            "p95": 37454125,
+            "p99": 38455287,
+            "max": 38539496
+          },
+          "serviceThreadParkNs": {
+            "count": 2647,
+            "p50": 0,
+            "p95": 1573833,
+            "p99": 3050833,
+            "max": 3050833
+          },
+          "gcPauseNs": {
+            "count": 2647,
+            "p50": 0,
+            "p95": 0,
+            "p99": 0,
+            "max": 0
+          },
+          "otherCallbacksStarted": {
+            "count": 2647,
+            "p50": 451,
+            "p95": 867,
+            "p99": 972,
+            "max": 998
+          }
+        },
+        "longest": [
+          {
+            "sequence": 978714,
+            "kind": "ADMISSION",
+            "gapNs": 47384292,
+            "otherCallbackEventWallNs": 38535246,
+            "serviceThreadParkNs": 79542,
+            "gcPauseNs": 0,
+            "otherCallbacksStarted": 550
+          },
+          {
+            "sequence": 978715,
+            "kind": "ADMISSION",
+            "gapNs": 47386875,
+            "otherCallbackEventWallNs": 38537371,
+            "serviceThreadParkNs": 79542,
+            "gcPauseNs": 0,
+            "otherCallbacksStarted": 551
+          },
+          {
+            "sequence": 978716,
+            "kind": "ADMISSION",
+            "gapNs": 47389459,
+            "otherCallbackEventWallNs": 38539496,
+            "serviceThreadParkNs": 79542,
+            "gcPauseNs": 0,
+            "otherCallbacksStarted": 552
+          }
+        ]
+      },
+      "EXECUTION": {
+        "distributions": {
+          "gapNs": {
+            "count": 2647,
+            "p50": 10161250,
+            "p95": 37766625,
+            "p99": 47432834,
+            "max": 47702084
+          },
+          "otherCallbackEventWallNs": {
+            "count": 2647,
+            "p50": 9554877,
+            "p95": 35384335,
+            "p99": 38580328,
+            "max": 38831328
+          },
+          "serviceThreadParkNs": {
+            "count": 2647,
+            "p50": 0,
+            "p95": 2394875,
+            "p99": 2660833,
+            "max": 2660833
+          },
+          "gcPauseNs": {
+            "count": 2647,
+            "p50": 0,
+            "p95": 0,
+            "p99": 0,
+            "max": 0
+          },
+          "otherCallbacksStarted": {
+            "count": 2647,
+            "p50": 228,
+            "p95": 629,
+            "p99": 753,
+            "max": 774
+          }
+        },
+        "longest": [
+          {
+            "sequence": 978249,
+            "kind": "EXECUTION",
+            "gapNs": 47681417,
+            "otherCallbackEventWallNs": 38811911,
+            "serviceThreadParkNs": 79542,
+            "gcPauseNs": 0,
+            "otherCallbacksStarted": 580
+          },
+          {
+            "sequence": 978250,
+            "kind": "EXECUTION",
+            "gapNs": 47689000,
+            "otherCallbackEventWallNs": 38819078,
+            "serviceThreadParkNs": 79542,
+            "gcPauseNs": 0,
+            "otherCallbacksStarted": 581
+          },
+          {
+            "sequence": 978251,
+            "kind": "EXECUTION",
+            "gapNs": 47702084,
+            "otherCallbackEventWallNs": 38831328,
+            "serviceThreadParkNs": 79542,
+            "gcPauseNs": 0,
+            "otherCallbacksStarted": 582
+          }
+        ]
+      }
+    },
+    "1": {
+      "ADMISSION": {
+        "distributions": {
+          "gapNs": {
+            "count": 2647,
+            "p50": 9761125,
+            "p95": 47302333,
+            "p99": 49218708,
+            "max": 49319042
+          },
+          "otherCallbackEventWallNs": {
+            "count": 2647,
+            "p50": 7773222,
+            "p95": 45436704,
+            "p99": 47202909,
+            "max": 47291286
+          },
+          "serviceThreadParkNs": {
+            "count": 2647,
+            "p50": 0,
+            "p95": 5723708,
+            "p99": 15047083,
+            "max": 15056958
+          },
+          "gcPauseNs": {
+            "count": 2647,
+            "p50": 0,
+            "p95": 0,
+            "p99": 0,
+            "max": 0
+          },
+          "otherCallbacksStarted": {
+            "count": 2647,
+            "p50": 422,
+            "p95": 836,
+            "p99": 886,
+            "max": 905
+          }
+        },
+        "longest": [
+          {
+            "sequence": 981289,
+            "kind": "ADMISSION",
+            "gapNs": 49309667,
+            "otherCallbackEventWallNs": 47282828,
+            "serviceThreadParkNs": 179959,
+            "gcPauseNs": 0,
+            "otherCallbacksStarted": 608
+          },
+          {
+            "sequence": 981290,
+            "kind": "ADMISSION",
+            "gapNs": 49316459,
+            "otherCallbackEventWallNs": 47289161,
+            "serviceThreadParkNs": 179959,
+            "gcPauseNs": 0,
+            "otherCallbacksStarted": 609
+          },
+          {
+            "sequence": 981291,
+            "kind": "ADMISSION",
+            "gapNs": 49319042,
+            "otherCallbackEventWallNs": 47291286,
+            "serviceThreadParkNs": 179959,
+            "gcPauseNs": 0,
+            "otherCallbacksStarted": 610
+          }
+        ]
+      },
+      "EXECUTION": {
+        "distributions": {
+          "gapNs": {
+            "count": 2647,
+            "p50": 5653084,
+            "p95": 46354834,
+            "p99": 48393208,
+            "max": 48722208
+          },
+          "otherCallbackEventWallNs": {
+            "count": 2647,
+            "p50": 2710461,
+            "p95": 44525288,
+            "p99": 46446662,
+            "max": 46755249
+          },
+          "serviceThreadParkNs": {
+            "count": 2647,
+            "p50": 0,
+            "p95": 15035208,
+            "p99": 15056958,
+            "max": 15056958
+          },
+          "gcPauseNs": {
+            "count": 2647,
+            "p50": 0,
+            "p95": 0,
+            "p99": 0,
+            "max": 0
+          },
+          "otherCallbacksStarted": {
+            "count": 2647,
+            "p50": 218,
+            "p95": 598,
+            "p99": 815,
+            "max": 841
+          }
+        },
+        "longest": [
+          {
+            "sequence": 981060,
+            "kind": "EXECUTION",
+            "gapNs": 48691708,
+            "otherCallbackEventWallNs": 46725874,
+            "serviceThreadParkNs": 182292,
+            "gcPauseNs": 0,
+            "otherCallbacksStarted": 487
+          },
+          {
+            "sequence": 981061,
+            "kind": "EXECUTION",
+            "gapNs": 48697958,
+            "otherCallbackEventWallNs": 46731624,
+            "serviceThreadParkNs": 182292,
+            "gcPauseNs": 0,
+            "otherCallbacksStarted": 488
+          },
+          {
+            "sequence": 981062,
+            "kind": "EXECUTION",
+            "gapNs": 48722208,
+            "otherCallbackEventWallNs": 46755249,
+            "serviceThreadParkNs": 182292,
+            "gcPauseNs": 0,
+            "otherCallbacksStarted": 489
+          }
+        ]
+      }
+    },
+    "2": {
+      "ADMISSION": {
+        "distributions": {
+          "gapNs": {
+            "count": 2647,
+            "p50": 15779292,
+            "p95": 60906709,
+            "p99": 70243417,
+            "max": 70384250
+          },
+          "otherCallbackEventWallNs": {
+            "count": 2647,
+            "p50": 14422286,
+            "p95": 54957509,
+            "p99": 64168220,
+            "max": 64278679
+          },
+          "serviceThreadParkNs": {
+            "count": 2647,
+            "p50": 0,
+            "p95": 3678208,
+            "p99": 6705709,
+            "max": 6705709
+          },
+          "gcPauseNs": {
+            "count": 2647,
+            "p50": 0,
+            "p95": 6667625,
+            "p99": 6667625,
+            "max": 6667625
+          },
+          "otherCallbacksStarted": {
+            "count": 2647,
+            "p50": 449,
+            "p95": 842,
+            "p99": 924,
+            "max": 950
+          }
+        },
+        "longest": [
+          {
+            "sequence": 978612,
+            "kind": "ADMISSION",
+            "gapNs": 70377084,
+            "otherCallbackEventWallNs": 64272346,
+            "serviceThreadParkNs": 0,
+            "gcPauseNs": 6667625,
+            "otherCallbacksStarted": 725
+          },
+          {
+            "sequence": 978613,
+            "kind": "ADMISSION",
+            "gapNs": 70380834,
+            "otherCallbackEventWallNs": 64275679,
+            "serviceThreadParkNs": 0,
+            "gcPauseNs": 6667625,
+            "otherCallbacksStarted": 726
+          },
+          {
+            "sequence": 978614,
+            "kind": "ADMISSION",
+            "gapNs": 70384250,
+            "otherCallbackEventWallNs": 64278679,
+            "serviceThreadParkNs": 0,
+            "gcPauseNs": 6667625,
+            "otherCallbacksStarted": 727
+          }
+        ]
+      },
+      "EXECUTION": {
+        "distributions": {
+          "gapNs": {
+            "count": 2647,
+            "p50": 10571709,
+            "p95": 59572917,
+            "p99": 63305083,
+            "max": 70235625
+          },
+          "otherCallbackEventWallNs": {
+            "count": 2647,
+            "p50": 9522123,
+            "p95": 53761718,
+            "p99": 57234385,
+            "max": 64161011
+          },
+          "serviceThreadParkNs": {
+            "count": 2647,
+            "p50": 0,
+            "p95": 1455416,
+            "p99": 1571416,
+            "max": 1571416
+          },
+          "gcPauseNs": {
+            "count": 2647,
+            "p50": 0,
+            "p95": 6667625,
+            "p99": 6667625,
+            "max": 6667625
+          },
+          "otherCallbacksStarted": {
+            "count": 2647,
+            "p50": 238,
+            "p95": 717,
+            "p99": 825,
+            "max": 875
+          }
+        },
+        "longest": [
+          {
+            "sequence": 978202,
+            "kind": "EXECUTION",
+            "gapNs": 70210417,
+            "otherCallbackEventWallNs": 64151427,
+            "serviceThreadParkNs": 0,
+            "gcPauseNs": 6667625,
+            "otherCallbacksStarted": 698
+          },
+          {
+            "sequence": 978203,
+            "kind": "EXECUTION",
+            "gapNs": 70215875,
+            "otherCallbackEventWallNs": 64156427,
+            "serviceThreadParkNs": 0,
+            "gcPauseNs": 6667625,
+            "otherCallbacksStarted": 699
+          },
+          {
+            "sequence": 978204,
+            "kind": "EXECUTION",
+            "gapNs": 70235625,
+            "otherCallbackEventWallNs": 64161011,
+            "serviceThreadParkNs": 0,
+            "gcPauseNs": 6667625,
+            "otherCallbacksStarted": 700
+          }
+        ]
+      }
+    }
+  }
+}

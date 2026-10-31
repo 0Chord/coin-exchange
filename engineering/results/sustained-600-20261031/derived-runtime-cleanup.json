@@ -1,0 +1,7 @@
+{
+  "removedPath": "/Users/0chord/.codex/worktrees/issue148-http-aeron/exchange-core/build/sustained-600-20261031/runtime",
+  "removedBytes": 174420891,
+  "reconstructFrom": "/Users/0chord/.codex/worktrees/issue148-http-aeron/exchange-core/build/full-progress-20261031/runtime-progress-v1",
+  "overlay": "/Users/0chord/.codex/worktrees/issue148-http-aeron/exchange-core/build/sustained-600-20261031/runtime-overlay",
+  "fullHashManifest": "/Users/0chord/.codex/worktrees/issue148-http-aeron/exchange-core/build/sustained-600-20261031/runtime-manifest.json"
+}

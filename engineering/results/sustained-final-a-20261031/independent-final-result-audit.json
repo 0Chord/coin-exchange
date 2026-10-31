@@ -1,0 +1,98 @@
+{
+  "auditedAt": "2026-10-31T14:24:33.590773+09:00",
+  "runId": "ha142-afe93d9bcd",
+  "verdict": "PASS",
+  "checks": 6834,
+  "checksByCategory": {
+    "execution": 3,
+    "commands": 3076,
+    "raw-events": 62,
+    "nodes": 8,
+    "cohort": 12,
+    "captures": 89,
+    "financial": 49,
+    "service-deltas": 150,
+    "marker-deltas": 18,
+    "collector-deltas": 8,
+    "time": 14,
+    "latency": 3,
+    "intervals": 420,
+    "gates": 3,
+    "heap": 5,
+    "guard": 2278,
+    "cleanup": 13,
+    "source-hashes": 595,
+    "manifest-link": 5,
+    "image": 3,
+    "memory": 20
+  },
+  "failures": [],
+  "independentScope": "Read original client/node events,9 raw state CAPTUREs,6 checkpoint states and counter differences,all756 raw du responses,command exits and cleanup output,post-run595 source SHA256; reused preflight actual1344/1345 runtime hashes and unchanged manifest hashes. No build,load,test or Docker operation performed.",
+  "result": {
+    "warmupBuys": 729641,
+    "measuredBuys": 21294294,
+    "actualTotalBuys": 22023935,
+    "actualOfferingWindowSeconds": 600.000885648,
+    "wholeCohortIncludingAckSeconds": 600.05219594,
+    "wholeCohortTps": 35487.402836084686,
+    "allReplicasP95Ms": 50.036735,
+    "allReplicasP99Ms": 87.293951,
+    "gateOfferingObservedSeconds": 596.750517479,
+    "wholeWindowOutsideObservedGateLoopsSeconds": 3.250368169,
+    "feeRevenue": 660718050,
+    "buyerQuoteAvailable": 420600172300,
+    "sellerQuoteAvailable": 220019110650,
+    "lastAdmissionSequence": 22023938,
+    "finalStateSha256": "7bb6baa42e8a14b0441c98f9aeb085291ec513a15abaa85aecbd8c1c995cc3cd",
+    "archivePeakGiB": 15.768871307373047,
+    "minimumObservedHostFreeGiB": 57.133724212646484,
+    "guardSamples": 252,
+    "memoryMiBSamplesByContainer": {
+      "ha142-afe93d9bcd-client": [
+        503.8,
+        504.6,
+        505.7
+      ],
+      "ha142-afe93d9bcd-node0-1": [
+        564.3,
+        610.8,
+        630.2
+      ],
+      "ha142-afe93d9bcd-node1-1": [
+        456.7,
+        498.7,
+        509.8
+      ],
+      "ha142-afe93d9bcd-node2-1": [
+        455.8,
+        494.8,
+        503.3
+      ]
+    },
+    "serviceThreadNodeAverageCpuUsPerMeasuredOrder": 12.156617684483928,
+    "serviceThreadNodeAverageAllocatedBytesPerMeasuredOrder": 12997.368564054452,
+    "ownedComposeResourcesRemoved": true
+  },
+  "importantLimits": [
+    "One same-host direct-Aeron run; no HTTP Gateway,remote durability gate,fault injection or stable maximum throughput conclusion.",
+    "Whole-run percentiles use HdrHistogram3 significant digits. Individual latency samples and histogram objects were not saved,so percentile values were checked against raw event/source algorithm rather than independently recomputed. Successful source check at client-source line1162 requires histogram count==measured count; count is not independently exported.",
+    "HA_INTERVAL orders are admissions; final cohort contains512 admissions and955 all-replica observations after the last interval event. Interval elapsed uses actual timestamps,not forced10-second divisors.",
+    "Storage guard raw limitation says256MiB from short profile. Actual600 profile cap24GiB minus earlyStop23GiB means1GiB headroom. Polling is not a filesystem quota. Guard wall costs remain inside the throughput denominator and must not be subtracted.",
+    "Memory observations are3 sparse container-usage samples,not continuous JVM heap measurements or proof of leak absence. Actual node MaxHeapSize was directly read for all3; client-Xmx was supplied/logged but not separately queried.",
+    "Source and staged-runtime files were hashed before execution; post-run manifest hashes and all595 source hashes rechecked. Actual image contents were not extracted for a separate in-container file hash.",
+    "State fingerprint equality is read from node CAPTUREs; full binary codec snapshot was not saved for independent fingerprint regeneration. All exposed financial balances,maker reservations,floors and counters were independently recalculated.",
+    "Owned compose cleanup passed. Removal of temporary image and duplicate staged runtime is handled separately by root after this audit."
+  ],
+  "evidenceSha256": {
+    "app-api/build/reports/ha-trading/ha142-afe93d9bcd/summary.json": "345aa5c80439e0ff626db42d102e08717a101793dffe5ca4f140dd76d69d3b8f",
+    "app-api/build/reports/ha-trading/ha142-afe93d9bcd/command-12.stdout.log": "2cc0d9a4bef49dab0b064a4503589d21b5a5d173acf1812fbd47fe464d86f8f7",
+    "app-api/build/reports/ha-trading/ha142-afe93d9bcd/command-767.stdout.log": "db8d461df3e3a91f09a1da3f2dcc5087cdc249d77c839efed546238d9bc02fc0",
+    "app-api/build/reports/ha-trading/ha142-afe93d9bcd/command-768.stderr.log": "4997e1f4633dda0784807d1088b938550aa2eaa6a51084fad652f28ede4f8ab3",
+    "build/sustained-final-a-20261031/execution.json": "5e22be5fa85e4a3b8bc136ba4f6354438388d6304e788afa6391495466824ca7",
+    "build/sustained-final-a-20261031/container-memory-samples.jsonl": "16954fc25922ad010cea968b317e83ede3249cd3040e44f18e6c89d0abf91572",
+    "build/sustained-final-a-20261031/image-build.log": "aa7d5f6d874203e54dccd6d6c338b176372649339cf7ce6a581112ee4b419ff9",
+    "build/candidate-validation-20261031/final-source-manifest.json": "95f2bf92dbbf38cbde417567fe3ecf27e0cfec72b16377f931411265629b9e4d",
+    "build/candidate-validation-20261031/final-runtime-manifest.json": "c294ed1725147c5f95b103259a62996a9a3ed3b9edb6d9fdf760d82dfe45c91b",
+    "build/sustained-final-a-20261031/runtime-manifest.json": "10c92026e2bd4846ebcfb26e8c540fe333b0494b7a1c442d8c7d9745c51239ff"
+  }
+}

@@ -1,5 +1,238 @@
 # 완료 거래 이력의 메모리 누적 수정 — 2026-10-29
 
+> **2026-10-31 게시 기준:** 아래는 이전 이력·설계 기록이다. 최종 bounded 구현·검증·남은 경계는 [PR 리뷰 지도](trading-pr-review-142.md), [상태·복구 설계](aeron-trading-ha-code-design.md), [최종10분 결과](trading-sustained-final-a-20261031.md)를 따른다.
+
+> **현재 설계의 기준(2026-10-30):** 사용자 요청으로 Kafka·외부 결과 전달을 뒤로 미뤘다. 현재 구현할 코드의 설계는 [Aeron 거래 상태의 유한 보관과 복구](/Users/0chord/.codex/worktrees/issue148-http-aeron/exchange-core/engineering/aeron-trading-ha-code-design.md)다. 아래 A/B 결과 전달 설계와 독립 검토는 후속 검토 기록으로 보존하며 현재 작업의 선행 조건이 아니다. 제품 코드는 `a39b0d8` 기준이고 새 설계는 미구현이다. 이어지는 성능·RocksDB 절은 기존 구현과 실험의 기록이다.
+
+## Inbox·Archive·결과 전달의 책임 재설계 — 2026-10-30
+
+### 1. 목표와 현재 상태
+
+거래 callback에서 완료 이력 전체를 직렬화·인덱싱하고 저장 공간을 기다리는 경로를 제거한다. 현재 잔고·활성 예약·주문장·미완료 작업과 유한한 중복 방지 상태를 메모리에 유지한다. 확정 입력과 복구 가능한 Snapshot을 결과 재현의 권위로 사용하고, Kafka와 RDB는 거래 결과·원장·과거 응답의 전달·조회 책임을 가진다.
+
+이번 변경은 설계 문서뿐이다. 현재 제품에는 RocksDB 이력 경로가 남아 있고, 아래 결과 워커·Kafka·새 Inbox 프로토콜은 연결되지 않았다. 설계의 정합성 검토와 실제 장애·성능 검증을 구분한다. 50k TPS 또는 운영 준비 완료를 주장하지 않는다.
+
+**기존 합의:** Kafka는 확정 결과 전달의 공통 경로, DB는 그 결과를 반영하는 조회 모델이다. 돈 계산 불일치는 거래를 차단한다. 일반 노드 장애는 건강한 사본의 승계를 막지 않는다. 전체 primary 저장소 소실에도 성공 기록 유실0을 목표로 한 원격 내구성 요구도 유지한다.
+
+**이번 사용자 선택:** 요청에 세대·증가 순번을 도입하고 오래된 결과는 조회 경로로 분리한다. 아래의 구체적인 창·ID 발급·worker 배치는 이 선택에 맞춘 설계 제안이다.
+
+### 2. 거래 Inbox·결과 재현 원천·DB Inbox의 책임
+
+| 이름 | 담당과 완료 기준 |
+|---|---|
+| 거래 Inbox | 거래 클러스터가 요청 식별자·최초 접수 결과·현재 금융 상태를 같은 확정 입력의 적용으로 갱신한다. 같은 요청을 다시 예약하지 않는다. 단순 네트워크 수신과 다르다. |
+| A안의 결과 재현 원천 | 확정 입력·재생 시작 상태·당시 코드/정책으로 모든 결과를 다시 만들 수 있는 복구 원천이다. **완성된 결과 payload를 저장한 Outbox가 아니다.** 별도 결과 워커가 입력을 재생해 결과를 만든다. |
+| DB Inbox | RDB consumer가 결과 batch ID와 해당 batch의 모든 조회/원장 변경을 한 DB transaction에 기록한다. 중복 전달은 금융 이력을 다시 반영하지 않는다. |
+
+Snapshot은 특정 입력 위치까지의 복구 기준이다. 매 주문마다 찍지 않고, Snapshot 완료가 매 요청의 접수 조건도 아니다. 결과 워커는 뒤에서 실행하지만, 출력 누락을복구할 원천은 거래 확정 순간부터 존재해야 한다. live egress나 휘발성 queue에만 결과를 남기고 해제하는 방식은 사용하지 않는다. 앞선 설명에서 A를 단순히 ‘결과 Outbox’라고 부른 것은 입력 보존과 결과 보존을 혼동하게 하므로 바로잡는다.
+
+```mermaid
+flowchart LR
+    U[클라이언트: 같은 요청 토큰으로 재시도] --> G[확장 가능한 HTTP Gateway]
+    G --> T[거래 클러스터 3노드: 순서 확정·금융 적용·작은 Inbox]
+    T --> A[각 노드 Archive: 확정 입력의 복구 근거]
+    T --> L[Live Snapshot: 현재 상태·작은 Inbox·미완료 실행]
+    A --> W[결과 워커: 확정 입력 재생·결과 생성]
+    Q[결과 워커 Snapshot: Kafka 전달 위치 이하] --> W
+    W --> K[Kafka: 결과와 재개 위치]
+    K --> I[RDB Consumer: Inbox와 전체 결과를 함께 반영]
+    I --> R[과거 요청·체결·원장 조회]
+    A --> B[별도 장애 영역: 로그·Snapshot·복구 메타데이터]
+```
+
+거래 세 노드는 같은 금융 상태를 복제하며, 마켓별 별도 클러스터로 나누는 작업은 이 설계와 별개다. 결과 워커는 금융 권위가 없고 거래 클러스터로 주문·체결을 재전송하지 않는다. 전체 결과를 재계산하는 추가 CPU 비용이 있으나 그 비용과 외부 저장 대기를 거래 callback에서 분리한다.
+
+### 3. 위치와 성공 응답의 기준
+
+모든 위치는 같은 `clusterLineage`의 **입력 로그 끝 위치**로 환산해 비교한다. lineage는 리더 교체·프로세스 재시작·동일 이력의 재해 복구에서도 유지하며 매번 새 UUID를 발급하지 않는다. Kafka offset과 Archive byte position을 직접 비교하지 않는다. 노드별 recordingId는 다른 값일 수 있다.
+
+| 위치 | 의미 |
+|---|---|
+| C | 권위 있는 canonical term chain에서 확정돼 서비스에 적용할 수 있는 연속 입력 위치 |
+| X | 별도 장애 영역에서 live 상태 복구와 worker의 미전달 출력 재생을 모두 보장하는 연속 입력 위치. worker S≤K Snapshot과 필요한 입력 구간도 포함 |
+| K | 해당 위치까지의 모든 출력이 Kafka에서 commit된 연속 입력 위치. 전송 API 호출/개별 broker ACK와 다름 |
+| D | 결과 topic의 완결 장벽까지 RDB Inbox·전체 결과·소비 위치가 commit된 연속 입력 위치 |
+| S | 워커가 다시 시작할 때 사용할 durable Snapshot 위치. 기본 복구에서는 S≤K |
+
+전체 primary 저장소 유실에도 성공 유실0이라는 기존 목표를 적용하면 공개 가능한 범위는 `D≤K≤X≤C`다. 실제 읽는 사본의 연속 recording 끝 위치 R도 검사하여, 워커는 `min(C,X,R)`까지만 읽는다. Archive recording 끝 R만 보고 미확정 tail을 처리하지 않는다. 서비스 적용 위치 인증과 term-chain 검증의 구체 API는 구현 전 통합 검사 대상이다.
+
+최초 승인·정상 업무 거절, epoch 발급/교체, 영구 퇴역을 뜻하는 RESULT_ARCHIVED 등 상태·프로토콜 결정은 근거 입력 위치 P가 C와 X에 포함된 뒤 공개한다. Kafka K와 RDB D는 기다리지 않는다. 매칭·정산 완료 통지와 현재 잔고의 확정 조회에도 해당 상태 위치가 X 이하인지 적용한다. 단순 형식 오류나 재시도 가능한 용량 거절은 영구 처리 결과와 구분한다. X를 앞선 speculative 상태를 확정된 고객 결과로 노출하지 않는다. 원격 보호 대기는 Gateway/외부 경계에서 pipeline으로 처리하며 서비스 스레드를 동기 대기로 붙잡지 않는다.
+
+단순 ClusterBackup 설치로 X가 자동 보장되는 것은 아니다. 공식 문서도 backup이 live commit을 뒤따를 수 있다고 설명한다. X 증명에는 durable한 복구 묶음과 연속성 검사가 필요하다. 이 묶음은 live 복구뿐 아니라 `S≤K`의 worker Snapshot, 거기서 X까지 미전달 결과를 재현할 입력·term chain·버전도 별도 장애 영역에 보존해야 한다. 최신 live Snapshot만으로 X를 인증하지 않는다. 원격 단절 시 성공 응답을 계속 보장하면서 전체 primary 유실의 RPO0도 보장할 수는 없다. 요청 결과는 미확인으로 남기고 headroom이 소진되기 전에 새 접수를 제한한다. [공식 ClusterBackup](https://aeron.io/docs/aeron-cluster/cluster-backup/)
+
+### 4. 유한한 거래 Inbox와 새 ID 계약
+
+권위 요청 키는 `(accountId, clientChannel, epoch, sequence)`다. clientChannel은 계정에 등록된 유한한 슬롯이고 epoch는 클러스터의 제어 명령으로 발급한다. Gateway 프로세스 ID와 Aeron 세션 ID를 요청 identity로 쓰지 않는다. Gateway가 바뀌어도 클라이언트는 같은 토큰·원문을 보낸다. 미확인 요청은 클라이언트가 복구 가능한 형태로 보관하며, 새 토큰으로 자동 재발행하지 않는다.
+
+각 채널은 다음 작은 상태를 가진다.
+
+- 발급된 현재 epoch와 `retiredThrough`: 그 이하 sequence는 절대 새 요청으로 실행하지 않는다.
+- 유한 window W 안의 처리 bitmap·정확한 요청 원본·작은 최초 승인/거절 영수증. 해시 하나로 원본 동일성을 판정하지 않는다.
+- 연속 처리 완료 위치와 로그에 반영한 client receipt ACK. 승인과 정상 업무 거절은 sequence를 소비한다.
+- 활성 주문·예약·pending 실행은 receipt와 별개로 보관한다. 접수 receipt를 해제해도 체결 대기 중인 주문을 해제하지 않는다.
+
+| 입력 | 동작 |
+|---|---|
+| 현 epoch, window 안의 새 sequence | 처음 판단하고 원본·작은 첫 결과를 반영 |
+| window 안의 이미 처리된 sequence, 같은 원본 | 첫 접수 결과 반환. 추가 예약·원장·실행 제출 없음 |
+| 같은 sequence의 다른 원본 | 내용 충돌. 최초 결과 유지 |
+| sequence≤retiredThrough | `RESULT_ARCHIVED`/과거 조회 안내. 결과가 없어도 재실행 금지 |
+| window보다 너무 큰 sequence | 재시도 가능한 용량 거절. sequence와 floor를 소비/전진하지 않음 |
+| 낮은 epoch / 미발급 높은 epoch | fenced / 미발급 오류. 새 epoch를 데이터 요청으로 자동 생성하지 않음 |
+
+최대 수신 번호만으로 window를 밀지 않는다. 예를 들어 10·12번만 처리했으면 11번 hole을 넘겨 지우지 않는다. client ACK도 `(account,channel,epoch)`에 묶어 **ACK 적용 당시의 연속 처리 prefix 이하**만 허용한다. 미래 ACK를 저장했다가 이후 결과까지 자동 해제하지 않는다. `retiredThrough`는 유효한 client ACK와 연속 처리 prefix 안에서만 진전한다. W와 전체 receipt byte 한도는 구현 전 측정 예산으로 정하며, 모든 계정에 W개 객체를 미리 할당하지 않는다. pending·활성 주문·계정/채널에도 별도 한도가 필요하다.
+
+epoch 변경은 인증된 `expectedEpoch`의 seal/rotate를 확정 로그에 기록하여 이전 송신자를 차단한다. 이전 epoch에서 이미 예약한 pending은 그대로 실행한다. 옛 요청의 처리 여부를 모르면 조회로 해결하고 새 epoch로 바꿔 다시 주문하지 않는다. 옛 epoch에서 미처리였다는 답은 조회 인덱스가 seal 위치까지 빠짐없이 반영됐을 때만 확정할 수 있다. 그 전의 absence는 `UNKNOWN`이다.
+
+**주문·원장 ID도 함께 정리한다.** 새 CreateOrder 요청에서 과거 임의 orderId를 지정하지 못하게 하고 서버가 `(lineage, admissionSequence)`로 주문 ID를 발급한다. 같은 요청에는 같은 주문 ID, 새 R2에는 새 주문 ID다. 원장/source ID는 `(lineage, canonical transition, subevent index)`에서 서버가 생성한다. 이에 따라 모든 과거 임의 ID set을 금융 callback이 조회하는 책임을 제거할 수 있다. 외부 입금처럼 임의 외부 ID를 받는 흐름은 이 계약에 몰래 섞지 않고 별도 권위 Inbox를 설계한다.
+
+옛 임의 requestId를 Gateway마다 새 sequence로 자동 매핑하는 호환 기능은 금지한다. 별도 버전의 요청 프로토콜로 전환하고, 기존 명세·테스트와 변경 계약을 명확히 구분한다. cancel/조회는 서버 주문 ID를 참조하며, 닫힌 주문의 자세한 정보는 과거 조회에서 권한을 검사한다.
+
+내부 실행은 `(lineage, marketId, admissionSequence)`로 식별한다. 해당 마켓의 첫 pending만 실행하고 전체 반영·pending 제거·`executedThrough[market]` 진전을 함께 완료한다. 그 이하 실행의 재전송은 돈을 움직이지 않으며 과거 Completion 전체를 반환하지 않는다. 다른 마켓의 더 큰 승인 순번을 완료했다고 전역 maxExecuted를 올리지 않는다. 실행이 끝났어도 미체결 maker는 활성 주문이므로 필요한 주문·예약·정책·FIFO 상태를 남긴다.
+
+### 5. A안의 결과 워커: 확정 입력을 재생해 결과를 생성·전달
+
+현재 권고는 **A: 결정론적 입력 재생 투영**을 먼저 검증하는 것이다. **B: 별도 결과 로그 확정 후 적용**은 아래 독립 검토에서 상태 경합과 결과 적용 여부의 계약이 미완료로 판정됐다. A의 권고는 사용자에게 A/B 선택까지 합의됐다는 뜻이 아니며, 두 안 모두 운영 적용·성능 우열은 검증되지 않았다.
+
+1. 같은 lineage의 검증된 worker Snapshot S를 복원한다. Snapshot에는 현재 잔고·활성 주문·Inbox/실행 순번·정책/알고리즘 버전이 있으며 과거 완료 그래프 전체는 없다.
+2. 권위 있는 term chain과 확정 범위 안에서 원본 입력을 순서대로 읽는다. 저장된 callback timestamp, 당시 마켓/정책, timer/config/epoch 제어 입력도 재현한다. 현재 RDB 설정이나 현재 시간을 사용하지 않는다.
+3. replay 전용 코어 구동으로 결과를 만든다. live Adapter처럼 접수 뒤 내부 실행을 새로 송신하지 않고, Archive에 기록된 실제 내부 Execute 입력이 나왔을 때만 매칭·정산한다. 고객 egress와 live 관찰 부작용도 실행하지 않는다.
+4. 최초 상태 전이에서만 결과 batch를 만든다. 중복 명령이 옛 결과를 반환했다는 이유로 새 거래 이벤트를 생성하지 않는다.
+5. 결과 records와 정확한 재개 cursor를 같은 Kafka transaction으로 commit한다. byte/time 한도에 맞춰 batch 처리하며 Kafka가 느리면 읽기를 멈추고 backlog는 Archive에 남긴다.
+6. RDB consumer가 같은 batch ID를 Inbox에 넣고 요청 결과·체결·모든 복식 원장 항목·조회 상태를 한 DB transaction에 반영한다. 소비 위치도 그 transaction에 저장하고 broker offset ACK는 뒤에 한다.
+
+batch ID 예시는 `(lineage, EXECUTION, admissionSequence)`, 개별 원장 ID는 그 batch의 고정 subindex다. 노드 recordingId나 같은 요청이 다시 들어온 새 logPosition으로 새 업무 ID를 만들지 않는다. 같은 batch ID의 다른 원문이 보이면 덮어쓰지 않고 정합성 오류로 멈춘다. 코드 binary identity·schema·chunking·정책 버전과 전환 위치를 보관한다. 새 알고리즘으로 옛 입력을 무조건 재계산하지 않는다.
+
+**전달 worker HA 구현 권고:** Kafka Connect distributed worker 두 개 이상에 logical cluster당 source task 한 개를 배치하고, framework의 source transaction·offset 저장·이전 task generation fencing을 재사용한다. `exactly.once.source.support=enabled`, `exactly.once.support=required`, `transaction.boundary=poll`, `errors.tolerance=none`을 기준으로 한다. 커넥터의 capability는 구현·검증 전까지 선언만으로 보장하지 않는다. Kafka는 RF3/minISR2/acks=all, consumer는 read_committed, 내부 checkpoint topic도 HA로 설정한다. [공식 Source EOS 계약](https://kafka.apache.org/40/configuration/kafka-connect-configs/), [개발 계약](https://kafka.apache.org/33/kafka-connect/connector-development-guide/)
+
+정상 결과는 한 금융 batch의 모든 원장 leg를 담은 envelope로 보낸다. 결과가 커질 때는 입력 크기만으로 결과 크기를 제한했다고 가정하지 않는다. **분할 형식은** `BatchPart(batchId, partIndex, bytes)`와 마지막 `BatchSeal(batchId, partCount, fullLength, checksum, sourceThrough)`이다. 하나의 input을 모두 발행한 뒤에만 다음 input의 결과로 진행한다. source cursor는 `(completeThrough=K, inProgressInput=P, nextPartIndex)`를 포함해 중간 종료에도 정확히 다음 part부터 재개한다. **각 SourceRecord에는 그 record 직후의 불변 cursor를 붙인다.** poll 끝 cursor를 모든 part에 복사하지 않는다. 정상 종료·pause에서도 poll의 일부만 commit될 수 있기 때문이다. seal commit 전에는 K를 P로 올리지 않는다. schema와 chunking 크기를 고정하고 cursor/Snapshot과 함께 버전 관리한다.
+
+RDB는 part와 그 다음 Kafka 소비 위치를 같은 DB transaction으로 durable staging에 저장하되 금융/고객 조회에 공개하지 않는다. seal에서 모든 part·길이·내용을 검증하고 전체 batch의 Inbox·원장·조회 변경·완결 소비 위치를 원자적으로 적용한 뒤 D를 전진시킨다. 재시작은 DB에 commit된 소비 위치에서 한다. 중복 batch도 원문을 대조하며 `ON CONFLICT DO NOTHING`만으로 다른 원문을 정상 중복으로 처리하지 않는다. 단순 Kafka transaction을 여러 RDB transaction의 원자성으로 해석하지 않는다. 첫 버전의 금융 결과 topic은 logical cluster당 한 partition으로 순서를 유지한다. 다중 partition은 별도 offset vector·원장 원자성 설계가 필요하다. 무결과 입력도 SourceBarrier로 빠짐없는 위치를 전달한다. 분할은 최종 전체 batch DB transaction 비용을 없애지 않으므로 그 최대 크기도 별도로 정한다.
+
+Connect의 `TransactionContext.abortTransaction()`은 재시도 API가 아니므로 사용하지 않는다. offsets를 전진시키며 records를 버릴 수 있다. 일시적 실패 시 task/shadow state를 폐기하고 확정 cursor로 복구한다. worker 소실 재배치와 FAILED task의 재시작을 구분하여, supervisor의 제한된 backoff 재시작과 정합성/고정 오류의 무한 재시작 금지를 둔다. 금융 records를 filter/SMT/DLQ로 건너뛰지 않는다. [공식 TransactionContext](https://raw.githubusercontent.com/apache/kafka/4.1/connect/api/src/main/java/org/apache/kafka/connect/source/TransactionContext.java), [Connect 운영](https://kafka.apache.org/41/kafka-connect/administration/)
+
+### 6. Snapshot과 전달 위치가 엇갈릴 때
+
+예를 들어 live 엔진은 1,000까지 적용했는데 Kafka K=900이고 worker Snapshot S=850이면 다음과 같이 복구한다.
+
+- S850 상태를 복원하고 851~900 입력은 출력 없이 재생하여 K900 상태를 만든다.
+- 901 이후는 새 결과를 만들고 전송한다. 901의 part 일부만 commit됐다면 같은 결과를 재현하고 저장된 nextPartIndex부터 전송한다.
+- live Snapshot1000만 복원하고 1001부터 전송하면 901~1000 결과가 사라지므로 금지한다.
+- worker Snapshot은 commit이 확인된 K 이하에서만 durable manifest로 공개한다. Snapshot 파일·checksum·정체성 확인이 끝나기 전 이전 snapshot/log를 제거하지 않는다.
+- Kafka commit 응답 timeout은 실패로 확정하지 않는다. 새 task가 이전 producer를 fence하고 read_committed source cursor를 읽어 commit 여부를 판단한다. callback의 개별 send 성공으로 K를 올리지 않는다.
+- Connect의 task fencing은 같은 논리적 group/connector identity 안의 이전 세대를 대상으로 한다. DR에서 group 또는 connector 이름을 바꿔 새 writer를 띄우는 것만으로 옛 writer를 차단했다고 보지 않는다. live 클러스터·source publisher·원격 manifest writer·retention controller의 승격 세대와 단일 쓰기 소유권을 함께 검증해야 한다. 이 승격 프로토콜은 아직 미설계다.
+
+따라서 최신 live Snapshot과 별도로 worker가 돌아갈 수 있는 Snapshot과 입력 구간을 보존한다. 이는 엔진 메모리에 미전달 결과 전체를 쌓아 두지 않기 위한 핵심 조건이다.
+
+### 7. 무엇을 언제 해제하는가
+
+| 대상 | 해제 조건 |
+|---|---|
+| 계산 후보·큰 완료/원장 객체 | 적용 완료 후 현재 활성 상태·pending·작은 receipt가 필요한 값만 소유하고, 확정 입력의 재생 근거가 보존됨. Kafka D/K를 기다리며 전체 객체를 붙잡지 않음 |
+| 작은 접수 receipt | 유효한 client ACK와 연속 prefix에 따라 retiredThrough 진전. Kafka K와 독립이지만 K 미확정 결과를 재현할 이전 Snapshot+로그는 별도로 유지 |
+| 활성 maker·예약·정책·FIFO | 체결/취소로 비활성이 되고 미완료 작업에서 더 참조하지 않을 때 |
+| worker의 전송 batch/part | source cursor에 commit된 부분은 해제. 실패한 speculative shadow state는 확정 cursor 복구로 폐기 |
+| 로컬 Archive 구간 | live 복구와 worker 복구 모두에 필요한 구간, K/D, 원격 X와 보관 원문을 연결해서 안전성을 확인한 뒤에만 이동/삭제 |
+| Kafka 기록 | 필수 consumer의 D와 재시작/감사 보관 근거가 확보된 뒤 정책에 따라 보관. 기본 시간 만료로 미반영 금융 기록을 지우지 않음 |
+
+로컬 Archive 정리는 전역 금융 감사 기록의 폐기와 다르다. 필요 원문은 별도 durable 보관소로 옮길 수 있다. Snapshot 하나가 생겼다는 이유로 그 이전 입력을 전부 지우지 않는다. retention controller는 스트림별 위치의 대응을 검증한다.
+
+Kafka/worker/RDB/원격 저장이 멈춰도 보관 여유 안에서는 거래를 진행한다. backlog bytes·필요 로그·노드별 free reserve를 외부 controller가 관측하고, headroom이 소진되기 전에 **새 접수 gate 변경을 복제 명령으로 확정**한다. 각 노드가 로컬 디스크 상태를 읽고 서로 다른 금융 결정을 내리지 않는다. 이미 접수된 pending 실행과 차단 제어를 처리할 별도 공간을 남긴다. 금융 계산 불일치는 전달 장애와 구분하여 거래를 차단한다.
+
+### 8. 장애별 기대 동작
+
+| 장애 시점 | 남아야 하는 근거와 복구 |
+|---|---|
+| 로그 확정 전 Gateway 단절 | 성공 확정 없음. 같은 토큰으로 재시도하며 timeout을 미접수로 단정하지 않음 |
+| 예약 확정 뒤 응답 전 leader 소실 | 새 leader가 같은 Inbox·예약을 복원. 같은 토큰에 추가 예약 없음 |
+| 접수 뒤 내부 실행 확정 전 leader 소실 | 접수·pending과 Aeron의 pending-service-message 복구 계약을 통해 실행을 이어감. 임의 새 실행 ID를 만들지 않음 |
+| 정산 적용 뒤 worker 수신 전 소실 | 확정 입력을 재생해 같은 batch 생성. 큰 Completion 메모리 유실이 출력 유실로 이어지지 않음 |
+| Kafka commit 전 worker 소실 | 미commit records는 read_committed에서 미공개. 이전 cursor부터 재생 |
+| Kafka commit 뒤 응답 유실 | 확정 cursor를 읽고 이미 commit된 part/batch를 건너뜀. 추측으로 반대 transaction 수행 금지 |
+| Kafka 이후 RDB commit 전 소실 | Inbox·금융 조회 변경·DB offset 전부 rollback 또는 전부 commit. 다시 받으면 stable batch ID로 중복 효과 없음 |
+| RDB가 옛 요청을 아직 모름 | retired 요청을 새 주문으로 실행하지 않음. 조회는 PENDING/UNKNOWN과 D를 반환 |
+| 오래된 epoch의 Gateway 재등장 | 외부 명령은 fenced. 기존에 승인된 old-epoch pending 실행은 계속 처리 |
+| Kafka 장기 장애/디스크 여유 감소 | 미전달 로그 보존, 읽기/접수 제한. 미전달 데이터 삭제로 거래를 지속하지 않음 |
+| primary 세 저장소 소실 | live 복구와 worker S≤K·미전달 입력 재생을 모두 보장하는 원격 묶음으로 X까지 복원. 기존 primary 쓰기 차단 후 승격하고 lineage를 유지. X를 넘은 최초 정상 결과/세대/완료 공개는 원래 허용하지 않음 |
+| 동일 batch ID의 다른 결과/코드 버전 불일치 | 결과 발행/조회 반영을 중단하고 조사. live 잔고를 조회 DB 값으로 덮어쓰지 않음 |
+
+### 9. 작은 구현 단위와 검증 순서 — 아직 착수하지 않음
+
+1. **새 Inbox·ID·실행 순번 코어:** window hole, 미래 ACK, epoch seal, 재전송, 신규 요청/주문 ID 구분을 검증한다. 현재 임의 ID 경로와 자동 혼용하지 않는다.
+2. **최소 상태 Snapshot과 Archive 재생 결과:** 완료 그래프 없이 복원하고 같은 원문으로 동일 batch를 생성한다. 부분 maker·여러 체결·잔고 부족·중복 실행·동일 마켓 순서를 검증한다. 알고리즘/정책 버전도 복원한다.
+3. **Kafka 결과 전달과 source cursor:** worker 강제 종료·rebalance·partial poll·transaction 응답 유실·part 중간 재시작에서 누락과 prefix 조기 전진이 없는지 검증한다.
+4. **RDB Inbox·과거 조회:** 모든 posting과 조회 변경의 원자성, part/seal 재조립, 중복 입력, D 이전 absence를 검증한다.
+5. **해제·보관·원격 성공 gate와 전환:** old Snapshot을 보호한 상태에서 RocksDB hot-path 의존을 제거한다. 저장소 단절과 한도에서 새 거래 제한·pending 보존·X 이전 성공 미공개를 검증한다.
+6. **동일 부하의 짧은 성능 대조:** 메모리 전용/거래3노드/worker 포함 pipeline을 따로 측정한다. core가 빨라도 K나 D가 계속 뒤처지면 지속 처리량 개선으로 채택하지 않는다. 이전 조건과 분자·분모를 맞추고 이력 무손실·bounded heap·전체 pipeline 처리량을 함께 확인한다.
+
+이 문서로 새 GitHub 이슈를 발급하거나 제품 구현·성능 시험을 시작하지 않았다. 미검증 구현을 먼저 RocksDB 대체로 투입하지 않는다.
+
+### 10. 독립 검토 결과 — 2026-10-30
+
+**최종 판정은 ‘A안의 원리는 조건부 타당, 구현·장애 검증 미완료 / B안은 필수 상태 전이 설계 미완료’다. 문제없음·전체 검증 완료·운영 준비 완료로 표시하지 않는다.**
+
+기준 제품 커밋은 `a39b0d8c9176aefac676f62312a3f51fdcb79dbd`다. 작성 대화를 전달하지 않은 새 컨텍스트의 서브 에이전트 세 개가 같은 고정 packet과 관련 실제 코드를 각자 대조했다. 앞선 리뷰 보고서는 읽지 않았고 빌드·테스트·부하 시험·제품 수정도 하지 않았다. 세 검토는 모두 같은 모델 계열의 도구 보조 검토이며, 별도 사람·운영 검증을 대신하지 않는다.
+
+| 독립 검토 | 확인한 범위 | 판정 |
+|---|---|---|
+| `delivery_consistency_independent` | 자금 보존, 요청·주문·실행 중복, bounded Inbox, RDB 원자성 | A는 명시된 조건 안에서 논리적으로 성립. window·API·Snapshot 등 미구현. B는 stale 후보의 재계산·재제출·단일 적용 계약 미정 |
+| `delivery_recovery_independent` | 로그·Snapshot·Kafka/DB 위치, 원격 재해 복구, 보관·승격 | A의 복구 원리는 성립할 수 있으나 X 증명·source cursor·DR fencing·보관 하한의 구현·실증 없음. B의 미전달 결과 보관·공개 위치 계약 부족 |
+| `delivery_aeron_feasibility_independent` | 실제 Aeron 1.53.3·Kafka 4.2.1 API/소스, 현 Adapter 호출 관계 | A의 전용 재생 경로와 record별 cursor 필요. B는 현 구조에 세 번째 로그 단계·in-flight 제어·적용된 결과 구분 필요. 어느 안도 TPS 우열 확인 안 됨 |
+
+고정 검토본 A의 SHA-256은 `355b5e2196a0e13eb06f7af18e6cf7c24c9c809eb5ab81c3c16b3892467cb6c1`, B는 `92b48861d21089b859bfa4c4f8a4ad3d68ac9c6afa8bc13e4d7fc5b18acc5cfe`다. 이 절의 보완은 해당 검토 뒤에 반영했으므로 위 지문은 현재 문서 전체의 지문이 아니다.
+
+#### A와 B를 섞어 설명하지 않는다
+
+| 구분 | A: 입력 로그 재생 투영 | B: 결과 로그 확정 후 적용 |
+|---|---|---|
+| 거래 경로 | 접수 확정 → Execute 확정 → 한 callback에서 계산·적용 | 현 구조에 추가하면 접수 확정 → Execute에서 후보 계산 → Result 확정·검증·적용 |
+| 결과를 복구하는 원천 | 확정 입력 + 재생 시작 상태 + 당시 코드·정책 | 실제 적용된 결과 payload + 결과/적용 버전 |
+| 워커의 일 | 별도 상태에서 금융 계산 재현, 출력만 발행 | 유효하게 적용된 결과만 전달 |
+| 비용 이동 | 금융 계산을 워커에서도 수행. 거래 callback의 이력 I/O를 분리할 가능성 | 결과 직렬화·복제 byte·추가 확정/적용 단계 증가. worker 계산은 줄일 가능성 |
+| 현재 판단 | 우선 검증 권고. 실행 검증 전 채택 완료 아님 | 아래 경합·적용 판정 문제를 풀기 전 구현 대상 아님 |
+
+**B의 구체적인 반례:** R1 후보가 잔고 `사용 가능100·예약100`을 읽고 실행 후 `100·0`을 계획했다. Result 확정 전에 R2가 50을 예약해 현재 값이 `50·150`이 됐다. R1의 옛 후보를 그대로 덮어쓰면 R2 예약을 훼손한다. 버전 검증으로 이를 거절할 수는 있지만 누가 어떤 순서로 재계산하고 중복 후보 중 하나만 적용할지 아직 정하지 않았다. 같은 마켓 순서만으로 다른 마켓의 공유 자금 변경까지 막지는 못한다.
+
+더 나아가 **Result 입력이 로그에 확정된 것과 금융 적용에 성공한 것은 다르다.** stale 후보를 callback에서 거절한다면 결과 워커가 로그의 모든 Result를 그대로 발행해서는 안 된다. 관련 변경을 직렬화해 유효성을 보장하거나, 적용/거절의 권위 기록을 남기거나, 워커도 검증을 재현하는 계약이 필요하다. 또한 E1 후보의 Result가 확정되기 전 E2가 도착하는 in-flight 순서와 큰 결과의 완결 적용도 미정이다. 따라서 B는 ‘Outbox에 넣기만 하면 끝나는 방식’이 아니다.
+
+#### 현재 코드에 이미 있는 것과 없는 것
+
+| 현재 확인된 사실 | 새 설계와의 차이 |
+|---|---|
+| `OrderAdmissionState`는 `(userId, requestId)`와 cold history로 최초 결과·내용 충돌을 판정 | epoch/window/client ACK/floor 프로토콜 아님 |
+| `TradingState.executePending()`은 확정 Execute callback 안에서 계산·검증·적용·Completion 기록 | A 전용 replay worker나 B의 별도 Result 단계 없음 |
+| 활성 maker 확인에 전체 Completion 참조를 사용 | Completion을 삭제하기 전 최소 활성 상태로 참여 검증까지 변경 필요 |
+| 현재 Snapshot은 cold history도 export | 최소 live 상태/별도 worker S≤K Snapshot 아님 |
+| 현재 run identity는 설정·schema 중심 | 당시 실행 binary hash·알고리즘 전환표 보존 보장 아님 |
+| Kafka client 4.2.1 의존성은 있음 | Connect runtime·source connector·DB Inbox·X gate·retention controller가 구현됐다는 뜻 아님 |
+
+#### 구현 전에 닫아야 할 계약과 아직 실행하지 않은 시험
+
+| 남은 계약 | 요구하는 검증 결과 | 이번 상태 |
+|---|---|---|
+| canonical C와 recording/term 대응, 원격 복구 manifest X | leader 교체·미확정 tail·원격 단절에서 C/X를 앞서 금융 결과를 공개하지 않음. `tryClaim` 성공을 확정 위치로 사용하지 않음 | 공식 API·현재 코드 대조, 통합 시험 없음 |
+| 새 Inbox 및 ID 예산·전환 | ACK hole/미래 ACK/old epoch/같은 토큰 다른 원문/새 요청의 옛 주문 ID 재사용에서 추가 예약·누락 없음 | 논리 반례 검토, 구현·시험 없음 |
+| 코드·정책·timestamp를 포함한 독립 재생 | 여러 체결·부분 maker·중복 Execute를 동일 batch로 재현. live Adapter를 재사용해 내부 Execute를 다시 보내지 않음 | 소스 대조, 재생 시험 없음 |
+| record별 cursor·chunk/seal·S≤K | poll part 일부 commit·응답 유실·worker 종료 뒤 누락 없이 재개. 최신 live Snapshot만으로 미전달 결과를 버리지 않음 | 공식 소스 대조, 장애 시험 없음 |
+| RDB staging/Inbox/모든 원장 leg/소비 위치 | DB commit 응답 유실 뒤 동일 batch 재수신에도 중복 효과 없음. 일부 posting만 공개되지 않음 | 논리 검토, DB 통합 시험 없음 |
+| DR 단일 소유권·retention 하한·접수 제한 | 옛 writer와 DR writer 동시 발행 차단. 복구에 필요한 입력/Snapshot 삭제 금지. 건강한 quorum의 승계와 디스크 headroom 정책 구분 | 필수 프로토콜·수치 미정, 장애 시험 없음 |
+| 성능·지속 가능성 | 같은 부하에서 거래 완료와 K/D 처리량, backlog, heap·disk 사용량을 함께 확인 | 새 설계 측정 없음. 50k TPS 주장 근거 없음 |
+
+Aeron 서비스의 내부 메시지 제출과 후속 확정 callback은 다른 경계이며, Archive recording 끝은 확정 위치가 아니다. Kafka Connect는 정상 stop/pause에서도 poll의 일부만 commit할 수 있다. 이 조건은 실제 pinned 버전의 공식 소스로 대조했다. [Aeron 1.53.3 서비스 구현](https://github.com/aeron-io/aeron/blob/1.53.3/aeron-cluster/src/main/java/io/aeron/cluster/service/ClusteredServiceAgent.java), [Kafka 4.2.1 source task 구현](https://github.com/apache/kafka/blob/4.2.1/connect/runtime/src/main/java/org/apache/kafka/connect/runtime/ExactlyOnceWorkerSourceTask.java), [Kafka 4.2.1 abort 계약](https://github.com/apache/kafka/blob/4.2.1/connect/api/src/main/java/org/apache/kafka/connect/source/TransactionContext.java)
+
+**바로 다음 설계 작업:** A의 확정 prefix·재생 동일성을 작은 검증 단위로 명세하고, 동시에 Inbox와 X/DR의 미결정 계약을 닫는다. RocksDB 쓰기·완료 이력을 먼저 제거하지 않는다. 새 이슈 등록·제품 구현·시험 착수는 이 검토 완료와 별도다.
+
+### 문답·결정 기록
+
+- 질문(요약): 임의 문자열 요청 ID를 언제 다시 보내도 첫 결과를 반환하는 계약을 유지할지, 세대·증가 순번과 과거 조회로 분리할지.
+- AI 제안: 세대·순번으로 엔진의 영구 exact ID 조회와 무한 receipt 누적을 분리한다.
+- 사용자 답변: **“요청에 세대·증가 순번 도입, 오래된 결과는 조회 경로로 분리 (추천)”**. 선택 이유의 별도 진술은 없었다.
+- 상태: 이 방향은 합의. 서버 주문 ID·client ACK·window·결과 worker 배치·chunk/cursor와 전환 절차는 구체 설계 제안이며 미구현·미검증이다.
+- 현재 코드 근거: `OrderAdmissionState.admitWithContextCheck()`의 cold 요청 조회, `prepareHistoryCapacity()`의 저장 대기, `TradingState.executePending()`의 전체 Completion 보관, `DevelopmentFundingAdapter`의 Snapshot/실행 제출 경로. 기준 커밋 `a39b0d8`.
+
+---
+
+
 ## 최종 판정
 
 완료 이력의 메모리 참조를 저장 확인 뒤 해제하고, 과거 응답·원장·중복 ID를 보존한다. 첫 저장 구현은 같은 sync=2 짧은 비교에서 기존 메모리 이력의 10,805 TPS를 1,055 TPS로 낮췄다. 이 회귀를 해결하려고 같은 접수 원본의 중복 저장을 제거했다. 새 60,000주문 비교에서는 **1,596 → 3,383 TPS**, 세 노드 완료 관측 p99는 **5.47 → 2.24초**로 개선됐다. 아직 기존 처리량 회복이나 고성능 목표 달성을 뜻하지 않는다. 두 비교는 주문 수가 다르므로 1,055와 3,383을 직접 개선율로 계산하지 않는다.

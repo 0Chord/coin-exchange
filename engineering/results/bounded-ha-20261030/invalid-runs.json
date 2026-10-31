@@ -1,0 +1,10 @@
+[
+  {
+    "runId": "ha142-7487027af5",
+    "reason": "test observer resolved client DNS before client container existed; no performance result"
+  },
+  {
+    "runId": "ha142-7cf8d33e4f",
+    "reason": "one or more completion UDP markers missing; completion performance invalid"
+  }
+]

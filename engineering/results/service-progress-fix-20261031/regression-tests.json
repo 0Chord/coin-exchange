@@ -1,0 +1,30 @@
+[
+  {
+    "suite": "com.exchange.core.api.trading.infrastructure.aeron.BoundedAdapterTelemetryTest",
+    "tests": 8,
+    "failures": 0,
+    "errors": 0,
+    "skipped": 0
+  },
+  {
+    "suite": "com.exchange.core.api.trading.infrastructure.aeron.DevelopmentFundingRecoveryTest",
+    "tests": 5,
+    "failures": 0,
+    "errors": 0,
+    "skipped": 0
+  },
+  {
+    "suite": "com.exchange.core.api.trading.infrastructure.aeron.DevelopmentOrderNodeTest",
+    "tests": 14,
+    "failures": 0,
+    "errors": 0,
+    "skipped": 0
+  },
+  {
+    "suite": "com.exchange.core.api.trading.infrastructure.aeron.TradingNodeMetricHandoffTest",
+    "tests": 13,
+    "failures": 0,
+    "errors": 0,
+    "skipped": 0
+  }
+]

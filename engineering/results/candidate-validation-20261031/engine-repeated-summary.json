@@ -1,0 +1,16 @@
+{
+  "base": {
+    "tps": 69605.40694801172,
+    "p95Ns": 16500,
+    "p99Ns": 33667,
+    "currentThreadCpuNsPerOrder": 14231.4,
+    "allocatedBytesPerOrder": 10966.5472
+  },
+  "domain": {
+    "tps": 73432.80550958702,
+    "p95Ns": 15917,
+    "p99Ns": 26584,
+    "currentThreadCpuNsPerOrder": 12756.0,
+    "allocatedBytesPerOrder": 10747.072
+  }
+}

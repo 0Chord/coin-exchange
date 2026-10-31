@@ -1,0 +1,8 @@
+// Test-only dependency for the preserved 600-second client; main runtime is unchanged.
+allprojects {
+    plugins.withId('org.jetbrains.kotlin.jvm') {
+        if (project.name == 'app-api') {
+            dependencies.add('testImplementation', 'org.hdrhistogram:HdrHistogram:2.2.2')
+        }
+    }
+}

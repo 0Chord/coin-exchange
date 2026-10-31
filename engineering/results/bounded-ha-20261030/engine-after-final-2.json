@@ -1,0 +1,23 @@
+{
+  "mode": "bounded-inbox-ack256",
+  "scope": "single-JVM BUY admit+execute+ACK; transport excluded",
+  "warmup": 1000,
+  "markets": "BTC/SOL/SUI",
+  "sellPreparation": 6000,
+  "ackEvery": 256,
+  "completed": 5000,
+  "elapsedNs": 129066291,
+  "tps": 38739.78217906642,
+  "currentThreadCpuNs": 125998000,
+  "currentThreadCpuNsPerOrder": 25199.6,
+  "currentThreadAllocatedBytes": 70289576,
+  "allocatedBytesPerOrder": 14057.9152,
+  "p95Ns": 42750,
+  "p99Ns": 70083,
+  "finalAckNs": 31666,
+  "financiallyVerified": true,
+  "retainedLiveOrders": 0,
+  "retainedReceipts": 0,
+  "retainedReceiptCanonicalBytes": 0,
+  "feeRevenue": 180000
+}

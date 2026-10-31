@@ -1,0 +1,50 @@
+{
+  "blocks": [
+    [
+      "base",
+      "domain",
+      "wake",
+      "client"
+    ],
+    [
+      "domain",
+      "client",
+      "base",
+      "wake"
+    ],
+    [
+      "wake",
+      "base",
+      "client",
+      "domain"
+    ],
+    [
+      "client",
+      "wake",
+      "domain",
+      "base"
+    ]
+  ],
+  "wire": "Protobuf bounded wire3",
+  "nodes": 3,
+  "sync": [
+    2,
+    2,
+    2
+  ],
+  "markets": [
+    "BTC-USDT",
+    "SOL-USDT",
+    "SUI-USDT"
+  ],
+  "heapMiB": 1024,
+  "cpuPerContainer": 2,
+  "memoryPerContainerGiB": 2,
+  "admissionWindow": 512,
+  "executionWindow": 1024,
+  "warmupSeconds": 20,
+  "measureSeconds": 10,
+  "maxSamples": 2000000,
+  "driverRoot": "/dev/shm",
+  "selection": "Preserve all financial/replica/ACK checks. Judge full-cohort TPS, tail latency and service CPU/allocation together. Do not select allocation-only or isolated outlier gains; mixed/unproven candidates stay excluded."
+}

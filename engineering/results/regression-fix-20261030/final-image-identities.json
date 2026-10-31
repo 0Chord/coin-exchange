@@ -1,0 +1,20 @@
+[
+  {
+    "tag": "exchange-regression-before:20261030",
+    "id": "sha256:bbd0b2549b25bfc6244bd42bae364764d2c740cea101decac0116329d0b52bff",
+    "created": "2026-10-30T14:00:22.013936553Z",
+    "size": 398745500
+  },
+  {
+    "tag": "exchange-regression-after:20261030",
+    "id": "sha256:4dc48fd1b66e63c71d1f80fd7f08717969ee558811edc7664a6e63f566dc0f85",
+    "created": "2026-10-30T14:17:31.47344496Z",
+    "size": 398749385
+  },
+  {
+    "tag": "exchange-regression-map:20261030",
+    "id": "sha256:1ec93b34f8fcae213ea616a04de8662d90f47c05def2c9a72d7691eeef9cff61",
+    "created": "2026-10-30T14:38:19.35710546Z",
+    "size": 398750909
+  }
+]

@@ -1,0 +1,17 @@
+{
+  "adopted": [
+    "domain immutable result reuse"
+  ],
+  "rejected": [
+    "wake conditional worker wakeup",
+    "client single decode"
+  ],
+  "restoredFiles": [
+    "app-api/src/main/kotlin/com/exchange/core/api/trading/infrastructure/aeron/TradingNodeTelemetry.kt",
+    "app-api/src/test/kotlin/com/exchange/core/api/trading/infrastructure/aeron/TradingNodeMetricHandoffTest.kt",
+    "app-api/src/test/kotlin/com/exchange/core/api/trading/infrastructure/aeron/HaTradingProbeClient.kt",
+    "app-api/src/test/kotlin/com/exchange/core/api/trading/infrastructure/aeron/BoundedHaTradingClient.kt",
+    "app-api/src/test/kotlin/com/exchange/core/api/trading/infrastructure/aeron/HaTradingProbeFlowTest.kt"
+  ],
+  "reason": "A reduces owned intermediate allocation without weakening validation; no reliable three-node throughput gain claimed. B/C have mixed or adverse throughput/tail results."
+}

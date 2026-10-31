@@ -1,0 +1,107 @@
+{
+  "changedTestClasses": [
+    "test-classes/com/exchange/core/api/trading/infrastructure/aeron/HaProbeAckCoordinator.class",
+    "test-classes/com/exchange/core/api/trading/infrastructure/aeron/HaProbeAcknowledgement.class",
+    "test-classes/com/exchange/core/api/trading/infrastructure/aeron/HaProbeAdmission.class",
+    "test-classes/com/exchange/core/api/trading/infrastructure/aeron/HaProbeCompletion.class",
+    "test-classes/com/exchange/core/api/trading/infrastructure/aeron/HaProbeConnection$close$1$1.class",
+    "test-classes/com/exchange/core/api/trading/infrastructure/aeron/HaProbeConnection.class",
+    "test-classes/com/exchange/core/api/trading/infrastructure/aeron/HaProbeGateDwell.class",
+    "test-classes/com/exchange/core/api/trading/infrastructure/aeron/HaProbeLatencies.class",
+    "test-classes/com/exchange/core/api/trading/infrastructure/aeron/HaProbeMarkerCollector$Arrival.class",
+    "test-classes/com/exchange/core/api/trading/infrastructure/aeron/HaProbeMarkerCollector.class",
+    "test-classes/com/exchange/core/api/trading/infrastructure/aeron/HaProbeMarkerReceiver.class",
+    "test-classes/com/exchange/core/api/trading/infrastructure/aeron/HaProbePhase.class",
+    "test-classes/com/exchange/core/api/trading/infrastructure/aeron/HaProbeRunPlan$Companion.class",
+    "test-classes/com/exchange/core/api/trading/infrastructure/aeron/HaProbeRunPlan.class",
+    "test-classes/com/exchange/core/api/trading/infrastructure/aeron/HaProbeThroughput.class",
+    "test-classes/com/exchange/core/api/trading/infrastructure/aeron/HaProbeWire$DefaultImpls.class",
+    "test-classes/com/exchange/core/api/trading/infrastructure/aeron/HaProbeWire.class",
+    "test-classes/com/exchange/core/api/trading/infrastructure/aeron/HaTradingProbeClientKt$runHaTradingProbeClient$1$1$phase$3.class",
+    "test-classes/com/exchange/core/api/trading/infrastructure/aeron/HaTradingProbeClientKt$runHaTradingProbeClient$1$1$phase$4.class",
+    "test-classes/com/exchange/core/api/trading/infrastructure/aeron/HaTradingProbeClientKt.class"
+  ],
+  "hashes": {
+    "test-classes/com/exchange/core/api/trading/infrastructure/aeron/HaProbeAckCoordinator.class": {
+      "after": "dfebe9437c16c00e396f851111f871cbd84d2fcddf3b41a04c0aab5849915bb8",
+      "before": "4d321696f1d84708fa68e6272b8864bc2742920d00c4f85d98f555e68de743e1"
+    },
+    "test-classes/com/exchange/core/api/trading/infrastructure/aeron/HaProbeAcknowledgement.class": {
+      "after": "9b16d1e231f106f92b28839a59a572470f29093f3a7598ad9c1b87b162024c93",
+      "before": "9f174d7fb800e4e455456c98d8db68489cf44096443ed1ae98b516492a750f11"
+    },
+    "test-classes/com/exchange/core/api/trading/infrastructure/aeron/HaProbeAdmission.class": {
+      "after": "0f6e385e31dd8df2cd0a1f0efbef258b7491bd653eb170d3cacf29ddcf547049",
+      "before": "b97d5053077cc32b21999620379f038a4d63ec709a386ca4a6281f89e576e87c"
+    },
+    "test-classes/com/exchange/core/api/trading/infrastructure/aeron/HaProbeCompletion.class": {
+      "after": "de68f62f461a1294cdde0f3d939e3e3171188ba4a08139a1f727d32f1dd47710",
+      "before": "5ff4a87ea2040272f386d2d93c1a3bb4f0bc66439af39768c5593977fb0efb98"
+    },
+    "test-classes/com/exchange/core/api/trading/infrastructure/aeron/HaProbeConnection$close$1$1.class": {
+      "after": "3d3d8664c462aadbbad134baef7362dd71e4eb8add40d3e2a65f9e953ea69c6f",
+      "before": "684fadb52cd79c159ad2011c0ec5f355d545e4680b2f99117afb99f8e63ff484"
+    },
+    "test-classes/com/exchange/core/api/trading/infrastructure/aeron/HaProbeConnection.class": {
+      "after": "4bb37ed882a434aaa3359f08464519fd479bfdc8180152f259a158fc8d2bb81c",
+      "before": "cead6e6037c37ff2c56243e7d7784d3d9e6eb7d5aa43ca92c147be6ae5e688ae"
+    },
+    "test-classes/com/exchange/core/api/trading/infrastructure/aeron/HaProbeGateDwell.class": {
+      "after": "f8c30599c301a1783e08cd804437672fa7cb0eb3a56c2d6fcb68a67143ba5f54",
+      "before": "484126e6f4afced6b9a02517b0c156d1f12cc9ea103e14f952fc73df45c8c1b5"
+    },
+    "test-classes/com/exchange/core/api/trading/infrastructure/aeron/HaProbeLatencies.class": {
+      "after": "1cfc08c9e1569bb66ebc663221b1f16ec89597352a3b21b7909edf5927fd3255",
+      "before": null
+    },
+    "test-classes/com/exchange/core/api/trading/infrastructure/aeron/HaProbeMarkerCollector$Arrival.class": {
+      "after": "2f3cb038cc841459f161e61d6fb727dcd5006f4dc823f588fac0ed2e9e03e508",
+      "before": "f66a42678d1d2991482573e8bb3b7b497f11842df5ba5d447f2698aaa0b5c7d7"
+    },
+    "test-classes/com/exchange/core/api/trading/infrastructure/aeron/HaProbeMarkerCollector.class": {
+      "after": "6388778e241be05c3ba88930a0df458eb4c0b80cc7bd8802cc1effa41ba59a42",
+      "before": "0b2d6afa71da3ced25163f244c87748fe938c246d6c8c62dc7affce82b59165b"
+    },
+    "test-classes/com/exchange/core/api/trading/infrastructure/aeron/HaProbeMarkerReceiver.class": {
+      "after": "525a0f4d31c21240c7a22a3d03242bf72ce47740597b1b459355207edfa60a18",
+      "before": "4e6c4cca47fc42263cfa73be568e68a8ed0c8d12bd26dc5232a74ddee3895be9"
+    },
+    "test-classes/com/exchange/core/api/trading/infrastructure/aeron/HaProbePhase.class": {
+      "after": "d3cd7eaec38d0f11a7573cbce2e0828f50d45fa56d72d521c54d08014653a0fa",
+      "before": "2e359c04c45c853a0d526ff45d9a02a6ae773ab5740be72a2ff9adb0e2b1c43e"
+    },
+    "test-classes/com/exchange/core/api/trading/infrastructure/aeron/HaProbeRunPlan$Companion.class": {
+      "after": "03f95a6fb6f18f7663c67063d2dc1e8efe63a6db11d7a1a3597db39444e39c43",
+      "before": "7115eea0f240b1959e6679de36483696fb8798c63c0c93abe6b509cc6f368bc6"
+    },
+    "test-classes/com/exchange/core/api/trading/infrastructure/aeron/HaProbeRunPlan.class": {
+      "after": "8a1b55b507bc3dd9d9f0e0026edbf6df0c63328e2b2a5c42d183e555a81b1e45",
+      "before": "38f49ce3148ec293bdd3d4d64f5c21ecb6f059c7eef296d442683cdbec3d7dee"
+    },
+    "test-classes/com/exchange/core/api/trading/infrastructure/aeron/HaProbeThroughput.class": {
+      "after": "840003b20548777df732aad6dc8ad607096d341b5da59b822439e77b46faa577",
+      "before": "17b5e19068db6e6f4444441afe2bbdd3eb2d94c6a0a463a18d492faabbda9fcf"
+    },
+    "test-classes/com/exchange/core/api/trading/infrastructure/aeron/HaProbeWire$DefaultImpls.class": {
+      "after": "9ec40d2b5f17371a80ed85834ac73dd386dc9a7eceba7f56cf1b4cff9cc3f9e7",
+      "before": "9751e50c66a215755260347001b12d393d55acdb384043fa562278bd00a8bfe4"
+    },
+    "test-classes/com/exchange/core/api/trading/infrastructure/aeron/HaProbeWire.class": {
+      "after": "8722f0b4c12f3d02325441c783f51ea70208cf05b975a73e029dc81e07ee4c36",
+      "before": "bfe9907fe0995ef551dc0352798eeb309f499dd7fd0a59fb5a68c24ccd833eff"
+    },
+    "test-classes/com/exchange/core/api/trading/infrastructure/aeron/HaTradingProbeClientKt$runHaTradingProbeClient$1$1$phase$3.class": {
+      "after": "29467519e929b100b797bf3ff23d69d403994238e3e0df04fd2e81054a3ab7ff",
+      "before": "3f4681bf277dc4a38410724791c9e9c4fba0af4eee97814be35e124eb3ec8da8"
+    },
+    "test-classes/com/exchange/core/api/trading/infrastructure/aeron/HaTradingProbeClientKt$runHaTradingProbeClient$1$1$phase$4.class": {
+      "after": "6311e07842d641f02833ac604bcc9c2f3694d10cab56a94c3d44a1461d82839e",
+      "before": "dac34653630b79a594977e2d122c6d48af4f68d6a9c8961fe75b875bb0a3fe1e"
+    },
+    "test-classes/com/exchange/core/api/trading/infrastructure/aeron/HaTradingProbeClientKt.class": {
+      "after": "b77d11ca1339acc6b99996e324c6f22b0c57c067bc97805f13e3c8521619392a",
+      "before": "c6d6a3f3c8088195ce48d78a9e87ba783d05cd8f0814c9062f394022f8328282"
+    }
+  },
+  "productClassesAndLibrariesIdentical": true
+}

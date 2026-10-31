@@ -1,0 +1,97 @@
+{
+  "before": {
+    "admissionTps": {
+      "median": 4264.499011129632,
+      "min": 3264.7660805681116,
+      "max": 4386.916853997156
+    },
+    "admissionP95Ns": {
+      "median": 118509500,
+      "min": 93394833,
+      "max": 128448709
+    },
+    "admissionP99Ns": {
+      "median": 132771208,
+      "min": 104662334,
+      "max": 183308958
+    },
+    "leaderCompletionTps": {
+      "median": 4197.558363076049,
+      "min": 3203.2492037856427,
+      "max": 4253.596290395119
+    },
+    "leaderCompletionP95Ns": {
+      "median": 200835958,
+      "min": 147000583,
+      "max": 236424959
+    },
+    "leaderCompletionP99Ns": {
+      "median": 234965125,
+      "min": 176436417,
+      "max": 304051126
+    },
+    "allReplicasTps": {
+      "median": 3769.193556214739,
+      "min": 3201.9728415169993,
+      "max": 4036.310647354553
+    },
+    "allReplicasP95Ns": {
+      "median": 250430875,
+      "min": 151387792,
+      "max": 347672750
+    },
+    "allReplicasP99Ns": {
+      "median": 304051126,
+      "min": 176436417,
+      "max": 359728417
+    }
+  },
+  "after": {
+    "admissionTps": {
+      "median": 6269.0425458577765,
+      "min": 3530.4655031599596,
+      "max": 6897.078917823985
+    },
+    "admissionP95Ns": {
+      "median": 56363583,
+      "min": 54404416,
+      "max": 95442667
+    },
+    "admissionP99Ns": {
+      "median": 68778208,
+      "min": 59288542,
+      "max": 108847792
+    },
+    "leaderCompletionTps": {
+      "median": 6147.510117562931,
+      "min": 3501.2343423110865,
+      "max": 6777.076924409817
+    },
+    "leaderCompletionP95Ns": {
+      "median": 89980458,
+      "min": 81231125,
+      "max": 149164125
+    },
+    "leaderCompletionP99Ns": {
+      "median": 99626333,
+      "min": 96501541,
+      "max": 166738250
+    },
+    "allReplicasTps": {
+      "median": 6080.220912228629,
+      "min": 3492.9805910835867,
+      "max": 6753.035742805231
+    },
+    "allReplicasP95Ns": {
+      "median": 110686083,
+      "min": 90655916,
+      "max": 158892750
+    },
+    "allReplicasP99Ns": {
+      "median": 126292375,
+      "min": 99626333,
+      "max": 166738250
+    }
+  },
+  "scope": "same-host Docker, three 2-CPU/2GiB nodes, own client 2-CPU/2GiB, sync2, BTC/SOL/SUI,1000 BUY warmup+5000 measured BUY orders,6000 SELL prepopulation,maxInFlight256, finite cohort including drain, direct Aeron+test-only TCP completion observation; not HTTP or sustainable maximum"
+}

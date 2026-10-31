@@ -1,0 +1,860 @@
+{
+  "workspace": "/Users/0chord/.codex/worktrees/issue148-http-aeron/exchange-core",
+  "branch": "test/http-trading-performance/142",
+  "base": "origin/feature/phase-2/integration",
+  "inspection": "read-only source/manifest/result audit; no builds, tests, source mutations or remote operations",
+  "summary": {
+    "final_manifest_files": 595,
+    "current_manifest_mismatches": [],
+    "production_build_paths": 72,
+    "same_as_snapshot7": 63,
+    "changed_or_added_since_snapshot7": 9,
+    "committed_diff_product_paths": 45,
+    "latest_tests": {
+      "jvm_regression": 887,
+      "fresh_architecture": 385,
+      "fresh_app_selected": 70,
+      "reused_matching": 156,
+      "reused_trading": 276,
+      "python": 13,
+      "fresh_real_fault_jvm": 2,
+      "fault_conditions": 16
+    },
+    "scope_warning": "Snapshot-5 bounded review used a39b0d8 as base. It is not a complete independent review of the 9 earlier commits versus origin integration. Candidate A review covers A delta, not all 72 product/build paths."
+  },
+  "production_build_files": [
+    {
+      "path": "app-api/build.gradle.kts",
+      "sha256": "d16093d48337cc322b289c6a961fa59fa53f3b2aa2334e1d47a6b5884b5c1ae8",
+      "present_in_committed_branch_diff": true,
+      "same_as_snapshot7": true,
+      "same_as_frozen_sources": [
+        "protobuf_cleanup",
+        "regression_v2",
+        "service_progress",
+        "candidate_A_final"
+      ]
+    },
+    {
+      "path": "app-api/src/main/kotlin/com/exchange/core/TradingGatewayApplication.kt",
+      "sha256": "719086c9de602c859405c6a475e4ebc6f2e7924747caa5c87cf424dc502fb78c",
+      "present_in_committed_branch_diff": false,
+      "same_as_snapshot7": true,
+      "same_as_frozen_sources": [
+        "protobuf_cleanup",
+        "regression_v2",
+        "service_progress",
+        "candidate_A_final"
+      ]
+    },
+    {
+      "path": "app-api/src/main/kotlin/com/exchange/core/api/common/TradingOrderHttpExceptionHandler.kt",
+      "sha256": "788d3a07470269c77bb38ac37f8b49f5e6e7fe40fa7636fbf29f26a57a171acc",
+      "present_in_committed_branch_diff": false,
+      "same_as_snapshot7": true,
+      "same_as_frozen_sources": [
+        "protobuf_cleanup",
+        "regression_v2",
+        "service_progress",
+        "candidate_A_final"
+      ]
+    },
+    {
+      "path": "app-api/src/main/kotlin/com/exchange/core/api/config/BoundedTradingGatewayConfig.kt",
+      "sha256": "c9bbea738ccae1aa4365cc903db71f4a2c72dcc6174584b2cdc09fcdc79f2fc8",
+      "present_in_committed_branch_diff": false,
+      "same_as_snapshot7": false,
+      "same_as_frozen_sources": [
+        "protobuf_cleanup",
+        "regression_v2",
+        "service_progress",
+        "candidate_A_final"
+      ]
+    },
+    {
+      "path": "app-api/src/main/kotlin/com/exchange/core/api/config/RemoteRecoveryGateConfig.kt",
+      "sha256": "671ca896f138c589a9a803fbc6e41e60699c74feeea87585a3b6cf2ca1f4609c",
+      "present_in_committed_branch_diff": false,
+      "same_as_snapshot7": true,
+      "same_as_frozen_sources": [
+        "protobuf_cleanup",
+        "regression_v2",
+        "service_progress",
+        "candidate_A_final"
+      ]
+    },
+    {
+      "path": "app-api/src/main/kotlin/com/exchange/core/api/config/TradingGatewayConfig.kt",
+      "sha256": "92581506ec8e104908880b424508fff3329b08c7f936f3f27737d26eee56c9ad",
+      "present_in_committed_branch_diff": true,
+      "same_as_snapshot7": true,
+      "same_as_frozen_sources": [
+        "protobuf_cleanup",
+        "regression_v2",
+        "service_progress",
+        "candidate_A_final"
+      ]
+    },
+    {
+      "path": "app-api/src/main/kotlin/com/exchange/core/api/config/TradingGatewayHttpProtocol.kt",
+      "sha256": "0c2d5043a47a49b72c4bdbfb43e6efa0dd5f24d161d407dc756160047f14de38",
+      "present_in_committed_branch_diff": true,
+      "same_as_snapshot7": true,
+      "same_as_frozen_sources": [
+        "protobuf_cleanup",
+        "regression_v2",
+        "service_progress",
+        "candidate_A_final"
+      ]
+    },
+    {
+      "path": "app-api/src/main/kotlin/com/exchange/core/api/trading/api/BoundedTradingOrderController.kt",
+      "sha256": "a24533cc93aa83663d2d738e07dda5f3090add0d55db319ec6909f19e62ee5c6",
+      "present_in_committed_branch_diff": false,
+      "same_as_snapshot7": true,
+      "same_as_frozen_sources": [
+        "protobuf_cleanup",
+        "regression_v2",
+        "service_progress",
+        "candidate_A_final"
+      ]
+    },
+    {
+      "path": "app-api/src/main/kotlin/com/exchange/core/api/trading/api/BoundedTradingOrderRequest.kt",
+      "sha256": "7f9324b852f8c85636fc7eb4fcecf5cd3eb08c2be08848edf77f40ecd5cb0a3b",
+      "present_in_committed_branch_diff": false,
+      "same_as_snapshot7": true,
+      "same_as_frozen_sources": [
+        "protobuf_cleanup",
+        "regression_v2",
+        "service_progress",
+        "candidate_A_final"
+      ]
+    },
+    {
+      "path": "app-api/src/main/kotlin/com/exchange/core/api/trading/application/BoundedTradingOrderUseCase.kt",
+      "sha256": "efc1e980b99c07ca7060b842ef24aa0e8e7f3ec2b12820c00ee563afa52b7512",
+      "present_in_committed_branch_diff": false,
+      "same_as_snapshot7": true,
+      "same_as_frozen_sources": [
+        "protobuf_cleanup",
+        "regression_v2",
+        "service_progress",
+        "candidate_A_final"
+      ]
+    },
+    {
+      "path": "app-api/src/main/kotlin/com/exchange/core/api/trading/infrastructure/aeron/AeronOrderGateway.kt",
+      "sha256": "d36288b2f9607269d505cb7ad8b59d6c3b6547064b00600d1ae7291071d50a6c",
+      "present_in_committed_branch_diff": true,
+      "same_as_snapshot7": true,
+      "same_as_frozen_sources": [
+        "protobuf_cleanup",
+        "regression_v2",
+        "service_progress",
+        "candidate_A_final"
+      ]
+    },
+    {
+      "path": "app-api/src/main/kotlin/com/exchange/core/api/trading/infrastructure/aeron/AeronOrderTransport.kt",
+      "sha256": "428e8c67f7b3f6139091320b170c8e4e9a22bf4f538116f87d46e363d6cd62ee",
+      "present_in_committed_branch_diff": true,
+      "same_as_snapshot7": true,
+      "same_as_frozen_sources": [
+        "protobuf_cleanup",
+        "regression_v2",
+        "service_progress",
+        "candidate_A_final"
+      ]
+    },
+    {
+      "path": "app-api/src/main/kotlin/com/exchange/core/api/trading/infrastructure/aeron/AeronSnapshotStreams.kt",
+      "sha256": "514ed38fdee9e054ba21056158970bf9e24aea949aff4ad47a80756960e73b2f",
+      "present_in_committed_branch_diff": true,
+      "same_as_snapshot7": true,
+      "same_as_frozen_sources": [
+        "protobuf_cleanup",
+        "regression_v2",
+        "service_progress",
+        "candidate_A_final"
+      ]
+    },
+    {
+      "path": "app-api/src/main/kotlin/com/exchange/core/api/trading/infrastructure/aeron/BoundedAeronClient.kt",
+      "sha256": "ba0dbbdf537f69c86a55813e1e7e65b02495c4b56f9204a1838eb1ed89acb4d1",
+      "present_in_committed_branch_diff": false,
+      "same_as_snapshot7": true,
+      "same_as_frozen_sources": [
+        "protobuf_cleanup",
+        "regression_v2",
+        "service_progress",
+        "candidate_A_final"
+      ]
+    },
+    {
+      "path": "app-api/src/main/kotlin/com/exchange/core/api/trading/infrastructure/aeron/BoundedAeronGateway.kt",
+      "sha256": "f977cc2dc09c40cd1e2dfdab355a98e122a645e7bf034c482b0cba23302bbd8e",
+      "present_in_committed_branch_diff": false,
+      "same_as_snapshot7": true,
+      "same_as_frozen_sources": [
+        "protobuf_cleanup",
+        "regression_v2",
+        "service_progress",
+        "candidate_A_final"
+      ]
+    },
+    {
+      "path": "app-api/src/main/kotlin/com/exchange/core/api/trading/infrastructure/aeron/BoundedExecutionIdentity.kt",
+      "sha256": "b10a073ec10ac02fbd26c49dcd47f06f2d91638b3bcab94743e4d91cb9c1c8cc",
+      "present_in_committed_branch_diff": false,
+      "same_as_snapshot7": true,
+      "same_as_frozen_sources": [
+        "protobuf_cleanup",
+        "regression_v2",
+        "service_progress",
+        "candidate_A_final"
+      ]
+    },
+    {
+      "path": "app-api/src/main/kotlin/com/exchange/core/api/trading/infrastructure/aeron/BoundedTradingSnapshotPersistence.kt",
+      "sha256": "0855575d934439812344a8ebf90091a92e586d909048962c320a67492aba84cf",
+      "present_in_committed_branch_diff": false,
+      "same_as_snapshot7": true,
+      "same_as_frozen_sources": [
+        "protobuf_cleanup",
+        "regression_v2",
+        "service_progress",
+        "candidate_A_final"
+      ]
+    },
+    {
+      "path": "app-api/src/main/kotlin/com/exchange/core/api/trading/infrastructure/aeron/DevelopmentFundingAdapter.kt",
+      "sha256": "1a10f628cb9470b16a69be4f0fb0fe64ce94695e7a69a62e5e5aecf953f219a2",
+      "present_in_committed_branch_diff": true,
+      "same_as_snapshot7": false,
+      "same_as_frozen_sources": [
+        "service_progress",
+        "candidate_A_final"
+      ]
+    },
+    {
+      "path": "app-api/src/main/kotlin/com/exchange/core/api/trading/infrastructure/aeron/DevelopmentFundingEvents.kt",
+      "sha256": "f86bb3be6d794f505c214f0e0eb760a4147db28ed5abb354ccdace1667a043c2",
+      "present_in_committed_branch_diff": true,
+      "same_as_snapshot7": true,
+      "same_as_frozen_sources": [
+        "protobuf_cleanup",
+        "regression_v2",
+        "service_progress",
+        "candidate_A_final"
+      ]
+    },
+    {
+      "path": "app-api/src/main/kotlin/com/exchange/core/api/trading/infrastructure/aeron/DevelopmentFundingNode.kt",
+      "sha256": "1913af1b38f003a84f8e1e31d429f0d0cbc48f3f0199f08a3fb2cf85bb6bfcf0",
+      "present_in_committed_branch_diff": true,
+      "same_as_snapshot7": true,
+      "same_as_frozen_sources": [
+        "protobuf_cleanup",
+        "regression_v2",
+        "service_progress",
+        "candidate_A_final"
+      ]
+    },
+    {
+      "path": "app-api/src/main/kotlin/com/exchange/core/api/trading/infrastructure/aeron/DevelopmentFundingRun.kt",
+      "sha256": "6cd1e2ef614dd850e0833e3e42a98eba10501d7ad218d2258e91c4a4e1c51c49",
+      "present_in_committed_branch_diff": true,
+      "same_as_snapshot7": true,
+      "same_as_frozen_sources": [
+        "protobuf_cleanup",
+        "regression_v2",
+        "service_progress",
+        "candidate_A_final"
+      ]
+    },
+    {
+      "path": "app-api/src/main/kotlin/com/exchange/core/api/trading/infrastructure/aeron/GatewayMetrics.kt",
+      "sha256": "99703e6c9b0e613285a865f05762eaab20007169bd6fe9cb795ab007214ee7b0",
+      "present_in_committed_branch_diff": true,
+      "same_as_snapshot7": true,
+      "same_as_frozen_sources": [
+        "protobuf_cleanup",
+        "regression_v2",
+        "service_progress",
+        "candidate_A_final"
+      ]
+    },
+    {
+      "path": "app-api/src/main/kotlin/com/exchange/core/api/trading/infrastructure/aeron/TradingAeronRuntime.kt",
+      "sha256": "e26d3bc8788949df4777ead461de13ae6c7c8a74f9c761e9b3c113002c4ef6b5",
+      "present_in_committed_branch_diff": true,
+      "same_as_snapshot7": true,
+      "same_as_frozen_sources": [
+        "protobuf_cleanup",
+        "regression_v2",
+        "service_progress",
+        "candidate_A_final"
+      ]
+    },
+    {
+      "path": "app-api/src/main/kotlin/com/exchange/core/api/trading/infrastructure/aeron/TradingNodeTelemetry.kt",
+      "sha256": "c7d2d64e8e90f4450fdae1adf8f330b371bcdfdf971309cbbb95baf68af526be",
+      "present_in_committed_branch_diff": true,
+      "same_as_snapshot7": false,
+      "same_as_frozen_sources": [
+        "service_progress",
+        "candidate_A_final"
+      ]
+    },
+    {
+      "path": "app-api/src/main/kotlin/com/exchange/core/api/trading/infrastructure/aeron/TradingStateSnapshotPersistence.kt",
+      "sha256": "5baccabf63d5ca45d3dfba3ae1ecbd2a6be8dddd92b91bcc630062ccaa301eb3",
+      "present_in_committed_branch_diff": true,
+      "same_as_snapshot7": true,
+      "same_as_frozen_sources": [
+        "protobuf_cleanup",
+        "regression_v2",
+        "service_progress",
+        "candidate_A_final"
+      ]
+    },
+    {
+      "path": "app-api/src/main/kotlin/com/exchange/core/api/trading/infrastructure/codec/AdmissionCommandCodec.kt",
+      "sha256": "c2880cb20a5c5306e61b9797b5ac13a5eea46ee33e2e31e5be4374b34bf4478a",
+      "present_in_committed_branch_diff": true,
+      "same_as_snapshot7": true,
+      "same_as_frozen_sources": [
+        "protobuf_cleanup",
+        "regression_v2",
+        "service_progress",
+        "candidate_A_final"
+      ]
+    },
+    {
+      "path": "app-api/src/main/kotlin/com/exchange/core/api/trading/infrastructure/codec/AdmissionMessageFormat.kt",
+      "sha256": "a3555fd15995bd731c9401e01de0f37a9747c8e9eff5961d7d50ee6ad86e39fa",
+      "present_in_committed_branch_diff": true,
+      "same_as_snapshot7": true,
+      "same_as_frozen_sources": [
+        "protobuf_cleanup",
+        "regression_v2",
+        "service_progress",
+        "candidate_A_final"
+      ]
+    },
+    {
+      "path": "app-api/src/main/kotlin/com/exchange/core/api/trading/infrastructure/codec/BoundedTradingCodec.kt",
+      "sha256": "6284b796d031c2914032836b9d953cbb9b3c3533f1b3e83ec0d03d3b4d8e69b2",
+      "present_in_committed_branch_diff": false,
+      "same_as_snapshot7": true,
+      "same_as_frozen_sources": [
+        "protobuf_cleanup",
+        "regression_v2",
+        "service_progress",
+        "candidate_A_final"
+      ]
+    },
+    {
+      "path": "app-api/src/main/kotlin/com/exchange/core/api/trading/infrastructure/codec/ExecuteAdmissionCodec.kt",
+      "sha256": "cff4eb3a03b37623fc445ba786914791d79d7cf683d52ee080819f4bc237d4c0",
+      "present_in_committed_branch_diff": true,
+      "same_as_snapshot7": true,
+      "same_as_frozen_sources": [
+        "protobuf_cleanup",
+        "regression_v2",
+        "service_progress",
+        "candidate_A_final"
+      ]
+    },
+    {
+      "path": "app-api/src/main/kotlin/com/exchange/core/api/trading/infrastructure/history/BoundedTradingStateCodec.kt",
+      "sha256": "3d54dd7b5890d0379deacef6f2517da628c3ccc4f866bc41eb6dfb35ec4fded2",
+      "present_in_committed_branch_diff": false,
+      "same_as_snapshot7": true,
+      "same_as_frozen_sources": [
+        "protobuf_cleanup",
+        "regression_v2",
+        "service_progress",
+        "candidate_A_final"
+      ]
+    },
+    {
+      "path": "app-api/src/main/kotlin/com/exchange/core/api/trading/infrastructure/history/RocksDbTradingHistoryStore.kt",
+      "sha256": "71dd153a848595fdb25d7d5d2f69224f4903be9e66653e3134ec3452eca1726e",
+      "present_in_committed_branch_diff": true,
+      "same_as_snapshot7": true,
+      "same_as_frozen_sources": [
+        "protobuf_cleanup",
+        "regression_v2",
+        "service_progress",
+        "candidate_A_final"
+      ]
+    },
+    {
+      "path": "app-api/src/main/kotlin/com/exchange/core/api/trading/infrastructure/history/TradingHistoryCodec.kt",
+      "sha256": "b168e861ff9462162343e751e69f5aa09031677842586f8e9041482675e95cbd",
+      "present_in_committed_branch_diff": true,
+      "same_as_snapshot7": true,
+      "same_as_frozen_sources": [
+        "protobuf_cleanup",
+        "regression_v2",
+        "service_progress",
+        "candidate_A_final"
+      ]
+    },
+    {
+      "path": "app-api/src/main/kotlin/com/exchange/core/api/trading/infrastructure/history/TradingSnapshotCodec.kt",
+      "sha256": "27b0988019e6eec685d48a57cb56f1590c9e1da061d98a6c9462630a68dda9d9",
+      "present_in_committed_branch_diff": true,
+      "same_as_snapshot7": true,
+      "same_as_frozen_sources": [
+        "protobuf_cleanup",
+        "regression_v2",
+        "service_progress",
+        "candidate_A_final"
+      ]
+    },
+    {
+      "path": "app-api/src/main/kotlin/com/exchange/core/api/trading/infrastructure/recovery/ArchiveRecoveryProof.kt",
+      "sha256": "6d428112143ebedfb43b61b9b1b0411869ab939f89cf3017c7f42a7414b07989",
+      "present_in_committed_branch_diff": false,
+      "same_as_snapshot7": true,
+      "same_as_frozen_sources": [
+        "protobuf_cleanup",
+        "regression_v2",
+        "service_progress",
+        "candidate_A_final"
+      ]
+    },
+    {
+      "path": "app-api/src/main/kotlin/com/exchange/core/api/trading/infrastructure/recovery/RecoveryDurabilityGate.kt",
+      "sha256": "4fb540600a209d1b074a995d43e754c6b036a407aba02d861f27c5701ac3230a",
+      "present_in_committed_branch_diff": false,
+      "same_as_snapshot7": true,
+      "same_as_frozen_sources": [
+        "protobuf_cleanup",
+        "regression_v2",
+        "service_progress",
+        "candidate_A_final"
+      ]
+    },
+    {
+      "path": "app-api/src/main/kotlin/com/exchange/core/api/trading/infrastructure/recovery/RemoteAeronBackup.kt",
+      "sha256": "e63c9809e151460517caa174a78bdc6bf54dd38a3cc17e59257201f4dcfd0774",
+      "present_in_committed_branch_diff": false,
+      "same_as_snapshot7": true,
+      "same_as_frozen_sources": [
+        "protobuf_cleanup",
+        "regression_v2",
+        "service_progress",
+        "candidate_A_final"
+      ]
+    },
+    {
+      "path": "app-api/src/main/kotlin/com/exchange/core/api/trading/infrastructure/recovery/RemotePrefixProof.kt",
+      "sha256": "c90152983c480366d36c4ffbec58aee03bdac04086313107de9052c1efdb5400",
+      "present_in_committed_branch_diff": false,
+      "same_as_snapshot7": true,
+      "same_as_frozen_sources": [
+        "protobuf_cleanup",
+        "regression_v2",
+        "service_progress",
+        "candidate_A_final"
+      ]
+    },
+    {
+      "path": "app-api/src/main/kotlin/com/exchange/core/api/trading/infrastructure/recovery/RemotePromotionAuthority.kt",
+      "sha256": "7fd3c270d8c1fb349b5ed32dd41d37a77316745fc5defa3b76e1b0c57d106721",
+      "present_in_committed_branch_diff": false,
+      "same_as_snapshot7": true,
+      "same_as_frozen_sources": [
+        "protobuf_cleanup",
+        "regression_v2",
+        "service_progress",
+        "candidate_A_final"
+      ]
+    },
+    {
+      "path": "app-api/src/main/kotlin/com/exchange/core/api/trading/infrastructure/recovery/RemoteRecoveryFiles.kt",
+      "sha256": "45896c5dc0a4583b1fe813bacaafae196dc4a23d577112b6c4bdfb9f7fc51069",
+      "present_in_committed_branch_diff": false,
+      "same_as_snapshot7": true,
+      "same_as_frozen_sources": [
+        "protobuf_cleanup",
+        "regression_v2",
+        "service_progress",
+        "candidate_A_final"
+      ]
+    },
+    {
+      "path": "app-api/src/main/kotlin/com/exchange/core/api/trading/infrastructure/recovery/RemoteRecoveryPromotion.kt",
+      "sha256": "a13eb4c8480a06f6e9ecae6a4e4c6ffd990496f2fd3a36f8e2d45325c6d9165e",
+      "present_in_committed_branch_diff": false,
+      "same_as_snapshot7": true,
+      "same_as_frozen_sources": [
+        "protobuf_cleanup",
+        "regression_v2",
+        "service_progress",
+        "candidate_A_final"
+      ]
+    },
+    {
+      "path": "app-api/src/main/kotlin/com/exchange/core/api/trading/infrastructure/recovery/RetainedExecutionBundle.kt",
+      "sha256": "cf56a8e6e37d1816072a92333ad508e4fdddb525ba337f60ffe81ed97d709739",
+      "present_in_committed_branch_diff": false,
+      "same_as_snapshot7": true,
+      "same_as_frozen_sources": [
+        "protobuf_cleanup",
+        "regression_v2",
+        "service_progress",
+        "candidate_A_final"
+      ]
+    },
+    {
+      "path": "app-api/src/main/proto/order_admission.proto",
+      "sha256": "402442c464672f83cd615b8eb0aaac84eef2cded3fb9dd477e94f8bc32b7520b",
+      "present_in_committed_branch_diff": false,
+      "same_as_snapshot7": true,
+      "same_as_frozen_sources": [
+        "protobuf_cleanup",
+        "regression_v2",
+        "service_progress",
+        "candidate_A_final"
+      ]
+    },
+    {
+      "path": "app-api/src/main/resources/application-aeron-gateway.yaml",
+      "sha256": "67cbf0fd370928efc22efd4581246d2dd4a4eae2f7ade28e41856816aff958f6",
+      "present_in_committed_branch_diff": true,
+      "same_as_snapshot7": true,
+      "same_as_frozen_sources": [
+        "candidate_A_final"
+      ]
+    },
+    {
+      "path": "architecture-tests/build.gradle.kts",
+      "sha256": "398dc822d713f130ec9bb2cb708e635ef728cc3bd0896f94c92d37098597f98b",
+      "present_in_committed_branch_diff": true,
+      "same_as_snapshot7": true,
+      "same_as_frozen_sources": [
+        "protobuf_cleanup",
+        "regression_v2",
+        "service_progress",
+        "candidate_A_final"
+      ]
+    },
+    {
+      "path": "domain-fee/src/main/kotlin/com/exchange/core/fee/TradingFeeCalculator.kt",
+      "sha256": "59b07dac5fd3aeaf5b67f72324813c50d707f634c520991b98e799ae42ee1e8f",
+      "present_in_committed_branch_diff": true,
+      "same_as_snapshot7": true,
+      "same_as_frozen_sources": [
+        "candidate_A_final"
+      ]
+    },
+    {
+      "path": "domain-fee/src/main/kotlin/com/exchange/core/fee/TradingFeeReserveCalculator.kt",
+      "sha256": "23adf01032618187cb3d8c8be59c62f4c558791a8df68c664eee538f4059e829",
+      "present_in_committed_branch_diff": true,
+      "same_as_snapshot7": true,
+      "same_as_frozen_sources": [
+        "candidate_A_final"
+      ]
+    },
+    {
+      "path": "domain-ledger/src/main/kotlin/com/exchange/core/ledger/LedgerPostingListPool.kt",
+      "sha256": "57444ff2a0de76e32717a28834f72fa415f862247817ac289db8eca063600f56",
+      "present_in_committed_branch_diff": true,
+      "same_as_snapshot7": true,
+      "same_as_frozen_sources": [
+        "candidate_A_final"
+      ]
+    },
+    {
+      "path": "domain-ledger/src/main/kotlin/com/exchange/core/ledger/LedgerTransaction.kt",
+      "sha256": "220646df9485bc487b63753c32af76734e0816d1f6a2cbf279ebbc0d188b0c6f",
+      "present_in_committed_branch_diff": true,
+      "same_as_snapshot7": true,
+      "same_as_frozen_sources": [
+        "candidate_A_final"
+      ]
+    },
+    {
+      "path": "domain-matching/src/main/kotlin/com/exchange/core/matching/MatchingCheckpoint.kt",
+      "sha256": "47a402e8b731587c3d8616457c632124c07c4252a1b6927af9e1c07e18988d24",
+      "present_in_committed_branch_diff": true,
+      "same_as_snapshot7": true,
+      "same_as_frozen_sources": [
+        "protobuf_cleanup",
+        "regression_v2",
+        "service_progress",
+        "candidate_A_final"
+      ]
+    },
+    {
+      "path": "domain-matching/src/main/kotlin/com/exchange/core/matching/MatchingCommandResult.kt",
+      "sha256": "fcb8367718ec2d0381cb5e71a73821c2198530cfb8acf34a02c6bb9e204ac2a0",
+      "present_in_committed_branch_diff": true,
+      "same_as_snapshot7": true,
+      "same_as_frozen_sources": [
+        "protobuf_cleanup",
+        "regression_v2",
+        "service_progress",
+        "candidate_A_final"
+      ]
+    },
+    {
+      "path": "domain-matching/src/main/kotlin/com/exchange/core/matching/MatchingEngine.kt",
+      "sha256": "e2b1d258b52616a9a6254d0366c8a154826dd04d2b14c54fb67963532060f85b",
+      "present_in_committed_branch_diff": true,
+      "same_as_snapshot7": true,
+      "same_as_frozen_sources": [
+        "protobuf_cleanup",
+        "regression_v2",
+        "service_progress",
+        "candidate_A_final"
+      ]
+    },
+    {
+      "path": "domain-matching/src/main/kotlin/com/exchange/core/matching/MatchingResultState.kt",
+      "sha256": "af104f47ccaa7adc50752e2023dc1ad75b6b0900485d0dccf34072514659f35e",
+      "present_in_committed_branch_diff": true,
+      "same_as_snapshot7": false,
+      "same_as_frozen_sources": [
+        "candidate_A_final"
+      ]
+    },
+    {
+      "path": "domain-order/src/main/kotlin/com/exchange/core/order/OrderFillSettlementCalculator.kt",
+      "sha256": "a362c389bb0d385779bcebe8f4d30d2c1c2097e4eea2ac9b1881742f6487b2de",
+      "present_in_committed_branch_diff": true,
+      "same_as_snapshot7": true,
+      "same_as_frozen_sources": [
+        "candidate_A_final"
+      ]
+    },
+    {
+      "path": "domain-order/src/main/kotlin/com/exchange/core/order/QuoteAmountCalculator.kt",
+      "sha256": "4787613b8fe54f0d2f71bff3055c585a1f33cbe556fa890bbcc1b90515184500",
+      "present_in_committed_branch_diff": true,
+      "same_as_snapshot7": true,
+      "same_as_frozen_sources": [
+        "candidate_A_final"
+      ]
+    },
+    {
+      "path": "domain-trading/src/main/kotlin/com/exchange/core/trading/BoundedTradingValues.kt",
+      "sha256": "ea94d94ccf8c97eb67e9b76f063f058ff0014a59405455cfbb99d79fa9018166",
+      "present_in_committed_branch_diff": false,
+      "same_as_snapshot7": true,
+      "same_as_frozen_sources": [
+        "protobuf_cleanup",
+        "regression_v2",
+        "service_progress",
+        "candidate_A_final"
+      ]
+    },
+    {
+      "path": "domain-trading/src/main/kotlin/com/exchange/core/trading/CompactSettlementBalanceHistory.kt",
+      "sha256": "137955b09b074cbfc4b0593ab50526fd82045267c1d7ea3291d661b8e552e5df",
+      "present_in_committed_branch_diff": true,
+      "same_as_snapshot7": true,
+      "same_as_frozen_sources": [
+        "protobuf_cleanup",
+        "regression_v2",
+        "service_progress",
+        "candidate_A_final"
+      ]
+    },
+    {
+      "path": "domain-trading/src/main/kotlin/com/exchange/core/trading/OrderAdmissionCalculator.kt",
+      "sha256": "1ed5a9cbac75c9f01dee7de1faf80ae5eb98d7783df5f0b6e8ed05090f914657",
+      "present_in_committed_branch_diff": true,
+      "same_as_snapshot7": false,
+      "same_as_frozen_sources": [
+        "protobuf_cleanup",
+        "regression_v2",
+        "service_progress",
+        "candidate_A_final"
+      ]
+    },
+    {
+      "path": "domain-trading/src/main/kotlin/com/exchange/core/trading/OrderAdmissionCandidate.kt",
+      "sha256": "1701a0df999f6af4af49ce74b03ff5c5668770c4c58cd0fc923632c71ba5762c",
+      "present_in_committed_branch_diff": true,
+      "same_as_snapshot7": false,
+      "same_as_frozen_sources": [
+        "protobuf_cleanup",
+        "regression_v2",
+        "service_progress",
+        "candidate_A_final"
+      ]
+    },
+    {
+      "path": "domain-trading/src/main/kotlin/com/exchange/core/trading/OrderAdmissionState.kt",
+      "sha256": "19d439b50e771c0df08d01997d390ed5d2b444aa57f493e9f2917af20ec0fa02",
+      "present_in_committed_branch_diff": true,
+      "same_as_snapshot7": true,
+      "same_as_frozen_sources": [
+        "protobuf_cleanup",
+        "regression_v2",
+        "service_progress",
+        "candidate_A_final"
+      ]
+    },
+    {
+      "path": "domain-trading/src/main/kotlin/com/exchange/core/trading/OrderAdmissionTransition.kt",
+      "sha256": "ff317f252144fbcb1da030445a33ab744cae700ad5020a01f4dd67ae0368c83d",
+      "present_in_committed_branch_diff": false,
+      "same_as_snapshot7": false,
+      "same_as_frozen_sources": [
+        "protobuf_cleanup",
+        "regression_v2",
+        "service_progress",
+        "candidate_A_final"
+      ]
+    },
+    {
+      "path": "domain-trading/src/main/kotlin/com/exchange/core/trading/OrderSettlementCalculator.kt",
+      "sha256": "43acd1e0bbdb7b1035bac9cb4fb6b741c4a72eeff38edcceb8bc874e1916adb6",
+      "present_in_committed_branch_diff": true,
+      "same_as_snapshot7": false,
+      "same_as_frozen_sources": [
+        "protobuf_cleanup",
+        "regression_v2",
+        "service_progress",
+        "candidate_A_final"
+      ]
+    },
+    {
+      "path": "domain-trading/src/main/kotlin/com/exchange/core/trading/OrderSettlementCandidate.kt",
+      "sha256": "3c8e0315aa917926ca2e12a3cb97a505e8c033677ccf70c487207ddc11cf29cd",
+      "present_in_committed_branch_diff": true,
+      "same_as_snapshot7": true,
+      "same_as_frozen_sources": [
+        "protobuf_cleanup",
+        "regression_v2",
+        "service_progress",
+        "candidate_A_final"
+      ]
+    },
+    {
+      "path": "domain-trading/src/main/kotlin/com/exchange/core/trading/SettlementLedgerTransactions.kt",
+      "sha256": "55d91ef7ebd6a2c9d8855c005b310c6aa739dcbca2a381c00f93b3b5111609a9",
+      "present_in_committed_branch_diff": true,
+      "same_as_snapshot7": true,
+      "same_as_frozen_sources": [
+        "protobuf_cleanup",
+        "regression_v2",
+        "service_progress",
+        "candidate_A_final"
+      ]
+    },
+    {
+      "path": "domain-trading/src/main/kotlin/com/exchange/core/trading/TradingCheckpoint.kt",
+      "sha256": "e66b9b3216fca1120bad2e58f1d1a141a0bd414321cc6366d7e19c1ade432a36",
+      "present_in_committed_branch_diff": true,
+      "same_as_snapshot7": true,
+      "same_as_frozen_sources": [
+        "protobuf_cleanup",
+        "regression_v2",
+        "service_progress",
+        "candidate_A_final"
+      ]
+    },
+    {
+      "path": "domain-trading/src/main/kotlin/com/exchange/core/trading/TradingCheckpointValidation.kt",
+      "sha256": "ca34993719d635722aeab136024759eb7192aeb3fe40a41a6db6b37f4838ebdb",
+      "present_in_committed_branch_diff": true,
+      "same_as_snapshot7": true,
+      "same_as_frozen_sources": [
+        "protobuf_cleanup",
+        "regression_v2",
+        "service_progress",
+        "candidate_A_final"
+      ]
+    },
+    {
+      "path": "domain-trading/src/main/kotlin/com/exchange/core/trading/TradingHistoryStore.kt",
+      "sha256": "cf15885a81eca3023ad46c478456b320fef5f783e1bddee4dec13c1facd4d8ea",
+      "present_in_committed_branch_diff": true,
+      "same_as_snapshot7": true,
+      "same_as_frozen_sources": [
+        "protobuf_cleanup",
+        "regression_v2",
+        "service_progress",
+        "candidate_A_final"
+      ]
+    },
+    {
+      "path": "domain-trading/src/main/kotlin/com/exchange/core/trading/TradingHistoryValues.kt",
+      "sha256": "50cb64a5dda9bd75edf2228410df4cb10b44882f7d6b5200ec710439cafa7513",
+      "present_in_committed_branch_diff": true,
+      "same_as_snapshot7": true,
+      "same_as_frozen_sources": [
+        "protobuf_cleanup",
+        "regression_v2",
+        "service_progress",
+        "candidate_A_final"
+      ]
+    },
+    {
+      "path": "domain-trading/src/main/kotlin/com/exchange/core/trading/TradingIdentifierDigest.kt",
+      "sha256": "1eeb331c909550dcf2dc5b34443d387af9e7686e623362d1ef202cb0b4548ee4",
+      "present_in_committed_branch_diff": true,
+      "same_as_snapshot7": true,
+      "same_as_frozen_sources": [
+        "protobuf_cleanup",
+        "regression_v2",
+        "service_progress",
+        "candidate_A_final"
+      ]
+    },
+    {
+      "path": "domain-trading/src/main/kotlin/com/exchange/core/trading/TradingRequest.kt",
+      "sha256": "e081e7e05165d8ed61da78a517b2bb43feecdc46566ef2eab02094500afeca9d",
+      "present_in_committed_branch_diff": false,
+      "same_as_snapshot7": true,
+      "same_as_frozen_sources": [
+        "protobuf_cleanup",
+        "regression_v2",
+        "service_progress",
+        "candidate_A_final"
+      ]
+    },
+    {
+      "path": "domain-trading/src/main/kotlin/com/exchange/core/trading/TradingRequestInbox.kt",
+      "sha256": "01dfad4c57d765e68842ef4eb9cc64e86a6c82d89c4fd75137f4888a5434be2e",
+      "present_in_committed_branch_diff": false,
+      "same_as_snapshot7": true,
+      "same_as_frozen_sources": [
+        "protobuf_cleanup",
+        "regression_v2",
+        "service_progress",
+        "candidate_A_final"
+      ]
+    },
+    {
+      "path": "domain-trading/src/main/kotlin/com/exchange/core/trading/TradingResourceLimits.kt",
+      "sha256": "36181b1455bfe5b3b8045892ffe3110330d9a9c8c15b19e03a96c1df62437bff",
+      "present_in_committed_branch_diff": false,
+      "same_as_snapshot7": true,
+      "same_as_frozen_sources": [
+        "protobuf_cleanup",
+        "regression_v2",
+        "service_progress",
+        "candidate_A_final"
+      ]
+    },
+    {
+      "path": "domain-trading/src/main/kotlin/com/exchange/core/trading/TradingState.kt",
+      "sha256": "2557566df56486ec57adadaf126b047fa470c6d3ac8c187940f1752310b78221",
+      "present_in_committed_branch_diff": true,
+      "same_as_snapshot7": false,
+      "same_as_frozen_sources": [
+        "candidate_A_final"
+      ]
+    }
+  ]
+}

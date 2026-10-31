@@ -1,0 +1,1 @@
+{"existingHelper":"build/optimization-sbe-20261030/jit-diagnostic/RepeatExistingEngine.class","jvmsPerVariant":3,"callsPerJvm":5,"primaryEvaluation":"median of final three calls per JVM, then median across three JVMs; preserve first two calls and do not use fastest-only","scope":"finite state rebuilt per call; diagnostic warm sequence, not sustained maximum"}

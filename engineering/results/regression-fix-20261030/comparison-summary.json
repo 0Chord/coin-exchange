@@ -1,0 +1,118 @@
+{
+  "before": {
+    "runs": [
+      {
+        "run": 1,
+        "orders": 329913,
+        "admissionTps": 32979.42711931603,
+        "allReplicasTps": 32960.33594964558,
+        "admissionP95Ns": 14336417,
+        "admissionP99Ns": 27475584,
+        "allReplicasP95Ns": 30457959,
+        "allReplicasP99Ns": 51215167,
+        "cpuPerOrderNs": 12804.406093929814,
+        "allocatedPerOrder": 11617.024326615401,
+        "approxLockAttemptsPerOrder": 200.4636131343718,
+        "peakAllocatedBytes": 721367040
+      },
+      {
+        "run": 4,
+        "orders": 174186,
+        "admissionTps": 17410.252283704205,
+        "allReplicasTps": 17398.835276322454,
+        "admissionP95Ns": 30511375,
+        "admissionP99Ns": 75139042,
+        "allReplicasP95Ns": 59132083,
+        "allReplicasP99Ns": 167432916,
+        "cpuPerOrderNs": 20567.196133252193,
+        "allocatedPerOrder": 11587.57173749134,
+        "approxLockAttemptsPerOrder": 283.2143111386679,
+        "peakAllocatedBytes": 500514816
+      },
+      {
+        "run": 5,
+        "orders": 317123,
+        "admissionTps": 31701.580361043398,
+        "allReplicasTps": 31686.658088434462,
+        "admissionP95Ns": 14802625,
+        "admissionP99Ns": 23031542,
+        "allReplicasP95Ns": 29679875,
+        "allReplicasP99Ns": 40993458,
+        "cpuPerOrderNs": 13393.15038854535,
+        "allocatedPerOrder": 11595.693145351594,
+        "approxLockAttemptsPerOrder": 204.45255626365795,
+        "peakAllocatedBytes": 668073984
+      }
+    ],
+    "medians": {
+      "orders": 317123,
+      "admissionTps": 31701.580361043398,
+      "allReplicasTps": 31686.658088434462,
+      "admissionP95Ns": 14802625,
+      "admissionP99Ns": 27475584,
+      "allReplicasP95Ns": 30457959,
+      "allReplicasP99Ns": 51215167,
+      "cpuPerOrderNs": 13393.15038854535,
+      "allocatedPerOrder": 11595.693145351594,
+      "approxLockAttemptsPerOrder": 204.45255626365795
+    }
+  },
+  "after": {
+    "runs": [
+      {
+        "run": 2,
+        "orders": 380008,
+        "admissionTps": 37939.769911597265,
+        "allReplicasTps": 37917.1943079915,
+        "admissionP95Ns": 11850208,
+        "admissionP99Ns": 17826416,
+        "allReplicasP95Ns": 23581209,
+        "allReplicasP99Ns": 31916917,
+        "cpuPerOrderNs": 11154.831227237322,
+        "allocatedPerOrder": 11241.022427598014,
+        "approxLockAttemptsPerOrder": 4.832235110839772,
+        "peakAllocatedBytes": 783458304
+      },
+      {
+        "run": 3,
+        "orders": 344065,
+        "admissionTps": 34392.290092792384,
+        "allReplicasTps": 34375.13854016819,
+        "admissionP95Ns": 13686083,
+        "admissionP99Ns": 23437125,
+        "allReplicasP95Ns": 26088500,
+        "allReplicasP99Ns": 42221625,
+        "cpuPerOrderNs": 11915.937320951953,
+        "allocatedPerOrder": 11225.024449837481,
+        "approxLockAttemptsPerOrder": 4.828110967404415,
+        "peakAllocatedBytes": 756989952
+      },
+      {
+        "run": 6,
+        "orders": 299149,
+        "admissionTps": 29896.26850495525,
+        "allReplicasTps": 29877.862887265703,
+        "admissionP95Ns": 16119666,
+        "admissionP99Ns": 24470250,
+        "allReplicasP95Ns": 30592750,
+        "allReplicasP99Ns": 45075833,
+        "cpuPerOrderNs": 12708.63105453581,
+        "allocatedPerOrder": 11241.0293822365,
+        "approxLockAttemptsPerOrder": 4.8085201688790535,
+        "peakAllocatedBytes": 651755520
+      }
+    ],
+    "medians": {
+      "orders": 344065,
+      "admissionTps": 34392.290092792384,
+      "allReplicasTps": 34375.13854016819,
+      "admissionP95Ns": 13686083,
+      "admissionP99Ns": 23437125,
+      "allReplicasP95Ns": 26088500,
+      "allReplicasP99Ns": 42221625,
+      "cpuPerOrderNs": 11915.937320951953,
+      "allocatedPerOrder": 11241.022427598014,
+      "approxLockAttemptsPerOrder": 4.828110967404415
+    }
+  }
+}

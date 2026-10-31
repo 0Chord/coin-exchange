@@ -1,0 +1,10 @@
+{
+  "sourceFilesVerified": 520,
+  "runtimeFilesVerified": 1344,
+  "sourceManifestSha256": "27f6be3c4773e1cce7d72aee62b78b0cbe2957a636309f89e05eaa2c1da0d234",
+  "domainJarSha256": "011ff38ed6093e90d2f2b022937ebbcfea77d9a541cf66b9f8682328806cf861",
+  "v3CandidateAdopted": false,
+  "wire": "protobuf",
+  "snapshotFormat": 2,
+  "fullLatestHttpPerformanceMeasured": false
+}

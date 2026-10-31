@@ -1,0 +1,10 @@
+{
+  "checkedAt": "2026-10-31T14:00:46.362797+09:00",
+  "ownedNodeClientJvmPids": [],
+  "ownedHa142Containers": [],
+  "dockerContainersLeftUntouched": [
+    "generator-fakecodec-docker-generator-10k-001"
+  ],
+  "filesystem": "Filesystem      Size    Used   Avail Capacity iused ifree %iused  Mounted on\n/dev/disk3s5   460Gi   341Gi    77Gi    82%    5.7M  804M    1%   /System/Volumes/Data\n",
+  "evidenceBytes": 21032028
+}

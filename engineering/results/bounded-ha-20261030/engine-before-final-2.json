@@ -1,0 +1,22 @@
+{
+  "mode": "legacy-a39-api-history-off",
+  "scope": "single-JVM BUY admit+execute; transport excluded",
+  "warmup": 1000,
+  "markets": "BTC/SOL/SUI",
+  "sellPreparation": 6000,
+  "completed": 5000,
+  "elapsedNs": 121422792,
+  "tps": 41178.43048774566,
+  "currentThreadCpuNs": 90494000,
+  "currentThreadCpuNsPerOrder": 18098.8,
+  "currentThreadAllocatedBytes": 55737968,
+  "allocatedBytesPerOrder": 11147.5936,
+  "p95Ns": 22125,
+  "p99Ns": 37000,
+  "finalAckNs": 7292,
+  "financiallyVerified": true,
+  "retainedCompletions": 12000,
+  "retainedRequests": 12000,
+  "retainedLedgerTransactions": 18004,
+  "feeRevenue": 180000
+}

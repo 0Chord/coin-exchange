@@ -1,0 +1,82 @@
+{
+  "productCodeChangedThisTurn": false,
+  "performanceLoadComplete": true,
+  "runs": [
+    {
+      "runId": "ha142-7349f52e2f",
+      "success": true,
+      "financialAndReplicaStateVerified": true,
+      "ownedProjectCleanupSucceeded": true,
+      "cleanupFailures": [],
+      "source": "measurement.json",
+      "measurement": {
+        "orders": 273087,
+        "warmup": 679891,
+        "maxInFlight": 512,
+        "maxExecutionInFlight": 1024,
+        "admissionTps": 27270.475645141905,
+        "admissionP95Ns": 36029166,
+        "admissionP99Ns": 68876458,
+        "allReplicasTps": 27244.328677647085,
+        "allReplicasP95Ns": 75109125,
+        "allReplicasP99Ns": 129044833
+      }
+    },
+    {
+      "runId": "ha142-d32ee02737",
+      "success": true,
+      "financialAndReplicaStateVerified": true,
+      "ownedProjectCleanupSucceeded": true,
+      "cleanupFailures": [],
+      "source": "control-measurement.json",
+      "measurement": {
+        "orders": 408616,
+        "warmup": 579589,
+        "maxInFlight": 512,
+        "maxExecutionInFlight": 1024,
+        "admissionTps": 40835.75928669926,
+        "admissionP95Ns": 21390292,
+        "admissionP99Ns": 34309416,
+        "allReplicasTps": 40807.34169336885,
+        "allReplicasP95Ns": 45959250,
+        "allReplicasP99Ns": 62670208
+      }
+    },
+    {
+      "runId": "ha142-753a4362eb",
+      "success": true,
+      "financialAndReplicaStateVerified": true,
+      "ownedProjectCleanupSucceeded": true,
+      "cleanupFailures": [],
+      "source": "no-periodic/measurement.json",
+      "measurement": {
+        "orders": 264691,
+        "warmup": 719247,
+        "maxInFlight": 512,
+        "maxExecutionInFlight": 1024,
+        "admissionTps": 26404.287473556087,
+        "admissionP95Ns": 32149666,
+        "admissionP99Ns": 60919083,
+        "allReplicasTps": 26315.046005058397,
+        "allReplicasP95Ns": 62698458,
+        "allReplicasP99Ns": 132402167
+      }
+    }
+  ],
+  "identityVerification": {
+    "source": {
+      "root": "/Users/0chord/.codex/worktrees/issue148-http-aeron/exchange-core",
+      "manifest": "/Users/0chord/.codex/worktrees/issue148-http-aeron/exchange-core/build/regression-fix-20261030/source-v2-manifest.json",
+      "manifestSha256": "27f6be3c4773e1cce7d72aee62b78b0cbe2957a636309f89e05eaa2c1da0d234",
+      "fileCount": 520,
+      "mismatches": []
+    },
+    "runtime": {
+      "root": "/Users/0chord/.codex/worktrees/issue148-http-aeron/exchange-core/build/regression-fix-20261030/after",
+      "manifest": "/Users/0chord/.codex/worktrees/issue148-http-aeron/exchange-core/build/regression-fix-20261030/after-runtime.json",
+      "manifestSha256": "cc9092291294b4cca680b7153ff01f45832138fb87a005811e4c8f07474f2dbf",
+      "fileCount": 1344,
+      "mismatches": []
+    }
+  }
+}

@@ -1,0 +1,55 @@
+{
+  "scope": "P0/P1/P2/P3a/P3b + new-lineage SBE88/v0",
+  "originalHead": "a39b0d8c9176aefac676f62312a3f51fdcb79dbd",
+  "branch": "test/http-trading-performance/142",
+  "independentReviews": [
+    "review-wire/review.md",
+    "review-wire-2/review.md",
+    "review-domain/review.md",
+    "review-domain-2/review.md"
+  ],
+  "knownResolvedFindings": [
+    "configuration-map wire selection",
+    "fatal observer error alongside classified validation"
+  ],
+  "conditionalNotImplemented": [
+    "P3c shared index",
+    "P4 matching references",
+    "scratchpad",
+    "one-phase processing",
+    "sync0"
+  ],
+  "sourceAndFinalProductHashesMatch": true,
+  "fullApiSuite": {
+    "tests": 1407,
+    "failures": 0,
+    "errors": 0,
+    "skipped": 3
+  },
+  "sbeSelectedSuite": {
+    "tests": 15,
+    "failures": 0,
+    "errors": 0,
+    "skipped": 0
+  },
+  "haChecks": {
+    "primary": 10,
+    "fourthBackup": 6,
+    "allPassed": true
+  },
+  "comparisonRuns": 9,
+  "defaultFormat": "protobuf",
+  "sbeStatus": "explicit opt-in, not adopted as default",
+  "knownLimits": [
+    "50k TPS not achieved",
+    "cold short engine-probe throughput regression retained in report",
+    "same-host tests, no multi-AZ/power-failure proof"
+  ],
+  "cleanup": {
+    "all9RunContainersAndVolumesRemoved": true,
+    "twoOwnedImagesRemoved": true,
+    "oldRebuildableDockerBuildCacheReclaimedGB": 9.073,
+    "hostFreeGiBApprox": 85,
+    "oldProtobuf1336FilesUnchanged": true
+  }
+}

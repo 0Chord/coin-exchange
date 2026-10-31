@@ -1,0 +1,16 @@
+{
+  "before": {
+    "tps": 34074.83955146225,
+    "p95Ns": 36291,
+    "p99Ns": 83292,
+    "currentThreadCpuNsPerOrder": 29100.0,
+    "allocatedBytesPerOrder": 11473.9248
+  },
+  "after": {
+    "tps": 59350.84984244486,
+    "p95Ns": 22000,
+    "p99Ns": 63000,
+    "currentThreadCpuNsPerOrder": 16754.8,
+    "allocatedBytesPerOrder": 11409.776
+  }
+}

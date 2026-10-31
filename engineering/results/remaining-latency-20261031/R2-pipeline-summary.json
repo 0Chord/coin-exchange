@@ -1,0 +1,5249 @@
+{
+  "status": "VALID",
+  "runId": "ha142-753a4362eb",
+  "orders": 264691,
+  "tailCount": 2647,
+  "tailDefinition": "ceil(N/100) slowest actual client all-three RTT (replicas-start); deterministic sequence tie break",
+  "measurementPath": "/Users/0chord/.codex/worktrees/issue148-http-aeron/exchange-core/build/remaining-latency-20261031/no-periodic/measurement.json",
+  "diagnosticMeasurement": {
+    "maxInFlight": 512,
+    "maxExecutionInFlight": 1024,
+    "orders": 264691,
+    "admissionTps": 26404.287473556087,
+    "allReplicasTps": 26315.046005058397,
+    "allReplicasP95Ns": 62698458,
+    "allReplicasP99Ns": 132402167,
+    "cohortTpsIncludingAck": 26314.212231156736
+  },
+  "inputCohortValid": true,
+  "correlationValid": true,
+  "validationErrorCount": 0,
+  "ackFreshnessGuardNs": 9000000000,
+  "client": {
+    "anchorCount": 1,
+    "offsetEnvelopeNs": [
+      1793374650515525445,
+      1793374650515533237
+    ],
+    "offsetIntersectionNs": [
+      1793374650515525445,
+      1793374650515533237
+    ],
+    "anchorWidthsNs": [
+      7792
+    ],
+    "eventCounts": {
+      "jdk.JavaMonitorEnter": 69,
+      "jdk.ExecutionSample": 971,
+      "jdk.ThreadSleep": 2374,
+      "jdk.NativeMethodSample": 693,
+      "jdk.ThreadCPULoad": 2712,
+      "jdk.CPULoad": 14,
+      "jdk.ThreadPark": 499,
+      "jdk.SafepointBegin": 42,
+      "jdk.ExecuteVMOperation": 40,
+      "jdk.SafepointEnd": 40,
+      "jdk.GCHeapSummary": 78,
+      "jdk.GCPhasePause": 39,
+      "jdk.GarbageCollection": 39,
+      "jdk.FileWrite": 1295,
+      "exchange.BoundedClientClockAnchor": 1
+    },
+    "gcPauseCount": 39,
+    "gcPauseUnionNs": 140954835,
+    "wholeCohortGcOverlap": {
+      "lowerNs": {
+        "count": 264691,
+        "p50": 0,
+        "p95": 4505167,
+        "p99": 11007542,
+        "max": 13858125,
+        "min": 0
+      },
+      "upperNs": {
+        "count": 264691,
+        "p50": 0,
+        "p95": 4505167,
+        "p99": 11007542,
+        "max": 13858125,
+        "min": 0
+      },
+      "requestsWithPossibleOverlap": 38667,
+      "requestsWithGuaranteedOverlap": 38667
+    },
+    "tailGcOverlap": {
+      "lowerNs": {
+        "count": 2647,
+        "p50": 1419959,
+        "p95": 3085167,
+        "p99": 3085167,
+        "max": 3085167,
+        "min": 0
+      },
+      "upperNs": {
+        "count": 2647,
+        "p50": 1419959,
+        "p95": 3085167,
+        "p99": 3085167,
+        "max": 3085167,
+        "min": 0
+      },
+      "requestsWithPossibleOverlap": 1831,
+      "requestsWithGuaranteedOverlap": 1831
+    }
+  },
+  "members": {
+    "0": {
+      "role": "FOLLOWER",
+      "callbacksValidated": 529382,
+      "extraCallbackKinds": {
+        "UNKNOWN": 565
+      },
+      "exactPositionArchiveCommitJoins": 529382,
+      "exactLeaderAppendValidFreshPeerAckJoins": 0,
+      "recordingId": 0,
+      "measuredArchiveBlocks": 3156,
+      "measuredArchiveBlocksWithSameThreadNestedFileForce": 3156,
+      "recordedArchiveBlocks": 3165,
+      "recordedAppends": 0,
+      "commitAdvances": 13218,
+      "commitMaxBracketNs": 2359167,
+      "maxFirstPeerAckAgeNs": 0,
+      "clockOffsetEnvelopeNs": [
+        1793374650513987779,
+        1793374650518743071
+      ],
+      "clockOffsetIntersectionNs": [
+        1793374650515529279,
+        1793374650515529279
+      ],
+      "maxCallbackClockAnchorWidthNs": 3213834,
+      "gcPauseCount": 21,
+      "gcPauseUnionNs": 91108169,
+      "eventCounts": {
+        "jdk.ThreadSleep": 915,
+        "jdk.JavaMonitorEnter": 1,
+        "jdk.ThreadCPULoad": 4182,
+        "jdk.CPULoad": 15,
+        "jdk.ThreadPark": 3614,
+        "jdk.ExecutionSample": 476,
+        "jdk.GCHeapSummary": 40,
+        "jdk.GCPhasePause": 21,
+        "jdk.GarbageCollection": 20,
+        "jdk.SafepointBegin": 28,
+        "jdk.ExecuteVMOperation": 26,
+        "jdk.SafepointEnd": 26,
+        "exchange.BoundedServiceCallback": 529947,
+        "exchange.FollowerCommit": 13218,
+        "jdk.FileWrite": 3167,
+        "jdk.FileForce": 3170,
+        "exchange.ArchiveBlock": 3165,
+        "jdk.NativeMethodSample": 554
+      },
+      "serviceRecordingTopSampleFrames": [
+        [
+          "com.exchange.core.trading.TradingState.executePending",
+          54
+        ],
+        [
+          "java.util.HashMap.getNode",
+          22
+        ],
+        [
+          "java.util.Collections$UnmodifiableCollection$1.hasNext",
+          20
+        ],
+        [
+          "java.util.HashMap.putVal",
+          12
+        ],
+        [
+          "com.exchange.core.trading.TradingRequestKt.tradingTextBytes",
+          11
+        ],
+        [
+          "com.exchange.core.trading.TradingState.admit",
+          9
+        ],
+        [
+          "sun.management.ThreadImpl.getCurrentThreadCpuTime",
+          9
+        ],
+        [
+          "java.util.Arrays.copyOf",
+          8
+        ],
+        [
+          "com.exchange.core.matching.MatchingEngine.prepareSubmit",
+          8
+        ],
+        [
+          "java.util.HashMap.put",
+          7
+        ],
+        [
+          "com.exchange.core.order.OrderReservation.<init>",
+          7
+        ],
+        [
+          "com.exchange.core.trading.TradingRequestInbox.acknowledge-U6MWdmw",
+          7
+        ],
+        [
+          "com.exchange.core.api.trading.infrastructure.aeron.DevelopmentFundingAdapter.onBoundedMessage",
+          6
+        ],
+        [
+          "java.util.Collections$UnmodifiableCollection.size",
+          6
+        ],
+        [
+          "com.exchange.core.api.trading.infrastructure.codec.generated.BoundedTradingCommand$Builder.mergeFrom",
+          6
+        ]
+      ],
+      "kinds": {
+        "ADMISSION": {
+          "whole": {
+            "adviceAfterProductNs": {
+              "count": 264691,
+              "p50": 375,
+              "p95": 6375,
+              "p99": 16542,
+              "max": 21371417,
+              "min": 250
+            },
+            "adviceBeforeProductNs": {
+              "count": 264691,
+              "p50": 333,
+              "p95": 500,
+              "p99": 2083,
+              "max": 5033000,
+              "min": 208
+            },
+            "adviceInvocationNs": {
+              "count": 264691,
+              "p50": 2250,
+              "p95": 13041,
+              "p99": 59958,
+              "max": 21448875,
+              "min": 1750
+            },
+            "commitToService": {
+              "lowerNs": {
+                "count": 264691,
+                "p50": 4183834,
+                "p95": 20839000,
+                "p99": 34075291,
+                "max": 48833750,
+                "min": -1539041
+              },
+              "upperNs": {
+                "count": 264691,
+                "p50": 8940917,
+                "p95": 25596251,
+                "p99": 38831667,
+                "max": 53589667,
+                "min": 3218501
+              }
+            },
+            "fileForceNestedUnionNs": {
+              "count": 264691,
+              "p50": 2145292,
+              "p95": 6815292,
+              "p99": 14749834,
+              "max": 68825250,
+              "min": 493875
+            },
+            "gcCommitToService": {
+              "lowerNs": {
+                "count": 264691,
+                "p50": 0,
+                "p95": 0,
+                "p99": 3585458,
+                "max": 7283625,
+                "min": 0
+              },
+              "upperNs": {
+                "count": 264691,
+                "p50": 0,
+                "p95": 0,
+                "p99": 3836375,
+                "max": 7283625,
+                "min": 0
+              }
+            },
+            "gcRecordStartThroughProductEnd": {
+              "lowerNs": {
+                "count": 264691,
+                "p50": 0,
+                "p95": 0,
+                "p99": 4487375,
+                "max": 7283625,
+                "min": 0
+              },
+              "upperNs": {
+                "count": 264691,
+                "p50": 0,
+                "p95": 0,
+                "p99": 4487375,
+                "max": 7283625,
+                "min": 0
+              }
+            },
+            "gcRecordToCommit": {
+              "lowerNs": {
+                "count": 264691,
+                "p50": 0,
+                "p95": 0,
+                "p99": 0,
+                "max": 6757125,
+                "min": 0
+              },
+              "upperNs": {
+                "count": 264691,
+                "p50": 0,
+                "p95": 0,
+                "p99": 0,
+                "max": 6757125,
+                "min": 0
+              }
+            },
+            "gcWithinProductCallback": {
+              "lowerNs": {
+                "count": 264691,
+                "p50": 0,
+                "p95": 0,
+                "p99": 0,
+                "max": 1082041,
+                "min": 0
+              },
+              "upperNs": {
+                "count": 264691,
+                "p50": 0,
+                "p95": 0,
+                "p99": 0,
+                "max": 5054084,
+                "min": 0
+              }
+            },
+            "gcWithinRecordBlockNs": {
+              "count": 264691,
+              "p50": 0,
+              "p95": 0,
+              "p99": 0,
+              "max": 7283625,
+              "min": 0
+            },
+            "productCallbackNs": {
+              "count": 264691,
+              "p50": 1500,
+              "p95": 6625,
+              "p99": 30708,
+              "max": 7997209,
+              "min": 1125
+            },
+            "recordBlockNs": {
+              "count": 264691,
+              "p50": 2441291,
+              "p95": 7730709,
+              "p99": 14858208,
+              "max": 97861625,
+              "min": 514458
+            },
+            "recordToCommit": {
+              "lowerNs": {
+                "count": 264691,
+                "p50": 815583,
+                "p95": 4587666,
+                "p99": 11645875,
+                "max": 47107959,
+                "min": 1000
+              },
+              "upperNs": {
+                "count": 264691,
+                "p50": 817834,
+                "p95": 4588375,
+                "p99": 11646542,
+                "max": 47109084,
+                "min": 2417
+              }
+            }
+          },
+          "tail": {
+            "adviceAfterProductNs": {
+              "count": 2647,
+              "p50": 583,
+              "p95": 8000,
+              "p99": 19250,
+              "max": 21371417,
+              "min": 250
+            },
+            "adviceBeforeProductNs": {
+              "count": 2647,
+              "p50": 334,
+              "p95": 1958,
+              "p99": 3167,
+              "max": 1016500,
+              "min": 291
+            },
+            "adviceInvocationNs": {
+              "count": 2647,
+              "p50": 4792,
+              "p95": 20708,
+              "p99": 196375,
+              "max": 21448875,
+              "min": 1875
+            },
+            "commitToService": {
+              "lowerNs": {
+                "count": 2647,
+                "p50": 13880834,
+                "p95": 44683917,
+                "p99": 45753208,
+                "max": 45848292,
+                "min": -1480416
+              },
+              "upperNs": {
+                "count": 2647,
+                "p50": 18638584,
+                "p95": 49441292,
+                "p99": 50510417,
+                "max": 50605542,
+                "min": 3277959
+              }
+            },
+            "fileForceNestedUnionNs": {
+              "count": 2647,
+              "p50": 14749834,
+              "p95": 23534166,
+              "p99": 38154667,
+              "max": 68825250,
+              "min": 3265667
+            },
+            "gcCommitToService": {
+              "lowerNs": {
+                "count": 2647,
+                "p50": 0,
+                "p95": 0,
+                "p99": 0,
+                "max": 0,
+                "min": 0
+              },
+              "upperNs": {
+                "count": 2647,
+                "p50": 0,
+                "p95": 0,
+                "p99": 0,
+                "max": 0,
+                "min": 0
+              }
+            },
+            "gcRecordStartThroughProductEnd": {
+              "lowerNs": {
+                "count": 2647,
+                "p50": 0,
+                "p95": 0,
+                "p99": 0,
+                "max": 0,
+                "min": 0
+              },
+              "upperNs": {
+                "count": 2647,
+                "p50": 0,
+                "p95": 0,
+                "p99": 0,
+                "max": 0,
+                "min": 0
+              }
+            },
+            "gcRecordToCommit": {
+              "lowerNs": {
+                "count": 2647,
+                "p50": 0,
+                "p95": 0,
+                "p99": 0,
+                "max": 0,
+                "min": 0
+              },
+              "upperNs": {
+                "count": 2647,
+                "p50": 0,
+                "p95": 0,
+                "p99": 0,
+                "max": 0,
+                "min": 0
+              }
+            },
+            "gcWithinProductCallback": {
+              "lowerNs": {
+                "count": 2647,
+                "p50": 0,
+                "p95": 0,
+                "p99": 0,
+                "max": 0,
+                "min": 0
+              },
+              "upperNs": {
+                "count": 2647,
+                "p50": 0,
+                "p95": 0,
+                "p99": 0,
+                "max": 0,
+                "min": 0
+              }
+            },
+            "gcWithinRecordBlockNs": {
+              "count": 2647,
+              "p50": 0,
+              "p95": 0,
+              "p99": 0,
+              "max": 0,
+              "min": 0
+            },
+            "productCallbackNs": {
+              "count": 2647,
+              "p50": 1959,
+              "p95": 12917,
+              "p99": 61625,
+              "max": 3510084,
+              "min": 1250
+            },
+            "recordBlockNs": {
+              "count": 2647,
+              "p50": 14858208,
+              "p95": 24299000,
+              "p99": 45341875,
+              "max": 97861625,
+              "min": 4468625
+            },
+            "recordToCommit": {
+              "lowerNs": {
+                "count": 2647,
+                "p50": 2494916,
+                "p95": 22872917,
+                "p99": 47106542,
+                "max": 47107959,
+                "min": 149500
+              },
+              "upperNs": {
+                "count": 2647,
+                "p50": 2496583,
+                "p95": 22875250,
+                "p99": 47107709,
+                "max": 47109084,
+                "min": 152500
+              }
+            }
+          }
+        },
+        "EXECUTION": {
+          "whole": {
+            "adviceAfterProductNs": {
+              "count": 264691,
+              "p50": 625,
+              "p95": 8833,
+              "p99": 30583,
+              "max": 4390709,
+              "min": 333
+            },
+            "adviceBeforeProductNs": {
+              "count": 264691,
+              "p50": 334,
+              "p95": 625,
+              "p99": 2208,
+              "max": 5116333,
+              "min": 250
+            },
+            "adviceInvocationNs": {
+              "count": 264691,
+              "p50": 5666,
+              "p95": 34125,
+              "p99": 184708,
+              "max": 16696917,
+              "min": 3958
+            },
+            "commitToService": {
+              "lowerNs": {
+                "count": 264691,
+                "p50": 3442750,
+                "p95": 20288500,
+                "p99": 33696166,
+                "max": 54461500,
+                "min": -1977875
+              },
+              "upperNs": {
+                "count": 264691,
+                "p50": 8199667,
+                "p95": 25048709,
+                "p99": 38452333,
+                "max": 59217084,
+                "min": 3217667
+              }
+            },
+            "fileForceNestedUnionNs": {
+              "count": 264691,
+              "p50": 2150333,
+              "p95": 6836875,
+              "p99": 13166042,
+              "max": 68825250,
+              "min": 493875
+            },
+            "gcCommitToService": {
+              "lowerNs": {
+                "count": 264691,
+                "p50": 0,
+                "p95": 0,
+                "p99": 3174834,
+                "max": 7283625,
+                "min": 0
+              },
+              "upperNs": {
+                "count": 264691,
+                "p50": 0,
+                "p95": 0,
+                "p99": 3836375,
+                "max": 7283625,
+                "min": 0
+              }
+            },
+            "gcRecordStartThroughProductEnd": {
+              "lowerNs": {
+                "count": 264691,
+                "p50": 0,
+                "p95": 0,
+                "p99": 4212959,
+                "max": 7283625,
+                "min": 0
+              },
+              "upperNs": {
+                "count": 264691,
+                "p50": 0,
+                "p95": 0,
+                "p99": 4487375,
+                "max": 7283625,
+                "min": 0
+              }
+            },
+            "gcRecordToCommit": {
+              "lowerNs": {
+                "count": 264691,
+                "p50": 0,
+                "p95": 0,
+                "p99": 0,
+                "max": 6757125,
+                "min": 0
+              },
+              "upperNs": {
+                "count": 264691,
+                "p50": 0,
+                "p95": 0,
+                "p99": 0,
+                "max": 6757125,
+                "min": 0
+              }
+            },
+            "gcWithinProductCallback": {
+              "lowerNs": {
+                "count": 264691,
+                "p50": 0,
+                "p95": 0,
+                "p99": 0,
+                "max": 4371625,
+                "min": 0
+              },
+              "upperNs": {
+                "count": 264691,
+                "p50": 0,
+                "p95": 0,
+                "p99": 0,
+                "max": 7283625,
+                "min": 0
+              }
+            },
+            "gcWithinRecordBlockNs": {
+              "count": 264691,
+              "p50": 0,
+              "p95": 0,
+              "p99": 0,
+              "max": 7283625,
+              "min": 0
+            },
+            "productCallbackNs": {
+              "count": 264691,
+              "p50": 4333,
+              "p95": 23625,
+              "p99": 106459,
+              "max": 16687000,
+              "min": 3208
+            },
+            "recordBlockNs": {
+              "count": 264691,
+              "p50": 2447375,
+              "p95": 7786333,
+              "p99": 13921708,
+              "max": 97861625,
+              "min": 514458
+            },
+            "recordToCommit": {
+              "lowerNs": {
+                "count": 264691,
+                "p50": 793708,
+                "p95": 4568667,
+                "p99": 9898667,
+                "max": 47109375,
+                "min": 1000
+              },
+              "upperNs": {
+                "count": 264691,
+                "p50": 797834,
+                "p95": 4570167,
+                "p99": 9900292,
+                "max": 47109959,
+                "min": 2417
+              }
+            }
+          },
+          "tail": {
+            "adviceAfterProductNs": {
+              "count": 2647,
+              "p50": 1166,
+              "p95": 8542,
+              "p99": 36250,
+              "max": 1989333,
+              "min": 375
+            },
+            "adviceBeforeProductNs": {
+              "count": 2647,
+              "p50": 375,
+              "p95": 1500,
+              "p99": 3041,
+              "max": 2907666,
+              "min": 291
+            },
+            "adviceInvocationNs": {
+              "count": 2647,
+              "p50": 10333,
+              "p95": 53542,
+              "p99": 1036958,
+              "max": 7133375,
+              "min": 4209
+            },
+            "commitToService": {
+              "lowerNs": {
+                "count": 2647,
+                "p50": 8620125,
+                "p95": 36225500,
+                "p99": 45891709,
+                "max": 46161000,
+                "min": -1472209
+              },
+              "upperNs": {
+                "count": 2647,
+                "p50": 13376834,
+                "p95": 40981376,
+                "p99": 50648959,
+                "max": 50918250,
+                "min": 3287958
+              }
+            },
+            "fileForceNestedUnionNs": {
+              "count": 2647,
+              "p50": 8724500,
+              "p95": 68825250,
+              "p99": 68825250,
+              "max": 68825250,
+              "min": 765833
+            },
+            "gcCommitToService": {
+              "lowerNs": {
+                "count": 2647,
+                "p50": 0,
+                "p95": 0,
+                "p99": 0,
+                "max": 0,
+                "min": 0
+              },
+              "upperNs": {
+                "count": 2647,
+                "p50": 0,
+                "p95": 0,
+                "p99": 0,
+                "max": 0,
+                "min": 0
+              }
+            },
+            "gcRecordStartThroughProductEnd": {
+              "lowerNs": {
+                "count": 2647,
+                "p50": 0,
+                "p95": 0,
+                "p99": 0,
+                "max": 0,
+                "min": 0
+              },
+              "upperNs": {
+                "count": 2647,
+                "p50": 0,
+                "p95": 0,
+                "p99": 0,
+                "max": 0,
+                "min": 0
+              }
+            },
+            "gcRecordToCommit": {
+              "lowerNs": {
+                "count": 2647,
+                "p50": 0,
+                "p95": 0,
+                "p99": 0,
+                "max": 0,
+                "min": 0
+              },
+              "upperNs": {
+                "count": 2647,
+                "p50": 0,
+                "p95": 0,
+                "p99": 0,
+                "max": 0,
+                "min": 0
+              }
+            },
+            "gcWithinProductCallback": {
+              "lowerNs": {
+                "count": 2647,
+                "p50": 0,
+                "p95": 0,
+                "p99": 0,
+                "max": 0,
+                "min": 0
+              },
+              "upperNs": {
+                "count": 2647,
+                "p50": 0,
+                "p95": 0,
+                "p99": 0,
+                "max": 0,
+                "min": 0
+              }
+            },
+            "gcWithinRecordBlockNs": {
+              "count": 2647,
+              "p50": 0,
+              "p95": 0,
+              "p99": 0,
+              "max": 0,
+              "min": 0
+            },
+            "productCallbackNs": {
+              "count": 2647,
+              "p50": 7458,
+              "p95": 39417,
+              "p99": 537291,
+              "max": 7122833,
+              "min": 3458
+            },
+            "recordBlockNs": {
+              "count": 2647,
+              "p50": 8881625,
+              "p95": 97861625,
+              "p99": 97861625,
+              "max": 97861625,
+              "min": 1070875
+            },
+            "recordToCommit": {
+              "lowerNs": {
+                "count": 2647,
+                "p50": 1721625,
+                "p95": 46097709,
+                "p99": 47107959,
+                "max": 47109375,
+                "min": 28208
+              },
+              "upperNs": {
+                "count": 2647,
+                "p50": 1722917,
+                "p95": 46106084,
+                "p99": 47109084,
+                "max": 47109959,
+                "min": 30416
+              }
+            }
+          }
+        }
+      },
+      "localInterCallbackGap": {
+        "whole": {
+          "admissionProductEndToExecutionProductStartNs": {
+            "count": 264691,
+            "p50": 13741000,
+            "p95": 30199000,
+            "p99": 49174167,
+            "max": 123752376,
+            "min": 1119958
+          },
+          "sameNodeGcOverlap": {
+            "lowerNs": {
+              "count": 264691,
+              "p50": 0,
+              "p95": 0,
+              "p99": 4721334,
+              "max": 7283625,
+              "min": 0
+            },
+            "upperNs": {
+              "count": 264691,
+              "p50": 0,
+              "p95": 0,
+              "p99": 4837875,
+              "max": 7283625,
+              "min": 0
+            }
+          }
+        },
+        "tail": {
+          "admissionProductEndToExecutionProductStartNs": {
+            "count": 2647,
+            "p50": 63809042,
+            "p95": 121435792,
+            "p99": 123304084,
+            "max": 123752376,
+            "min": 12094417
+          },
+          "sameNodeGcOverlap": {
+            "lowerNs": {
+              "count": 2647,
+              "p50": 0,
+              "p95": 0,
+              "p99": 0,
+              "max": 0,
+              "min": 0
+            },
+            "upperNs": {
+              "count": 2647,
+              "p50": 0,
+              "p95": 0,
+              "p99": 0,
+              "max": 0,
+              "min": 0
+            }
+          }
+        }
+      }
+    },
+    "1": {
+      "role": "FOLLOWER",
+      "callbacksValidated": 529382,
+      "extraCallbackKinds": {
+        "UNKNOWN": 565
+      },
+      "exactPositionArchiveCommitJoins": 529382,
+      "exactLeaderAppendValidFreshPeerAckJoins": 0,
+      "recordingId": 0,
+      "measuredArchiveBlocks": 3106,
+      "measuredArchiveBlocksWithSameThreadNestedFileForce": 3106,
+      "recordedArchiveBlocks": 3115,
+      "recordedAppends": 0,
+      "commitAdvances": 13190,
+      "commitMaxBracketNs": 9777750,
+      "maxFirstPeerAckAgeNs": 0,
+      "clockOffsetEnvelopeNs": [
+        1793374650514207654,
+        1793374650515744778
+      ],
+      "clockOffsetIntersectionNs": [
+        1793374650515529112,
+        1793374650515529112
+      ],
+      "maxCallbackClockAnchorWidthNs": 1321541,
+      "gcPauseCount": 17,
+      "gcPauseUnionNs": 123164999,
+      "eventCounts": {
+        "jdk.ThreadPark": 3660,
+        "jdk.ThreadSleep": 859,
+        "jdk.JavaMonitorEnter": 1,
+        "jdk.ThreadCPULoad": 3859,
+        "jdk.ExecutionSample": 372,
+        "jdk.CPULoad": 14,
+        "jdk.SafepointBegin": 24,
+        "jdk.ExecuteVMOperation": 22,
+        "jdk.SafepointEnd": 22,
+        "exchange.BoundedServiceCallback": 529947,
+        "exchange.FollowerCommit": 13190,
+        "jdk.FileWrite": 3117,
+        "jdk.FileForce": 3120,
+        "exchange.ArchiveBlock": 3115,
+        "jdk.NativeMethodSample": 546,
+        "jdk.GCHeapSummary": 34,
+        "jdk.GCPhasePause": 17,
+        "jdk.GarbageCollection": 17
+      },
+      "serviceRecordingTopSampleFrames": [
+        [
+          "com.exchange.core.trading.TradingState.executePending",
+          38
+        ],
+        [
+          "java.util.Collections$UnmodifiableCollection$1.hasNext",
+          15
+        ],
+        [
+          "java.util.HashMap.getNode",
+          11
+        ],
+        [
+          "com.exchange.core.api.trading.infrastructure.aeron.DevelopmentFundingAdapter.onBoundedMessage",
+          10
+        ],
+        [
+          "com.exchange.core.trading.TradingRequestKt.tradingTextBytes",
+          9
+        ],
+        [
+          "java.lang.Thread.yield0",
+          9
+        ],
+        [
+          "java.util.HashMap.putVal",
+          8
+        ],
+        [
+          "com.exchange.core.trading.TradingRequestInbox.acknowledge-U6MWdmw",
+          6
+        ],
+        [
+          "java.lang.String.hashCode",
+          6
+        ],
+        [
+          "java.util.Collections$UnmodifiableCollection$1.<init>",
+          6
+        ],
+        [
+          "java.math.BigInteger.toMagArray",
+          5
+        ],
+        [
+          "jdk.internal.misc.Unsafe.unpark",
+          5
+        ],
+        [
+          "java.util.HashMap.hash",
+          5
+        ],
+        [
+          "java.util.ArrayList$Itr.next",
+          4
+        ],
+        [
+          "java.util.HashMap.removeNode",
+          4
+        ]
+      ],
+      "kinds": {
+        "ADMISSION": {
+          "whole": {
+            "adviceAfterProductNs": {
+              "count": 264691,
+              "p50": 375,
+              "p95": 6666,
+              "p99": 22333,
+              "max": 9860208,
+              "min": 209
+            },
+            "adviceBeforeProductNs": {
+              "count": 264691,
+              "p50": 333,
+              "p95": 542,
+              "p99": 2250,
+              "max": 3478584,
+              "min": 250
+            },
+            "adviceInvocationNs": {
+              "count": 264691,
+              "p50": 2292,
+              "p95": 15375,
+              "p99": 62667,
+              "max": 13814959,
+              "min": 1833
+            },
+            "commitToService": {
+              "lowerNs": {
+                "count": 264691,
+                "p50": 501292,
+                "p95": 10540958,
+                "p99": 34397500,
+                "max": 64269584,
+                "min": -1462292
+              },
+              "upperNs": {
+                "count": 264691,
+                "p50": 2042249,
+                "p95": 12079666,
+                "p99": 35937916,
+                "max": 65807083,
+                "min": 218458
+              }
+            },
+            "fileForceNestedUnionNs": {
+              "count": 264691,
+              "p50": 2170542,
+              "p95": 7481208,
+              "p99": 17443375,
+              "max": 74604125,
+              "min": 615583
+            },
+            "gcCommitToService": {
+              "lowerNs": {
+                "count": 264691,
+                "p50": 0,
+                "p95": 0,
+                "p99": 0,
+                "max": 18112709,
+                "min": 0
+              },
+              "upperNs": {
+                "count": 264691,
+                "p50": 0,
+                "p95": 0,
+                "p99": 0,
+                "max": 18112709,
+                "min": 0
+              }
+            },
+            "gcRecordStartThroughProductEnd": {
+              "lowerNs": {
+                "count": 264691,
+                "p50": 0,
+                "p95": 0,
+                "p99": 3953542,
+                "max": 18112709,
+                "min": 0
+              },
+              "upperNs": {
+                "count": 264691,
+                "p50": 0,
+                "p95": 0,
+                "p99": 4193916,
+                "max": 18112709,
+                "min": 0
+              }
+            },
+            "gcRecordToCommit": {
+              "lowerNs": {
+                "count": 264691,
+                "p50": 0,
+                "p95": 0,
+                "p99": 0,
+                "max": 10051792,
+                "min": 0
+              },
+              "upperNs": {
+                "count": 264691,
+                "p50": 0,
+                "p95": 0,
+                "p99": 0,
+                "max": 10051792,
+                "min": 0
+              }
+            },
+            "gcWithinProductCallback": {
+              "lowerNs": {
+                "count": 264691,
+                "p50": 0,
+                "p95": 0,
+                "p99": 0,
+                "max": 9931584,
+                "min": 0
+              },
+              "upperNs": {
+                "count": 264691,
+                "p50": 0,
+                "p95": 0,
+                "p99": 0,
+                "max": 10166584,
+                "min": 0
+              }
+            },
+            "gcWithinRecordBlockNs": {
+              "count": 264691,
+              "p50": 0,
+              "p95": 0,
+              "p99": 0,
+              "max": 10720708,
+              "min": 0
+            },
+            "productCallbackNs": {
+              "count": 264691,
+              "p50": 1542,
+              "p95": 7333,
+              "p99": 31250,
+              "max": 13809875,
+              "min": 1208
+            },
+            "recordBlockNs": {
+              "count": 264691,
+              "p50": 2410833,
+              "p95": 8088042,
+              "p99": 18342500,
+              "max": 76260375,
+              "min": 690541
+            },
+            "recordToCommit": {
+              "lowerNs": {
+                "count": 264691,
+                "p50": 920750,
+                "p95": 5151583,
+                "p99": 10053375,
+                "max": 54240750,
+                "min": 750
+              },
+              "upperNs": {
+                "count": 264691,
+                "p50": 922292,
+                "p95": 5153000,
+                "p99": 10069542,
+                "max": 54247333,
+                "min": 2667
+              }
+            }
+          },
+          "tail": {
+            "adviceAfterProductNs": {
+              "count": 2647,
+              "p50": 375,
+              "p95": 2458,
+              "p99": 10291,
+              "max": 480125,
+              "min": 291
+            },
+            "adviceBeforeProductNs": {
+              "count": 2647,
+              "p50": 333,
+              "p95": 1541,
+              "p99": 3125,
+              "max": 355500,
+              "min": 250
+            },
+            "adviceInvocationNs": {
+              "count": 2647,
+              "p50": 2334,
+              "p95": 18667,
+              "p99": 81042,
+              "max": 2385708,
+              "min": 1916
+            },
+            "commitToService": {
+              "lowerNs": {
+                "count": 2647,
+                "p50": 8440000,
+                "p95": 45981209,
+                "p99": 47897625,
+                "max": 47997876,
+                "min": -1307375
+              },
+              "upperNs": {
+                "count": 2647,
+                "p50": 9977749,
+                "p95": 47531125,
+                "p99": 49435416,
+                "max": 49535208,
+                "min": 232416
+              }
+            },
+            "fileForceNestedUnionNs": {
+              "count": 2647,
+              "p50": 17443375,
+              "p95": 25331666,
+              "p99": 74604125,
+              "max": 74604125,
+              "min": 4981500
+            },
+            "gcCommitToService": {
+              "lowerNs": {
+                "count": 2647,
+                "p50": 0,
+                "p95": 0,
+                "p99": 0,
+                "max": 0,
+                "min": 0
+              },
+              "upperNs": {
+                "count": 2647,
+                "p50": 0,
+                "p95": 0,
+                "p99": 0,
+                "max": 0,
+                "min": 0
+              }
+            },
+            "gcRecordStartThroughProductEnd": {
+              "lowerNs": {
+                "count": 2647,
+                "p50": 0,
+                "p95": 0,
+                "p99": 0,
+                "max": 0,
+                "min": 0
+              },
+              "upperNs": {
+                "count": 2647,
+                "p50": 0,
+                "p95": 0,
+                "p99": 0,
+                "max": 0,
+                "min": 0
+              }
+            },
+            "gcRecordToCommit": {
+              "lowerNs": {
+                "count": 2647,
+                "p50": 0,
+                "p95": 0,
+                "p99": 0,
+                "max": 0,
+                "min": 0
+              },
+              "upperNs": {
+                "count": 2647,
+                "p50": 0,
+                "p95": 0,
+                "p99": 0,
+                "max": 0,
+                "min": 0
+              }
+            },
+            "gcWithinProductCallback": {
+              "lowerNs": {
+                "count": 2647,
+                "p50": 0,
+                "p95": 0,
+                "p99": 0,
+                "max": 0,
+                "min": 0
+              },
+              "upperNs": {
+                "count": 2647,
+                "p50": 0,
+                "p95": 0,
+                "p99": 0,
+                "max": 0,
+                "min": 0
+              }
+            },
+            "gcWithinRecordBlockNs": {
+              "count": 2647,
+              "p50": 0,
+              "p95": 0,
+              "p99": 0,
+              "max": 0,
+              "min": 0
+            },
+            "productCallbackNs": {
+              "count": 2647,
+              "p50": 1584,
+              "p95": 13459,
+              "p99": 57000,
+              "max": 2367042,
+              "min": 1291
+            },
+            "recordBlockNs": {
+              "count": 2647,
+              "p50": 18342500,
+              "p95": 37028292,
+              "p99": 76260375,
+              "max": 76260375,
+              "min": 5423500
+            },
+            "recordToCommit": {
+              "lowerNs": {
+                "count": 2647,
+                "p50": 3588875,
+                "p95": 25050209,
+                "p99": 41160417,
+                "max": 54240750,
+                "min": 27042
+              },
+              "upperNs": {
+                "count": 2647,
+                "p50": 3589917,
+                "p95": 25051292,
+                "p99": 41163292,
+                "max": 54247333,
+                "min": 30708
+              }
+            }
+          }
+        },
+        "EXECUTION": {
+          "whole": {
+            "adviceAfterProductNs": {
+              "count": 264691,
+              "p50": 583,
+              "p95": 9458,
+              "p99": 41292,
+              "max": 8360709,
+              "min": 291
+            },
+            "adviceBeforeProductNs": {
+              "count": 264691,
+              "p50": 333,
+              "p95": 709,
+              "p99": 2375,
+              "max": 8282625,
+              "min": 250
+            },
+            "adviceInvocationNs": {
+              "count": 264691,
+              "p50": 5875,
+              "p95": 38625,
+              "p99": 136458,
+              "max": 20338167,
+              "min": 3834
+            },
+            "commitToService": {
+              "lowerNs": {
+                "count": 264691,
+                "p50": 284959,
+                "p95": 10674501,
+                "p99": 29885292,
+                "max": 56131042,
+                "min": -1412167
+              },
+              "upperNs": {
+                "count": 264691,
+                "p50": 1824749,
+                "p95": 12220166,
+                "p99": 31431582,
+                "max": 57671041,
+                "min": 218416
+              }
+            },
+            "fileForceNestedUnionNs": {
+              "count": 264691,
+              "p50": 2173083,
+              "p95": 7124375,
+              "p99": 16822208,
+              "max": 74604125,
+              "min": 672666
+            },
+            "gcCommitToService": {
+              "lowerNs": {
+                "count": 264691,
+                "p50": 0,
+                "p95": 0,
+                "p99": 0,
+                "max": 18112709,
+                "min": 0
+              },
+              "upperNs": {
+                "count": 264691,
+                "p50": 0,
+                "p95": 0,
+                "p99": 0,
+                "max": 18112709,
+                "min": 0
+              }
+            },
+            "gcRecordStartThroughProductEnd": {
+              "lowerNs": {
+                "count": 264691,
+                "p50": 0,
+                "p95": 0,
+                "p99": 4193916,
+                "max": 18112709,
+                "min": 0
+              },
+              "upperNs": {
+                "count": 264691,
+                "p50": 0,
+                "p95": 0,
+                "p99": 4193916,
+                "max": 18112709,
+                "min": 0
+              }
+            },
+            "gcRecordToCommit": {
+              "lowerNs": {
+                "count": 264691,
+                "p50": 0,
+                "p95": 0,
+                "p99": 0,
+                "max": 10051792,
+                "min": 0
+              },
+              "upperNs": {
+                "count": 264691,
+                "p50": 0,
+                "p95": 0,
+                "p99": 0,
+                "max": 10051792,
+                "min": 0
+              }
+            },
+            "gcWithinProductCallback": {
+              "lowerNs": {
+                "count": 264691,
+                "p50": 0,
+                "p95": 0,
+                "p99": 0,
+                "max": 17337501,
+                "min": 0
+              },
+              "upperNs": {
+                "count": 264691,
+                "p50": 0,
+                "p95": 0,
+                "p99": 0,
+                "max": 18112709,
+                "min": 0
+              }
+            },
+            "gcWithinRecordBlockNs": {
+              "count": 264691,
+              "p50": 0,
+              "p95": 0,
+              "p99": 0,
+              "max": 18112709,
+              "min": 0
+            },
+            "productCallbackNs": {
+              "count": 264691,
+              "p50": 4500,
+              "p95": 25292,
+              "p99": 93125,
+              "max": 20329959,
+              "min": 3125
+            },
+            "recordBlockNs": {
+              "count": 264691,
+              "p50": 2421625,
+              "p95": 7771834,
+              "p99": 17431250,
+              "max": 76260375,
+              "min": 690541
+            },
+            "recordToCommit": {
+              "lowerNs": {
+                "count": 264691,
+                "p50": 836375,
+                "p95": 5021083,
+                "p99": 10196083,
+                "max": 54240750,
+                "min": 750
+              },
+              "upperNs": {
+                "count": 264691,
+                "p50": 839334,
+                "p95": 5032583,
+                "p99": 10199041,
+                "max": 54247333,
+                "min": 2917
+              }
+            }
+          },
+          "tail": {
+            "adviceAfterProductNs": {
+              "count": 2647,
+              "p50": 542,
+              "p95": 4125,
+              "p99": 17417,
+              "max": 8360709,
+              "min": 333
+            },
+            "adviceBeforeProductNs": {
+              "count": 2647,
+              "p50": 333,
+              "p95": 875,
+              "p99": 2208,
+              "max": 126625,
+              "min": 250
+            },
+            "adviceInvocationNs": {
+              "count": 2647,
+              "p50": 5542,
+              "p95": 42083,
+              "p99": 259875,
+              "max": 20338167,
+              "min": 4083
+            },
+            "commitToService": {
+              "lowerNs": {
+                "count": 2647,
+                "p50": 4332167,
+                "p95": 45033751,
+                "p99": 47072084,
+                "max": 47401125,
+                "min": -1264791
+              },
+              "upperNs": {
+                "count": 2647,
+                "p50": 5875457,
+                "p95": 46572041,
+                "p99": 48610541,
+                "max": 48939582,
+                "min": 274166
+              }
+            },
+            "fileForceNestedUnionNs": {
+              "count": 2647,
+              "p50": 17805500,
+              "p95": 58253750,
+              "p99": 74604125,
+              "max": 74604125,
+              "min": 847125
+            },
+            "gcCommitToService": {
+              "lowerNs": {
+                "count": 2647,
+                "p50": 0,
+                "p95": 0,
+                "p99": 0,
+                "max": 0,
+                "min": 0
+              },
+              "upperNs": {
+                "count": 2647,
+                "p50": 0,
+                "p95": 0,
+                "p99": 0,
+                "max": 0,
+                "min": 0
+              }
+            },
+            "gcRecordStartThroughProductEnd": {
+              "lowerNs": {
+                "count": 2647,
+                "p50": 0,
+                "p95": 0,
+                "p99": 0,
+                "max": 0,
+                "min": 0
+              },
+              "upperNs": {
+                "count": 2647,
+                "p50": 0,
+                "p95": 0,
+                "p99": 0,
+                "max": 0,
+                "min": 0
+              }
+            },
+            "gcRecordToCommit": {
+              "lowerNs": {
+                "count": 2647,
+                "p50": 0,
+                "p95": 0,
+                "p99": 0,
+                "max": 0,
+                "min": 0
+              },
+              "upperNs": {
+                "count": 2647,
+                "p50": 0,
+                "p95": 0,
+                "p99": 0,
+                "max": 0,
+                "min": 0
+              }
+            },
+            "gcWithinProductCallback": {
+              "lowerNs": {
+                "count": 2647,
+                "p50": 0,
+                "p95": 0,
+                "p99": 0,
+                "max": 0,
+                "min": 0
+              },
+              "upperNs": {
+                "count": 2647,
+                "p50": 0,
+                "p95": 0,
+                "p99": 0,
+                "max": 0,
+                "min": 0
+              }
+            },
+            "gcWithinRecordBlockNs": {
+              "count": 2647,
+              "p50": 0,
+              "p95": 0,
+              "p99": 0,
+              "max": 0,
+              "min": 0
+            },
+            "productCallbackNs": {
+              "count": 2647,
+              "p50": 4625,
+              "p95": 34250,
+              "p99": 224833,
+              "max": 20329959,
+              "min": 3375
+            },
+            "recordBlockNs": {
+              "count": 2647,
+              "p50": 18414958,
+              "p95": 58327333,
+              "p99": 76260375,
+              "max": 76260375,
+              "min": 1416583
+            },
+            "recordToCommit": {
+              "lowerNs": {
+                "count": 2647,
+                "p50": 975333,
+                "p95": 41152500,
+                "p99": 54240750,
+                "max": 54240750,
+                "min": 97209
+              },
+              "upperNs": {
+                "count": 2647,
+                "p50": 976417,
+                "p95": 41155459,
+                "p99": 54247333,
+                "max": 54247333,
+                "min": 102250
+              }
+            }
+          }
+        }
+      },
+      "localInterCallbackGap": {
+        "whole": {
+          "admissionProductEndToExecutionProductStartNs": {
+            "count": 264691,
+            "p50": 13811625,
+            "p95": 31108584,
+            "p99": 53706125,
+            "max": 110429041,
+            "min": 580000
+          },
+          "sameNodeGcOverlap": {
+            "lowerNs": {
+              "count": 264691,
+              "p50": 0,
+              "p95": 0,
+              "p99": 8064291,
+              "max": 18112709,
+              "min": 0
+            },
+            "upperNs": {
+              "count": 264691,
+              "p50": 0,
+              "p95": 0,
+              "p99": 8064291,
+              "max": 18112709,
+              "min": 0
+            }
+          }
+        },
+        "tail": {
+          "admissionProductEndToExecutionProductStartNs": {
+            "count": 2647,
+            "p50": 66169292,
+            "p95": 108359667,
+            "p99": 109691167,
+            "max": 110429041,
+            "min": 5739709
+          },
+          "sameNodeGcOverlap": {
+            "lowerNs": {
+              "count": 2647,
+              "p50": 0,
+              "p95": 0,
+              "p99": 0,
+              "max": 0,
+              "min": 0
+            },
+            "upperNs": {
+              "count": 2647,
+              "p50": 0,
+              "p95": 0,
+              "p99": 0,
+              "max": 0,
+              "min": 0
+            }
+          }
+        }
+      }
+    },
+    "2": {
+      "role": "LEADER",
+      "callbacksValidated": 529382,
+      "extraCallbackKinds": {
+        "UNKNOWN": 565
+      },
+      "exactPositionArchiveCommitJoins": 529382,
+      "exactLeaderAppendValidFreshPeerAckJoins": 529382,
+      "recordingId": 0,
+      "measuredArchiveBlocks": 3211,
+      "measuredArchiveBlocksWithSameThreadNestedFileForce": 3211,
+      "recordedArchiveBlocks": 3220,
+      "recordedAppends": 529947,
+      "commitAdvances": 5614,
+      "commitMaxBracketNs": 3655667,
+      "maxFirstPeerAckAgeNs": 52398459,
+      "clockOffsetEnvelopeNs": [
+        1793374650513719779,
+        1793374650516791361
+      ],
+      "clockOffsetIntersectionNs": [
+        1793374650515529320,
+        1793374650515529320
+      ],
+      "maxCallbackClockAnchorWidthNs": 1809708,
+      "gcPauseCount": 22,
+      "gcPauseUnionNs": 97676085,
+      "eventCounts": {
+        "exchange.BoundedServiceCallback": 529947,
+        "jdk.FileWrite": 3222,
+        "jdk.FileForce": 3225,
+        "exchange.ArchiveBlock": 3220,
+        "jdk.NativeMethodSample": 558,
+        "exchange.LogAppend": 529947,
+        "exchange.FollowerAck": 6221,
+        "exchange.LeaderCommit": 5614,
+        "jdk.JavaMonitorEnter": 1,
+        "jdk.ThreadCPULoad": 4008,
+        "jdk.CPULoad": 14,
+        "jdk.GCHeapSummary": 41,
+        "jdk.GCPhasePause": 22,
+        "jdk.GarbageCollection": 21,
+        "jdk.ThreadSleep": 874,
+        "jdk.ThreadPark": 3328,
+        "jdk.ExecutionSample": 560,
+        "jdk.SafepointBegin": 31,
+        "jdk.ExecuteVMOperation": 29,
+        "jdk.SafepointEnd": 29
+      },
+      "serviceRecordingTopSampleFrames": [
+        [
+          "com.exchange.core.trading.TradingState.executePending",
+          57
+        ],
+        [
+          "java.util.HashMap.getNode",
+          20
+        ],
+        [
+          "java.util.HashMap.putVal",
+          16
+        ],
+        [
+          "com.exchange.core.trading.TradingRequestKt.tradingTextBytes",
+          14
+        ],
+        [
+          "io.aeron.ConcurrentPublication.offer",
+          12
+        ],
+        [
+          "jdk.jfr.internal.event.EventWriter.putUncheckedLong",
+          11
+        ],
+        [
+          "com.exchange.core.api.trading.infrastructure.aeron.DevelopmentFundingAdapter.onBoundedMessage",
+          11
+        ],
+        [
+          "java.util.Collections$UnmodifiableCollection$1.hasNext",
+          10
+        ],
+        [
+          "kotlin.collections.CollectionsKt___CollectionsKt$asSequence$$inlined$Sequence$1.iterator",
+          10
+        ],
+        [
+          "com.exchange.core.api.trading.infrastructure.aeron.DevelopmentFundingAdapter.onSessionMessage",
+          9
+        ],
+        [
+          "java.util.HashMap.hash",
+          9
+        ],
+        [
+          "com.exchange.core.trading.TradingRequestInbox.acknowledge-U6MWdmw",
+          9
+        ],
+        [
+          "java.util.Collections$UnmodifiableCollection$1.<init>",
+          9
+        ],
+        [
+          "com.exchange.core.api.trading.infrastructure.codec.AdmissionMessageFormat.text",
+          8
+        ],
+        [
+          "java.util.Arrays.copyOf",
+          8
+        ]
+      ],
+      "kinds": {
+        "ADMISSION": {
+          "whole": {
+            "adviceAfterProductNs": {
+              "count": 264691,
+              "p50": 375,
+              "p95": 6625,
+              "p99": 16917,
+              "max": 9670291,
+              "min": 208
+            },
+            "adviceBeforeProductNs": {
+              "count": 264691,
+              "p50": 333,
+              "p95": 583,
+              "p99": 2292,
+              "max": 5074417,
+              "min": 250
+            },
+            "adviceInvocationNs": {
+              "count": 264691,
+              "p50": 2833,
+              "p95": 16791,
+              "p99": 82333,
+              "max": 9813916,
+              "min": 2166
+            },
+            "appendToRecord": {
+              "lowerNs": {
+                "count": 264691,
+                "p50": 3949792,
+                "p95": 12065667,
+                "p99": 27546292,
+                "max": 106026708,
+                "min": 909333
+              },
+              "upperNs": {
+                "count": 264691,
+                "p50": 3950125,
+                "p95": 12067875,
+                "p99": 27546333,
+                "max": 106028000,
+                "min": 909375
+              }
+            },
+            "clientFirstAttemptToAppend": {
+              "lowerNs": {
+                "count": 264691,
+                "p50": 389667,
+                "p95": 4032667,
+                "p99": 7076583,
+                "max": 21280083,
+                "min": 749
+              },
+              "upperNs": {
+                "count": 264691,
+                "p50": 397791,
+                "p95": 4040916,
+                "p99": 7091875,
+                "max": 21287917,
+                "min": 8792
+              }
+            },
+            "commitToService": {
+              "lowerNs": {
+                "count": 264691,
+                "p50": 6495126,
+                "p95": 18347543,
+                "p99": 31159959,
+                "max": 68575043,
+                "min": -1808958
+              },
+              "upperNs": {
+                "count": 264691,
+                "p50": 9576874,
+                "p95": 21422875,
+                "p99": 34233250,
+                "max": 71650666,
+                "min": 1264457
+              }
+            },
+            "fileForceNestedUnionNs": {
+              "count": 264691,
+              "p50": 2152458,
+              "p95": 6877125,
+              "p99": 13134750,
+              "max": 68890583,
+              "min": 520292
+            },
+            "gcAppendToRecord": {
+              "lowerNs": {
+                "count": 264691,
+                "p50": 0,
+                "p95": 0,
+                "p99": 0,
+                "max": 9411042,
+                "min": 0
+              },
+              "upperNs": {
+                "count": 264691,
+                "p50": 0,
+                "p95": 0,
+                "p99": 0,
+                "max": 9411042,
+                "min": 0
+              }
+            },
+            "gcCommitToService": {
+              "lowerNs": {
+                "count": 264691,
+                "p50": 0,
+                "p95": 0,
+                "p99": 3726709,
+                "max": 9411042,
+                "min": 0
+              },
+              "upperNs": {
+                "count": 264691,
+                "p50": 0,
+                "p95": 0,
+                "p99": 3726709,
+                "max": 9411042,
+                "min": 0
+              }
+            },
+            "gcLocalRecordToPeerReady": {
+              "lowerNs": {
+                "count": 264691,
+                "p50": 0,
+                "p95": 0,
+                "p99": 0,
+                "max": 9411042,
+                "min": 0
+              },
+              "upperNs": {
+                "count": 264691,
+                "p50": 0,
+                "p95": 0,
+                "p99": 0,
+                "max": 9411042,
+                "min": 0
+              }
+            },
+            "gcQuorumReadyToCommit": {
+              "lowerNs": {
+                "count": 264691,
+                "p50": 0,
+                "p95": 0,
+                "p99": 0,
+                "max": 0,
+                "min": 0
+              },
+              "upperNs": {
+                "count": 264691,
+                "p50": 0,
+                "p95": 0,
+                "p99": 0,
+                "max": 0,
+                "min": 0
+              }
+            },
+            "gcRecordStartThroughProductEnd": {
+              "lowerNs": {
+                "count": 264691,
+                "p50": 0,
+                "p95": 0,
+                "p99": 4151417,
+                "max": 9411042,
+                "min": 0
+              },
+              "upperNs": {
+                "count": 264691,
+                "p50": 0,
+                "p95": 0,
+                "p99": 4405250,
+                "max": 9411042,
+                "min": 0
+              }
+            },
+            "gcRecordToCommit": {
+              "lowerNs": {
+                "count": 264691,
+                "p50": 0,
+                "p95": 0,
+                "p99": 0,
+                "max": 9411042,
+                "min": 0
+              },
+              "upperNs": {
+                "count": 264691,
+                "p50": 0,
+                "p95": 0,
+                "p99": 0,
+                "max": 9411042,
+                "min": 0
+              }
+            },
+            "gcWithinProductCallback": {
+              "lowerNs": {
+                "count": 264691,
+                "p50": 0,
+                "p95": 0,
+                "p99": 0,
+                "max": 2133460,
+                "min": 0
+              },
+              "upperNs": {
+                "count": 264691,
+                "p50": 0,
+                "p95": 0,
+                "p99": 0,
+                "max": 4960625,
+                "min": 0
+              }
+            },
+            "gcWithinRecordBlockNs": {
+              "count": 264691,
+              "p50": 0,
+              "p95": 0,
+              "p99": 0,
+              "max": 9411042,
+              "min": 0
+            },
+            "localRecordToPeerReady": {
+              "lowerNs": {
+                "count": 264691,
+                "p50": 399209,
+                "p95": 3980125,
+                "p99": 9294333,
+                "max": 45965250,
+                "min": 0
+              },
+              "upperNs": {
+                "count": 264691,
+                "p50": 399542,
+                "p95": 3981000,
+                "p99": 9294500,
+                "max": 45965292,
+                "min": 0
+              }
+            },
+            "productCallbackNs": {
+              "count": 264691,
+              "p50": 2041,
+              "p95": 9416,
+              "p99": 42625,
+              "max": 7860375,
+              "min": 1500
+            },
+            "quorumReadyToCommit": {
+              "lowerNs": {
+                "count": 264691,
+                "p50": 9084,
+                "p95": 360334,
+                "p99": 1162708,
+                "max": 19410125,
+                "min": 333
+              },
+              "upperNs": {
+                "count": 264691,
+                "p50": 13334,
+                "p95": 375416,
+                "p99": 1164000,
+                "max": 19410291,
+                "min": 583
+              }
+            },
+            "recordBlockNs": {
+              "count": 264691,
+              "p50": 2419417,
+              "p95": 7595500,
+              "p99": 14285208,
+              "max": 98146958,
+              "min": 552208
+            },
+            "recordToCommit": {
+              "lowerNs": {
+                "count": 264691,
+                "p50": 492958,
+                "p95": 4067583,
+                "p99": 9464416,
+                "max": 45968000,
+                "min": 1208
+              },
+              "upperNs": {
+                "count": 264691,
+                "p50": 497416,
+                "p95": 4097833,
+                "p99": 9466750,
+                "max": 45976292,
+                "min": 2000
+              }
+            }
+          },
+          "tail": {
+            "adviceAfterProductNs": {
+              "count": 2647,
+              "p50": 417,
+              "p95": 3750,
+              "p99": 17958,
+              "max": 9670291,
+              "min": 291
+            },
+            "adviceBeforeProductNs": {
+              "count": 2647,
+              "p50": 334,
+              "p95": 2250,
+              "p99": 3500,
+              "max": 4127334,
+              "min": 291
+            },
+            "adviceInvocationNs": {
+              "count": 2647,
+              "p50": 3083,
+              "p95": 25708,
+              "p99": 182041,
+              "max": 9813916,
+              "min": 2208
+            },
+            "appendToRecord": {
+              "lowerNs": {
+                "count": 2647,
+                "p50": 26365791,
+                "p95": 92695708,
+                "p99": 101963833,
+                "max": 106026708,
+                "min": 7159375
+              },
+              "upperNs": {
+                "count": 2647,
+                "p50": 26365833,
+                "p95": 92695750,
+                "p99": 101963916,
+                "max": 106028000,
+                "min": 7159417
+              }
+            },
+            "clientFirstAttemptToAppend": {
+              "lowerNs": {
+                "count": 2647,
+                "p50": 1840000,
+                "p95": 12156583,
+                "p99": 14129917,
+                "max": 15535250,
+                "min": 24583
+              },
+              "upperNs": {
+                "count": 2647,
+                "p50": 1848167,
+                "p95": 12164416,
+                "p99": 14137750,
+                "max": 15543334,
+                "min": 32417
+              }
+            },
+            "commitToService": {
+              "lowerNs": {
+                "count": 2647,
+                "p50": 13973126,
+                "p95": 59097501,
+                "p99": 68434293,
+                "max": 68575043,
+                "min": -1706041
+              },
+              "upperNs": {
+                "count": 2647,
+                "p50": 17079833,
+                "p95": 62173124,
+                "p99": 71509916,
+                "max": 71650666,
+                "min": 1371208
+              }
+            },
+            "fileForceNestedUnionNs": {
+              "count": 2647,
+              "p50": 12371209,
+              "p95": 33758625,
+              "p99": 68890583,
+              "max": 68890583,
+              "min": 3452417
+            },
+            "gcAppendToRecord": {
+              "lowerNs": {
+                "count": 2647,
+                "p50": 0,
+                "p95": 0,
+                "p99": 6667625,
+                "max": 6667625,
+                "min": 0
+              },
+              "upperNs": {
+                "count": 2647,
+                "p50": 0,
+                "p95": 0,
+                "p99": 6667625,
+                "max": 6667625,
+                "min": 0
+              }
+            },
+            "gcCommitToService": {
+              "lowerNs": {
+                "count": 2647,
+                "p50": 0,
+                "p95": 6667625,
+                "p99": 6667625,
+                "max": 6667625,
+                "min": 0
+              },
+              "upperNs": {
+                "count": 2647,
+                "p50": 0,
+                "p95": 6667625,
+                "p99": 6667625,
+                "max": 6667625,
+                "min": 0
+              }
+            },
+            "gcLocalRecordToPeerReady": {
+              "lowerNs": {
+                "count": 2647,
+                "p50": 0,
+                "p95": 0,
+                "p99": 0,
+                "max": 6667625,
+                "min": 0
+              },
+              "upperNs": {
+                "count": 2647,
+                "p50": 0,
+                "p95": 0,
+                "p99": 0,
+                "max": 6667625,
+                "min": 0
+              }
+            },
+            "gcQuorumReadyToCommit": {
+              "lowerNs": {
+                "count": 2647,
+                "p50": 0,
+                "p95": 0,
+                "p99": 0,
+                "max": 0,
+                "min": 0
+              },
+              "upperNs": {
+                "count": 2647,
+                "p50": 0,
+                "p95": 0,
+                "p99": 0,
+                "max": 0,
+                "min": 0
+              }
+            },
+            "gcRecordStartThroughProductEnd": {
+              "lowerNs": {
+                "count": 2647,
+                "p50": 0,
+                "p95": 6667625,
+                "p99": 6667625,
+                "max": 6667625,
+                "min": 0
+              },
+              "upperNs": {
+                "count": 2647,
+                "p50": 0,
+                "p95": 6667625,
+                "p99": 6667625,
+                "max": 6667625,
+                "min": 0
+              }
+            },
+            "gcRecordToCommit": {
+              "lowerNs": {
+                "count": 2647,
+                "p50": 0,
+                "p95": 0,
+                "p99": 0,
+                "max": 6667625,
+                "min": 0
+              },
+              "upperNs": {
+                "count": 2647,
+                "p50": 0,
+                "p95": 0,
+                "p99": 0,
+                "max": 6667625,
+                "min": 0
+              }
+            },
+            "gcWithinProductCallback": {
+              "lowerNs": {
+                "count": 2647,
+                "p50": 0,
+                "p95": 0,
+                "p99": 0,
+                "max": 0,
+                "min": 0
+              },
+              "upperNs": {
+                "count": 2647,
+                "p50": 0,
+                "p95": 0,
+                "p99": 0,
+                "max": 0,
+                "min": 0
+              }
+            },
+            "gcWithinRecordBlockNs": {
+              "count": 2647,
+              "p50": 0,
+              "p95": 0,
+              "p99": 6667625,
+              "max": 6667625,
+              "min": 0
+            },
+            "localRecordToPeerReady": {
+              "lowerNs": {
+                "count": 2647,
+                "p50": 596167,
+                "p95": 18400959,
+                "p99": 19396500,
+                "max": 23249458,
+                "min": 0
+              },
+              "upperNs": {
+                "count": 2647,
+                "p50": 596333,
+                "p95": 18401042,
+                "p99": 19396541,
+                "max": 23249542,
+                "min": 0
+              }
+            },
+            "productCallbackNs": {
+              "count": 2647,
+              "p50": 2250,
+              "p95": 16542,
+              "p99": 106708,
+              "max": 5469083,
+              "min": 1583
+            },
+            "quorumReadyToCommit": {
+              "lowerNs": {
+                "count": 2647,
+                "p50": 9291,
+                "p95": 4925791,
+                "p99": 19400791,
+                "max": 19410125,
+                "min": 2000
+              },
+              "upperNs": {
+                "count": 2647,
+                "p50": 52000,
+                "p95": 4928708,
+                "p99": 19405125,
+                "max": 19410291,
+                "min": 3667
+              }
+            },
+            "recordBlockNs": {
+              "count": 2647,
+              "p50": 15384375,
+              "p95": 34746792,
+              "p99": 98146958,
+              "max": 98146958,
+              "min": 5681458
+            },
+            "recordToCommit": {
+              "lowerNs": {
+                "count": 2647,
+                "p50": 1217542,
+                "p95": 19159417,
+                "p99": 19410125,
+                "max": 23254667,
+                "min": 62291
+              },
+              "upperNs": {
+                "count": 2647,
+                "p50": 1220042,
+                "p95": 19161917,
+                "p99": 19410291,
+                "max": 23257167,
+                "min": 67958
+              }
+            }
+          }
+        },
+        "EXECUTION": {
+          "whole": {
+            "adviceAfterProductNs": {
+              "count": 264691,
+              "p50": 583,
+              "p95": 8667,
+              "p99": 29834,
+              "max": 16137750,
+              "min": 333
+            },
+            "adviceBeforeProductNs": {
+              "count": 264691,
+              "p50": 375,
+              "p95": 708,
+              "p99": 2417,
+              "max": 8787666,
+              "min": 250
+            },
+            "adviceInvocationNs": {
+              "count": 264691,
+              "p50": 5750,
+              "p95": 33917,
+              "p99": 190500,
+              "max": 28591958,
+              "min": 4042
+            },
+            "appendToRecord": {
+              "lowerNs": {
+                "count": 264691,
+                "p50": 4029125,
+                "p95": 12722458,
+                "p99": 29645208,
+                "max": 118111708,
+                "min": 541667
+              },
+              "upperNs": {
+                "count": 264691,
+                "p50": 4029375,
+                "p95": 12723625,
+                "p99": 29645250,
+                "max": 118112666,
+                "min": 541709
+              }
+            },
+            "commitToService": {
+              "lowerNs": {
+                "count": 264691,
+                "p50": 5637042,
+                "p95": 16304042,
+                "p99": 28343834,
+                "max": 68426584,
+                "min": -2728207
+              },
+              "upperNs": {
+                "count": 264691,
+                "p50": 8714458,
+                "p95": 19383916,
+                "p99": 31454416,
+                "max": 71502207,
+                "min": 1269125
+              }
+            },
+            "fileForceNestedUnionNs": {
+              "count": 264691,
+              "p50": 2166792,
+              "p95": 6930291,
+              "p99": 13533167,
+              "max": 68890583,
+              "min": 501667
+            },
+            "gcAppendToRecord": {
+              "lowerNs": {
+                "count": 264691,
+                "p50": 0,
+                "p95": 0,
+                "p99": 2324750,
+                "max": 9411042,
+                "min": 0
+              },
+              "upperNs": {
+                "count": 264691,
+                "p50": 0,
+                "p95": 0,
+                "p99": 2324750,
+                "max": 9411042,
+                "min": 0
+              }
+            },
+            "gcCommitToService": {
+              "lowerNs": {
+                "count": 264691,
+                "p50": 0,
+                "p95": 0,
+                "p99": 3037875,
+                "max": 9411042,
+                "min": 0
+              },
+              "upperNs": {
+                "count": 264691,
+                "p50": 0,
+                "p95": 0,
+                "p99": 3281041,
+                "max": 9411042,
+                "min": 0
+              }
+            },
+            "gcLocalRecordToPeerReady": {
+              "lowerNs": {
+                "count": 264691,
+                "p50": 0,
+                "p95": 0,
+                "p99": 0,
+                "max": 9411042,
+                "min": 0
+              },
+              "upperNs": {
+                "count": 264691,
+                "p50": 0,
+                "p95": 0,
+                "p99": 0,
+                "max": 9411042,
+                "min": 0
+              }
+            },
+            "gcQuorumReadyToCommit": {
+              "lowerNs": {
+                "count": 264691,
+                "p50": 0,
+                "p95": 0,
+                "p99": 0,
+                "max": 0,
+                "min": 0
+              },
+              "upperNs": {
+                "count": 264691,
+                "p50": 0,
+                "p95": 0,
+                "p99": 0,
+                "max": 0,
+                "min": 0
+              }
+            },
+            "gcRecordStartThroughProductEnd": {
+              "lowerNs": {
+                "count": 264691,
+                "p50": 0,
+                "p95": 0,
+                "p99": 3989500,
+                "max": 9411042,
+                "min": 0
+              },
+              "upperNs": {
+                "count": 264691,
+                "p50": 0,
+                "p95": 0,
+                "p99": 4151417,
+                "max": 9411042,
+                "min": 0
+              }
+            },
+            "gcRecordToCommit": {
+              "lowerNs": {
+                "count": 264691,
+                "p50": 0,
+                "p95": 0,
+                "p99": 0,
+                "max": 9411042,
+                "min": 0
+              },
+              "upperNs": {
+                "count": 264691,
+                "p50": 0,
+                "p95": 0,
+                "p99": 0,
+                "max": 9411042,
+                "min": 0
+              }
+            },
+            "gcWithinProductCallback": {
+              "lowerNs": {
+                "count": 264691,
+                "p50": 0,
+                "p95": 0,
+                "p99": 0,
+                "max": 7995293,
+                "min": 0
+              },
+              "upperNs": {
+                "count": 264691,
+                "p50": 0,
+                "p95": 0,
+                "p99": 0,
+                "max": 9411042,
+                "min": 0
+              }
+            },
+            "gcWithinRecordBlockNs": {
+              "count": 264691,
+              "p50": 0,
+              "p95": 0,
+              "p99": 0,
+              "max": 9411042,
+              "min": 0
+            },
+            "leaderProductEndToLeaderObserved": {
+              "lowerNs": {
+                "count": 264691,
+                "p50": -1012624,
+                "p95": 1481542,
+                "p99": 8446876,
+                "max": 32651334,
+                "min": -1259375
+              },
+              "upperNs": {
+                "count": 264691,
+                "p50": 2066750,
+                "p95": 4560916,
+                "p99": 11526250,
+                "max": 35730708,
+                "min": 1819999
+              }
+            },
+            "localRecordToPeerReady": {
+              "lowerNs": {
+                "count": 264691,
+                "p50": 413542,
+                "p95": 3980125,
+                "p99": 8689875,
+                "max": 45965250,
+                "min": 0
+              },
+              "upperNs": {
+                "count": 264691,
+                "p50": 413584,
+                "p95": 3981000,
+                "p99": 8690750,
+                "max": 45965292,
+                "min": 0
+              }
+            },
+            "productCallbackNs": {
+              "count": 264691,
+              "p50": 4458,
+              "p95": 23542,
+              "p99": 106334,
+              "max": 28584208,
+              "min": 3250
+            },
+            "quorumReadyToCommit": {
+              "lowerNs": {
+                "count": 264691,
+                "p50": 8834,
+                "p95": 334000,
+                "p99": 1401250,
+                "max": 19400791,
+                "min": 292
+              },
+              "upperNs": {
+                "count": 264691,
+                "p50": 13500,
+                "p95": 353834,
+                "p99": 1404958,
+                "max": 19405125,
+                "min": 916
+              }
+            },
+            "recordBlockNs": {
+              "count": 264691,
+              "p50": 2429625,
+              "p95": 7595500,
+              "p99": 15198916,
+              "max": 98146958,
+              "min": 523584
+            },
+            "recordToCommit": {
+              "lowerNs": {
+                "count": 264691,
+                "p50": 511458,
+                "p95": 4098000,
+                "p99": 8763458,
+                "max": 45968000,
+                "min": 1750
+              },
+              "upperNs": {
+                "count": 264691,
+                "p50": 519333,
+                "p95": 4100417,
+                "p99": 8766542,
+                "max": 45976292,
+                "min": 2000
+              }
+            }
+          },
+          "tail": {
+            "adviceAfterProductNs": {
+              "count": 2647,
+              "p50": 666,
+              "p95": 5791,
+              "p99": 13792,
+              "max": 16137750,
+              "min": 375
+            },
+            "adviceBeforeProductNs": {
+              "count": 2647,
+              "p50": 375,
+              "p95": 1666,
+              "p99": 2541,
+              "max": 2609292,
+              "min": 291
+            },
+            "adviceInvocationNs": {
+              "count": 2647,
+              "p50": 7833,
+              "p95": 40042,
+              "p99": 410333,
+              "max": 16230500,
+              "min": 4125
+            },
+            "appendToRecord": {
+              "lowerNs": {
+                "count": 2647,
+                "p50": 35457542,
+                "p95": 105980916,
+                "p99": 116083208,
+                "max": 118111708,
+                "min": 1933459
+              },
+              "upperNs": {
+                "count": 2647,
+                "p50": 35457667,
+                "p95": 105980958,
+                "p99": 116083250,
+                "max": 118112666,
+                "min": 1935375
+              }
+            },
+            "commitToService": {
+              "lowerNs": {
+                "count": 2647,
+                "p50": 8762543,
+                "p95": 57763876,
+                "p99": 61495917,
+                "max": 68426584,
+                "min": -1775875
+              },
+              "upperNs": {
+                "count": 2647,
+                "p50": 11837916,
+                "p95": 60839499,
+                "p99": 64570416,
+                "max": 71502207,
+                "min": 1300416
+              }
+            },
+            "fileForceNestedUnionNs": {
+              "count": 2647,
+              "p50": 12493083,
+              "p95": 68890583,
+              "p99": 68890583,
+              "max": 68890583,
+              "min": 801834
+            },
+            "gcAppendToRecord": {
+              "lowerNs": {
+                "count": 2647,
+                "p50": 0,
+                "p95": 0,
+                "p99": 0,
+                "max": 6667625,
+                "min": 0
+              },
+              "upperNs": {
+                "count": 2647,
+                "p50": 0,
+                "p95": 0,
+                "p99": 0,
+                "max": 6667625,
+                "min": 0
+              }
+            },
+            "gcCommitToService": {
+              "lowerNs": {
+                "count": 2647,
+                "p50": 0,
+                "p95": 6667625,
+                "p99": 6667625,
+                "max": 6667625,
+                "min": 0
+              },
+              "upperNs": {
+                "count": 2647,
+                "p50": 0,
+                "p95": 6667625,
+                "p99": 6667625,
+                "max": 6667625,
+                "min": 0
+              }
+            },
+            "gcLocalRecordToPeerReady": {
+              "lowerNs": {
+                "count": 2647,
+                "p50": 0,
+                "p95": 0,
+                "p99": 6667625,
+                "max": 6667625,
+                "min": 0
+              },
+              "upperNs": {
+                "count": 2647,
+                "p50": 0,
+                "p95": 0,
+                "p99": 6667625,
+                "max": 6667625,
+                "min": 0
+              }
+            },
+            "gcQuorumReadyToCommit": {
+              "lowerNs": {
+                "count": 2647,
+                "p50": 0,
+                "p95": 0,
+                "p99": 0,
+                "max": 0,
+                "min": 0
+              },
+              "upperNs": {
+                "count": 2647,
+                "p50": 0,
+                "p95": 0,
+                "p99": 0,
+                "max": 0,
+                "min": 0
+              }
+            },
+            "gcRecordStartThroughProductEnd": {
+              "lowerNs": {
+                "count": 2647,
+                "p50": 0,
+                "p95": 6667625,
+                "p99": 6667625,
+                "max": 6667625,
+                "min": 0
+              },
+              "upperNs": {
+                "count": 2647,
+                "p50": 0,
+                "p95": 6667625,
+                "p99": 6667625,
+                "max": 6667625,
+                "min": 0
+              }
+            },
+            "gcRecordToCommit": {
+              "lowerNs": {
+                "count": 2647,
+                "p50": 0,
+                "p95": 0,
+                "p99": 6667625,
+                "max": 6667625,
+                "min": 0
+              },
+              "upperNs": {
+                "count": 2647,
+                "p50": 0,
+                "p95": 0,
+                "p99": 6667625,
+                "max": 6667625,
+                "min": 0
+              }
+            },
+            "gcWithinProductCallback": {
+              "lowerNs": {
+                "count": 2647,
+                "p50": 0,
+                "p95": 0,
+                "p99": 0,
+                "max": 6667625,
+                "min": 0
+              },
+              "upperNs": {
+                "count": 2647,
+                "p50": 0,
+                "p95": 0,
+                "p99": 0,
+                "max": 6667625,
+                "min": 0
+              }
+            },
+            "gcWithinRecordBlockNs": {
+              "count": 2647,
+              "p50": 0,
+              "p95": 0,
+              "p99": 0,
+              "max": 0,
+              "min": 0
+            },
+            "leaderProductEndToLeaderObserved": {
+              "lowerNs": {
+                "count": 2647,
+                "p50": 964167,
+                "p95": 17540042,
+                "p99": 19736251,
+                "max": 32651334,
+                "min": -1258125
+              },
+              "upperNs": {
+                "count": 2647,
+                "p50": 4043541,
+                "p95": 20619416,
+                "p99": 22815625,
+                "max": 35730708,
+                "min": 1821249
+              }
+            },
+            "localRecordToPeerReady": {
+              "lowerNs": {
+                "count": 2647,
+                "p50": 350125,
+                "p95": 18400959,
+                "p99": 18400959,
+                "max": 45965250,
+                "min": 0
+              },
+              "upperNs": {
+                "count": 2647,
+                "p50": 351167,
+                "p95": 18401042,
+                "p99": 18401042,
+                "max": 45965292,
+                "min": 0
+              }
+            },
+            "productCallbackNs": {
+              "count": 2647,
+              "p50": 6291,
+              "p95": 31541,
+              "p99": 205208,
+              "max": 12419791,
+              "min": 3334
+            },
+            "quorumReadyToCommit": {
+              "lowerNs": {
+                "count": 2647,
+                "p50": 5334,
+                "p95": 19400791,
+                "p99": 19400791,
+                "max": 19400791,
+                "min": 1375
+              },
+              "upperNs": {
+                "count": 2647,
+                "p50": 10375,
+                "p95": 19405125,
+                "p99": 19405125,
+                "max": 19405125,
+                "min": 2500
+              }
+            },
+            "recordBlockNs": {
+              "count": 2647,
+              "p50": 20401708,
+              "p95": 98146958,
+              "p99": 98146958,
+              "max": 98146958,
+              "min": 1425750
+            },
+            "recordToCommit": {
+              "lowerNs": {
+                "count": 2647,
+                "p50": 749334,
+                "p95": 19400791,
+                "p99": 19400791,
+                "max": 45968000,
+                "min": 15333
+              },
+              "upperNs": {
+                "count": 2647,
+                "p50": 753375,
+                "p95": 19405125,
+                "p99": 19405125,
+                "max": 45976292,
+                "min": 17541
+              }
+            }
+          }
+        }
+      },
+      "localInterCallbackGap": {
+        "whole": {
+          "admissionProductEndToExecutionProductStartNs": {
+            "count": 264691,
+            "p50": 13585833,
+            "p95": 27140958,
+            "p99": 54659000,
+            "max": 119689750,
+            "min": 2670667
+          },
+          "sameNodeGcOverlap": {
+            "lowerNs": {
+              "count": 264691,
+              "p50": 0,
+              "p95": 0,
+              "p99": 4253709,
+              "max": 9411042,
+              "min": 0
+            },
+            "upperNs": {
+              "count": 264691,
+              "p50": 0,
+              "p95": 0,
+              "p99": 4405250,
+              "max": 9411042,
+              "min": 0
+            }
+          }
+        },
+        "tail": {
+          "admissionProductEndToExecutionProductStartNs": {
+            "count": 2647,
+            "p50": 59469917,
+            "p95": 117296625,
+            "p99": 118986625,
+            "max": 119689750,
+            "min": 5946334
+          },
+          "sameNodeGcOverlap": {
+            "lowerNs": {
+              "count": 2647,
+              "p50": 0,
+              "p95": 6667625,
+              "p99": 6667625,
+              "max": 6667625,
+              "min": 0
+            },
+            "upperNs": {
+              "count": 2647,
+              "p50": 0,
+              "p95": 6667625,
+              "p99": 6667625,
+              "max": 6667625,
+              "min": 0
+            }
+          }
+        }
+      }
+    }
+  },
+  "clientActualRttNs": {
+    "whole": {
+      "count": 264691,
+      "p50": 31672000,
+      "p95": 62698458,
+      "p99": 132402167,
+      "max": 173313834,
+      "min": 12174542
+    },
+    "tail": {
+      "count": 2647,
+      "p50": 145482625,
+      "p95": 170375917,
+      "p99": 172215000,
+      "max": 173313834,
+      "min": 132402167
+    }
+  },
+  "limits": [
+    "This is the profiled diagnostic run. JFR, ByteBuddy callbacks and event commits alter scheduling/load; never mix this TPS/p99 into unprofiled capacity comparisons.",
+    "Per-phase CPU is not measured. Pipeline stages are wall time; service callback product duration is same-JVM nanoTime.",
+    "Commit release remains its native entry/exit bracket, never an invented exact timestamp. Negative elapsed lower bounds indicate overlapping brackets, not clamped zero.",
+    "Cross-recording estimates convert each JVM nanoTime using its own JFR offset envelope and assume the common Docker VM wall clock. Raw nanoTime values from different JVMs are never subtracted.",
+    "One client anchor proves an observed offset bracket at the anchor, not arbitrary drift absence throughout the run; node callbacks additionally require a common offset intersection.",
+    "Follower ACK wait includes reception, durability, reporting, leader polling and scheduling, not pure network latency.",
+    "FileForce is nested inside ArchiveBlock on the same thread; nested durations must not be added to parent stages.",
+    "Stages from different members run in parallel and nested/overlapping stages must not be added into a critical-path total.",
+    "GC overlap uses same-recording GCPhasePause unions only; overlap is temporal coincidence, not proof that GC caused the entire stage. Per-request overlaps share pauses and must not be summed across requests.",
+    "No individual follower marker receive times are present. Latest product end to all-three observation is a cohort-end estimate, not each follower transport latency."
+  ],
+  "tailObservationAfterLatestOriginalCallback": {
+    "lastProductEndToAllReplicaObserved": {
+      "lowerNs": {
+        "count": 2647,
+        "p50": 1561291,
+        "p95": 42446125,
+        "p99": 43201334,
+        "max": 43351001,
+        "min": -3199543
+      },
+      "upperNs": {
+        "count": 2647,
+        "p50": 6051875,
+        "p95": 43991041,
+        "p99": 44746250,
+        "max": 44895917,
+        "min": 1563541
+      }
+    }
+  },
+  "representatives": [
+    {
+      "label": "tailBoundary",
+      "sequence": 864624,
+      "actualClientRttNs": 132402167,
+      "clientLatencyNs": {
+        "response": 116337542,
+        "leader": 132402167,
+        "replicas": 132402167
+      },
+      "lastProductEndToAllReplicaObserved": [
+        -1533459,
+        1900167
+      ],
+      "clientSameJvmGcOverlap": [
+        0,
+        0
+      ],
+      "clientGcPauses": [],
+      "nodes": {
+        "0": {
+          "callbacks": {
+            "ADMISSION": {
+              "sequence": 864624,
+              "kind": "ADMISSION",
+              "position": 221486560,
+              "role": "FOLLOWER",
+              "archiveBlock": {
+                "start": 1793374688454185670,
+                "end": 1793374688458654295,
+                "startPosition": 221481824,
+                "endPosition": 221590592,
+                "recordingId": 0,
+                "thread": {
+                  "jfrId": 27,
+                  "javaId": 27,
+                  "osId": 28,
+                  "name": "archive-conductor"
+                }
+              },
+              "fileForceNested": [
+                {
+                  "start": 1793374688455196795,
+                  "end": 1793374688458609295,
+                  "path": "/records/ha142-753a4362eb/archive/0-218103808.rec",
+                  "metaData": true,
+                  "thread": {
+                    "jfrId": 27,
+                    "javaId": 27,
+                    "osId": 28,
+                    "name": "archive-conductor"
+                  }
+                }
+              ],
+              "commitBracket": [
+                1793374688458946504,
+                1793374688458956045
+              ],
+              "productStartBracket": [
+                1793374688460480920,
+                1793374688465236212
+              ],
+              "productEndBracket": [
+                1793374688460482587,
+                1793374688465237879
+              ],
+              "adviceJfrBracket": [
+                1793374688462022087,
+                1793374688462024545
+              ],
+              "stages": {
+                "recordBlockNs": 4468625,
+                "fileForceNestedUnionNs": 3412500,
+                "recordToCommit": [
+                  292209,
+                  301750
+                ],
+                "commitToService": [
+                  1524875,
+                  6289708
+                ],
+                "productCallbackNs": 1667,
+                "adviceInvocationNs": 2375,
+                "adviceBeforeProductNs": 291,
+                "adviceAfterProductNs": 417,
+                "gcWithinRecordBlockNs": 0,
+                "gcRecordToCommit": [
+                  0,
+                  0
+                ],
+                "gcCommitToService": [
+                  0,
+                  0
+                ],
+                "gcWithinProductCallback": [
+                  0,
+                  0
+                ],
+                "gcRecordStartThroughProductEnd": [
+                  0,
+                  0
+                ]
+              },
+              "sameNodeGcPausesOverlappingLocalPath": []
+            },
+            "EXECUTION": {
+              "sequence": 864624,
+              "kind": "EXECUTION",
+              "position": 221595968,
+              "role": "FOLLOWER",
+              "archiveBlock": {
+                "start": 1793374688466629254,
+                "end": 1793374688468582379,
+                "startPosition": 221594944,
+                "endPosition": 221597504,
+                "recordingId": 0,
+                "thread": {
+                  "jfrId": 27,
+                  "javaId": 27,
+                  "osId": 28,
+                  "name": "archive-conductor"
+                }
+              },
+              "fileForceNested": [
+                {
+                  "start": 1793374688466722420,
+                  "end": 1793374688468573545,
+                  "path": "/records/ha142-753a4362eb/archive/0-218103808.rec",
+                  "metaData": true,
+                  "thread": {
+                    "jfrId": 27,
+                    "javaId": 27,
+                    "osId": 28,
+                    "name": "archive-conductor"
+                  }
+                }
+              ],
+              "commitBracket": [
+                1793374688468748587,
+                1793374688468750545
+              ],
+              "productStartBracket": [
+                1793374688476424545,
+                1793374688481179837
+              ],
+              "productEndBracket": [
+                1793374688476428587,
+                1793374688481183879
+              ],
+              "adviceJfrBracket": [
+                1793374688477965670,
+                1793374688477970754
+              ],
+              "stages": {
+                "recordBlockNs": 1953125,
+                "fileForceNestedUnionNs": 1851125,
+                "recordToCommit": [
+                  166208,
+                  168166
+                ],
+                "commitToService": [
+                  7674000,
+                  12431250
+                ],
+                "productCallbackNs": 4042,
+                "adviceInvocationNs": 5000,
+                "adviceBeforeProductNs": 333,
+                "adviceAfterProductNs": 625,
+                "gcWithinRecordBlockNs": 0,
+                "gcRecordToCommit": [
+                  0,
+                  0
+                ],
+                "gcCommitToService": [
+                  0,
+                  0
+                ],
+                "gcWithinProductCallback": [
+                  0,
+                  0
+                ],
+                "gcRecordStartThroughProductEnd": [
+                  0,
+                  0
+                ]
+              },
+              "sameNodeGcPausesOverlappingLocalPath": []
+            }
+          },
+          "interCallbackGap": {
+            "admissionProductEndToExecutionProductStartNs": 15941958,
+            "sameNodeGcOverlap": [
+              0,
+              0
+            ]
+          }
+        },
+        "1": {
+          "callbacks": {
+            "ADMISSION": {
+              "sequence": 864624,
+              "kind": "ADMISSION",
+              "position": 221486560,
+              "role": "FOLLOWER",
+              "archiveBlock": {
+                "start": 1793374688419856628,
+                "end": 1793374688456884920,
+                "startPosition": 221466976,
+                "endPosition": 221579200,
+                "recordingId": 0,
+                "thread": {
+                  "jfrId": 27,
+                  "javaId": 27,
+                  "osId": 29,
+                  "name": "archive-conductor"
+                }
+              },
+              "fileForceNested": [
+                {
+                  "start": 1793374688439043920,
+                  "end": 1793374688456849420,
+                  "path": "/records/ha142-753a4362eb/archive/0-218103808.rec",
+                  "metaData": true,
+                  "thread": {
+                    "jfrId": 27,
+                    "javaId": 27,
+                    "osId": 29,
+                    "name": "archive-conductor"
+                  }
+                }
+              ],
+              "commitBracket": [
+                1793374688457850295,
+                1793374688457853253
+              ],
+              "productStartBracket": [
+                1793374688457192170,
+                1793374688458729294
+              ],
+              "productEndBracket": [
+                1793374688457193587,
+                1793374688458730711
+              ],
+              "adviceJfrBracket": [
+                1793374688458513253,
+                1793374688458515378
+              ],
+              "stages": {
+                "recordBlockNs": 37028292,
+                "fileForceNestedUnionNs": 17805500,
+                "recordToCommit": [
+                  965375,
+                  968333
+                ],
+                "commitToService": [
+                  -661083,
+                  878999
+                ],
+                "productCallbackNs": 1417,
+                "adviceInvocationNs": 2083,
+                "adviceBeforeProductNs": 333,
+                "adviceAfterProductNs": 333,
+                "gcWithinRecordBlockNs": 0,
+                "gcRecordToCommit": [
+                  0,
+                  0
+                ],
+                "gcCommitToService": [
+                  0,
+                  0
+                ],
+                "gcWithinProductCallback": [
+                  0,
+                  0
+                ],
+                "gcRecordStartThroughProductEnd": [
+                  0,
+                  0
+                ]
+              },
+              "sameNodeGcPausesOverlappingLocalPath": []
+            },
+            "EXECUTION": {
+              "sequence": 864624,
+              "kind": "EXECUTION",
+              "position": 221595968,
+              "role": "FOLLOWER",
+              "archiveBlock": {
+                "start": 1793374688465655545,
+                "end": 1793374688467072128,
+                "startPosition": 221593920,
+                "endPosition": 221597504,
+                "recordingId": 0,
+                "thread": {
+                  "jfrId": 27,
+                  "javaId": 27,
+                  "osId": 29,
+                  "name": "archive-conductor"
+                }
+              },
+              "fileForceNested": [
+                {
+                  "start": 1793374688466218170,
+                  "end": 1793374688467065295,
+                  "path": "/records/ha142-753a4362eb/archive/0-218103808.rec",
+                  "metaData": true,
+                  "thread": {
+                    "jfrId": 27,
+                    "javaId": 27,
+                    "osId": 29,
+                    "name": "archive-conductor"
+                  }
+                }
+              ],
+              "commitBracket": [
+                1793374688467465628,
+                1793374688467467503
+              ],
+              "productStartBracket": [
+                1793374688466326129,
+                1793374688467863253
+              ],
+              "productEndBracket": [
+                1793374688466329879,
+                1793374688467867003
+              ],
+              "adviceJfrBracket": [
+                1793374688467647253,
+                1793374688467651878
+              ],
+              "stages": {
+                "recordBlockNs": 1416583,
+                "fileForceNestedUnionNs": 847125,
+                "recordToCommit": [
+                  393500,
+                  395375
+                ],
+                "commitToService": [
+                  -1141374,
+                  397625
+                ],
+                "productCallbackNs": 3750,
+                "adviceInvocationNs": 4584,
+                "adviceBeforeProductNs": 334,
+                "adviceAfterProductNs": 500,
+                "gcWithinRecordBlockNs": 0,
+                "gcRecordToCommit": [
+                  0,
+                  0
+                ],
+                "gcCommitToService": [
+                  0,
+                  0
+                ],
+                "gcWithinProductCallback": [
+                  0,
+                  0
+                ],
+                "gcRecordStartThroughProductEnd": [
+                  0,
+                  0
+                ]
+              },
+              "sameNodeGcPausesOverlappingLocalPath": []
+            }
+          },
+          "interCallbackGap": {
+            "admissionProductEndToExecutionProductStartNs": 9132542,
+            "sameNodeGcOverlap": [
+              0,
+              0
+            ]
+          }
+        },
+        "2": {
+          "callbacks": {
+            "ADMISSION": {
+              "sequence": 864624,
+              "kind": "ADMISSION",
+              "position": 221486560,
+              "role": "LEADER",
+              "archiveBlock": {
+                "start": 1793374688356163503,
+                "end": 1793374688454310461,
+                "startPosition": 221459424,
+                "endPosition": 221517376,
+                "recordingId": 0,
+                "thread": {
+                  "jfrId": 27,
+                  "javaId": 27,
+                  "osId": 28,
+                  "name": "archive-conductor"
+                }
+              },
+              "fileForceNested": [
+                {
+                  "start": 1793374688385377378,
+                  "end": 1793374688454267961,
+                  "path": "/records/ha142-753a4362eb/archive/0-218103808.rec",
+                  "metaData": true,
+                  "thread": {
+                    "jfrId": 27,
+                    "javaId": 27,
+                    "osId": 28,
+                    "name": "archive-conductor"
+                  }
+                }
+              ],
+              "commitBracket": [
+                1793374688457667045,
+                1793374688457670836
+              ],
+              "productStartBracket": [
+                1793374688461522712,
+                1793374688464594294
+              ],
+              "productEndBracket": [
+                1793374688461546420,
+                1793374688464618002
+              ],
+              "adviceJfrBracket": [
+                1793374688463331711,
+                1793374688463357670
+              ],
+              "stages": {
+                "recordBlockNs": 98146958,
+                "fileForceNestedUnionNs": 68890583,
+                "recordToCommit": [
+                  3356584,
+                  3360375
+                ],
+                "commitToService": [
+                  3851876,
+                  6927249
+                ],
+                "productCallbackNs": 23708,
+                "adviceInvocationNs": 25917,
+                "adviceBeforeProductNs": 542,
+                "adviceAfterProductNs": 1667,
+                "gcWithinRecordBlockNs": 0,
+                "gcRecordToCommit": [
+                  0,
+                  0
+                ],
+                "gcCommitToService": [
+                  0,
+                  0
+                ],
+                "gcWithinProductCallback": [
+                  0,
+                  0
+                ],
+                "gcRecordStartThroughProductEnd": [
+                  0,
+                  0
+                ],
+                "appendToRecord": [
+                  101978666,
+                  101978750
+                ],
+                "localRecordToPeerReady": [
+                  3350000,
+                  3351250
+                ],
+                "quorumReadyToCommit": [
+                  5334,
+                  10375
+                ],
+                "gcAppendToRecord": [
+                  0,
+                  0
+                ],
+                "gcLocalRecordToPeerReady": [
+                  0,
+                  0
+                ],
+                "gcQuorumReadyToCommit": [
+                  0,
+                  0
+                ],
+                "clientFirstAttemptToAppend": [
+                  5075666,
+                  5083542
+                ]
+              },
+              "appendBracket": [
+                1793374688352331711,
+                1793374688352331795
+              ],
+              "firstPeerAck": {
+                "start": 1793374688457660461,
+                "end": 1793374688457661711,
+                "logPosition": 221579200,
+                "leadershipTermId": 0,
+                "followerMemberId": 1
+              },
+              "firstPeerAckCandidates": [
+                {
+                  "start": 1793374688457660461,
+                  "end": 1793374688457661711,
+                  "logPosition": 221579200,
+                  "leadershipTermId": 0,
+                  "followerMemberId": 1
+                },
+                {
+                  "start": 1793374688460208253,
+                  "end": 1793374688460209378,
+                  "logPosition": 221590592,
+                  "leadershipTermId": 0,
+                  "followerMemberId": 0
+                }
+              ],
+              "quorumReadyBracket": [
+                1793374688457660461,
+                1793374688457661711
+              ],
+              "sameNodeGcPausesOverlappingLocalPath": []
+            },
+            "EXECUTION": {
+              "sequence": 864624,
+              "kind": "EXECUTION",
+              "position": 221595968,
+              "role": "LEADER",
+              "archiveBlock": {
+                "start": 1793374688465600920,
+                "end": 1793374688467066545,
+                "startPosition": 221594944,
+                "endPosition": 221597504,
+                "recordingId": 0,
+                "thread": {
+                  "jfrId": 27,
+                  "javaId": 27,
+                  "osId": 28,
+                  "name": "archive-conductor"
+                }
+              },
+              "fileForceNested": [
+                {
+                  "start": 1793374688466255336,
+                  "end": 1793374688467057170,
+                  "path": "/records/ha142-753a4362eb/archive/0-218103808.rec",
+                  "metaData": true,
+                  "thread": {
+                    "jfrId": 27,
+                    "javaId": 27,
+                    "osId": 28,
+                    "name": "archive-conductor"
+                  }
+                }
+              ],
+              "commitBracket": [
+                1793374688467247753,
+                1793374688467248586
+              ],
+              "productStartBracket": [
+                1793374688477753712,
+                1793374688480825294
+              ],
+              "productEndBracket": [
+                1793374688477758045,
+                1793374688480829627
+              ],
+              "adviceJfrBracket": [
+                1793374688479562878,
+                1793374688479568170
+              ],
+              "stages": {
+                "recordBlockNs": 1465625,
+                "fileForceNestedUnionNs": 801834,
+                "recordToCommit": [
+                  181208,
+                  182041
+                ],
+                "commitToService": [
+                  10505126,
+                  13577541
+                ],
+                "productCallbackNs": 4333,
+                "adviceInvocationNs": 5292,
+                "adviceBeforeProductNs": 375,
+                "adviceAfterProductNs": 584,
+                "gcWithinRecordBlockNs": 0,
+                "gcRecordToCommit": [
+                  0,
+                  0
+                ],
+                "gcCommitToService": [
+                  0,
+                  0
+                ],
+                "gcWithinProductCallback": [
+                  0,
+                  0
+                ],
+                "gcRecordStartThroughProductEnd": [
+                  0,
+                  0
+                ],
+                "appendToRecord": [
+                  3705542,
+                  3706084
+                ],
+                "localRecordToPeerReady": [
+                  179541,
+                  179833
+                ],
+                "quorumReadyToCommit": [
+                  1375,
+                  2500
+                ],
+                "gcAppendToRecord": [
+                  0,
+                  0
+                ],
+                "gcLocalRecordToPeerReady": [
+                  0,
+                  0
+                ],
+                "gcQuorumReadyToCommit": [
+                  0,
+                  0
+                ],
+                "leaderProductEndToLeaderObserved": [
+                  -1179207,
+                  1900167
+                ]
+              },
+              "appendBracket": [
+                1793374688463360461,
+                1793374688463361003
+              ],
+              "firstPeerAck": {
+                "start": 1793374688467246086,
+                "end": 1793374688467246378,
+                "logPosition": 221597504,
+                "leadershipTermId": 0,
+                "followerMemberId": 1
+              },
+              "firstPeerAckCandidates": [
+                {
+                  "start": 1793374688467246086,
+                  "end": 1793374688467246378,
+                  "logPosition": 221597504,
+                  "leadershipTermId": 0,
+                  "followerMemberId": 1
+                },
+                {
+                  "start": 1793374688468903253,
+                  "end": 1793374688468903836,
+                  "logPosition": 221597504,
+                  "leadershipTermId": 0,
+                  "followerMemberId": 0
+                }
+              ],
+              "quorumReadyBracket": [
+                1793374688467246086,
+                1793374688467246378
+              ],
+              "sameNodeGcPausesOverlappingLocalPath": []
+            }
+          },
+          "interCallbackGap": {
+            "admissionProductEndToExecutionProductStartNs": 16207292,
+            "sameNodeGcOverlap": [
+              0,
+              0
+            ]
+          }
+        }
+      }
+    },
+    {
+      "label": "tailMedianRank",
+      "sequence": 981022,
+      "actualClientRttNs": 145482625,
+      "clientLatencyNs": {
+        "response": 30553584,
+        "leader": 64120667,
+        "replicas": 145482625
+      },
+      "lastProductEndToAllReplicaObserved": [
+        43185000,
+        44729916
+      ],
+      "clientSameJvmGcOverlap": [
+        3085167,
+        3085167
+      ],
+      "clientGcPauses": [
+        {
+          "gcId": 100,
+          "name": "GC Pause",
+          "start": 1793374692767546880,
+          "end": 1793374692770632047,
+          "overlapNs": 3085167
+        }
+      ],
+      "nodes": {
+        "0": {
+          "callbacks": {
+            "ADMISSION": {
+              "sequence": 981022,
+              "kind": "ADMISSION",
+              "position": 251292640,
+              "role": "FOLLOWER",
+              "archiveBlock": {
+                "start": 1793374692657577006,
+                "end": 1793374692663659339,
+                "startPosition": 251174752,
+                "endPosition": 251297760,
+                "recordingId": 0,
+                "thread": {
+                  "jfrId": 27,
+                  "javaId": 27,
+                  "osId": 28,
+                  "name": "archive-conductor"
+                }
+              },
+              "fileForceNested": [
+                {
+                  "start": 1793374692658966464,
+                  "end": 1793374692663642256,
+                  "path": "/records/ha142-753a4362eb/archive/0-234881024.rec",
+                  "metaData": true,
+                  "thread": {
+                    "jfrId": 27,
+                    "javaId": 27,
+                    "osId": 28,
+                    "name": "archive-conductor"
+                  }
+                }
+              ],
+              "commitBracket": [
+                1793374692664508297,
+                1793374692664508881
+              ],
+              "productStartBracket": [
+                1793374692684328256,
+                1793374692689083548
+              ],
+              "productEndBracket": [
+                1793374692684329672,
+                1793374692689084964
+              ],
+              "adviceJfrBracket": [
+                1793374692685869422,
+                1793374692685871464
+              ],
+              "stages": {
+                "recordBlockNs": 6082333,
+                "fileForceNestedUnionNs": 4675792,
+                "recordToCommit": [
+                  848958,
+                  849542
+                ],
+                "commitToService": [
+                  19819375,
+                  24575251
+                ],
+                "productCallbackNs": 1416,
+                "adviceInvocationNs": 2000,
+                "adviceBeforeProductNs": 292,
+                "adviceAfterProductNs": 292,
+                "gcWithinRecordBlockNs": 0,
+                "gcRecordToCommit": [
+                  0,
+                  0
+                ],
+                "gcCommitToService": [
+                  0,
+                  0
+                ],
+                "gcWithinProductCallback": [
+                  0,
+                  0
+                ],
+                "gcRecordStartThroughProductEnd": [
+                  0,
+                  0
+                ]
+              },
+              "sameNodeGcPausesOverlappingLocalPath": []
+            },
+            "EXECUTION": {
+              "sequence": 981022,
+              "kind": "EXECUTION",
+              "position": 251372096,
+              "role": "FOLLOWER",
+              "archiveBlock": {
+                "start": 1793374692687427047,
+                "end": 1793374692693818422,
+                "startPosition": 251298112,
+                "endPosition": 251392704,
+                "recordingId": 0,
+                "thread": {
+                  "jfrId": 27,
+                  "javaId": 27,
+                  "osId": 28,
+                  "name": "archive-conductor"
+                }
+              },
+              "fileForceNested": [
+                {
+                  "start": 1793374692690515547,
+                  "end": 1793374692693781214,
+                  "path": "/records/ha142-753a4362eb/archive/0-234881024.rec",
+                  "metaData": true,
+                  "thread": {
+                    "jfrId": 27,
+                    "javaId": 27,
+                    "osId": 28,
+                    "name": "archive-conductor"
+                  }
+                }
+              ],
+              "commitBracket": [
+                1793374692695546256,
+                1793374692695547422
+              ],
+              "productStartBracket": [
+                1793374692717130006,
+                1793374692721885298
+              ],
+              "productEndBracket": [
+                1793374692717143589,
+                1793374692721898881
+              ],
+              "adviceJfrBracket": [
+                1793374692718670922,
+                1793374692718688006
+              ],
+              "stages": {
+                "recordBlockNs": 6391375,
+                "fileForceNestedUnionNs": 3265667,
+                "recordToCommit": [
+                  1727834,
+                  1729000
+                ],
+                "commitToService": [
+                  21582584,
+                  26339042
+                ],
+                "productCallbackNs": 13583,
+                "adviceInvocationNs": 16917,
+                "adviceBeforeProductNs": 542,
+                "adviceAfterProductNs": 2792,
+                "gcWithinRecordBlockNs": 0,
+                "gcRecordToCommit": [
+                  0,
+                  0
+                ],
+                "gcCommitToService": [
+                  0,
+                  0
+                ],
+                "gcWithinProductCallback": [
+                  0,
+                  0
+                ],
+                "gcRecordStartThroughProductEnd": [
+                  0,
+                  0
+                ]
+              },
+              "sameNodeGcPausesOverlappingLocalPath": []
+            }
+          },
+          "interCallbackGap": {
+            "admissionProductEndToExecutionProductStartNs": 32800334,
+            "sameNodeGcOverlap": [
+              0,
+              0
+            ]
+          }
+        },
+        "1": {
+          "callbacks": {
+            "ADMISSION": {
+              "sequence": 981022,
+              "kind": "ADMISSION",
+              "position": 251292640,
+              "role": "FOLLOWER",
+              "archiveBlock": {
+                "start": 1793374692661268589,
+                "end": 1793374692673886755,
+                "startPosition": 251183328,
+                "endPosition": 251297984,
+                "recordingId": 0,
+                "thread": {
+                  "jfrId": 27,
+                  "javaId": 27,
+                  "osId": 29,
+                  "name": "archive-conductor"
+                }
+              },
+              "fileForceNested": [
+                {
+                  "start": 1793374692663410255,
+                  "end": 1793374692673863380,
+                  "path": "/records/ha142-753a4362eb/archive/0-234881024.rec",
+                  "metaData": true,
+                  "thread": {
+                    "jfrId": 27,
+                    "javaId": 27,
+                    "osId": 29,
+                    "name": "archive-conductor"
+                  }
+                }
+              ],
+              "commitBracket": [
+                1793374692674038005,
+                1793374692674040755
+              ],
+              "productStartBracket": [
+                1793374692682355089,
+                1793374692683892213
+              ],
+              "productEndBracket": [
+                1793374692682366631,
+                1793374692683903755
+              ],
+              "adviceJfrBracket": [
+                1793374692683676047,
+                1793374692683690797
+              ],
+              "stages": {
+                "recordBlockNs": 12618166,
+                "fileForceNestedUnionNs": 10453125,
+                "recordToCommit": [
+                  151250,
+                  154000
+                ],
+                "commitToService": [
+                  8314334,
+                  9854208
+                ],
+                "productCallbackNs": 11542,
+                "adviceInvocationNs": 14625,
+                "adviceBeforeProductNs": 458,
+                "adviceAfterProductNs": 2625,
+                "gcWithinRecordBlockNs": 0,
+                "gcRecordToCommit": [
+                  0,
+                  0
+                ],
+                "gcCommitToService": [
+                  0,
+                  0
+                ],
+                "gcWithinProductCallback": [
+                  0,
+                  0
+                ],
+                "gcRecordStartThroughProductEnd": [
+                  0,
+                  0
+                ]
+              },
+              "sameNodeGcPausesOverlappingLocalPath": []
+            },
+            "EXECUTION": {
+              "sequence": 981022,
+              "kind": "EXECUTION",
+              "position": 251372096,
+              "role": "FOLLOWER",
+              "archiveBlock": {
+                "start": 1793374692691796755,
+                "end": 1793374692709228005,
+                "startPosition": 251314496,
+                "endPosition": 251429280,
+                "recordingId": 0,
+                "thread": {
+                  "jfrId": 27,
+                  "javaId": 27,
+                  "osId": 29,
+                  "name": "archive-conductor"
+                }
+              },
+              "fileForceNested": [
+                {
+                  "start": 1793374692692386547,
+                  "end": 1793374692709208755,
+                  "path": "/records/ha142-753a4362eb/archive/0-234881024.rec",
+                  "metaData": true,
+                  "thread": {
+                    "jfrId": 27,
+                    "javaId": 27,
+                    "osId": 29,
+                    "name": "archive-conductor"
+                  }
+                }
+              ],
+              "commitBracket": [
+                1793374692709541547,
+                1793374692709542589
+              ],
+              "productStartBracket": [
+                1793374692756462339,
+                1793374692757999463
+              ],
+              "productEndBracket": [
+                1793374692756466714,
+                1793374692758003838
+              ],
+              "adviceJfrBracket": [
+                1793374692757783422,
+                1793374692757788839
+              ],
+              "stages": {
+                "recordBlockNs": 17431250,
+                "fileForceNestedUnionNs": 16822208,
+                "recordToCommit": [
+                  313542,
+                  314584
+                ],
+                "commitToService": [
+                  46919750,
+                  48457916
+                ],
+                "productCallbackNs": 4375,
+                "adviceInvocationNs": 5333,
+                "adviceBeforeProductNs": 333,
+                "adviceAfterProductNs": 625,
+                "gcWithinRecordBlockNs": 0,
+                "gcRecordToCommit": [
+                  0,
+                  0
+                ],
+                "gcCommitToService": [
+                  0,
+                  0
+                ],
+                "gcWithinProductCallback": [
+                  0,
+                  0
+                ],
+                "gcRecordStartThroughProductEnd": [
+                  0,
+                  0
+                ]
+              },
+              "sameNodeGcPausesOverlappingLocalPath": []
+            }
+          },
+          "interCallbackGap": {
+            "admissionProductEndToExecutionProductStartNs": 74095708,
+            "sameNodeGcOverlap": [
+              0,
+              0
+            ]
+          }
+        },
+        "2": {
+          "callbacks": {
+            "ADMISSION": {
+              "sequence": 981022,
+              "kind": "ADMISSION",
+              "position": 251292640,
+              "role": "LEADER",
+              "archiveBlock": {
+                "start": 1793374692657631213,
+                "end": 1793374692663715255,
+                "startPosition": 251176032,
+                "endPosition": 251297760,
+                "recordingId": 0,
+                "thread": {
+                  "jfrId": 27,
+                  "javaId": 27,
+                  "osId": 28,
+                  "name": "archive-conductor"
+                }
+              },
+              "fileForceNested": [
+                {
+                  "start": 1793374692658473463,
+                  "end": 1793374692663698547,
+                  "path": "/records/ha142-753a4362eb/archive/0-234881024.rec",
+                  "metaData": true,
+                  "thread": {
+                    "jfrId": 27,
+                    "javaId": 27,
+                    "osId": 28,
+                    "name": "archive-conductor"
+                  }
+                }
+              ],
+              "commitBracket": [
+                1793374692664315463,
+                1793374692664318838
+              ],
+              "productStartBracket": [
+                1793374692683031964,
+                1793374692686103546
+              ],
+              "productEndBracket": [
+                1793374692683035964,
+                1793374692686107546
+              ],
+              "adviceJfrBracket": [
+                1793374692684840630,
+                1793374692684846047
+              ],
+              "stages": {
+                "recordBlockNs": 6084042,
+                "fileForceNestedUnionNs": 5225084,
+                "recordToCommit": [
+                  600208,
+                  603583
+                ],
+                "commitToService": [
+                  18713126,
+                  21788083
+                ],
+                "productCallbackNs": 4000,
+                "adviceInvocationNs": 5333,
+                "adviceBeforeProductNs": 833,
+                "adviceAfterProductNs": 500,
+                "gcWithinRecordBlockNs": 0,
+                "gcRecordToCommit": [
+                  0,
+                  0
+                ],
+                "gcCommitToService": [
+                  0,
+                  0
+                ],
+                "gcWithinProductCallback": [
+                  0,
+                  0
+                ],
+                "gcRecordStartThroughProductEnd": [
+                  0,
+                  0
+                ],
+                "appendToRecord": [
+                  7317833,
+                  7317875
+                ],
+                "localRecordToPeerReady": [
+                  596167,
+                  596333
+                ],
+                "quorumReadyToCommit": [
+                  3875,
+                  7416
+                ],
+                "gcAppendToRecord": [
+                  0,
+                  0
+                ],
+                "gcLocalRecordToPeerReady": [
+                  0,
+                  0
+                ],
+                "gcQuorumReadyToCommit": [
+                  0,
+                  0
+                ],
+                "clientFirstAttemptToAppend": [
+                  683375,
+                  691209
+                ]
+              },
+              "appendBracket": [
+                1793374692656397380,
+                1793374692656397422
+              ],
+              "firstPeerAck": {
+                "start": 1793374692664311422,
+                "end": 1793374692664311588,
+                "logPosition": 251297760,
+                "leadershipTermId": 0,
+                "followerMemberId": 0
+              },
+              "firstPeerAckCandidates": [
+                {
+                  "start": 1793374692674561255,
+                  "end": 1793374692674561422,
+                  "logPosition": 251297984,
+                  "leadershipTermId": 0,
+                  "followerMemberId": 1
+                },
+                {
+                  "start": 1793374692664311422,
+                  "end": 1793374692664311588,
+                  "logPosition": 251297760,
+                  "leadershipTermId": 0,
+                  "followerMemberId": 0
+                }
+              ],
+              "quorumReadyBracket": [
+                1793374692664311422,
+                1793374692664311588
+              ],
+              "sameNodeGcPausesOverlappingLocalPath": []
+            },
+            "EXECUTION": {
+              "sequence": 981022,
+              "kind": "EXECUTION",
+              "position": 251372096,
+              "role": "LEADER",
+              "archiveBlock": {
+                "start": 1793374692687261880,
+                "end": 1793374692693785255,
+                "startPosition": 251298496,
+                "endPosition": 251404736,
+                "recordingId": 0,
+                "thread": {
+                  "jfrId": 27,
+                  "javaId": 27,
+                  "osId": 28,
+                  "name": "archive-conductor"
+                }
+              },
+              "fileForceNested": [
+                {
+                  "start": 1793374692690314505,
+                  "end": 1793374692693766922,
+                  "path": "/records/ha142-753a4362eb/archive/0-234881024.rec",
+                  "metaData": true,
+                  "thread": {
+                    "jfrId": 27,
+                    "javaId": 27,
+                    "osId": 28,
+                    "name": "archive-conductor"
+                  }
+                }
+              ],
+              "commitBracket": [
+                1793374692694123255,
+                1793374692694133088
+              ],
+              "productStartBracket": [
+                1793374692717576214,
+                1793374692720647796
+              ],
+              "productEndBracket": [
+                1793374692717877464,
+                1793374692720949046
+              ],
+              "adviceJfrBracket": [
+                1793374692719385088,
+                1793374692719689213
+              ],
+              "stages": {
+                "recordBlockNs": 6523375,
+                "fileForceNestedUnionNs": 3452417,
+                "recordToCommit": [
+                  338000,
+                  347833
+                ],
+                "commitToService": [
+                  23443126,
+                  26524541
+                ],
+                "productCallbackNs": 301250,
+                "adviceInvocationNs": 304042,
+                "adviceBeforeProductNs": 625,
+                "adviceAfterProductNs": 2167,
+                "gcWithinRecordBlockNs": 0,
+                "gcRecordToCommit": [
+                  0,
+                  0
+                ],
+                "gcCommitToService": [
+                  0,
+                  0
+                ],
+                "gcWithinProductCallback": [
+                  0,
+                  0
+                ],
+                "gcRecordStartThroughProductEnd": [
+                  0,
+                  0
+                ],
+                "appendToRecord": [
+                  8938083,
+                  8938125
+                ],
+                "localRecordToPeerReady": [
+                  331500,
+                  331875
+                ],
+                "quorumReadyToCommit": [
+                  6125,
+                  16333
+                ],
+                "gcAppendToRecord": [
+                  0,
+                  0
+                ],
+                "gcLocalRecordToPeerReady": [
+                  0,
+                  0
+                ],
+                "gcQuorumReadyToCommit": [
+                  0,
+                  0
+                ],
+                "leaderProductEndToLeaderObserved": [
+                  -1122166,
+                  1957208
+                ]
+              },
+              "appendBracket": [
+                1793374692684847130,
+                1793374692684847172
+              ],
+              "firstPeerAck": {
+                "start": 1793374692694116755,
+                "end": 1793374692694117130,
+                "logPosition": 251392704,
+                "leadershipTermId": 0,
+                "followerMemberId": 0
+              },
+              "firstPeerAckCandidates": [
+                {
+                  "start": 1793374692712941213,
+                  "end": 1793374692712941338,
+                  "logPosition": 251429280,
+                  "leadershipTermId": 0,
+                  "followerMemberId": 1
+                },
+                {
+                  "start": 1793374692694116755,
+                  "end": 1793374692694117130,
+                  "logPosition": 251392704,
+                  "leadershipTermId": 0,
+                  "followerMemberId": 0
+                }
+              ],
+              "quorumReadyBracket": [
+                1793374692694116755,
+                1793374692694117130
+              ],
+              "sameNodeGcPausesOverlappingLocalPath": []
+            }
+          },
+          "interCallbackGap": {
+            "admissionProductEndToExecutionProductStartNs": 34540250,
+            "sameNodeGcOverlap": [
+              0,
+              0
+            ]
+          }
+        }
+      }
+    },
+    {
+      "label": "worst",
+      "sequence": 978055,
+      "actualClientRttNs": 173313834,
+      "clientLatencyNs": {
+        "response": 48920334,
+        "leader": 173313834,
+        "replicas": 173313834
+      },
+      "lastProductEndToAllReplicaObserved": [
+        22045168,
+        25124542
+      ],
+      "clientSameJvmGcOverlap": [
+        1419959,
+        1419959
+      ],
+      "clientGcPauses": [
+        {
+          "gcId": 99,
+          "name": "GC Pause",
+          "start": 1793374692345973713,
+          "end": 1793374692347393672,
+          "overlapNs": 1419959
+        }
+      ],
+      "nodes": {
+        "0": {
+          "callbacks": {
+            "ADMISSION": {
+              "sequence": 978055,
+              "kind": "ADMISSION",
+              "position": 250546560,
+              "role": "FOLLOWER",
+              "archiveBlock": {
+                "start": 1793374692278527756,
+                "end": 1793374692293385964,
+                "startPosition": 250538240,
+                "endPosition": 250565632,
+                "recordingId": 0,
+                "thread": {
+                  "jfrId": 27,
+                  "javaId": 27,
+                  "osId": 28,
+                  "name": "archive-conductor"
+                }
+              },
+              "fileForceNested": [
+                {
+                  "start": 1793374692278600672,
+                  "end": 1793374692293350506,
+                  "path": "/records/ha142-753a4362eb/archive/0-234881024.rec",
+                  "metaData": true,
+                  "thread": {
+                    "jfrId": 27,
+                    "javaId": 27,
+                    "osId": 28,
+                    "name": "archive-conductor"
+                  }
+                }
+              ],
+              "commitBracket": [
+                1793374692309295756,
+                1793374692309297006
+              ],
+              "productStartBracket": [
+                1793374692333403214,
+                1793374692338158506
+              ],
+              "productEndBracket": [
+                1793374692333408256,
+                1793374692338163548
+              ],
+              "adviceJfrBracket": [
+                1793374692334943131,
+                1793374692334952089
+              ],
+              "stages": {
+                "recordBlockNs": 14858208,
+                "fileForceNestedUnionNs": 14749834,
+                "recordToCommit": [
+                  15909792,
+                  15911042
+                ],
+                "commitToService": [
+                  24106208,
+                  28862750
+                ],
+                "productCallbackNs": 5042,
+                "adviceInvocationNs": 8875,
+                "adviceBeforeProductNs": 1583,
+                "adviceAfterProductNs": 2250,
+                "gcWithinRecordBlockNs": 0,
+                "gcRecordToCommit": [
+                  0,
+                  0
+                ],
+                "gcCommitToService": [
+                  0,
+                  0
+                ],
+                "gcWithinProductCallback": [
+                  0,
+                  0
+                ],
+                "gcRecordStartThroughProductEnd": [
+                  0,
+                  0
+                ]
+              },
+              "sameNodeGcPausesOverlappingLocalPath": []
+            },
+            "EXECUTION": {
+              "sequence": 978055,
+              "kind": "EXECUTION",
+              "position": 250633600,
+              "role": "FOLLOWER",
+              "archiveBlock": {
+                "start": 1793374692334744756,
+                "end": 1793374692356720172,
+                "startPosition": 250628224,
+                "endPosition": 250697440,
+                "recordingId": 0,
+                "thread": {
+                  "jfrId": 27,
+                  "javaId": 27,
+                  "osId": 28,
+                  "name": "archive-conductor"
+                }
+              },
+              "fileForceNested": [
+                {
+                  "start": 1793374692336935547,
+                  "end": 1793374692356683297,
+                  "path": "/records/ha142-753a4362eb/archive/0-234881024.rec",
+                  "metaData": true,
+                  "thread": {
+                    "jfrId": 27,
+                    "javaId": 27,
+                    "osId": 28,
+                    "name": "archive-conductor"
+                  }
+                }
+              ],
+              "commitBracket": [
+                1793374692379526881,
+                1793374692379562464
+              ],
+              "productStartBracket": [
+                1793374692380265589,
+                1793374692385020881
+              ],
+              "productEndBracket": [
+                1793374692380279589,
+                1793374692385034881
+              ],
+              "adviceJfrBracket": [
+                1793374692381806506,
+                1793374692381822172
+              ],
+              "stages": {
+                "recordBlockNs": 21975416,
+                "fileForceNestedUnionNs": 19747750,
+                "recordToCommit": [
+                  22806709,
+                  22842292
+                ],
+                "commitToService": [
+                  703125,
+                  5494000
+                ],
+                "productCallbackNs": 14000,
+                "adviceInvocationNs": 15584,
+                "adviceBeforeProductNs": 542,
+                "adviceAfterProductNs": 1042,
+                "gcWithinRecordBlockNs": 0,
+                "gcRecordToCommit": [
+                  0,
+                  0
+                ],
+                "gcCommitToService": [
+                  0,
+                  0
+                ],
+                "gcWithinProductCallback": [
+                  0,
+                  0
+                ],
+                "gcRecordStartThroughProductEnd": [
+                  0,
+                  0
+                ]
+              },
+              "sameNodeGcPausesOverlappingLocalPath": []
+            }
+          },
+          "interCallbackGap": {
+            "admissionProductEndToExecutionProductStartNs": 46857333,
+            "sameNodeGcOverlap": [
+              0,
+              0
+            ]
+          }
+        },
+        "1": {
+          "callbacks": {
+            "ADMISSION": {
+              "sequence": 978055,
+              "kind": "ADMISSION",
+              "position": 250546560,
+              "role": "FOLLOWER",
+              "archiveBlock": {
+                "start": 1793374692278517797,
+                "end": 1793374692293806505,
+                "startPosition": 250538240,
+                "endPosition": 250565632,
+                "recordingId": 0,
+                "thread": {
+                  "jfrId": 27,
+                  "javaId": 27,
+                  "osId": 29,
+                  "name": "archive-conductor"
+                }
+              },
+              "fileForceNested": [
+                {
+                  "start": 1793374692278983880,
+                  "end": 1793374692293790797,
+                  "path": "/records/ha142-753a4362eb/archive/0-234881024.rec",
+                  "metaData": true,
+                  "thread": {
+                    "jfrId": 27,
+                    "javaId": 27,
+                    "osId": 29,
+                    "name": "archive-conductor"
+                  }
+                }
+              ],
+              "commitBracket": [
+                1793374692301696839,
+                1793374692301698380
+              ],
+              "productStartBracket": [
+                1793374692302057047,
+                1793374692303594171
+              ],
+              "productEndBracket": [
+                1793374692302061922,
+                1793374692303599046
+              ],
+              "adviceJfrBracket": [
+                1793374692303376755,
+                1793374692303409630
+              ],
+              "stages": {
+                "recordBlockNs": 15288708,
+                "fileForceNestedUnionNs": 14806917,
+                "recordToCommit": [
+                  7890334,
+                  7891875
+                ],
+                "commitToService": [
+                  358667,
+                  1897332
+                ],
+                "productCallbackNs": 4875,
+                "adviceInvocationNs": 32834,
+                "adviceBeforeProductNs": 1750,
+                "adviceAfterProductNs": 26209,
+                "gcWithinRecordBlockNs": 0,
+                "gcRecordToCommit": [
+                  0,
+                  0
+                ],
+                "gcCommitToService": [
+                  0,
+                  0
+                ],
+                "gcWithinProductCallback": [
+                  0,
+                  0
+                ],
+                "gcRecordStartThroughProductEnd": [
+                  0,
+                  0
+                ]
+              },
+              "sameNodeGcPausesOverlappingLocalPath": []
+            },
+            "EXECUTION": {
+              "sequence": 978055,
+              "kind": "EXECUTION",
+              "position": 250633600,
+              "role": "FOLLOWER",
+              "archiveBlock": {
+                "start": 1793374692334429714,
+                "end": 1793374692356207089,
+                "startPosition": 250601728,
+                "endPosition": 250697440,
+                "recordingId": 0,
+                "thread": {
+                  "jfrId": 27,
+                  "javaId": 27,
+                  "osId": 29,
+                  "name": "archive-conductor"
+                }
+              },
+              "fileForceNested": [
+                {
+                  "start": 1793374692337829089,
+                  "end": 1793374692356185255,
+                  "path": "/records/ha142-753a4362eb/archive/0-234881024.rec",
+                  "metaData": true,
+                  "thread": {
+                    "jfrId": 27,
+                    "javaId": 27,
+                    "osId": 29,
+                    "name": "archive-conductor"
+                  }
+                }
+              ],
+              "commitBracket": [
+                1793374692369716714,
+                1793374692369725589
+              ],
+              "productStartBracket": [
+                1793374692383035756,
+                1793374692384572880
+              ],
+              "productEndBracket": [
+                1793374692383040006,
+                1793374692384577130
+              ],
+              "adviceJfrBracket": [
+                1793374692384356880,
+                1793374692384361880
+              ],
+              "stages": {
+                "recordBlockNs": 21777375,
+                "fileForceNestedUnionNs": 18356166,
+                "recordToCommit": [
+                  13509625,
+                  13518500
+                ],
+                "commitToService": [
+                  13310167,
+                  14856166
+                ],
+                "productCallbackNs": 4250,
+                "adviceInvocationNs": 4959,
+                "adviceBeforeProductNs": 334,
+                "adviceAfterProductNs": 375,
+                "gcWithinRecordBlockNs": 0,
+                "gcRecordToCommit": [
+                  0,
+                  0
+                ],
+                "gcCommitToService": [
+                  0,
+                  0
+                ],
+                "gcWithinProductCallback": [
+                  0,
+                  0
+                ],
+                "gcRecordStartThroughProductEnd": [
+                  0,
+                  0
+                ]
+              },
+              "sameNodeGcPausesOverlappingLocalPath": []
+            }
+          },
+          "interCallbackGap": {
+            "admissionProductEndToExecutionProductStartNs": 80973834,
+            "sameNodeGcOverlap": [
+              0,
+              0
+            ]
+          }
+        },
+        "2": {
+          "callbacks": {
+            "ADMISSION": {
+              "sequence": 978055,
+              "kind": "ADMISSION",
+              "position": 250546560,
+              "role": "LEADER",
+              "archiveBlock": {
+                "start": 1793374692278229088,
+                "end": 1793374692300251505,
+                "startPosition": 250543104,
+                "endPosition": 250565632,
+                "recordingId": 0,
+                "thread": {
+                  "jfrId": 27,
+                  "javaId": 27,
+                  "osId": 28,
+                  "name": "archive-conductor"
+                }
+              },
+              "fileForceNested": [
+                {
+                  "start": 1793374692278425297,
+                  "end": 1793374692300232588,
+                  "path": "/records/ha142-753a4362eb/archive/0-234881024.rec",
+                  "metaData": true,
+                  "thread": {
+                    "jfrId": 27,
+                    "javaId": 27,
+                    "osId": 28,
+                    "name": "archive-conductor"
+                  }
+                }
+              ],
+              "commitBracket": [
+                1793374692301469047,
+                1793374692301471547
+              ],
+              "productStartBracket": [
+                1793374692309949381,
+                1793374692313020963
+              ],
+              "productEndBracket": [
+                1793374692309954797,
+                1793374692313026379
+              ],
+              "adviceJfrBracket": [
+                1793374692311758422,
+                1793374692311765172
+              ],
+              "stages": {
+                "recordBlockNs": 22022417,
+                "fileForceNestedUnionNs": 21807291,
+                "recordToCommit": [
+                  1217542,
+                  1220042
+                ],
+                "commitToService": [
+                  8477834,
+                  11551916
+                ],
+                "productCallbackNs": 5416,
+                "adviceInvocationNs": 6708,
+                "adviceBeforeProductNs": 500,
+                "adviceAfterProductNs": 792,
+                "gcWithinRecordBlockNs": 0,
+                "gcRecordToCommit": [
+                  0,
+                  0
+                ],
+                "gcCommitToService": [
+                  0,
+                  0
+                ],
+                "gcWithinProductCallback": [
+                  0,
+                  0
+                ],
+                "gcRecordStartThroughProductEnd": [
+                  0,
+                  0
+                ],
+                "appendToRecord": [
+                  29378542,
+                  29378583
+                ],
+                "localRecordToPeerReady": [
+                  1212333,
+                  1212417
+                ],
+                "quorumReadyToCommit": [
+                  5125,
+                  7709
+                ],
+                "gcAppendToRecord": [
+                  0,
+                  0
+                ],
+                "gcLocalRecordToPeerReady": [
+                  0,
+                  0
+                ],
+                "gcQuorumReadyToCommit": [
+                  0,
+                  0
+                ],
+                "clientFirstAttemptToAppend": [
+                  7686542,
+                  7694375
+                ]
+              },
+              "appendBracket": [
+                1793374692270872922,
+                1793374692270872963
+              ],
+              "firstPeerAck": {
+                "start": 1793374692301463838,
+                "end": 1793374692301463922,
+                "logPosition": 250565632,
+                "leadershipTermId": 0,
+                "followerMemberId": 0
+              },
+              "firstPeerAckCandidates": [
+                {
+                  "start": 1793374692301465463,
+                  "end": 1793374692301465547,
+                  "logPosition": 250565632,
+                  "leadershipTermId": 0,
+                  "followerMemberId": 1
+                },
+                {
+                  "start": 1793374692301463838,
+                  "end": 1793374692301463922,
+                  "logPosition": 250565632,
+                  "leadershipTermId": 0,
+                  "followerMemberId": 0
+                }
+              ],
+              "quorumReadyBracket": [
+                1793374692301463838,
+                1793374692301463922
+              ],
+              "sameNodeGcPausesOverlappingLocalPath": []
+            },
+            "EXECUTION": {
+              "sequence": 978055,
+              "kind": "EXECUTION",
+              "position": 250633600,
+              "role": "LEADER",
+              "archiveBlock": {
+                "start": 1793374692319366005,
+                "end": 1793374692339767713,
+                "startPosition": 250600192,
+                "endPosition": 250683744,
+                "recordingId": 0,
+                "thread": {
+                  "jfrId": 27,
+                  "javaId": 27,
+                  "osId": 28,
+                  "name": "archive-conductor"
+                }
+              },
+              "fileForceNested": [
+                {
+                  "start": 1793374692327175838,
+                  "end": 1793374692339749047,
+                  "path": "/records/ha142-753a4362eb/archive/0-234881024.rec",
+                  "metaData": true,
+                  "thread": {
+                    "jfrId": 27,
+                    "javaId": 27,
+                    "osId": 28,
+                    "name": "archive-conductor"
+                  }
+                }
+              ],
+              "commitBracket": [
+                1793374692358173547,
+                1793374692358177588
+              ],
+              "productStartBracket": [
+                1793374692411362631,
+                1793374692414434213
+              ],
+              "productEndBracket": [
+                1793374692411375672,
+                1793374692414447254
+              ],
+              "adviceJfrBracket": [
+                1793374692413171630,
+                1793374692413186380
+              ],
+              "stages": {
+                "recordBlockNs": 20401708,
+                "fileForceNestedUnionNs": 12573209,
+                "recordToCommit": [
+                  18405834,
+                  18409875
+                ],
+                "commitToService": [
+                  53185043,
+                  56260666
+                ],
+                "productCallbackNs": 13041,
+                "adviceInvocationNs": 14708,
+                "adviceBeforeProductNs": 542,
+                "adviceAfterProductNs": 1125,
+                "gcWithinRecordBlockNs": 0,
+                "gcRecordToCommit": [
+                  0,
+                  0
+                ],
+                "gcCommitToService": [
+                  6667625,
+                  6667625
+                ],
+                "gcWithinProductCallback": [
+                  0,
+                  0
+                ],
+                "gcRecordStartThroughProductEnd": [
+                  6667625,
+                  6667625
+                ],
+                "appendToRecord": [
+                  27182750,
+                  27182875
+                ],
+                "localRecordToPeerReady": [
+                  18400959,
+                  18401042
+                ],
+                "quorumReadyToCommit": [
+                  4792,
+                  8916
+                ],
+                "gcAppendToRecord": [
+                  0,
+                  0
+                ],
+                "gcLocalRecordToPeerReady": [
+                  0,
+                  0
+                ],
+                "gcQuorumReadyToCommit": [
+                  0,
+                  0
+                ],
+                "leaderProductEndToLeaderObserved": [
+                  22045168,
+                  25124542
+                ]
+              },
+              "appendBracket": [
+                1793374692312584838,
+                1793374692312584963
+              ],
+              "firstPeerAck": {
+                "start": 1793374692358168672,
+                "end": 1793374692358168755,
+                "logPosition": 250697440,
+                "leadershipTermId": 0,
+                "followerMemberId": 1
+              },
+              "firstPeerAckCandidates": [
+                {
+                  "start": 1793374692358168672,
+                  "end": 1793374692358168755,
+                  "logPosition": 250697440,
+                  "leadershipTermId": 0,
+                  "followerMemberId": 1
+                },
+                {
+                  "start": 1793374692378799213,
+                  "end": 1793374692378799380,
+                  "logPosition": 250697440,
+                  "leadershipTermId": 0,
+                  "followerMemberId": 0
+                }
+              ],
+              "quorumReadyBracket": [
+                1793374692358168672,
+                1793374692358168755
+              ],
+              "sameNodeGcPausesOverlappingLocalPath": [
+                {
+                  "gcId": 75,
+                  "name": "GC Pause",
+                  "start": 1793374692370151922,
+                  "end": 1793374692376819547,
+                  "overlapNs": 6667625
+                }
+              ]
+            }
+          },
+          "interCallbackGap": {
+            "admissionProductEndToExecutionProductStartNs": 101407834,
+            "sameNodeGcOverlap": [
+              6667625,
+              6667625
+            ]
+          }
+        }
+      }
+    }
+  ],
+  "inputHashes": [
+    {
+      "path": "/Users/0chord/.codex/worktrees/issue148-http-aeron/exchange-core/build/remaining-latency-20261031/no-periodic/measurement.json",
+      "bytes": 93022,
+      "sha256": "8f5ec3ffe25ea9e0cb039346692063e4cd8cc35f04f88a60b0dd22aa3342ca0d"
+    },
+    {
+      "path": "/Users/0chord/.codex/worktrees/issue148-http-aeron/exchange-core/build/remaining-latency-20261031/no-periodic/recordings/client-cohort.bin",
+      "bytes": 10587664,
+      "sha256": "3799dde5523c492cfd0bc0f5bf0339220959319209375a021e777721997d57b2"
+    },
+    {
+      "path": "/Users/0chord/.codex/worktrees/issue148-http-aeron/exchange-core/build/remaining-latency-20261031/no-periodic/node0.jsonl.gz",
+      "bytes": 26885529,
+      "sha256": "6d18bd8d7a548314e37cb1dc145b9f0db5660c371467c2b6104131c1bc1adc25"
+    },
+    {
+      "path": "/Users/0chord/.codex/worktrees/issue148-http-aeron/exchange-core/build/remaining-latency-20261031/no-periodic/node1.jsonl.gz",
+      "bytes": 26864090,
+      "sha256": "5f981b94f72d03b27e6e1dabc409cd8bf3b7426e1f4dc54f5460ab2471ca98a3"
+    },
+    {
+      "path": "/Users/0chord/.codex/worktrees/issue148-http-aeron/exchange-core/build/remaining-latency-20261031/no-periodic/node2.jsonl.gz",
+      "bytes": 36877539,
+      "sha256": "0ec1de12ede792fadb45e9ff09ca159764eb78c9ace23c7875dd45ab896eff6c"
+    },
+    {
+      "path": "/Users/0chord/.codex/worktrees/issue148-http-aeron/exchange-core/build/remaining-latency-20261031/no-periodic/client.jsonl.gz",
+      "bytes": 161371,
+      "sha256": "1d9d24d04c1cf20151340e24a1db788412c2f629e3a969889004cd8355dffe68"
+    }
+  ],
+  "analyzerHash": {
+    "path": "/Users/0chord/.codex/worktrees/issue148-http-aeron/exchange-core/build/remaining-latency-20261031/no-periodic/analyze_remaining.py",
+    "bytes": 34268,
+    "sha256": "ceaf0155b3c420cc71e104be13c4afbf4aa120d88d1547fe7afa91e97c744fb3"
+  },
+  "adaptedFromAnalyzer": {
+    "path": "/Users/0chord/.codex/visualizations/2026/09/23/01a0ce63-9327-7f32-a7e0-3429380284d8/issue142-performance/capacity-goal/direct-core-20261028/multi/execution-tail-20261028/request-correlation-20261028/goal-optimize-20261028/pipeline-stages-20261029/analyze_pipeline.py",
+    "bytes": 8901,
+    "sha256": "03a394263bbf6d9a9e85851173296e3d61e187ac19393c0cd9b937b0c143d795"
+  },
+  "fullCallbackArchiveCommitCoverage": 1588146,
+  "fullLeaderAppendValidFreshAckCoverage": 529382,
+  "exactCrossReplicaPositionsValidated": true,
+  "fixedLeaderMember": 2
+}

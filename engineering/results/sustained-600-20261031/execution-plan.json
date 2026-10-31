@@ -1,0 +1,36 @@
+{
+  "implementationDirectory": "/Users/0chord/.codex/worktrees/issue148-http-aeron/exchange-core",
+  "branch": "test/http-trading-performance/142",
+  "scope": "direct Aeron; no HTTP Gateway",
+  "wire": "Protobuf bounded wire3",
+  "nodes": 3,
+  "archiveCatalogConsensusSync": [
+    2,
+    2,
+    2
+  ],
+  "markets": [
+    "BTC-USDT",
+    "SOL-USDT",
+    "SUI-USDT"
+  ],
+  "warmupSeconds": 20,
+  "measureSeconds": 600,
+  "inFlight": 512,
+  "executionInFlight": 1024,
+  "maxSamples": 64000000,
+  "jvmHeapMiB": 1024,
+  "nodeCpuLimit": 2,
+  "nodeMemoryLimitMiB": 2048,
+  "driverRoot": "/dev/shm",
+  "diskAllocatedCapGiB": 24,
+  "diskEarlyStopGiB": 23,
+  "hostFreeReserveGiB": 8,
+  "productRuntime": "verified service-progress v1",
+  "excludedPendingCandidates": [
+    "matching immutable result reuse",
+    "metrics conditional wake",
+    "client decode-once"
+  ],
+  "limitation": "one host; one 600-second run; phase drain/aggregation pauses included in wall TPS; not an absolute maximum capacity or disaster recovery proof"
+}

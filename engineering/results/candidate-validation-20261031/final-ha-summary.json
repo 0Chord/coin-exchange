@@ -1,0 +1,22 @@
+[
+  {
+    "name": "com.exchange.core.api.trading.infrastructure.aeron.BoundedTradingClusterHaTest",
+    "tests": "1",
+    "skipped": "0",
+    "failures": "0",
+    "errors": "0",
+    "timestamp": "2026-10-31T04:55:10.850Z",
+    "hostname": "0Chord.local",
+    "time": "121.866"
+  },
+  {
+    "name": "com.exchange.core.api.trading.infrastructure.recovery.RemoteTradingRecoveryTest",
+    "tests": "1",
+    "skipped": "0",
+    "failures": "0",
+    "errors": "0",
+    "timestamp": "2026-10-31T04:57:12.717Z",
+    "hostname": "0Chord.local",
+    "time": "72.644"
+  }
+]

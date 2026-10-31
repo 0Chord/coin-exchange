@@ -1,0 +1,12 @@
+{
+  "independentContext": "read-only agent forked without authoring conversation",
+  "verified": [
+    "orders/cohort TPS arithmetic",
+    "original HA_PERFORMANCE matches summary",
+    "all three final sync levels/state hashes/ACK floors/balances/fees/pending/live makers",
+    "all runtime files match manifest; product classes and libraries match frozen baseline",
+    "owned containers/volumes/network cleanup logs"
+  ],
+  "unresolvedDefects": [],
+  "reportingNote": "Raw guard limitation says 256 MiB headroom from the short-run default. Actual numeric limits were cap 24 GiB and early stop 23 GiB, hence 1 GiB headroom. Numeric guard checks and success are unaffected."
+}

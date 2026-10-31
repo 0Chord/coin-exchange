@@ -1,0 +1,428 @@
+{
+  "scope": "Read-only final HA/recovery/regression and report review. No build/test/load/Docker execution or source change.",
+  "checks": 285,
+  "issues": [],
+  "steadyStateFileCount": 22,
+  "steadyStateNodeCount": 55,
+  "HA": {
+    "summary": {
+      "H03GenesisLogOnlyAllProcessRestart": true,
+      "leaderCrashAndDuplicateReservation": true,
+      "originalVolumeFollowerRejoin": true,
+      "H01CommittedAdmissionBeforeAnyExecutionOfferCrash": true,
+      "H05PartialSnapshotNeverBecomesRecoveryState": true,
+      "H02ExecutionCommittedBeforePublicAdmissionReceiptCrash": true,
+      "snapshotAndCommittedTailRestart": true,
+      "oldReceiptAndActiveMakerSurviveRestart": true,
+      "H09ThreeBoundedJvmsRecoverWithoutPreviousDriverFiles": true,
+      "H06MismatchedSnapshotRootNeverBecomesReady": true
+    },
+    "steadyStateFiles": [
+      {
+        "path": "/Users/0chord/.codex/worktrees/issue148-http-aeron/exchange-core/app-api/build/reports/ha-trading-faults/ha-fault-86be4120/H02-completed-before-public-reply.json",
+        "members": [
+          1,
+          2
+        ],
+        "buys": 3,
+        "stateSha256": "0732f2f9ede30de72cb403a0039cd2f56020730b03c07b7dd98da7f1684a104d"
+      },
+      {
+        "path": "/Users/0chord/.codex/worktrees/issue148-http-aeron/exchange-core/app-api/build/reports/ha-trading-faults/ha-fault-86be4120/H02-electing-survivors.json",
+        "members": [
+          1,
+          2
+        ],
+        "buys": 3,
+        "stateSha256": "0732f2f9ede30de72cb403a0039cd2f56020730b03c07b7dd98da7f1684a104d"
+      },
+      {
+        "path": "/Users/0chord/.codex/worktrees/issue148-http-aeron/exchange-core/app-api/build/reports/ha-trading-faults/ha-fault-86be4120/H02-same-receipt-after-crash.json",
+        "members": [
+          1,
+          2
+        ],
+        "buys": 3,
+        "stateSha256": "0732f2f9ede30de72cb403a0039cd2f56020730b03c07b7dd98da7f1684a104d"
+      },
+      {
+        "path": "/Users/0chord/.codex/worktrees/issue148-http-aeron/exchange-core/app-api/build/reports/ha-trading-faults/ha-fault-86be4120/after-leader-kill.json",
+        "members": [
+          0,
+          2
+        ],
+        "buys": 1,
+        "stateSha256": "809f2f9bf0b8b3deecbd0d58758beffc60cccf988102203b1a1c35726fba950c"
+      },
+      {
+        "path": "/Users/0chord/.codex/worktrees/issue148-http-aeron/exchange-core/app-api/build/reports/ha-trading-faults/ha-fault-86be4120/after-snapshot-tail.json",
+        "members": [
+          0,
+          1,
+          2
+        ],
+        "buys": 3,
+        "stateSha256": "0732f2f9ede30de72cb403a0039cd2f56020730b03c07b7dd98da7f1684a104d"
+      },
+      {
+        "path": "/Users/0chord/.codex/worktrees/issue148-http-aeron/exchange-core/app-api/build/reports/ha-trading-faults/ha-fault-86be4120/all-processes-recovered.json",
+        "members": [
+          0,
+          1,
+          2
+        ],
+        "buys": 3,
+        "stateSha256": "0732f2f9ede30de72cb403a0039cd2f56020730b03c07b7dd98da7f1684a104d"
+      },
+      {
+        "path": "/Users/0chord/.codex/worktrees/issue148-http-aeron/exchange-core/app-api/build/reports/ha-trading-faults/ha-fault-86be4120/before-genesis-only-restart.json",
+        "members": [
+          0,
+          1,
+          2
+        ],
+        "buys": 1,
+        "stateSha256": "809f2f9bf0b8b3deecbd0d58758beffc60cccf988102203b1a1c35726fba950c"
+      },
+      {
+        "path": "/Users/0chord/.codex/worktrees/issue148-http-aeron/exchange-core/app-api/build/reports/ha-trading-faults/ha-fault-86be4120/before-partial-snapshot.json",
+        "members": [
+          0,
+          1,
+          2
+        ],
+        "buys": 2,
+        "stateSha256": "6a30aa69d3ccc5a88a8a061a7d3b7d41ce08c2743ced7835e47dac21814a00df"
+      },
+      {
+        "path": "/Users/0chord/.codex/worktrees/issue148-http-aeron/exchange-core/app-api/build/reports/ha-trading-faults/ha-fault-86be4120/electing-survivors.json",
+        "members": [
+          0,
+          2
+        ],
+        "buys": 1,
+        "stateSha256": "809f2f9bf0b8b3deecbd0d58758beffc60cccf988102203b1a1c35726fba950c"
+      },
+      {
+        "path": "/Users/0chord/.codex/worktrees/issue148-http-aeron/exchange-core/app-api/build/reports/ha-trading-faults/ha-fault-86be4120/final.json",
+        "members": [
+          0,
+          1,
+          2
+        ],
+        "buys": 3,
+        "stateSha256": "0732f2f9ede30de72cb403a0039cd2f56020730b03c07b7dd98da7f1684a104d"
+      },
+      {
+        "path": "/Users/0chord/.codex/worktrees/issue148-http-aeron/exchange-core/app-api/build/reports/ha-trading-faults/ha-fault-86be4120/genesis-only-recovered.json",
+        "members": [
+          0,
+          1,
+          2
+        ],
+        "buys": 1,
+        "stateSha256": "809f2f9bf0b8b3deecbd0d58758beffc60cccf988102203b1a1c35726fba950c"
+      },
+      {
+        "path": "/Users/0chord/.codex/worktrees/issue148-http-aeron/exchange-core/app-api/build/reports/ha-trading-faults/ha-fault-86be4120/genesis-only-same-receipt.json",
+        "members": [
+          0,
+          1,
+          2
+        ],
+        "buys": 1,
+        "stateSha256": "809f2f9bf0b8b3deecbd0d58758beffc60cccf988102203b1a1c35726fba950c"
+      },
+      {
+        "path": "/Users/0chord/.codex/worktrees/issue148-http-aeron/exchange-core/app-api/build/reports/ha-trading-faults/ha-fault-86be4120/identity-mismatch-survivors.json",
+        "members": [
+          1,
+          2
+        ],
+        "buys": 3,
+        "stateSha256": "0732f2f9ede30de72cb403a0039cd2f56020730b03c07b7dd98da7f1684a104d"
+      },
+      {
+        "path": "/Users/0chord/.codex/worktrees/issue148-http-aeron/exchange-core/app-api/build/reports/ha-trading-faults/ha-fault-86be4120/partial-snapshot-recovered.json",
+        "members": [
+          0,
+          1,
+          2
+        ],
+        "buys": 2,
+        "stateSha256": "6a30aa69d3ccc5a88a8a061a7d3b7d41ce08c2743ced7835e47dac21814a00df"
+      },
+      {
+        "path": "/Users/0chord/.codex/worktrees/issue148-http-aeron/exchange-core/app-api/build/reports/ha-trading-faults/ha-fault-86be4120/partial-snapshot-survivors.json",
+        "members": [
+          0,
+          2
+        ],
+        "buys": 2,
+        "stateSha256": "6a30aa69d3ccc5a88a8a061a7d3b7d41ce08c2743ced7835e47dac21814a00df"
+      },
+      {
+        "path": "/Users/0chord/.codex/worktrees/issue148-http-aeron/exchange-core/app-api/build/reports/ha-trading-faults/ha-fault-86be4120/pending-electing-survivors.json",
+        "members": [
+          0,
+          1
+        ],
+        "buys": 2,
+        "stateSha256": "6a30aa69d3ccc5a88a8a061a7d3b7d41ce08c2743ced7835e47dac21814a00df"
+      },
+      {
+        "path": "/Users/0chord/.codex/worktrees/issue148-http-aeron/exchange-core/app-api/build/reports/ha-trading-faults/ha-fault-86be4120/pending-leader-recovered.json",
+        "members": [
+          0,
+          1,
+          2
+        ],
+        "buys": 2,
+        "stateSha256": "6a30aa69d3ccc5a88a8a061a7d3b7d41ce08c2743ced7835e47dac21814a00df"
+      },
+      {
+        "path": "/Users/0chord/.codex/worktrees/issue148-http-aeron/exchange-core/app-api/build/reports/ha-trading-faults/ha-fault-86be4120/pending-leader-survivors.json",
+        "members": [
+          0,
+          1
+        ],
+        "buys": 2,
+        "stateSha256": "6a30aa69d3ccc5a88a8a061a7d3b7d41ce08c2743ced7835e47dac21814a00df"
+      },
+      {
+        "path": "/Users/0chord/.codex/worktrees/issue148-http-aeron/exchange-core/app-api/build/reports/ha-trading-faults/ha-fault-86be4120/rejoined.json",
+        "members": [
+          0,
+          1,
+          2
+        ],
+        "buys": 1,
+        "stateSha256": "809f2f9bf0b8b3deecbd0d58758beffc60cccf988102203b1a1c35726fba950c"
+      },
+      {
+        "path": "/Users/0chord/.codex/worktrees/issue148-http-aeron/exchange-core/app-api/build/reports/ha-trading-faults/ha-fault-86be4120/snapshot-complete.json",
+        "members": [
+          0,
+          1,
+          2
+        ],
+        "buys": 2,
+        "stateSha256": "6a30aa69d3ccc5a88a8a061a7d3b7d41ce08c2743ced7835e47dac21814a00df"
+      }
+    ]
+  },
+  "remote": {
+    "summary": {
+      "admissionPublicSuccessWaitedForRemotePrefix": true,
+      "completionPublicSuccessWaitedForRemotePrefix": true,
+      "allOriginalProcessesStoppedAndAllThreeRootsRemoved": true,
+      "durableAuthorityConsumedOnceAndSameTargetRetrySafe": true,
+      "fourthOnlySnapshotAndTailFinancialStateExact": true,
+      "oldReceiptNoDoubleReservationAndActiveMakerLateFill": true
+    },
+    "steadyStateFiles": [
+      {
+        "path": "/Users/0chord/.codex/worktrees/issue148-http-aeron/exchange-core/app-api/build/reports/remote-trading-recovery/remote-f75e9ba9/before-primary-loss.json",
+        "members": [
+          0,
+          1,
+          2
+        ],
+        "buys": 2,
+        "stateSha256": "6a30aa69d3ccc5a88a8a061a7d3b7d41ce08c2743ced7835e47dac21814a00df"
+      },
+      {
+        "path": "/Users/0chord/.codex/worktrees/issue148-http-aeron/exchange-core/app-api/build/reports/remote-trading-recovery/remote-f75e9ba9/recovered.json",
+        "members": [
+          0
+        ],
+        "buys": 3,
+        "stateSha256": "0732f2f9ede30de72cb403a0039cd2f56020730b03c07b7dd98da7f1684a104d"
+      }
+    ]
+  },
+  "H01": [
+    {
+      "kind": "ADMISSION_COMMITTED_EXECUTION_NOT_OFFERED",
+      "member": 0,
+      "position": 3200,
+      "role": "FOLLOWER",
+      "executionOfferDelegations": 0,
+      "executionBodySha256": "8d325877313da5cf60c1fa99c5378333715259838451baa1180bd281d8ce5502",
+      "stateSha256": "c5e3452f05ef26ea358705fd738007ad0b9a6f5d61d8b102456b0bdff13663a5",
+      "pending": 1,
+      "marketExecutedThrough": 2,
+      "buyerAvailable": 979960,
+      "buyerHold": 10020,
+      "feeRevenue": "30",
+      "receipt": {
+        "code": "ACCEPTED",
+        "orderId": "O2AEhBUFJPQkUAAAAAAAAAjgAAAAAAAAAD",
+        "admissionSequence": 3,
+        "marketAdmissionSequence": 3
+      }
+    },
+    {
+      "kind": "ADMISSION_COMMITTED_EXECUTION_NOT_OFFERED",
+      "member": 1,
+      "position": 3200,
+      "role": "FOLLOWER",
+      "executionOfferDelegations": 0,
+      "executionBodySha256": "8d325877313da5cf60c1fa99c5378333715259838451baa1180bd281d8ce5502",
+      "stateSha256": "c5e3452f05ef26ea358705fd738007ad0b9a6f5d61d8b102456b0bdff13663a5",
+      "pending": 1,
+      "marketExecutedThrough": 2,
+      "buyerAvailable": 979960,
+      "buyerHold": 10020,
+      "feeRevenue": "30",
+      "receipt": {
+        "code": "ACCEPTED",
+        "orderId": "O2AEhBUFJPQkUAAAAAAAAAjgAAAAAAAAAD",
+        "admissionSequence": 3,
+        "marketAdmissionSequence": 3
+      }
+    },
+    {
+      "kind": "ADMISSION_COMMITTED_EXECUTION_NOT_OFFERED",
+      "member": 2,
+      "position": 3200,
+      "role": "LEADER",
+      "executionOfferDelegations": 0,
+      "executionBodySha256": "8d325877313da5cf60c1fa99c5378333715259838451baa1180bd281d8ce5502",
+      "stateSha256": "c5e3452f05ef26ea358705fd738007ad0b9a6f5d61d8b102456b0bdff13663a5",
+      "pending": 1,
+      "marketExecutedThrough": 2,
+      "buyerAvailable": 979960,
+      "buyerHold": 10020,
+      "feeRevenue": "30",
+      "receipt": {
+        "code": "ACCEPTED",
+        "orderId": "O2AEhBUFJPQkUAAAAAAAAAjgAAAAAAAAAD",
+        "admissionSequence": 3,
+        "marketAdmissionSequence": 3
+      }
+    }
+  ],
+  "H02": {
+    "kind": "EXECUTION_OFFERED_ADMISSION_REPLY_NOT_OFFERED",
+    "member": 0,
+    "admissionPosition": 4480,
+    "admissionReplyDelegations": 0,
+    "executionOfferDelegations": 1,
+    "receipt": {
+      "code": "ACCEPTED",
+      "orderId": "O2AEhBUFJPQkUAAAAAAAAAjgAAAAAAAAAE",
+      "admissionSequence": 4,
+      "marketAdmissionSequence": 4
+    }
+  },
+  "H05": {
+    "kind": "PARTIAL_SNAPSHOT_RECORDED",
+    "member": 1,
+    "partialBytes": 128,
+    "completeBodyBytes": 2189,
+    "publicationPosition": 352,
+    "recordedThrough": 352
+  },
+  "H09ReadyBootCounts": {
+    "0": 4,
+    "1": 5,
+    "2": 4
+  },
+  "H06RejectedBoot": [
+    {
+      "member": 0,
+      "boot": 4,
+      "recoverExisting": true,
+      "persistentRoot": "/var/folders/7f/l04jcvpd6755klk1rb37j0d40000gn/T/junit-6491180379756518310/node-0",
+      "driverRoot": "/var/folders/7f/l04jcvpd6755klk1rb37j0d40000gn/T/junit-6491180379756518310/driver-0-4",
+      "previousDriverRoot": "/var/folders/7f/l04jcvpd6755klk1rb37j0d40000gn/T/junit-6491180379756518310/driver-0-3",
+      "previousDriverAbsent": true,
+      "ready": false
+    }
+  ],
+  "regression": [
+    {
+      "project": "domain-matching",
+      "tests": 156,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "project": "domain-trading",
+      "tests": 276,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "project": "architecture-tests",
+      "tests": 385,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "project": "app-api",
+      "tests": 70,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    }
+  ],
+  "regressionCachedTests": 432,
+  "regressionFreshTests": 455,
+  "pythonTests": 13,
+  "haJUnitSuites": [
+    {
+      "name": "com.exchange.core.api.trading.infrastructure.aeron.BoundedTradingClusterHaTest",
+      "tests": "1",
+      "skipped": "0",
+      "failures": "0",
+      "errors": "0",
+      "timestamp": "2026-10-31T04:55:10.850Z",
+      "hostname": "0Chord.local",
+      "time": "121.866"
+    },
+    {
+      "name": "com.exchange.core.api.trading.infrastructure.recovery.RemoteTradingRecoveryTest",
+      "tests": "1",
+      "skipped": "0",
+      "failures": "0",
+      "errors": "0",
+      "timestamp": "2026-10-31T04:57:12.717Z",
+      "hostname": "0Chord.local",
+      "time": "72.644"
+    }
+  ],
+  "financialStates": {
+    "remoteBefore": {
+      "buys": 2,
+      "feeRevenue": 60,
+      "buyerQuoteAvailable": 979960,
+      "buyerBase": 200000000,
+      "sellerQuoteAvailable": 19980,
+      "sellerBaseHold": 100000000,
+      "liveMakers": 1
+    },
+    "HAAndRemoteFinal": {
+      "buys": 3,
+      "feeRevenue": 90,
+      "buyerQuoteAvailable": 969940,
+      "buyerBase": 300000000,
+      "sellerQuoteAvailable": 29970,
+      "sellerBaseHold": 0,
+      "liveMakers": 0
+    }
+  },
+  "limits": [
+    "HA/remote use same-host JVM subprocesses and temporary local directories, not independent-site physical DR.",
+    "Remote test invokes FileRecoveryDurabilityGate explicitly; it does not directly establish an HTTP response gate.",
+    "Compact reports retain state/check summaries, not all original archive volumes/process evidence.",
+    "HA/remote final intentionally retain 4 unacknowledged receipts (retiredThrough=0); performance probes retire all receipts. Do not conflate these checks.",
+    "Class raw identity differs from tested-domain through debug metadata despite identical main opcode behavior.",
+    "887 includes 432 unchanged-input UP-TO-DATE results, not 887 fresh executions."
+  ],
+  "reviewedEngineeringReportSha256": "0073065426620b5ebbe30235ec46b754ce8a6ebc9d8a6e42e33d6cc93cd88caa"
+}

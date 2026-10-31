@@ -1,0 +1,25 @@
+{
+  "codeCommit": "91cd57fedb6e9bbe2e67c87a2346776deb5acc87",
+  "checks": [
+    {
+      "command": "./gradlew ktlintCheck --no-daemon --console=plain --continue",
+      "exitCode": 0,
+      "elapsedSeconds": 25,
+      "rawLogSha256": "d7fd73b4e0420a0c7a32ae700cf4accbcefe23a4aaa994ed3bd8c91474609ecc"
+    },
+    {
+      "command": "./gradlew :architecture-tests:verifyArchitectureReport --no-daemon --console=plain",
+      "exitCode": 0,
+      "elapsedSeconds": 9,
+      "operatingChecks": "P01-P09 executed and successful; unchanged architecture tests reused",
+      "rawLogSha256": "a59f2bc6b9902a5dc26dede352b81cc880442b26ff00a2268aedd40b392f1eec"
+    }
+  ],
+  "rawLogsPreservedLocallyNotPublished": [
+    "engineering/results/candidate-validation-20261031/final-ha-recovery.log",
+    "engineering/results/candidate-validation-20261031/final-regression.log",
+    "engineering/results/candidate-validation-20261031/format.log",
+    "engineering/results/pr-publish-20261031/architecture-report.log",
+    "engineering/results/pr-publish-20261031/ktlint.log"
+  ]
+}

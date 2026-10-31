@@ -1,0 +1,33 @@
+{
+  "ownedRunIds": [
+    "ha142-0731184a89",
+    "ha142-0b3b53dae6",
+    "ha142-254a4f0fff",
+    "ha142-2aff8d94e0",
+    "ha142-324ababca6",
+    "ha142-536ac1917d",
+    "ha142-622598abb0",
+    "ha142-7a90bb21e8",
+    "ha142-7e9eeaeb94",
+    "ha142-7f11af1403",
+    "ha142-848bc0a94a",
+    "ha142-97bd5d1fd7",
+    "ha142-a6e804101c",
+    "ha142-d0a8191956",
+    "ha142-d2c3a34dd5",
+    "ha142-d98e9a11c5",
+    "ha142-de60bbac90",
+    "ha142-fb639300f3"
+  ],
+  "remainingOwnedContainersOrVolumes": [],
+  "removedOwnedImageTags": [
+    "exchange-regression-before:20261030",
+    "exchange-regression-after:20261030",
+    "exchange-regression-map:20261030"
+  ],
+  "remainingOwnedImageTags": [],
+  "hostFreeBytesAfterCleanup": 86352363520,
+  "preservedRuntimeManifest": "after-runtime.json",
+  "preservedSourceManifest": "source-v2-manifest.json",
+  "unrelatedDockerResourcesPruned": false
+}

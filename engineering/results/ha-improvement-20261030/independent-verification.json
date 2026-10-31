@@ -1,0 +1,21 @@
+{
+  "sourceManifestSha256": "52d245565d1b9ea23cc2ac0d5cbc72ac01df9758d27d6d1ce72536e180191bbf",
+  "sourceFiles": 709,
+  "codeReview": "isolated author-context-free HA/app/delta review and separate fee review; two measurement defects fixed and re-reviewed; no confirmed unresolved defects in reviewed scope",
+  "evidenceReview": "separate isolated verifier read source and original/compact results; recomputed medians of reported TPS/p95/p99 and throughput denominators; did not remeasure or reconstruct per-request sample arrays",
+  "verified": [
+    "duration before/after application classes 407 and test classes 806 identical; only domain-trading differs among 123 jars",
+    "eight final performance runs actual financial state, three replica SHA, ACK floors, sync2 and metric loss checks matched",
+    "HA ten checks including H01/H02/H03/H05/H06/H09",
+    "remote fourth-only recovery six checks",
+    "affected app tests 83 and TempDir tests 16 pass; class-level aggregate has no failures"
+  ],
+  "limits": [
+    "not a second complete app suite execution",
+    "SavedArchiveThreeCopyReplay not executed in final matrix",
+    "same-host processes and containers do not prove physical multi-AZ disaster survival",
+    "HTTP-to-Aeron-to-backup full integration not executed",
+    "50k TPS and absolute maximum sustained capacity not established",
+    "polling storage guard is not a hard filesystem quota"
+  ]
+}

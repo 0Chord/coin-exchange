@@ -1,0 +1,560 @@
+[
+  {
+    "window": 512,
+    "runId": "ha142-72c734bdb5",
+    "success": true,
+    "measurement": {
+      "kind": "HA_PERFORMANCE",
+      "mode": "bounded-wire3-no-history-index",
+      "scope": "three-node direct Aeron; sync2; duration window; partial maker; actual TCP completion observation",
+      "workload": "partial-maker",
+      "warmup": 629687,
+      "orders": 404954,
+      "sellPreparation": 3,
+      "maxSamples": 2000000,
+      "warmupSeconds": 20,
+      "measureSeconds": 10,
+      "actualTotalBuys": 1034641,
+      "expectedBuyerQuoteAvailable": 9672898180,
+      "expectedMakerRemaining": [
+        32178600000000,
+        321787000000000,
+        321786000000000
+      ],
+      "expectedBuyerAckFloor": 1034641,
+      "expectedSellerAckFloor": 3,
+      "maxInFlight": 512,
+      "maxExecutionInFlight": 1024,
+      "maxObservedUnanswered": 512,
+      "ackMode": "async",
+      "maxObservedFinancialIncomplete": 1024,
+      "asyncAckRequests": 962,
+      "backpressuredOffers": 3,
+      "completionCollectorPeakEntries": 1024,
+      "completionCollectorRetained": 0,
+      "completionReceiveBufferBytes": 212992,
+      "throughputSemantics": "phase start -> max(actual offering stop, last correlated observation); cohort also includes final ACK",
+      "rawSpanSemantics": "first send attempt -> last correlated observation; excludes remaining offering-window time",
+      "admissionTps": 40458.49627217314,
+      "admissionElapsedNs": 10009121379,
+      "admissionRawSpanTps": 40459.15161840262,
+      "admissionRawSpanNs": 10008959254,
+      "admissionP95Ns": 18803375,
+      "admissionP99Ns": 27582584,
+      "leaderCompletionTps": 40424.500967502085,
+      "leaderCompletionElapsedNs": 10017538629,
+      "leaderCompletionRawSpanTps": 40425.155212874284,
+      "leaderCompletionRawSpanNs": 10017376504,
+      "leaderCompletionP95Ns": 33382208,
+      "leaderCompletionP99Ns": 45756833,
+      "allReplicasTps": 40424.500967502085,
+      "allReplicasElapsedNs": 10017538629,
+      "allReplicasRawSpanTps": 40425.155212874284,
+      "allReplicasRawSpanNs": 10017376504,
+      "allReplicasP95Ns": 38049500,
+      "allReplicasP99Ns": 52834042,
+      "cohortElapsedIncludingAckNs": 10017631879,
+      "cohortTpsIncludingAck": 40424.12467250934,
+      "phaseElapsedIncludingAckNs": 10017631879,
+      "offeringWindowNs": 10000000000,
+      "actualOfferingWindowNs": 10000000045,
+      "sendStoppedNsFromFirstAttempt": 9999837920,
+      "drainAfterSendNs": 17631834,
+      "completionValid": true,
+      "sampleCapReached": false,
+      "malformedCompletionFrames": 0
+    },
+    "financialAndReplicaStateVerified": true,
+    "diskGuard": {
+      "allocatedCapBytes": 2147483648,
+      "minimumHostFreeBytes": 8589934592,
+      "earlyStopAllocatedBytes": 1879048192,
+      "intervalSeconds": 2.0,
+      "checks": 16,
+      "guardElapsedSeconds": 7.510624625079799,
+      "clientRunningGuardElapsedSeconds": 6.384890001150779,
+      "peakAllocatedBytes": 798588928,
+      "minimumObservedHostFreeBytes": 87360569344,
+      "samples": [
+        {
+          "phase": "before-client",
+          "hostFreeBytes": 88308678656,
+          "allocatedBytesByNode": {
+            "0": 1093632,
+            "1": 1093632,
+            "2": 1097728
+          },
+          "allocatedBytes": 3284992,
+          "passed": true,
+          "elapsedSeconds": 0.3861578750074841
+        },
+        {
+          "phase": "client-running",
+          "hostFreeBytes": 88259428352,
+          "allocatedBytesByNode": {
+            "0": 1306624,
+            "1": 1343488,
+            "2": 1404928
+          },
+          "allocatedBytes": 4055040,
+          "passed": true,
+          "elapsedSeconds": 0.6536807910306379
+        },
+        {
+          "phase": "client-running",
+          "hostFreeBytes": 88251686912,
+          "allocatedBytesByNode": {
+            "0": 4132864,
+            "1": 4337664,
+            "2": 4526080
+          },
+          "allocatedBytes": 12996608,
+          "passed": true,
+          "elapsedSeconds": 0.5176204579765908
+        },
+        {
+          "phase": "client-running",
+          "hostFreeBytes": 88217251840,
+          "allocatedBytesByNode": {
+            "0": 16818176,
+            "1": 17838080,
+            "2": 19017728
+          },
+          "allocatedBytes": 53673984,
+          "passed": true,
+          "elapsedSeconds": 0.47268820798490196
+        },
+        {
+          "phase": "client-running",
+          "hostFreeBytes": 88146046976,
+          "allocatedBytesByNode": {
+            "0": 40439808,
+            "1": 41545728,
+            "2": 42766336
+          },
+          "allocatedBytes": 124751872,
+          "passed": true,
+          "elapsedSeconds": 0.45045125001342967
+        },
+        {
+          "phase": "client-running",
+          "hostFreeBytes": 88074293248,
+          "allocatedBytesByNode": {
+            "0": 64368640,
+            "1": 65392640,
+            "2": 66629632
+          },
+          "allocatedBytes": 196390912,
+          "passed": true,
+          "elapsedSeconds": 0.4892322089872323
+        },
+        {
+          "phase": "client-running",
+          "hostFreeBytes": 87993020416,
+          "allocatedBytesByNode": {
+            "0": 91209728,
+            "1": 92631040,
+            "2": 93814784
+          },
+          "allocatedBytes": 277655552,
+          "passed": true,
+          "elapsedSeconds": 0.440044583985582
+        },
+        {
+          "phase": "client-running",
+          "hostFreeBytes": 87812878336,
+          "allocatedBytesByNode": {
+            "0": 117985280,
+            "1": 118943744,
+            "2": 120274944
+          },
+          "allocatedBytes": 357203968,
+          "passed": true,
+          "elapsedSeconds": 0.480036209046375
+        },
+        {
+          "phase": "client-running",
+          "hostFreeBytes": 87735418880,
+          "allocatedBytesByNode": {
+            "0": 144048128,
+            "1": 145616896,
+            "2": 146935808
+          },
+          "allocatedBytes": 436600832,
+          "passed": true,
+          "elapsedSeconds": 0.4922117090318352
+        },
+        {
+          "phase": "client-running",
+          "hostFreeBytes": 87662710784,
+          "allocatedBytesByNode": {
+            "0": 167620608,
+            "1": 168837120,
+            "2": 170119168
+          },
+          "allocatedBytes": 506576896,
+          "passed": true,
+          "elapsedSeconds": 0.46717733301920816
+        },
+        {
+          "phase": "client-running",
+          "hostFreeBytes": 87590436864,
+          "allocatedBytesByNode": {
+            "0": 191516672,
+            "1": 192905216,
+            "2": 194338816
+          },
+          "allocatedBytes": 578760704,
+          "passed": true,
+          "elapsedSeconds": 0.4997285839635879
+        },
+        {
+          "phase": "client-running",
+          "hostFreeBytes": 87509983232,
+          "allocatedBytesByNode": {
+            "0": 218198016,
+            "1": 219172864,
+            "2": 220278784
+          },
+          "allocatedBytes": 657649664,
+          "passed": true,
+          "elapsedSeconds": 0.4606151250191033
+        },
+        {
+          "phase": "client-running",
+          "hostFreeBytes": 87428493312,
+          "allocatedBytesByNode": {
+            "0": 245727232,
+            "1": 246943744,
+            "2": 248119296
+          },
+          "allocatedBytes": 740790272,
+          "passed": true,
+          "elapsedSeconds": 0.4968739580363035
+        },
+        {
+          "phase": "client-running",
+          "hostFreeBytes": 87360569344,
+          "allocatedBytesByNode": {
+            "0": 266194944,
+            "1": 266194944,
+            "2": 266199040
+          },
+          "allocatedBytes": 798588928,
+          "passed": true,
+          "elapsedSeconds": 0.4645295830559917
+        },
+        {
+          "phase": "client-finished",
+          "hostFreeBytes": 87509438464,
+          "allocatedBytesByNode": {
+            "0": 266194944,
+            "1": 266194944,
+            "2": 266199040
+          },
+          "allocatedBytes": 798588928,
+          "passed": true,
+          "elapsedSeconds": 0.3698690409655683
+        },
+        {
+          "phase": "final-verified-state",
+          "hostFreeBytes": 87509385216,
+          "allocatedBytesByNode": {
+            "0": 266194944,
+            "1": 266194944,
+            "2": 266199040
+          },
+          "allocatedBytes": 798588928,
+          "passed": true,
+          "elapsedSeconds": 0.36970770795596763
+        }
+      ],
+      "limitation": "polling guard with 256 MiB headroom, not a filesystem hard quota; du/exec can perturb throughput",
+      "project": "ha142-72c734bdb5",
+      "recordingRoot": "/records/ha142-72c734bdb5",
+      "allocationMethod": "du -sk allocated 1 KiB blocks from this project's three node roots",
+      "clientReaped": true,
+      "clientExitCode": 0
+    },
+    "ownedProjectCleanupSucceeded": true
+  },
+  {
+    "window": 1024,
+    "runId": "ha142-24e2cef3e8",
+    "success": true,
+    "measurement": {
+      "kind": "HA_PERFORMANCE",
+      "mode": "bounded-wire3-no-history-index",
+      "scope": "three-node direct Aeron; sync2; duration window; partial maker; actual TCP completion observation",
+      "workload": "partial-maker",
+      "warmup": 626236,
+      "orders": 389357,
+      "sellPreparation": 3,
+      "maxSamples": 2000000,
+      "warmupSeconds": 20,
+      "measureSeconds": 10,
+      "actualTotalBuys": 1015593,
+      "expectedBuyerQuoteAvailable": 9863759140,
+      "expectedMakerRemaining": [
+        32813600000000,
+        328136000000000,
+        328135000000000
+      ],
+      "expectedBuyerAckFloor": 1015593,
+      "expectedSellerAckFloor": 3,
+      "maxInFlight": 1024,
+      "maxExecutionInFlight": 1024,
+      "maxObservedUnanswered": 1024,
+      "ackMode": "async",
+      "maxObservedFinancialIncomplete": 1024,
+      "asyncAckRequests": 879,
+      "backpressuredOffers": 3,
+      "completionCollectorPeakEntries": 1024,
+      "completionCollectorRetained": 0,
+      "completionReceiveBufferBytes": 212992,
+      "throughputSemantics": "phase start -> max(actual offering stop, last correlated observation); cohort also includes final ACK",
+      "rawSpanSemantics": "first send attempt -> last correlated observation; excludes remaining offering-window time",
+      "admissionTps": 38905.78661678016,
+      "admissionElapsedNs": 10007688672,
+      "admissionRawSpanTps": 38909.73940241584,
+      "admissionRawSpanNs": 10006672005,
+      "admissionP95Ns": 22188292,
+      "admissionP99Ns": 31532958,
+      "leaderCompletionTps": 38891.032494116844,
+      "leaderCompletionElapsedNs": 10011485297,
+      "leaderCompletionRawSpanTps": 38894.982282163146,
+      "leaderCompletionRawSpanNs": 10010468630,
+      "leaderCompletionP95Ns": 40139375,
+      "leaderCompletionP99Ns": 55977792,
+      "allReplicasTps": 38868.28165172716,
+      "allReplicasElapsedNs": 10017345338,
+      "allReplicasRawSpanTps": 38872.22681972234,
+      "allReplicasRawSpanNs": 10016328671,
+      "allReplicasP95Ns": 45258709,
+      "allReplicasP99Ns": 61598000,
+      "cohortElapsedIncludingAckNs": 10017428630,
+      "cohortTpsIncludingAck": 38867.958473291364,
+      "phaseElapsedIncludingAckNs": 10017428630,
+      "offeringWindowNs": 10000000000,
+      "actualOfferingWindowNs": 10000000005,
+      "sendStoppedNsFromFirstAttempt": 9998983338,
+      "drainAfterSendNs": 17428625,
+      "completionValid": true,
+      "sampleCapReached": false,
+      "malformedCompletionFrames": 0
+    },
+    "financialAndReplicaStateVerified": true,
+    "diskGuard": {
+      "allocatedCapBytes": 2147483648,
+      "minimumHostFreeBytes": 8589934592,
+      "earlyStopAllocatedBytes": 1879048192,
+      "intervalSeconds": 2.0,
+      "checks": 16,
+      "guardElapsedSeconds": 7.620179247984197,
+      "clientRunningGuardElapsedSeconds": 6.551463165029418,
+      "peakAllocatedBytes": 783912960,
+      "minimumObservedHostFreeBytes": 87375183872,
+      "samples": [
+        {
+          "phase": "before-client",
+          "hostFreeBytes": 88306761728,
+          "allocatedBytesByNode": {
+            "0": 1093632,
+            "1": 1093632,
+            "2": 1093632
+          },
+          "allocatedBytes": 3280896,
+          "passed": true,
+          "elapsedSeconds": 0.347310833982192
+        },
+        {
+          "phase": "client-running",
+          "hostFreeBytes": 88257110016,
+          "allocatedBytesByNode": {
+            "0": 1384448,
+            "1": 1409024,
+            "2": 1548288
+          },
+          "allocatedBytes": 4341760,
+          "passed": true,
+          "elapsedSeconds": 0.5359610409941524
+        },
+        {
+          "phase": "client-running",
+          "hostFreeBytes": 88246198272,
+          "allocatedBytesByNode": {
+            "0": 5402624,
+            "1": 5955584,
+            "2": 6266880
+          },
+          "allocatedBytes": 17625088,
+          "passed": true,
+          "elapsedSeconds": 0.5471542910090648
+        },
+        {
+          "phase": "client-running",
+          "hostFreeBytes": 88219103232,
+          "allocatedBytesByNode": {
+            "0": 15425536,
+            "1": 16752640,
+            "2": 17625088
+          },
+          "allocatedBytes": 49803264,
+          "passed": true,
+          "elapsedSeconds": 0.4587412920081988
+        },
+        {
+          "phase": "client-running",
+          "hostFreeBytes": 88147775488,
+          "allocatedBytesByNode": {
+            "0": 38907904,
+            "1": 40005632,
+            "2": 41136128
+          },
+          "allocatedBytes": 120049664,
+          "passed": true,
+          "elapsedSeconds": 0.5280800000182353
+        },
+        {
+          "phase": "client-running",
+          "hostFreeBytes": 88067444736,
+          "allocatedBytesByNode": {
+            "0": 66228224,
+            "1": 67395584,
+            "2": 68632576
+          },
+          "allocatedBytes": 202256384,
+          "passed": true,
+          "elapsedSeconds": 0.4272522079991177
+        },
+        {
+          "phase": "client-running",
+          "hostFreeBytes": 87984971776,
+          "allocatedBytesByNode": {
+            "0": 93544448,
+            "1": 94658560,
+            "2": 96153600
+          },
+          "allocatedBytes": 284356608,
+          "passed": true,
+          "elapsedSeconds": 0.44744979101233184
+        },
+        {
+          "phase": "client-running",
+          "hostFreeBytes": 87800606720,
+          "allocatedBytesByNode": {
+            "0": 121389056,
+            "1": 122253312,
+            "2": 123265024
+          },
+          "allocatedBytes": 366907392,
+          "passed": true,
+          "elapsedSeconds": 0.45816137501969934
+        },
+        {
+          "phase": "client-running",
+          "hostFreeBytes": 87733858304,
+          "allocatedBytesByNode": {
+            "0": 143298560,
+            "1": 144330752,
+            "2": 145424384
+          },
+          "allocatedBytes": 433053696,
+          "passed": true,
+          "elapsedSeconds": 0.5372894590254873
+        },
+        {
+          "phase": "client-running",
+          "hostFreeBytes": 87668785152,
+          "allocatedBytesByNode": {
+            "0": 164962304,
+            "1": 166330368,
+            "2": 167723008
+          },
+          "allocatedBytes": 499015680,
+          "passed": true,
+          "elapsedSeconds": 0.5225042499951087
+        },
+        {
+          "phase": "client-running",
+          "hostFreeBytes": 87588659200,
+          "allocatedBytesByNode": {
+            "0": 191803392,
+            "1": 193052672,
+            "2": 194207744
+          },
+          "allocatedBytes": 579063808,
+          "passed": true,
+          "elapsedSeconds": 0.6631772079854272
+        },
+        {
+          "phase": "client-running",
+          "hostFreeBytes": 87524892672,
+          "allocatedBytesByNode": {
+            "0": 212889600,
+            "1": 214331392,
+            "2": 215740416
+          },
+          "allocatedBytes": 642961408,
+          "passed": true,
+          "elapsedSeconds": 0.4748595419805497
+        },
+        {
+          "phase": "client-running",
+          "hostFreeBytes": 87440953344,
+          "allocatedBytesByNode": {
+            "0": 240492544,
+            "1": 241762304,
+            "2": 242933760
+          },
+          "allocatedBytes": 725188608,
+          "passed": true,
+          "elapsedSeconds": 0.474838332971558
+        },
+        {
+          "phase": "client-running",
+          "hostFreeBytes": 87375183872,
+          "allocatedBytesByNode": {
+            "0": 261304320,
+            "1": 261304320,
+            "2": 261304320
+          },
+          "allocatedBytes": 783912960,
+          "passed": true,
+          "elapsedSeconds": 0.4759943750104867
+        },
+        {
+          "phase": "client-finished",
+          "hostFreeBytes": 87524151296,
+          "allocatedBytesByNode": {
+            "0": 261304320,
+            "1": 261304320,
+            "2": 261304320
+          },
+          "allocatedBytes": 783912960,
+          "passed": true,
+          "elapsedSeconds": 0.35687983297975734
+        },
+        {
+          "phase": "final-verified-state",
+          "hostFreeBytes": 87561928704,
+          "allocatedBytesByNode": {
+            "0": 261304320,
+            "1": 261304320,
+            "2": 261304320
+          },
+          "allocatedBytes": 783912960,
+          "passed": true,
+          "elapsedSeconds": 0.36452541599282995
+        }
+      ],
+      "limitation": "polling guard with 256 MiB headroom, not a filesystem hard quota; du/exec can perturb throughput",
+      "project": "ha142-24e2cef3e8",
+      "recordingRoot": "/records/ha142-24e2cef3e8",
+      "allocationMethod": "du -sk allocated 1 KiB blocks from this project's three node roots",
+      "clientReaped": true,
+      "clientExitCode": 0
+    },
+    "ownedProjectCleanupSucceeded": true
+  }
+]

@@ -1,0 +1,32 @@
+{
+  "runId": "ha142-8289c8c623",
+  "mode": "legacy",
+  "success": true,
+  "measurement": {
+    "kind": "HA_PERFORMANCE",
+    "mode": "legacy-wire2-rocksdb-rebuildable",
+    "scope": "three-node direct Aeron; sync2; finite cohort; UDP completion observation",
+    "warmup": 1000,
+    "orders": 5000,
+    "sellPreparation": 6000,
+    "maxInFlight": 256,
+    "admissionTps": 3924.8014540868176,
+    "admissionP95Ns": 118805250,
+    "admissionP99Ns": 164841334,
+    "leaderCompletionTps": 3858.7927489206277,
+    "leaderCompletionP95Ns": 218872376,
+    "leaderCompletionP99Ns": 228425250,
+    "allReplicasTps": 3735.3834408605294,
+    "allReplicasP95Ns": 224580334,
+    "allReplicasP99Ns": 242669833,
+    "cohortElapsedIncludingAckNs": 1338633168,
+    "completionValid": true,
+    "malformedDatagrams": 0
+  },
+  "financialAndReplicaStateVerified": true,
+  "stateSha256": "a57e9ab4bc4f3ce31cd6920dfe976b3d886296583438b73af46b56537599606a",
+  "reportBytes": 14256,
+  "limitation": "finite cohort; same-host Docker CPU/IO; not maximum sustainable TPS or remote disaster RPO0",
+  "baseCommit": "a39b0d8c9176aefac676f62312a3f51fdcb79dbd",
+  "observationRevision": "initial valid run; before receive-buffer adjustment"
+}

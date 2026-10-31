@@ -1,0 +1,50 @@
+[
+  {
+    "candidate": "domain",
+    "tag": "exchange-candidate-domain:20261031",
+    "expectedImageId": "sha256:f773ac826e60530ed4722f42e580f4ce383b117c3c98105df329d57f8123db63",
+    "exitCode": 0,
+    "stdout": "Untagged: exchange-candidate-domain:20261031\nDeleted: sha256:f773ac826e60530ed4722f42e580f4ce383b117c3c98105df329d57f8123db63\n",
+    "stderr": ""
+  },
+  {
+    "candidate": "wake",
+    "tag": "exchange-candidate-wake:20261031",
+    "expectedImageId": "sha256:107e28b49597286db5efe7d49f936aae9e24f8e24186bd5db302ce8b6e9d16fd",
+    "exitCode": 0,
+    "stdout": "Untagged: exchange-candidate-wake:20261031\nDeleted: sha256:107e28b49597286db5efe7d49f936aae9e24f8e24186bd5db302ce8b6e9d16fd\n",
+    "stderr": ""
+  },
+  {
+    "candidate": "client",
+    "tag": "exchange-candidate-client:20261031",
+    "expectedImageId": "sha256:16142d3bed93ede1ef501924aede7fcccd8662c075decd893217e8b06f1e046b",
+    "exitCode": 0,
+    "stdout": "Untagged: exchange-candidate-client:20261031\nDeleted: sha256:16142d3bed93ede1ef501924aede7fcccd8662c075decd893217e8b06f1e046b\n",
+    "stderr": ""
+  },
+  {
+    "candidate": "base",
+    "tag": "exchange-candidate-base:20261031",
+    "expectedImageId": "sha256:2999293a9138ab54ec85c53861c3d089fae71d6666b1e3e918f8160b31aed09d",
+    "exitCode": 0,
+    "stdout": "Untagged: exchange-candidate-base:20261031\nDeleted: sha256:2999293a9138ab54ec85c53861c3d089fae71d6666b1e3e918f8160b31aed09d\n",
+    "stderr": ""
+  },
+  {
+    "candidate": "combined",
+    "tag": "exchange-candidate-combined:20261031",
+    "expectedImageId": "sha256:a63e0779e0935d4c22eea134141bfe064b70b40f591a9a4ba0cd39451e9b46cc",
+    "exitCode": 0,
+    "stdout": "Untagged: exchange-candidate-combined:20261031\nDeleted: sha256:a63e0779e0935d4c22eea134141bfe064b70b40f591a9a4ba0cd39451e9b46cc\n",
+    "stderr": ""
+  },
+  {
+    "candidate": "all-three",
+    "tag": "exchange-candidate-all-three:20261031",
+    "expectedImageId": "sha256:bc4de45ef8c1f26f83cd710f93b8f9f8a4f282162cfdceb006c21e2d0089f22a",
+    "exitCode": 0,
+    "stdout": "Untagged: exchange-candidate-all-three:20261031\nDeleted: sha256:bc4de45ef8c1f26f83cd710f93b8f9f8a4f282162cfdceb006c21e2d0089f22a\n",
+    "stderr": ""
+  }
+]

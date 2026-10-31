@@ -1,0 +1,23 @@
+{
+  "base": {
+    "allReplicasTps": 45705.00288409507,
+    "allReplicasP95Ms": 34.439542,
+    "allReplicasP99Ms": 52.4652915,
+    "cpuNsPerOrder": 10915.492258380376,
+    "allocatedBytesPerOrder": 11255.023690417325
+  },
+  "combined": {
+    "allReplicasTps": 46535.630495740304,
+    "allReplicasP95Ms": 34.035979,
+    "allReplicasP99Ms": 56.851875,
+    "cpuNsPerOrder": 10811.62264851404,
+    "allocatedBytesPerOrder": 11244.661866336668
+  },
+  "all-three": {
+    "allReplicasTps": 42432.842144033704,
+    "allReplicasP95Ms": 38.9576045,
+    "allReplicasP99Ms": 61.4253335,
+    "cpuNsPerOrder": 11800.321464411843,
+    "allocatedBytesPerOrder": 11211.878979084446
+  }
+}

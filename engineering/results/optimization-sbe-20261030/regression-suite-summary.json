@@ -1,0 +1,26 @@
+{
+  "domain-trading": {
+    "tests": 276,
+    "failures": 0,
+    "errors": 0,
+    "skipped": 0
+  },
+  "domain-matching": {
+    "tests": 153,
+    "failures": 0,
+    "errors": 0,
+    "skipped": 0
+  },
+  "app-api": {
+    "tests": 1407,
+    "failures": 0,
+    "errors": 0,
+    "skipped": 3
+  },
+  "architecture-tests": {
+    "tests": 387,
+    "failures": 0,
+    "errors": 0,
+    "skipped": 0
+  }
+}
