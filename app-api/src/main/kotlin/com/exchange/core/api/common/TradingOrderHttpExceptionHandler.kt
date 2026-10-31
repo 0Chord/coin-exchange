@@ -12,7 +12,7 @@ import org.springframework.web.method.annotation.MethodArgumentTypeMismatchExcep
 
 /** 전송 형식과 입력 사전조건의 실패를 엔진의 정상 업무 거절과 구분한다. */
 @RestControllerAdvice(basePackages = ["com.exchange.core.api.trading.api"])
-@Profile("aeron-gateway")
+@Profile("aeron-gateway | aeron-bounded-gateway")
 class TradingOrderHttpExceptionHandler {
     @ExceptionHandler(
         HttpMessageNotReadableException::class,

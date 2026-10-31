@@ -1,6 +1,7 @@
 package com.exchange.core
 
 import com.exchange.core.api.common.TradingOrderHttpExceptionHandler
+import com.exchange.core.api.config.BoundedTradingGatewayConfig
 import com.exchange.core.api.config.TradingGatewayConfig
 import org.springframework.boot.autoconfigure.SpringBootApplication
 import org.springframework.boot.builder.SpringApplicationBuilder
@@ -16,12 +17,12 @@ import org.springframework.context.annotation.Profile
         "org.springframework.boot.flyway.autoconfigure.FlywayAutoConfiguration",
     ],
 )
-@Profile("aeron-gateway")
-@Import(TradingGatewayConfig::class, TradingOrderHttpExceptionHandler::class)
+@Profile("aeron-gateway | aeron-bounded-gateway")
+@Import(TradingGatewayConfig::class, BoundedTradingGatewayConfig::class, TradingOrderHttpExceptionHandler::class)
 class TradingGatewayApplication
 
 fun main(args: Array<String>) {
     SpringApplicationBuilder(TradingGatewayApplication::class.java)
-        .profiles("aeron-gateway")
+        .profiles(if (System.getenv("TRADING_GATEWAY_PROTOCOL") == "bounded") "aeron-bounded-gateway" else "aeron-gateway")
         .run(*args)
 }
