@@ -72,7 +72,7 @@ internal class DevelopmentFundingRun private constructor(
                         "복구 정체성 파일이 없거나 잘못됐습니다"
                     }
                     require(Files.readAllBytes(identityFile).contentEquals(bytes)) {
-                        "복구 설정이 원래 클러스터·마켓·수수료 정책과 다릅니다"
+                        "복구 설정이 원래 클러스터·마켓·수수료 정책·한도형 제어 설정과 다릅니다"
                     }
                     require(Files.isDirectory(config.archiveDirectory, NOFOLLOW_LINKS)) { "복구할 Archive가 없습니다" }
                     require(Files.isDirectory(config.clusterDirectory, NOFOLLOW_LINKS)) { "복구할 클러스터 기록이 없습니다" }
@@ -222,6 +222,8 @@ internal class DevelopmentFundingRun private constructor(
                 writeMarkets(config.markets)
             } else {
                 writeUTF("bounded-wire3-snapshot2")
+                // 확정 명령의 재생 결과를 바꾸는 제어 설정도 복구 전에 원래 값과 대조한다.
+                writeBoolean(config.trustedBoundedControl)
                 val bytes =
                     com.exchange.core.api.trading.infrastructure.history
                         .BoundedTradingStateCodec()
