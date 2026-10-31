@@ -17,7 +17,7 @@ import kotlin.test.assertTrue
 
 class TradingNodeMetricHandoffTest {
     @Test
-    fun `bounded mode skips a saturated optional metric without waiting for its exporter`() {
+    fun `한도형 메트릭은 포화 손실을 정확히 세고 대기 표본과 후속 표본을 계속 기록한다`() {
         val entered = CountDownLatch(1)
         val release = CountDownLatch(1)
         val calls = AtomicInteger()
@@ -44,29 +44,53 @@ class TradingNodeMetricHandoffTest {
                 }
             }
         registry.withRegistry {
-            TradingNodeMetrics(registry, asynchronous = true, queueCapacity = 1, dropOnSaturation = true).use { metrics ->
-                try {
-                    var now = 0L
-                    val capture = TradingNodeCallbackCapture { now }
+            TradingNodeMetrics(registry, asynchronous = true, queueCapacity = 3, dropOnSaturation = true).use { metrics ->
+                var now = 0L
+                val capture = TradingNodeCallbackCapture { now }
 
-                    fun record() {
-                        capture.reset()
-                        capture.kind = TradingNodeCallbackKind.ADMISSION
-                        now++
-                        capture.complete()
-                        metrics.recordCompleted(capture, 128, "LEADER", "OFFERED")
-                    }
-                    record()
+                fun record(duration: Long) {
+                    capture.reset()
+                    capture.kind = TradingNodeCallbackKind.ADMISSION
+                    now += duration
+                    capture.complete()
+                    metrics.recordCompleted(capture, 128, "LEADER", "OFFERED")
+                }
+                try {
+                    record(1)
                     assertTrue(entered.await(5, TimeUnit.SECONDS))
-                    // 작업자가 아직 첫 타이머 안에 있으므로 다른 슬롯을 소비할 수 없다.
-                    repeat(3) { record() }
-                    assertTrue(registry.get("${TradingNodeMetrics.PREFIX}.dropped_samples").gauge().value() >= 1.0)
+                    // 작업자가 첫 슬롯을 잡고 있으므로 두 표본만 더 수락하고 다음 두 표본은 버린다.
+                    record(2)
+                    record(3)
+                    record(4)
+                    record(5)
+                    assertEquals(2.0, registry.get("${TradingNodeMetrics.PREFIX}.dropped_samples").gauge().value())
                     assertFalse(metrics.isOperational)
-                    assertEquals(1L, release.count, "financial owner returned before the exporter was released")
+                    assertEquals(1L, release.count, "금융 처리 스레드는 exporter 해제를 기다리지 않는다")
                 } finally {
                     release.countDown()
                 }
                 metrics.awaitRecorded()
+
+                val callback = registry.get(TradingNodeMetrics.DURATION).tag("phase", "callback").timer()
+                val admissions = registry.get(TradingNodeMetrics.CALLBACKS).tag("kind", "admission").counter()
+                // 포화 전에 수락한 대기 표본도 빠짐없이 기록한다.
+                assertEquals(3L, callback.count())
+                assertEquals(6.0, callback.totalTime(TimeUnit.NANOSECONDS))
+                assertEquals(3.0, admissions.count())
+
+                record(7)
+                metrics.awaitRecorded()
+
+                // 과거 손실 표시를 유지하면서 비워진 큐의 다음 정상 표본도 기록한다.
+                assertEquals(4L, callback.count())
+                assertEquals(13.0, callback.totalTime(TimeUnit.NANOSECONDS))
+                assertEquals(4.0, admissions.count())
+                assertEquals(2.0, registry.get("${TradingNodeMetrics.PREFIX}.dropped_samples").gauge().value())
+                assertEquals(1.0, registry.get("${TradingNodeMetrics.PREFIX}.degraded").gauge().value())
+                assertEquals(0.0, registry.get("${TradingNodeMetrics.PREFIX}.observation_failures").counter().count())
+                assertEquals(0.0, registry.get("${TradingNodeMetrics.PREFIX}.handoff_fallbacks").counter().count())
+                assertFalse(metrics.isOperational)
+                assertEquals(0L, metrics.failureCount)
             }
         }
     }

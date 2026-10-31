@@ -304,7 +304,9 @@ internal class TradingNodeMetrics(
         timingErrors: Int,
     ) {
         try {
-            if (!isOperational) return
+            // 큐 포화로 생긴 손실은 degraded에 남기되 이미 수락했거나 이후 도착한 정상 표본은 기록한다.
+            // 실제 시계·meter 기록 실패가 있을 때만 기존처럼 후속 기록을 중단한다.
+            if (recordingFailures.get() != 0L) return
             var ordinal = 0
             while (ordinal < durationsNs.size) {
                 val duration = durationsNs[ordinal]

@@ -84,6 +84,7 @@ class BoundedTradingClusterHaTest {
             member: Int,
             recover: Boolean,
             mismatchIdentity: Boolean = false,
+            trustedControl: Boolean = true,
         ) {
             val boot = boots[member]++
             val root = persistentRoots[member]
@@ -143,6 +144,7 @@ class BoundedTradingClusterHaTest {
                     "FUNDING_MEMBERS" to members,
                     "FUNDING_RUN_ID" to runId,
                     "FUNDING_RECOVER_EXISTING" to recover.toString(),
+                    "FUNDING_TRUSTED_BOUNDED_CONTROL" to trustedControl.toString(),
                     "HA_PROBE_CONTROL" to control.toString(),
                     "HA_PROBE_FAULTS" to "true",
                     "HA_PROBE_IDENTITY_MISMATCH" to mismatchIdentity.toString(),
@@ -150,6 +152,21 @@ class BoundedTradingClusterHaTest {
             )
             builder.environment().remove("HA_PROBE_MARKER_ENDPOINT")
             processes[member] = builder.start()
+        }
+
+        fun rejectChangedControl(member: Int) {
+            val root = persistentRoots[member]
+            val before = Files.walk(root).use { it.toList().toSet() }
+            start(member, true, trustedControl = false)
+            val process = checkNotNull(processes[member])
+            assertTrue(process.waitFor(30, TimeUnit.SECONDS), "제어 설정이 다른 노드는 기동 전에 종료되어야 한다")
+            assertTrue(process.exitValue() != 0)
+            assertFalse(Files.readString(checkNotNull(output[member])).contains("\"kind\":\"HA_READY\""))
+            val error = Files.readString(directory.resolve("node-$member-${boots[member] - 1}.stderr.log"))
+            assertTrue(error.contains("복구 설정"), error.takeLast(4000))
+            assertEquals(before, Files.walk(root).use { it.toList().toSet() })
+            assertPersistentRoot(member)
+            processes[member] = null
         }
 
         fun waitReady(membersToWait: List<Int>) {
@@ -296,6 +313,8 @@ class BoundedTradingClusterHaTest {
             val genesis = capture(listOf(0, 1, 2), 2, "before-genesis-only-restart")
             assertTrue(genesis.all { it.path("snapshotCount").asLong() == 0L })
             repeat(3, ::kill)
+            rejectChangedControl(0)
+            checks["changedControlRejectedBeforeGenesisReplay"] = true
             Thread.sleep(10_500)
             repeat(3) { start(it, true) }
             waitReady(listOf(0, 1, 2))
@@ -520,6 +539,8 @@ class BoundedTradingClusterHaTest {
             assertEquals("90", tail.first().path("feeRevenue").asString())
             checks["H02ExecutionCommittedBeforePublicAdmissionReceiptCrash"] = true
             repeat(3, ::kill)
+            rejectChangedControl(0)
+            checks["changedControlRejectedBeforeSnapshotTailReplay"] = true
             Thread.sleep(10_500)
             repeat(3) { start(it, true) }
             waitReady(listOf(0, 1, 2))
