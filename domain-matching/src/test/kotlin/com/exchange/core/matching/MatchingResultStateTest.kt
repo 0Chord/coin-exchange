@@ -16,6 +16,96 @@ import kotlin.test.assertSame
 
 class MatchingResultStateTest : MatchingResultTestFixture() {
     @Test
+    fun `불변 후보의 완전성 검증은 실제 반영 전까지 엔진 상태를 전진시키지 않는다`() {
+        val engine = MatchingEngine()
+        engine.process(submit("S1", "U-S1", Side.SELL, 90, 1))
+        engine.process(submit("S2", "U-S2", Side.SELL, 95, 1))
+        val command = buy()
+        val plan = engine.prepareSubmit(command)
+
+        MatchingResultState.validateCompleteResult("C3", command, plan)
+        MatchingResultState.validateCompleteResult("C3", command, plan)
+
+        assertEquals(2L, engine.lastEngineSequence(market))
+        assertEquals(buyEvents(), plan.events)
+        assertEquals(buyEvents(), engine.apply(plan))
+        assertEquals(5L, engine.lastEngineSequence(market))
+    }
+
+    @Test
+    fun `후보가 소유한 이벤트는 원본 목록 변경과 외부 수정 시도로 바뀌지 않는다`() {
+        val input = buyEvents().toMutableList()
+        val command = buy()
+        val plan = SubmitOrderPlan(Any(), 2L, command, emptyList(), Quantity(1), input)
+        input.clear()
+
+        assertFailsWith<UnsupportedOperationException> { (plan.events as MutableList<MatchingEvent>).clear() }
+        MatchingResultState.validateCompleteResult("C3", command, plan)
+        assertEquals(buyEvents(), plan.events)
+        for (side in Side.entries) {
+            val emptyBook = MatchingEngine()
+            val noFill = submit("N1", "U-N1", side, 100, 3)
+            val noFillPlan = emptyBook.prepareSubmit(noFill)
+            MatchingResultState.validateCompleteResult("N1", noFill, noFillPlan)
+            assertEquals(0L, emptyBook.lastEngineSequence(market))
+            assertEquals(noFillPlan.events, emptyBook.apply(noFillPlan))
+        }
+    }
+
+    @Test
+    fun `후보 경로도 원본 명령과 이벤트 의미 및 overflow 반례를 같은 오류로 거절한다`() {
+        val invalid =
+            listOf(
+                buy() to listOf(firstTrade().copy(marketId = otherMarket), secondTrade(), remainder()),
+                buy() to listOf(firstTrade(), secondTrade().copy(engineSequence = 3), remainder()),
+                buy() to listOf(firstTrade().copy(engineSequence = 0), secondTrade(), remainder()),
+                buy() to listOf(secondTrade(), firstTrade(), remainder()),
+                buy() to listOf(firstTrade(), remainder()),
+                buy() to listOf(firstTrade().copy(takerUserId = UserId("other")), secondTrade(), remainder()),
+                buy() to listOf(firstTrade().copy(makerOrderId = OrderId("B1")), secondTrade(), remainder()),
+                buy() to listOf(firstTrade().copy(price = Price(101)), secondTrade(), remainder()),
+                buy() to listOf(firstTrade().copy(quantity = Quantity(2)), secondTrade(), remainder()),
+                buy() to listOf(remainder().copy(engineSequence = 3), secondTrade(), firstTrade().copy(engineSequence = 5)),
+                buy() to listOf(OrderCancelled(market, 3, OrderId("B1"), UserId("U-B1"), Quantity(3))),
+                buy().copy(userId = UserId("different-original")) to buyEvents(),
+                buy().copy(orderType = OrderType.MARKET) to buyEvents(),
+                buy().copy(timeInForce = TimeInForce.IOC) to buyEvents(),
+                buy() to listOf(firstTrade().copy(quantity = Quantity(Long.MAX_VALUE)), secondTrade(), remainder()),
+                buy() to
+                    listOf(
+                        firstTrade().copy(engineSequence = Long.MAX_VALUE),
+                        secondTrade().copy(engineSequence = Long.MAX_VALUE),
+                        remainder().copy(engineSequence = Long.MAX_VALUE),
+                    ),
+            )
+        for ((command, events) in invalid) {
+            // Deliberately retain the candidate's own command so a changed original is checked independently.
+            val plan = SubmitOrderPlan(Any(), 2L, buy(), emptyList(), Quantity.ZERO, events)
+            val copied =
+                assertFailsWith<MatchingResultException> {
+                    MatchingResultState.validateCompleteResult(
+                        "C3",
+                        command,
+                        events.size,
+                        events.first().engineSequence,
+                        events.last().engineSequence,
+                        events,
+                    )
+                }
+            val reused =
+                assertFailsWith<MatchingResultException> {
+                    MatchingResultState.validateCompleteResult("C3", command, plan)
+                }
+            assertEquals(MatchingResultException.Reason.INVALID_RESULT, reused.reason)
+            assertEquals(copied.reason, reused.reason)
+            assertEquals(copied.message, reused.message)
+        }
+        val plan = SubmitOrderPlan(Any(), 2L, buy(), emptyList(), Quantity(1), buyEvents())
+        val blankId = assertFailsWith<MatchingResultException> { MatchingResultState.validateCompleteResult(" ", buy(), plan) }
+        assertEquals(MatchingResultException.Reason.INVALID_RESULT, blankId.reason)
+    }
+
+    @Test
     fun `체결 두 건과 잔량 한 건을 모두 확인한 뒤 결과 하나로 등록한다`() {
         val state = prepared()
         val buy = buy()

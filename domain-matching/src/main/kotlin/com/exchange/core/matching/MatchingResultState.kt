@@ -241,20 +241,45 @@ class MatchingResultState {
             validate(result)
         }
 
-        private fun validate(result: MatchingCommandResult) {
-            requireResult(result.expectedEventCount > 0 && result.events.size == result.expectedEventCount, "전체 이벤트 개수가 다릅니다")
-            requireResult(result.firstEngineSequence > 0 && result.lastEngineSequence >= result.firstEngineSequence, "이벤트 순번 범위가 잘못됐습니다")
+        /** The plan already owns an immutable event copy; validate it against the original command. */
+        fun validateCompleteResult(
+            commandId: String,
+            command: MatchingCommand,
+            plan: SubmitOrderPlan,
+        ) {
+            requireResult(commandId.isNotBlank(), "내부 명령 ID가 비어 있습니다")
+            validate(command, plan.events.size, plan.firstEngineSequence, plan.lastEngineSequence, plan.events)
+        }
+
+        private fun validate(result: MatchingCommandResult) =
+            validate(
+                result.command,
+                result.expectedEventCount,
+                result.firstEngineSequence,
+                result.lastEngineSequence,
+                result.events,
+            )
+
+        private fun validate(
+            command: MatchingCommand,
+            expectedEventCount: Int,
+            firstEngineSequence: Long,
+            lastEngineSequence: Long,
+            events: List<MatchingEvent>,
+        ) {
+            requireResult(expectedEventCount > 0 && events.size == expectedEventCount, "전체 이벤트 개수가 다릅니다")
+            requireResult(firstEngineSequence > 0 && lastEngineSequence >= firstEngineSequence, "이벤트 순번 범위가 잘못됐습니다")
             requireResult(
-                exactAdd(result.firstEngineSequence, result.expectedEventCount.toLong() - 1) == result.lastEngineSequence,
+                exactAdd(firstEngineSequence, expectedEventCount.toLong() - 1) == lastEngineSequence,
                 "이벤트 개수와 순번 범위가 다릅니다",
             )
-            result.events.forEachIndexed { index, event ->
-                requireResult(event.marketId == result.command.marketId, "다른 마켓의 이벤트입니다")
-                requireResult(event.engineSequence == exactAdd(result.firstEngineSequence, index.toLong()), "이벤트 순서가 연속되지 않습니다")
+            events.forEachIndexed { index, event ->
+                requireResult(event.marketId == command.marketId, "다른 마켓의 이벤트입니다")
+                requireResult(event.engineSequence == exactAdd(firstEngineSequence, index.toLong()), "이벤트 순서가 연속되지 않습니다")
             }
-            when (val command = result.command) {
-                is SubmitOrderCommand -> validateSubmit(command, result.events)
-                is CancelOrderCommand -> validateCancel(command, result.events)
+            when (command) {
+                is SubmitOrderCommand -> validateSubmit(command, events)
+                is CancelOrderCommand -> validateCancel(command, events)
             }
         }
 

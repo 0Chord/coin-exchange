@@ -993,10 +993,7 @@ class TradingState(
             MatchingResultState.validateCompleteResult(
                 "EXECUTE:${live.marketAdmissionSequence}",
                 matchingCommand,
-                plan.events.size,
-                plan.firstEngineSequence,
-                plan.lastEngineSequence,
-                plan.events,
+                plan,
             )
             for (change in settlement.balanceChanges) {
                 check(current.balances[TradingBalanceKey(change.previous.userId, change.previous.assetId)] == change.previous)
