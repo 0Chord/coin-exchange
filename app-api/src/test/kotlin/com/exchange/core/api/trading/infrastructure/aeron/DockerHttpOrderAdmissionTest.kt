@@ -260,9 +260,10 @@ private class DockerHttpOrderVerification : AutoCloseable {
             compose(
                 listOf(
                     "run",
-                    "--use-aliases",
                     "--name",
                     name,
+                    "--env",
+                    "FUNDING_HOST=$name",
                     "client",
                     "com.exchange.core.api.trading.infrastructure.aeron.DevelopmentFundingClientKt",
                     "--cluster-env",

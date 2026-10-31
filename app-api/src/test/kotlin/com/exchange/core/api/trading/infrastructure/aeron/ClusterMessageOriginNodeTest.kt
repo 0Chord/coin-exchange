@@ -79,7 +79,7 @@ class ClusterMessageOriginNodeTest {
                 assertFalse(node.isClosed)
                 assertNull(node.error)
                 assertIs<FundingRequestOutcome.Confirmed>(client.request(command()))
-                assertEquals(1, assertNotNull(node.observation?.snapshot).preparations.size)
+                assertEquals(1, assertNotNull(node.captureObservation()?.snapshot).preparations.size)
                 assertEquals(1L, node.observation?.malformedMessages)
                 assertNull(node.error)
             }
@@ -97,7 +97,8 @@ class ClusterMessageOriginNodeTest {
                 DevelopmentFundingClient(config).use { client ->
                     assertTrue(client.send(command()))
                     eventually {
-                        node.observation
+                        node
+                            .captureObservation()
                             ?.snapshot
                             ?.preparations
                             ?.size == 1
@@ -106,7 +107,7 @@ class ClusterMessageOriginNodeTest {
                     val frame = probe.frames.single()
                     assertFalse(frame.internal)
                     assertFalse(frame.nullSession, "Aeron에서 받은 외부 세션은 존재하며 test decorator가 null로 바꾼다")
-                    val snapshot = assertNotNull(node.observation?.snapshot)
+                    val snapshot = assertNotNull(node.captureObservation()?.snapshot)
                     assertEquals(
                         1_000L,
                         snapshot.balances
@@ -125,6 +126,8 @@ class ClusterMessageOriginNodeTest {
         private val echo: ByteArray? = null,
         private val eraseExternalSession: Boolean = false,
     ) : ClusteredService by service {
+        override fun doBackgroundWork(nowNs: Long): Int = service.doBackgroundWork(nowNs)
+
         val frames = ConcurrentLinkedQueue<OriginFrame>()
         private lateinit var cluster: Cluster
 

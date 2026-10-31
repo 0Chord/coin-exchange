@@ -26,7 +26,6 @@ import io.aeron.driver.MediaDriver
 import io.aeron.driver.ThreadingMode
 import io.aeron.exceptions.AeronException
 import org.agrona.ErrorHandler
-import org.agrona.concurrent.SleepingMillisIdleStrategy
 import java.net.DatagramSocket
 import java.net.InetSocketAddress
 import java.nio.file.Files
@@ -112,6 +111,17 @@ internal class DevelopmentFundingNode private constructor(
     private var archive: Archive? = null
     private var consensus: ConsensusModule? = null
     private var container: ClusteredServiceContainer? = null
+
+    /** 요청 ID를 tag로 쓰지 않는 운영용 고정 구간 지표. 서비스 상태·복제 로그와 분리한다. */
+    private val metricsRegistry: io.micrometer.core.instrument.MeterRegistry =
+        io.micrometer.core.instrument.simple
+            .SimpleMeterRegistry()
+    private val metricRecorder = TradingNodeMetrics(metricsRegistry, asynchronous = true, onFatal = ::fail)
+    val metrics: io.micrometer.core.instrument.MeterRegistry
+        get() {
+            metricRecorder.awaitRecorded()
+            return metricsRegistry
+        }
     private val service =
         DevelopmentFundingAdapter(
             run {
@@ -131,9 +141,23 @@ internal class DevelopmentFundingNode private constructor(
             TimeUnit.MILLISECONDS.toNanos(config.replyTimeoutMs),
             markets = config.markets,
             serviceId = config.serviceId,
+            telemetry = metricRecorder,
             onFatal = ::fail,
         )
     val observation: FundingObservation? get() = service.observation
+
+    /** 전체 조회는 서비스 스레드에 요청한다. 일반 명령은 누적 상태를 복사하지 않는다. */
+    fun captureObservation(timeoutMs: Long = config.resultTimeoutMs): FundingObservation? {
+        require(timeoutMs in 1..60_000)
+        val capture = service.captureObservation()
+        return try {
+            capture.get(timeoutMs, TimeUnit.MILLISECONDS)
+        } catch (failure: Throwable) {
+            capture.cancel(false)
+            throw failure
+        }
+    }
+
     internal val logStreamId: Int get() = requireNotNull(consensus).context().logStreamId()
 
     /** Aeron이 단일 노드의 MDC publication에 적용하는 실제 기본 채널 설정이다. 실행 설정은 바꾸지 않는다. */
@@ -199,8 +223,11 @@ internal class DevelopmentFundingNode private constructor(
                     .dirDeleteOnStart(false)
                     .dirDeleteOnShutdown(false)
                     .spiesSimulateConnection(true)
+                    .socketRcvbufLength(TradingAeronRuntime.SOCKET_BUFFER_BYTES)
+                    .socketSndbufLength(TradingAeronRuntime.SOCKET_BUFFER_BYTES)
+                    .initialWindowLength(TradingAeronRuntime.RECEIVER_WINDOW_BYTES)
                     .threadingMode(ThreadingMode.SHARED)
-                    .sharedIdleStrategy(SleepingMillisIdleStrategy(1))
+                    .sharedIdleStrategy(TradingAeronRuntime.idleStrategy())
                     .errorHandler(errors),
             )
         archive =
@@ -215,11 +242,11 @@ internal class DevelopmentFundingNode private constructor(
                     .localControlChannel("aeron:ipc")
                     .replicationChannel(config.udp(5))
                     .recordingEventsEnabled(false)
-                    .segmentFileLength(64 * 1024)
+                    .segmentFileLength(TradingAeronRuntime.TERM_LENGTH_BYTES)
                     .fileSyncLevel(2)
                     .catalogFileSyncLevel(2)
                     .threadingMode(ArchiveThreadingMode.SHARED)
-                    .idleStrategySupplier { SleepingMillisIdleStrategy(1) }
+                    .idleStrategySupplier(TradingAeronRuntime::idleStrategy)
                     .errorHandler(errors),
             )
         consensus =
@@ -234,13 +261,14 @@ internal class DevelopmentFundingNode private constructor(
                     .clusterMembers(config.members)
                     .clusterDir(config.clusterDirectory.toFile())
                     .deleteDirOnStart(false)
-                    .ingressChannel("aeron:udp?term-length=64k")
-                    .logChannel("aeron:udp?term-length=64k|control-mode=manual|control=${config.endpoint(2)}")
+                    .ingressChannel(TradingAeronRuntime.UDP_CHANNEL)
+                    .ingressFragmentLimit(TradingAeronRuntime.INGRESS_FRAGMENT_LIMIT)
+                    .logChannel("${TradingAeronRuntime.LOG_CHANNEL}|control-mode=manual|control=${config.endpoint(2)}")
                     .replicationChannel(config.udp(6))
                     .archiveContext(config.archiveClient())
                     .sessionTimeoutNs(TimeUnit.MILLISECONDS.toNanos(config.sessionTimeoutMs))
                     .fileSyncLevel(2)
-                    .idleStrategySupplier { SleepingMillisIdleStrategy(1) }
+                    .idleStrategySupplier(TradingAeronRuntime::idleStrategy)
                     .errorHandler(errors)
                     .terminationHook { fail(IllegalStateException("Consensus가 종료됐습니다")) },
             )
@@ -254,7 +282,7 @@ internal class DevelopmentFundingNode private constructor(
                     .clusterDir(config.clusterDirectory.toFile())
                     .archiveContext(config.archiveClient())
                     .clusteredService(serviceDecorator(service))
-                    .idleStrategySupplier { SleepingMillisIdleStrategy(1) }
+                    .idleStrategySupplier(TradingAeronRuntime::idleStrategy)
                     .errorHandler(errors)
                     .terminationHook { fail(IllegalStateException("자금 준비 서비스가 종료됐습니다")) },
             )
@@ -301,6 +329,15 @@ internal class DevelopmentFundingNode private constructor(
                 } catch (error: Throwable) {
                     failure.compareAndSet(null, error)
                 }
+            }
+            try {
+                try {
+                    metricRecorder.close()
+                } finally {
+                    metricsRegistry.close()
+                }
+            } catch (error: Throwable) {
+                failure.compareAndSet(null, error)
             }
         } finally {
             stopped.countDown()
@@ -371,7 +408,10 @@ fun main(args: Array<String>) {
                 while (!node.awaitClosed(100)) {
                     val observed = node.observation
                     if (observed != null && observed !== last) {
-                        if (structured) fundingAppliedEvent(config, observed) else println("OBSERVATION $observed")
+                        val captured = node.captureObservation()
+                        if (captured != null) {
+                            if (structured) fundingAppliedEvent(config, captured) else println("OBSERVATION $captured")
+                        }
                         last = observed
                     }
                 }

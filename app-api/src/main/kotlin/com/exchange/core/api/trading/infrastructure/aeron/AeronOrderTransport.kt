@@ -6,7 +6,6 @@ import com.exchange.core.api.trading.infrastructure.codec.AdmissionResultPayload
 import io.aeron.cluster.client.AeronCluster
 import io.aeron.driver.MediaDriver
 import io.aeron.driver.ThreadingMode
-import org.agrona.concurrent.SleepingMillisIdleStrategy
 import org.agrona.concurrent.UnsafeBuffer
 import java.nio.file.Path
 import java.util.UUID
@@ -93,8 +92,11 @@ internal class AeronOrderTransport(
                 .aeronDirectoryName(settings.runRoot.resolve("driver-${UUID.randomUUID()}").toString())
                 .dirDeleteOnStart(false)
                 .dirDeleteOnShutdown(true)
+                .socketRcvbufLength(TradingAeronRuntime.SOCKET_BUFFER_BYTES)
+                .socketSndbufLength(TradingAeronRuntime.SOCKET_BUFFER_BYTES)
+                .initialWindowLength(TradingAeronRuntime.RECEIVER_WINDOW_BYTES)
                 .threadingMode(ThreadingMode.SHARED)
-                .sharedIdleStrategy(SleepingMillisIdleStrategy(1))
+                .sharedIdleStrategy(TradingAeronRuntime.idleStrategy())
                 .errorHandler { errors.compareAndSet(null, it) },
         )
     private val connection: AeronCluster =
@@ -103,7 +105,7 @@ internal class AeronOrderTransport(
                 AeronCluster
                     .Context()
                     .aeronDirectoryName(driver.aeronDirectoryName())
-                    .ingressChannel("aeron:udp?term-length=64k")
+                    .ingressChannel(TradingAeronRuntime.UDP_CHANNEL)
                     .ingressEndpoints(settings.ingressEndpoints)
                     .egressChannel("aeron:udp?endpoint=${settings.egressEndpoint}")
                     .messageTimeoutNs(TimeUnit.MILLISECONDS.toNanos(settings.startupTimeoutMs))

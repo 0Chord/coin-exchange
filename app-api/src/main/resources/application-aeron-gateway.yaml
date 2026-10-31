@@ -1,0 +1,11 @@
+# TCP 연결의 accept 대기열이다. 주문 큐·동시 처리 한도와 금융 판단은 Gateway가 별도로 제한한다.
+server:
+  tomcat:
+    accept-count: ${TRADING_GATEWAY_HTTP_ACCEPT_COUNT:1024}
+    # 비동기 요청은 HTTP worker를 반환한 뒤에도 processor를 점유한다.
+    # 큐 1024 + in-flight 256의 기본 수용량에 맞춰 반복 생성·등록을 줄인다.
+    processor-cache: ${TRADING_GATEWAY_HTTP_PROCESSOR_CACHE:1280}
+    # 가상 스레드를 끈 경우에는 설정된 최대 worker 수만큼 미리 준비한다.
+    threads:
+      max: ${TRADING_GATEWAY_HTTP_MAX_THREADS:200}
+      min-spare: ${TRADING_GATEWAY_HTTP_MIN_SPARE_THREADS:${server.tomcat.threads.max:200}}

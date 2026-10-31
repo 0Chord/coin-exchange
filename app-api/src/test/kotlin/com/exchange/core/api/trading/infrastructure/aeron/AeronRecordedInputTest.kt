@@ -43,13 +43,13 @@ class AeronRecordedInputTest {
         startObservedTradingNode(config).use { node ->
             val expected = listOf(fund(node), send(node, order()))
             assertEquals(1L, assertIs<AdmissionResultPayload.Accepted>(lastExternalObservation(node)?.admissionResult).sequence)
-            val before = snapshotValues(assertNotNull(node.observation?.snapshot))
+            val before = snapshotValues(assertNotNull(node.captureObservation()?.snapshot))
             val read = completed(reader(node).read(assertNotNull(node.observation).position))
             assertMatch(withExecutions(node, expected, read.limitPosition), read)
             assertEquals(expected.map { it.position }, read.inputs.filter { it.clusterSessionId >= 0 }.map { it.position })
             assertTrue(read.controls.isNotEmpty(), "실제 Cluster 제어 메시지와 업무 입력을 구분한다")
-            assertEquals(before, snapshotValues(assertNotNull(node.observation?.snapshot)))
-            val balance = assertNotNull(node.observation?.snapshot).balances.single()
+            assertEquals(before, snapshotValues(assertNotNull(node.captureObservation()?.snapshot)))
+            val balance = assertNotNull(node.captureObservation()?.snapshot).balances.single()
             assertEquals(Amount(700_000_000), balance.available)
             assertEquals(Amount(300_000_000), balance.hold)
             println(
@@ -76,7 +76,7 @@ class AeronRecordedInputTest {
             expected.add(send(node, first))
             assertEquals(accepted, lastExternalObservation(node)?.admissionResult)
 
-            val before = assertNotNull(node.observation?.snapshot)
+            val before = assertNotNull(node.captureObservation()?.snapshot)
             assertRepresentativeState(before)
             val read = completed(reader(node).read(assertNotNull(node.observation).position))
             assertMatch(withExecutions(node, expected, read.limitPosition), read)
@@ -87,8 +87,8 @@ class AeronRecordedInputTest {
                 read.inputs.filter { it.clusterSessionId >= 0 }[1].bytes,
                 read.inputs.filter { it.clusterSessionId >= 0 }[3].bytes,
             )
-            assertEquals(snapshotValues(before), snapshotValues(assertNotNull(node.observation?.snapshot)))
-            assertRepresentativeState(assertNotNull(node.observation?.snapshot))
+            assertEquals(snapshotValues(before), snapshotValues(assertNotNull(node.captureObservation()?.snapshot)))
+            assertRepresentativeState(assertNotNull(node.captureObservation()?.snapshot))
         }
     }
 
@@ -139,14 +139,14 @@ class AeronRecordedInputTest {
             val limit = expected.last().position
             val later = send(node, order("R3", "O3").let { it.copy(order = it.order.copy(quantity = Quantity(100_000_000))) })
             assertTrue(later.position > limit)
-            val beforeReading = snapshotValues(assertNotNull(node.observation?.snapshot))
+            val beforeReading = snapshotValues(assertNotNull(node.captureObservation()?.snapshot))
             val read = completed(reader(node).read(limit))
             assertMatch(withExecutions(node, expected, read.limitPosition), read)
             assertEquals(limit, read.consumedPosition)
             assertEquals(5, read.inputs.size)
             assertTrue(read.inputs.none { it.position == later.position })
-            assertEquals(beforeReading, snapshotValues(assertNotNull(node.observation?.snapshot)))
-            val current = assertNotNull(node.observation?.snapshot)
+            assertEquals(beforeReading, snapshotValues(assertNotNull(node.captureObservation()?.snapshot)))
+            val current = assertNotNull(node.captureObservation()?.snapshot)
             assertEquals(Amount(600_000_000), current.balances.single().available)
             assertEquals(Amount(400_000_000), current.balances.single().hold)
             assertEquals(2L, current.lastAdmissionSequence)
@@ -160,7 +160,7 @@ class AeronRecordedInputTest {
             val first = order()
             expected.add(send(node, first))
             val accepted = assertIs<AdmissionResultPayload.Accepted>(lastExternalObservation(node)?.admissionResult)
-            val before = snapshotValues(assertNotNull(node.observation?.snapshot))
+            val before = snapshotValues(assertNotNull(node.captureObservation()?.snapshot))
             val changed =
                 first.copy(
                     feePolicySnapshot =
@@ -173,15 +173,15 @@ class AeronRecordedInputTest {
                 )
             expected.add(send(node, changed))
             assertEquals(accepted, lastExternalObservation(node)?.admissionResult)
-            assertEquals(before, snapshotValues(assertNotNull(node.observation?.snapshot)))
+            assertEquals(before, snapshotValues(assertNotNull(node.captureObservation()?.snapshot)))
             val read = completed(reader(node).read(assertNotNull(node.observation).position))
             assertMatch(withExecutions(node, expected, read.limitPosition), read)
             assertEquals(changed, AdmissionCommandCodec().decode(read.inputs.last { it.clusterSessionId >= 0 }.bytes))
-            val request = assertNotNull(node.observation?.snapshot).requests.single()
+            val request = assertNotNull(node.captureObservation()?.snapshot).requests.single()
             assertEquals(first.feePolicySnapshot, request.feePolicySnapshot)
             assertEquals(first.ledgerTransactionId, request.ledgerTransactionId)
             assertEquals(first.occurredAt, request.occurredAt)
-            assertEquals(before, snapshotValues(assertNotNull(node.observation?.snapshot)))
+            assertEquals(before, snapshotValues(assertNotNull(node.captureObservation()?.snapshot)))
         }
     }
 
@@ -220,13 +220,13 @@ class AeronRecordedInputTest {
             expected.add(send(node, command) { maximumPayload = it.connection.ingressPublication().maxPayloadLength() })
             assertTrue(expected.last().bytes.size > maximumPayload, "실제 UDP publication의 MTU payload를 넘어야 한다")
             assertTrue(expected.last().bytes.size <= 4096)
-            val before = snapshotValues(assertNotNull(node.observation?.snapshot))
+            val before = snapshotValues(assertNotNull(node.captureObservation()?.snapshot))
             val read = completed(reader(node).read(assertNotNull(node.observation).position))
             assertMatch(withExecutions(node, expected, read.limitPosition), read)
             assertTrue(read.inputs.last { it.clusterSessionId >= 0 }.fragmentCount > 1, "실제 Archive의 여러 조각이 합쳐졌는지 확인한다")
             assertEquals(command, AdmissionCommandCodec().decode(read.inputs.last { it.clusterSessionId >= 0 }.bytes))
-            assertEquals(before, snapshotValues(assertNotNull(node.observation?.snapshot)))
-            val current = assertNotNull(node.observation?.snapshot)
+            assertEquals(before, snapshotValues(assertNotNull(node.captureObservation()?.snapshot)))
+            val current = assertNotNull(node.captureObservation()?.snapshot)
             assertEquals(Amount(699_400_000), current.balances.single().available)
             assertEquals(Amount(300_600_000), current.balances.single().hold)
             assertEquals(
@@ -264,7 +264,7 @@ class AeronRecordedInputTest {
                 listOf(
                     ChannelUri.parse(node.logChannel).apply { put("control", "127.0.0.1:1") }.toString(),
                     node.logChannel.replace("control-mode=manual", "control-mode=dynamic"),
-                    node.logChannel.replace("term-length=64k", "term-length=32k"),
+                    ChannelUri.parse(node.logChannel).apply { put("term-length", "32k") }.toString(),
                     node.logChannel + "|tags=999999999",
                     node.logChannel + "|session-id=0",
                     node.logChannel + "|endpoint=127.0.0.1:2",
@@ -287,7 +287,7 @@ class AeronRecordedInputTest {
     fun `이전 관찰값이나 실패 차단 상태 및 결과 누락의 위치를 완료 상한으로 쓰지 않는다`() {
         startObservedTradingNode(config()).use { node ->
             fund(node)
-            val valid = assertNotNull(node.observation)
+            val valid = assertNotNull(node.captureObservation())
             assertEquals(valid, normalObservation(valid, 0))
             assertNull(normalObservation(null, 0))
             assertNull(normalObservation(valid, valid.position))

@@ -1,6 +1,7 @@
 package com.exchange.core.api.trading.infrastructure.aeron
 
 import java.nio.file.Files
+import java.nio.file.LinkOption.NOFOLLOW_LINKS
 import java.nio.file.Path
 
 /** 환경값은 원본 stdout에도 남기지 않는다. 기존 단일 컨테이너 배열 JSON 형태를 유지한다. */
@@ -24,7 +25,7 @@ internal fun credentialLeakFiles(
     val needle = credential.toByteArray(Charsets.UTF_8)
     return Files.walk(reportDirectory).use { files ->
         files
-            .filter { Files.isRegularFile(it) }
+            .filter { Files.isRegularFile(it, NOFOLLOW_LINKS) }
             .filter { containsCredential(it, needle) }
             .sorted()
             .toList()

@@ -154,7 +154,7 @@ class DevelopmentMultiMarketOrderNodeTest {
                         order = mismatch.order.copy(orderId = correct.order.orderId),
                         ledgerTransactionId = correct.ledgerTransactionId,
                     )
-                val before = snapshotValues(assertNotNull(node.observation?.snapshot))
+                val before = snapshotValues(assertNotNull(node.captureObservation()?.snapshot))
 
                 val rejected = request(node, incorrect)
                 assertEquals(
@@ -195,7 +195,7 @@ class DevelopmentMultiMarketOrderNodeTest {
             val deniedCommand = order(SUI, "R-DENIED", "O-DENIED", price = 20_000_000, quantity = 40_000_000_000)
             val denied = assertIs<AdmissionResultPayload.Rejected>(request(node, deniedCommand).admissionResult)
             assertShortage(denied, asset = "USDT", available = 600_000_000, required = 800_000_000, shortfall = 200_000_000)
-            val original = assertNotNull(node.observation?.snapshot)
+            val original = assertNotNull(node.captureObservation()?.snapshot)
             val before = snapshotValues(original)
 
             listOf(acceptedCommand to accepted, deniedCommand to denied).forEach { (command, firstResult) ->
@@ -225,7 +225,7 @@ class DevelopmentMultiMarketOrderNodeTest {
             prepare(node)
             val btc = order(BTC, "R-BTC", "SAME-ORDER", price = 100_000_000, quantity = 100_000_000)
             request(node, btc)
-            val before = assertNotNull(node.observation?.snapshot)
+            val before = assertNotNull(node.captureObservation()?.snapshot)
             val changedMarket =
                 btc.copy(
                     order = btc.order.copy(marketId = SUI.market.marketId),
@@ -260,7 +260,7 @@ class DevelopmentMultiMarketOrderNodeTest {
             assertRequest(current, btc)
             assertRequest(current, duplicate)
             assertEquals(denied.admissionResult, request(node, badContext).admissionResult)
-            assertEquals(snapshotValues(current), snapshotValues(assertNotNull(node.observation?.snapshot)))
+            assertEquals(snapshotValues(current), snapshotValues(assertNotNull(node.captureObservation()?.snapshot)))
             assertNull(node.error)
         }
     }
@@ -519,7 +519,7 @@ class DevelopmentMultiMarketOrderNodeTest {
         val observation = applied(node, previousPosition)
         assertEquals(response, observation.admissionResult)
         awaitAutomaticCompletion(node, response)
-        return observation.copy(snapshot = checkNotNull(node.observation?.snapshot))
+        return observation.copy(snapshot = checkNotNull(node.captureObservation()?.snapshot))
     }
 
     private fun applied(

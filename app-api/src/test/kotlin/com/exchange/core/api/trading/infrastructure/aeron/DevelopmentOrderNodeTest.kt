@@ -26,8 +26,10 @@ import com.exchange.core.trading.TradingState
 import io.aeron.Publication
 import io.aeron.cluster.client.AeronCluster
 import org.agrona.concurrent.UnsafeBuffer
+import org.junit.jupiter.api.io.TempDir
 import java.net.DatagramSocket
 import java.nio.file.Files
+import java.nio.file.Path
 import java.time.Instant
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicReference
@@ -40,6 +42,9 @@ import kotlin.test.assertTrue
 
 /** 같은 실제 UDP 노드의 자금 준비와 주문 접수를 연결한다. HTTP·DB·전송 대역은 없다. */
 class DevelopmentOrderNodeTest {
+    @TempDir
+    lateinit var temporaryDirectory: Path
+
     @Test
     fun `실제로 준비한 1000 USDT에서 BUY 300을 접수하면 700은 사용 가능하고 300은 예약된다`() {
         val config = config()
@@ -430,7 +435,8 @@ class DevelopmentOrderNodeTest {
                 assertTrue(unknown.reason.contains("같은 사용자·요청 ID"))
                 eventually {
                     assertNull(node.error, "응답을 폐기한 주문을 처리하던 노드가 실패했다")
-                    node.observation
+                    node
+                        .captureObservation()
                         ?.snapshot
                         ?.requests
                         ?.any { it.requestId == command.requestId } == true
@@ -476,7 +482,8 @@ class DevelopmentOrderNodeTest {
                 assertTrue(unconfirmed.reason.contains("결과 미확인"))
                 eventually {
                     assertNull(node.error, "응답을 폐기한 BUY를 처리하던 노드가 실패했다")
-                    node.observation
+                    node
+                        .captureObservation()
                         ?.snapshot
                         ?.completions
                         ?.size == 2
@@ -663,10 +670,13 @@ class DevelopmentOrderNodeTest {
     private fun snapshot(node: DevelopmentFundingNode): TradingState.Snapshot {
         eventually {
             assertNull(node.error, "자동 실행 중 노드가 실패했습니다")
-            node.observation?.snapshot?.let { it.pendingOrders.isEmpty() && it.completions.size.toLong() == it.lastAdmissionSequence } ==
+            node.captureObservation()?.snapshot?.let {
+                it.pendingOrders.isEmpty() &&
+                    it.completions.size.toLong() == it.lastAdmissionSequence
+            } ==
                 true
         }
-        val current = assertNotNull(node.observation?.snapshot)
+        val current = assertNotNull(node.captureObservation()?.snapshot)
         assertTrue(current.pendingOrders.isEmpty(), "승인된 주문은 자동 실행 뒤 처리 대기에 남지 않는다")
         assertEquals(current.lastAdmissionSequence, current.completions.size.toLong())
         return current
@@ -827,7 +837,7 @@ class DevelopmentOrderNodeTest {
             val sockets = mutableListOf<DatagramSocket>()
             try {
                 (0..7).forEach { sockets.add(DatagramSocket(base + it)) }
-                return DevelopmentFundingSettings(Files.createTempDirectory("admission98-").resolve("run"), base)
+                return DevelopmentFundingSettings(Files.createTempDirectory(temporaryDirectory, "admission98-").resolve("run"), base)
             } catch (_: java.net.BindException) {
                 // 다른 실행과 포트가 겹치면 테스트용 묶음만 다시 선택한다.
             } finally {
