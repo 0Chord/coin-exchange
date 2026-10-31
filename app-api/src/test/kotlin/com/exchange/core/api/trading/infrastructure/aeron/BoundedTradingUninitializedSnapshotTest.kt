@@ -110,7 +110,7 @@ class BoundedTradingUninitializedSnapshotTest {
                     service.onStart(cluster, snapshotImage)
                 }
 
-            override fun doBackgroundWork(nowNs: Long): Int = service.doBackgroundWork(nowNs)
+                override fun doBackgroundWork(nowNs: Long): Int = service.doBackgroundWork(nowNs)
             }
         }
 
