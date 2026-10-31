@@ -16,6 +16,7 @@ import com.exchange.core.trading.OrderIntent
 import com.exchange.core.trading.RequestToken
 import io.aeron.Publication
 import org.agrona.concurrent.UnsafeBuffer
+import org.slf4j.LoggerFactory
 import java.nio.file.Files
 import java.util.concurrent.ArrayBlockingQueue
 import java.util.concurrent.CompletableFuture
@@ -23,6 +24,7 @@ import java.util.concurrent.CompletionException
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executors
+import java.util.concurrent.RejectedExecutionException
 import java.util.concurrent.Semaphore
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
@@ -71,6 +73,9 @@ internal class BoundedAeronGateway(
     private val protectionWaiting = ConcurrentHashMap<Long, Pending>()
     private val startup = CountDownLatch(1)
     private val startupFailure = AtomicReference<Throwable?>()
+    private val shutdownFailure = AtomicReference<Throwable?>()
+    private val completionContext = ThreadLocal<Boolean>()
+    private val logger = LoggerFactory.getLogger(BoundedAeronGateway::class.java)
     private val codec = BoundedTradingCodec()
     private val admissionLock = Any()
     private val completionPermits = Semaphore(settings.queueCapacity + settings.maxInFlight)
@@ -281,18 +286,25 @@ internal class BoundedAeronGateway(
         } catch (error: Throwable) {
             startupFailure.compareAndSet(null, error)
         } finally {
-            synchronized(admissionLock) { available = false }
-            startup.countDown()
-            inFlight.values.forEach { complete(it, null, BoundedGatewayException("RESULT_UNCONFIRMED", true)) }
-            inFlight.clear()
-            protectionWaiting.values.forEach { complete(it, null, BoundedGatewayException("REMOTE_PROTECTION_UNCONFIRMED", true)) }
-            protectionWaiting.clear()
-            while (true) {
-                val pending =
-                    queue.poll() ?: break
-                complete(pending, null, BoundedGatewayException("GATEWAY_UNAVAILABLE", false))
+            try {
+                synchronized(admissionLock) { available = false }
+                startup.countDown()
+                inFlight.values.forEach { complete(it, null, BoundedGatewayException("RESULT_UNCONFIRMED", true)) }
+                inFlight.clear()
+                protectionWaiting.values.forEach { complete(it, null, BoundedGatewayException("REMOTE_PROTECTION_UNCONFIRMED", true)) }
+                protectionWaiting.clear()
+                while (true) {
+                    val pending =
+                        queue.poll() ?: break
+                    complete(pending, null, BoundedGatewayException("GATEWAY_UNAVAILABLE", false))
+                }
+            } finally {
+                try {
+                    client?.close()
+                } finally {
+                    stopCompletions()
+                }
             }
-            client?.close()
         }
     }
 
@@ -302,21 +314,59 @@ internal class BoundedAeronGateway(
         error: Throwable?,
     ) {
         if (!pending.terminal.compareAndSet(false, true)) return
-        completions.execute {
-            try {
-                if (error != null) pending.result.completeExceptionally(error) else pending.result.complete(checkNotNull(response))
-            } finally {
-                completionPermits.release()
+        try {
+            completions.execute {
+                completeFuture(pending, response, error)
             }
+        } catch (_: RejectedExecutionException) {
+            // 원격 보호 완료와 종료가 경합해도 최초 결과와 예약한 완료 슬롯을 잃지 않는다.
+            completeFuture(pending, response, error)
+        }
+    }
+
+    private fun completeFuture(
+        pending: Pending,
+        response: BoundedTradingReply?,
+        error: Throwable?,
+    ) {
+        completionContext.set(true)
+        try {
+            if (error != null) pending.result.completeExceptionally(error) else pending.result.complete(checkNotNull(response))
+        } finally {
+            completionContext.remove()
+            completionPermits.release()
+        }
+    }
+
+    /** 전송 소유자가 마지막 결과를 제출한 뒤 정리하며, 멈춘 콜백을 무한히 기다리지 않는다. */
+    private fun stopCompletions() {
+        completions.shutdown()
+        try {
+            if (!completions.awaitTermination(settings.startupTimeoutMs + 1_000, TimeUnit.MILLISECONDS)) {
+                val failure = IllegalStateException("Bounded Aeron 완료 callback의 종료 대기 시간이 초과됐습니다")
+                shutdownFailure.compareAndSet(null, failure)
+                completions.shutdownNow()
+                completions.awaitTermination(250, TimeUnit.MILLISECONDS)
+                logger.warn(failure.message)
+            }
+        } catch (error: InterruptedException) {
+            shutdownFailure.compareAndSet(null, error)
+            completions.shutdownNow()
+            Thread.currentThread().interrupt()
+            logger.warn("Bounded Aeron 완료 callback의 종료 대기가 중단됐습니다", error)
         }
     }
 
     override fun close() {
-        closing = true
-        if (Thread.currentThread() !== worker) {
-            worker.join(settings.startupTimeoutMs + settings.resultTimeoutMs + 1_000)
+        synchronized(admissionLock) {
+            closing = true
+            available = false
+        }
+        // 동기 완료 콜백은 자기 실행기의 종료나 그것을 기다리는 소유 스레드와 서로 기다리지 않는다.
+        if (Thread.currentThread() !== worker && completionContext.get() != true) {
+            worker.join(settings.startupTimeoutMs + settings.resultTimeoutMs + 2_000)
             check(!worker.isAlive) { "bounded gateway did not stop" }
-            completions.close()
+            shutdownFailure.get()?.let { throw IllegalStateException("Bounded Aeron 완료 처리를 종료하지 못했습니다", it) }
         }
     }
 }
