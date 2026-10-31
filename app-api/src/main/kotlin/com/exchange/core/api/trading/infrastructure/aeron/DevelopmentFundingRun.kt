@@ -55,6 +55,7 @@ internal class DevelopmentFundingRun private constructor(
         fun open(config: DevelopmentFundingSettings): DevelopmentFundingRun {
             val root = config.runRoot
             require(root.normalize() == root && !Files.isSymbolicLink(root)) { "실행 루트는 정규 경로여야 합니다" }
+            validateDriverDirectory(config)
             if (config.recoverExisting) {
                 require(Files.isDirectory(root, NOFOLLOW_LINKS)) { "복구할 실행 루트가 없습니다" }
             } else {
@@ -103,6 +104,30 @@ internal class DevelopmentFundingRun private constructor(
             require(Files.isRegularFile(path, NOFOLLOW_LINKS) && Files.size(path) > 0) { "복구 기록이 없거나 비어 있습니다: $path" }
         }
 
+        /** Driver files are disposable; neither their path nor contents are recovery authority. */
+        private fun validateDriverDirectory(config: DevelopmentFundingSettings) {
+            val driverRoot = config.driverRoot ?: return
+            require(Files.isDirectory(driverRoot, NOFOLLOW_LINKS) && Files.isWritable(driverRoot)) {
+                "Driver 루트는 심링크가 아닌 쓰기 가능한 기존 디렉터리여야 합니다"
+            }
+            val driver = Path.of(config.driverDirectory)
+            require(!Files.isSymbolicLink(driver) && (!Files.exists(driver, NOFOLLOW_LINKS) || Files.isDirectory(driver, NOFOLLOW_LINKS))) {
+                "Driver 경로는 심링크나 일반 파일일 수 없습니다"
+            }
+            val actualDriver = driverRoot.toRealPath().resolve(driver.fileName)
+            val actualRun =
+                if (Files.exists(config.runRoot, NOFOLLOW_LINKS)) {
+                    config.runRoot.toRealPath()
+                } else {
+                    config.runRoot.parent
+                        .toRealPath()
+                        .resolve(config.runRoot.fileName)
+                }
+            require(!actualDriver.startsWith(actualRun) && !actualRun.startsWith(actualDriver)) {
+                "휘발성 Driver 경로는 Archive·클러스터를 포함한 영속 실행 루트와 분리해야 합니다"
+            }
+        }
+
         private fun writeIdentity(
             root: Path,
             target: Path,
@@ -136,7 +161,7 @@ internal class DevelopmentFundingRun private constructor(
                     output.writeInt(config.archiveFileSyncLevel)
                     output.writeBoolean(config.runId != null)
                     config.runId?.let(output::writeUTF)
-                    output.writeMarkets(config.markets)
+                    output.writeExecutionSettings(config)
                 }
                 bytes.toByteArray().also { require(it.size <= IDENTITY_LIMIT) { "복구 설정 크기 한도를 초과했습니다" } }
             }
@@ -152,7 +177,7 @@ internal class DevelopmentFundingRun private constructor(
                     output.writeUTF(config.members)
                     output.writeBoolean(config.runId != null)
                     config.runId?.let(output::writeUTF)
-                    output.writeMarkets(config.markets)
+                    output.writeExecutionSettings(config)
                 }
                 bytes.toByteArray()
             }
@@ -188,6 +213,21 @@ internal class DevelopmentFundingRun private constructor(
                 writeLong(policy.scheduleVersion)
                 writeLong(policy.feeRates.makerFeeRate.partsPerMillion)
                 writeLong(policy.feeRates.takerFeeRate.partsPerMillion)
+            }
+        }
+
+        private fun DataOutputStream.writeExecutionSettings(config: DevelopmentFundingSettings) {
+            val manifest = config.boundedManifest
+            if (manifest == null) {
+                writeMarkets(config.markets)
+            } else {
+                writeUTF("bounded-wire3-snapshot2")
+                val bytes =
+                    com.exchange.core.api.trading.infrastructure.history
+                        .BoundedTradingStateCodec()
+                        .encodeManifest(manifest)
+                writeInt(bytes.size)
+                write(bytes)
             }
         }
 

@@ -147,3 +147,88 @@ enum DevelopmentBalanceRejectionReason {
   DEVELOPMENT_BALANCE_REQUEST_CONTENT_CONFLICT = 1;
   DEVELOPMENT_BALANCE_ACCOUNT_ALREADY_USED = 2;
 }
+
+// Explicit opt-in bounded protocol. Its external header is schema87/version3.
+message BoundedTradingCommand {
+  optional int64 correlation_id = 1;
+  oneof body {
+    bytes initialize_manifest = 10;
+    BoundedOrderCommand admission = 11;
+    BoundedAcknowledge acknowledge = 12;
+    BoundedRotateEpoch rotate_epoch = 13;
+    BoundedExecute execution = 14;
+    DevelopmentBalanceCommand funding = 15;
+    bool progress = 16;
+    BoundedQuarantine quarantine = 17;
+  }
+}
+
+message BoundedOrderCommand {
+  optional string user_id = 1;
+  optional int32 channel = 2;
+  optional int64 epoch = 3;
+  optional int64 sequence = 4;
+  optional string market_id = 5;
+  optional int64 configuration_version = 6;
+  optional Side side = 7;
+  optional OrderType order_type = 8;
+  optional TimeInForce time_in_force = 9;
+  optional int64 price = 10;
+  optional int64 quantity = 11;
+}
+
+message BoundedAcknowledge {
+  optional string user_id = 1;
+  optional int32 channel = 2;
+  optional int64 epoch = 3;
+  optional int64 through = 4;
+}
+
+message BoundedRotateEpoch {
+  optional string user_id = 1;
+  optional int32 channel = 2;
+  optional int64 expected_epoch = 3;
+}
+
+message BoundedExecute {
+  optional fixed64 lineage_high = 1;
+  optional fixed64 lineage_low = 2;
+  optional string market_id = 3;
+  optional int64 market_sequence = 4;
+  optional int64 admission_sequence = 5;
+}
+
+message BoundedQuarantine {
+  optional int64 incident_position = 1;
+  optional string reason = 2;
+}
+
+message BoundedAdmissionReceipt {
+  optional string code = 1;
+  optional string order_id = 2;
+  optional int64 admission_sequence = 3;
+  optional int64 market_sequence = 4;
+  optional string reason = 5;
+  optional InsufficientBalance insufficient_balance = 6;
+}
+
+message BoundedMarketProgress {
+  optional string market_id = 1;
+  optional int64 last_assigned = 2;
+  optional int64 executed_through = 3;
+}
+
+message BoundedTradingReply {
+  optional int64 correlation_id = 1;
+  optional string code = 2;
+  optional int64 applied_log_position = 3;
+  optional BoundedAdmissionReceipt admission = 4;
+  optional int64 epoch = 5;
+  optional int64 retired_through = 6;
+  repeated BoundedMarketProgress markets = 7;
+  optional string lifecycle = 8;
+  optional int64 last_admission_sequence = 9;
+  optional DevelopmentBalancePrepared funding = 10;
+  optional fixed64 lineage_high = 11;
+  optional fixed64 lineage_low = 12;
+}

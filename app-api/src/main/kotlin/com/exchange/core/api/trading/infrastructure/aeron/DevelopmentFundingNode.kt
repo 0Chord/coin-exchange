@@ -11,6 +11,8 @@ import com.exchange.core.order.OrderReservationCalculator
 import com.exchange.core.trading.OrderAdmissionCalculator
 import com.exchange.core.trading.OrderSettlementCalculator
 import com.exchange.core.trading.SettlementLedgerTransactions
+import com.exchange.core.trading.TradingClusterManifest
+import com.exchange.core.trading.TradingRecoveryState
 import com.exchange.core.trading.TradingState
 import io.aeron.ChannelUri
 import io.aeron.archive.Archive
@@ -30,6 +32,7 @@ import org.agrona.ErrorHandler
 import java.net.DatagramSocket
 import java.net.InetSocketAddress
 import java.nio.file.Path
+import java.security.MessageDigest
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
@@ -51,9 +54,16 @@ internal data class DevelopmentFundingSettings(
     val runId: String? = null,
     val archiveFileSyncLevel: Int = 2,
     val recoverExisting: Boolean = false,
+    val boundedManifest: TradingClusterManifest? = null,
+    val trustedBoundedControl: Boolean = false,
+    /** Optional volatile transport root. Archive and consensus metadata stay under runRoot. */
+    val driverRoot: Path? = null,
 ) {
     init {
         require(runRoot.isAbsolute) { "실행 루트는 절대 경로여야 합니다" }
+        require(driverRoot == null || (driverRoot.isAbsolute && driverRoot.normalize() == driverRoot)) {
+            "Driver 루트는 정규 절대 경로여야 합니다"
+        }
         require(basePort in 1024..65528) { "연속 8개 포트가 필요합니다" }
         require(startupTimeoutMs in 1..60_000 && resultTimeoutMs in 1..60_000)
         require(maxReplyAttempts in 1..10_000 && replyTimeoutMs in 1..1_000)
@@ -65,12 +75,27 @@ internal data class DevelopmentFundingSettings(
         require(configured.any { it.id() == memberId }) { "멤버 목록에 자기 ID가 없습니다" }
         require(runId == null || runId.matches(Regex("[a-z0-9-]{1,64}")))
         require(archiveFileSyncLevel in 0..2)
+        if (boundedManifest != null) {
+            require(archiveFileSyncLevel == 2) { "bounded HA profile requires sync2" }
+            require(boundedManifest.executionArtifactSha256 == BoundedExecutionIdentity.artifactSha256) {
+                "financial artifact differs from bounded manifest"
+            }
+            require(boundedManifest.schemaSha256 == BoundedExecutionIdentity.schemaSha256) { "wire schema differs from bounded manifest" }
+        }
     }
 
     val market: MarketDefinition get() = markets.single().market
     val feePolicySnapshot: TradingFeePolicySnapshot get() = markets.single().feePolicySnapshot
 
-    val driverDirectory: String get() = runRoot.resolve("driver").toString()
+    val driverDirectory: String =
+        driverRoot?.let { root ->
+            val owner =
+                MessageDigest
+                    .getInstance("SHA-256")
+                    .digest(runRoot.toString().toByteArray(Charsets.UTF_8))
+                    .joinToString("") { "%02x".format(it) }
+            root.resolve("exchange-node-$memberId-$owner").toString()
+        } ?: runRoot.resolve("driver").toString()
     val archiveDirectory: Path get() = runRoot.resolve("archive")
     val clusterDirectory: Path get() = runRoot.resolve("cluster")
     val clusterId: Int get() = 97
@@ -121,7 +146,8 @@ internal class DevelopmentFundingNode private constructor(
     private val metricsRegistry: io.micrometer.core.instrument.MeterRegistry =
         io.micrometer.core.instrument.simple
             .SimpleMeterRegistry()
-    private val metricRecorder = TradingNodeMetrics(metricsRegistry, asynchronous = true, onFatal = ::fail)
+    private val metricRecorder =
+        TradingNodeMetrics(metricsRegistry, asynchronous = true, dropOnSaturation = config.boundedManifest != null, onFatal = ::fail)
     val metrics: io.micrometer.core.instrument.MeterRegistry
         get() {
             metricRecorder.awaitRecorded()
@@ -132,16 +158,20 @@ internal class DevelopmentFundingNode private constructor(
             run {
                 // 복구에서도 새 파생 이력을 사용한다. Snapshot과 Archive만 살아 있는 상태를 복원한다.
                 val historyStore =
-                    (
-                        if (config.archiveFileSyncLevel == 2) {
-                            // sync2 Archive가 확정 callback 전에 원본을 보존한다. 이 DB는 매번 새로 재구성한다.
-                            RocksDbTradingHistoryStore.createRebuildableIndex(checkNotNull(run).historyDirectory, onFatal = ::fail)
-                        } else {
-                            RocksDbTradingHistoryStore.create(checkNotNull(run).historyDirectory, onFatal = ::fail)
+                    if (config.boundedManifest != null) {
+                        null
+                    } else {
+                        (
+                            if (config.archiveFileSyncLevel == 2) {
+                                // sync2 Archive가 확정 callback 전에 원본을 보존한다. 이 DB는 매번 새로 재구성한다.
+                                RocksDbTradingHistoryStore.createRebuildableIndex(checkNotNull(run).historyDirectory, onFatal = ::fail)
+                            } else {
+                                RocksDbTradingHistoryStore.create(checkNotNull(run).historyDirectory, onFatal = ::fail)
+                            }
+                        ).also {
+                            history =
+                                it
                         }
-                    ).also {
-                        history =
-                            it
                     }
                 val fees = TradingFeeReserveCalculator()
                 val reservation = OrderReservationCalculator(BuyOrderFundingQuoteCalculator(fees))
@@ -154,6 +184,7 @@ internal class DevelopmentFundingNode private constructor(
                         SettlementLedgerTransactions(),
                     ),
                     historyStore = historyStore,
+                    boundedMode = config.boundedManifest != null,
                 )
             },
             config.maxReplyAttempts,
@@ -161,11 +192,24 @@ internal class DevelopmentFundingNode private constructor(
             markets = config.markets,
             serviceId = config.serviceId,
             telemetry = metricRecorder,
-            snapshots = TradingStateSnapshotPersistence(checkNotNull(history), checkNotNull(run).snapshotIdentitySha256),
+            snapshots =
+                config.boundedManifest?.let(::BoundedTradingSnapshotPersistence)
+                    ?: TradingStateSnapshotPersistence(checkNotNull(history), checkNotNull(run).snapshotIdentitySha256),
+            boundedManifest = config.boundedManifest,
+            trustedBoundedControl = config.trustedBoundedControl,
             onFatal = ::fail,
         )
     }
     val observation: FundingObservation? get() = service.observation
+    val tradingReady: Boolean get() = service.tradingReady
+
+    fun captureRecoveryState(timeoutMs: Long = config.resultTimeoutMs): TradingRecoveryState =
+        service.captureRecoveryState().get(timeoutMs, TimeUnit.MILLISECONDS)
+
+    /** External lifecycle operation; the consensus module logs the snapshot action. */
+    fun requestSnapshot(): Boolean =
+        io.aeron.cluster.ClusterControl.ToggleState.SNAPSHOT
+            .toggle(requireNotNull(consensus).context().controlToggleCounter())
 
     /** 전체 조회는 서비스 스레드에 요청한다. 일반 명령은 누적 상태를 복사하지 않는다. */
     fun captureObservation(timeoutMs: Long = config.resultTimeoutMs): FundingObservation? {
@@ -242,7 +286,7 @@ internal class DevelopmentFundingNode private constructor(
                     .Context()
                     .aeronDirectoryName(config.driverDirectory)
                     .dirDeleteOnStart(false)
-                    .dirDeleteOnShutdown(false)
+                    .dirDeleteOnShutdown(config.driverRoot != null)
                     .spiesSimulateConnection(true)
                     .socketRcvbufLength(TradingAeronRuntime.SOCKET_BUFFER_BYTES)
                     .socketSndbufLength(TradingAeronRuntime.SOCKET_BUFFER_BYTES)
@@ -404,6 +448,7 @@ fun main(args: Array<String>) {
                 Path.of(args[0]),
                 args.getOrNull(1)?.toInt() ?: 19700,
                 markets = readDevelopmentMarkets(environment),
+                driverRoot = environment["FUNDING_DRIVER_ROOT"]?.let(Path::of),
             )
         }
     try {

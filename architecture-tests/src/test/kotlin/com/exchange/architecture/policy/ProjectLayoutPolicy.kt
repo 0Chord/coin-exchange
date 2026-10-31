@@ -45,6 +45,7 @@ object ProjectLayoutPolicy {
                 app("trading-application", "$base/api/trading/application", "Aeron 주문 접수 진입점과 전송 결과 계약"),
                 app("admission-codec", "$base/api/trading/infrastructure/codec", "주문 접수 명령·응답 변환"),
                 app("trading-history", "$base/api/trading/infrastructure/history", "거래 이력의 로컬 영속 저장·정확한 재조회"),
+                app("trading-recovery", "$base/api/trading/infrastructure/recovery", "독립 복구 사본의 보관·검증·승계와 영속 접두부 확인"),
                 app("development-aeron", "$base/api/trading/infrastructure/aeron", "개발용 자금 준비의 실제 Aeron 실행"),
                 AllowedFolder(
                     "admission-generated-codec",

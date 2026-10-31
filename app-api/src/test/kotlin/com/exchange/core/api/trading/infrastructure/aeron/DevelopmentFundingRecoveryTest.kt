@@ -55,11 +55,19 @@ class DevelopmentFundingRecoveryTest {
     @Test
     fun `마지막 Snapshot 뒤 업무 입력이 없어도 복구 직후 전체 상태를 조회한다`() = recoverAndContinue(snapshotFirst = false, snapshotAtEnd = true)
 
+    @Test
+    fun `휘발 Driver 소실과 경로 변경 뒤에도 Snapshot과 Archive로 자금과 maker FIFO를 복구한다`() =
+        recoverAndContinue(snapshotFirst = true, volatileDriver = true)
+
     private fun recoverAndContinue(
         snapshotFirst: Boolean,
         snapshotAtEnd: Boolean = false,
+        volatileDriver: Boolean = false,
     ) {
-        val config = config()
+        val config =
+            config().let {
+                if (volatileDriver) it.copy(driverRoot = Files.createDirectory(directory.resolve("first-volatile-driver"))) else it
+            }
         val first = order("R1", "O1")
         val second = order("R2", "O2")
         val rejected = order("REJECT", "REJECTED", "empty-user")
@@ -89,14 +97,32 @@ class DevelopmentFundingRecoveryTest {
             assertNull(node.error)
         }
 
+        if (volatileDriver) {
+            assertFalse(Files.exists(Path.of(config.driverDirectory)), "정상 종료는 이 노드의 휘발성 Driver 파일만 회수한다")
+            assertTrue(Files.isRegularFile(config.archiveDirectory.resolve("archive.catalog")))
+            assertTrue(Files.isRegularFile(config.clusterDirectory.resolve("recording.log")))
+            Files.delete(requireNotNull(config.driverRoot))
+        }
+        val recoveredConfig =
+            config.copy(
+                recoverExisting = true,
+                driverRoot =
+                    if (volatileDriver) {
+                        Files.createDirectory(
+                            directory.resolve("replacement-volatile-driver"),
+                        )
+                    } else {
+                        config.driverRoot
+                    },
+            )
+
         // 정책 불일치는 기록을 열어 재생하기 전에 거절한다. 실패 뒤 올바른 설정은 같은 기록으로 복구된다.
         val changed = config.markets.single().let { it.copy(feePolicySnapshot = it.feePolicySnapshot.copy(scheduleVersion = 2)) }
         assertFailsWith<IllegalArgumentException> {
-            DevelopmentFundingNode.start(config.copy(recoverExisting = true, markets = DevelopmentMarketRegistry(listOf(changed))))
+            DevelopmentFundingNode.start(recoveredConfig.copy(markets = DevelopmentMarketRegistry(listOf(changed))))
         }
         val replayed = ConcurrentLinkedQueue<FundingObservation>()
         val restoredSnapshot = AtomicBoolean()
-        val recoveredConfig = config.copy(recoverExisting = true)
         DevelopmentFundingNode
             .start(recoveredConfig) { service ->
                 object : ClusteredService by service {

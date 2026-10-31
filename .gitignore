@@ -42,3 +42,9 @@ out/
 ### Local documentation ###
 # Keep local documents out of version control.
 /docs/
+
+### Local performance evidence and Python caches ###
+# Curated summaries/reproduction sources are explicitly tracked; raw runs stay local.
+engineering/results/
+__pycache__/
+*.py[cod]

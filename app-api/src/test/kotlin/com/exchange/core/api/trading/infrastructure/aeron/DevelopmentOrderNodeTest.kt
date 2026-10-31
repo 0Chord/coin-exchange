@@ -533,7 +533,11 @@ class DevelopmentOrderNodeTest {
                     tradingAfterReplay.filterKeys { it != "callbackTimestamp" },
                     "최초 완료·호가·현재 예약의 전체 업무 증거가 유지된다",
                 )
-                assertEquals(settled.completions, snapshot(node).completions, "최초 완료의 시각·전체 정산도 유지된다")
+                assertEquals(
+                    settled.completions.map { tradingCompletionValues(it) },
+                    snapshot(node).completions.map { tradingCompletionValues(it) },
+                    "최초 완료의 시각·전체 정산도 유지된다",
+                )
                 assertTrue(replayObservations.none { it["inputKind"] == "EXECUTION" }, "최초 승인의 재전송은 새 실행을 만들지 않는다")
                 assertNull(collector.verificationFailure)
                 assertNull(node.error)
@@ -715,13 +719,7 @@ class DevelopmentOrderNodeTest {
             snapshot.ledgerTransactions.map(::transactionValues),
             snapshot.completions.map {
                 // 서로 독립된 노드는 확정 콜백 시각이 다르므로 시각은 동등성 대상이 아니다.
-                listOf(
-                    it.admission.sequence,
-                    it.executionId,
-                    it.matchingResult,
-                    it.settlement.balanceChanges,
-                    it.settlement.reservationChanges,
-                )
+                tradingCompletionValues(it, includeExecutionTime = false)
             },
             snapshot.pendingOrders.map { recordValues(it) },
             snapshot.preparations.map { listOf(it.result, transactionValues(it.transaction)) },

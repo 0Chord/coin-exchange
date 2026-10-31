@@ -6,6 +6,7 @@ import tools.jackson.module.kotlin.jacksonObjectMapper
 import java.nio.file.FileAlreadyExistsException
 import java.nio.file.Files
 import java.nio.file.Path
+import java.util.concurrent.locks.LockSupport
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
@@ -19,7 +20,7 @@ class TradingEngineCapacityTest {
         @TempDir directory: Path,
     ) {
         val result =
-            runTradingEngineCapacity(
+            runCapacityFixture(
                 TradingEngineCapacityOptions(warmup = 1, orders = 2),
                 beforeMeasuredExecution = { error("test-only execution failure") },
             )
@@ -64,7 +65,7 @@ class TradingEngineCapacityTest {
 
     @Test
     fun `한 BUY의 실제 예약 매칭 수수료 정산 원장을 모두 실행하고 중복과 무자금 거절을 검증한다`() {
-        val result = runTradingEngineCapacity(TradingEngineCapacityOptions(warmup = 2, orders = 3))
+        val result = runCapacityFixture(TradingEngineCapacityOptions(warmup = 2, orders = 3))
 
         assertEquals("ORDER_LIMIT", result.stopReason)
         assertTrue(result.fixedCohortComplete, result.errors.joinToString("\n"))
@@ -117,7 +118,7 @@ class TradingEngineCapacityTest {
 
     @Test
     fun `rebuildable 선택은 실제 금융 검증과 cold 중복 검증을 유지하고 임시 이력을 정리한다`() {
-        val result = runTradingEngineCapacity(TradingEngineCapacityOptions(warmup = 2, orders = 3, historyMode = "rebuildable"))
+        val result = runCapacityFixture(TradingEngineCapacityOptions(warmup = 2, orders = 3, historyMode = "rebuildable"))
 
         assertTrue(result.fixedCohortComplete, result.errors.joinToString("\n"))
         assertEquals(3L, result.latency.count)
@@ -144,8 +145,8 @@ class TradingEngineCapacityTest {
     @Test
     fun `rebuildable 측정 실패도 정리하고 다음 실행은 같은 요청 ID를 새 이력에서 처리한다`() {
         val options = TradingEngineCapacityOptions(warmup = 1, orders = 2, historyMode = "rebuildable")
-        val failed = runTradingEngineCapacity(options, beforeMeasuredExecution = { error("test-only execution failure") })
-        val next = runTradingEngineCapacity(options)
+        val failed = runCapacityFixture(options, beforeMeasuredExecution = { error("test-only execution failure") })
+        val next = runCapacityFixture(options)
 
         assertEquals("MEASUREMENT_FAILURE", failed.stopReason)
         assertTrue(failed.errors.any { it.contains("test-only execution failure") })
@@ -170,7 +171,7 @@ class TradingEngineCapacityTest {
         assertTrue(options.postGc)
         assertFalse(engineCapacityOptionsFromArgs(arrayOf("--smoke")).single().preGc)
 
-        val result = runTradingEngineCapacity(options)
+        val result = runCapacityFixture(options)
 
         assertTrue(result.fixedCohortComplete, result.errors.joinToString("\n"))
         assertEquals("PRE_GC_DIAGNOSTIC", result.measurementMode)
@@ -195,7 +196,7 @@ class TradingEngineCapacityTest {
     fun `heap 상한에서 준비가 멈추면 측정 성공이나 지속 처리량을 주장하지 않고 실제 부분 상태를 검증한다`() {
         var checks = 0
         val result =
-            runTradingEngineCapacity(
+            runCapacityFixture(
                 TradingEngineCapacityOptions(warmup = 1, orders = 129),
                 heapUsedBytes = { if (++checks < 2) 10L else 70L },
                 maxHeapBytes = 100,
@@ -223,7 +224,7 @@ class TradingEngineCapacityTest {
     fun `예열 128건 뒤 heap 중단은 예열 이력을 보존하고 측정 성공으로 표시하지 않는다`() {
         var checks = 0
         val result =
-            runTradingEngineCapacity(
+            runCapacityFixture(
                 TradingEngineCapacityOptions(warmup = 129, orders = 1),
                 heapUsedBytes = { if (++checks < 4) 10L else 70L },
                 maxHeapBytes = 100,
@@ -256,7 +257,7 @@ class TradingEngineCapacityTest {
     fun `측정 128건 뒤 heap 중단은 모든 측정 표본과 부분 정산 상태를 보존한다`() {
         var checks = 0
         val result =
-            runTradingEngineCapacity(
+            runCapacityFixture(
                 TradingEngineCapacityOptions(warmup = 1, orders = 129),
                 heapUsedBytes = { if (++checks < 6) 10L else 70L },
                 maxHeapBytes = 100,
@@ -288,7 +289,7 @@ class TradingEngineCapacityTest {
     @Test
     fun `두 번째 측정 시도의 예외도 지연 표본에 포함하고 실패와 상태검사 오류를 숨기지 않는다`() {
         val result =
-            runTradingEngineCapacity(
+            runCapacityFixture(
                 TradingEngineCapacityOptions(warmup = 0, orders = 3),
                 beforeMeasuredExecution = { index -> check(index != 1) { "test-only measured execution failure" } },
             )
@@ -316,7 +317,7 @@ class TradingEngineCapacityTest {
     @Test
     fun `예열 뒤 첫 측정 오류도 실제 잔고 예약 원장과 주문장을 JSON 원본으로 보존한다`() {
         val result =
-            runTradingEngineCapacity(
+            runCapacityFixture(
                 TradingEngineCapacityOptions(warmup = 1, orders = 2),
                 beforeMeasuredExecution = { error("measured operation failed before admission") },
             )
@@ -365,7 +366,7 @@ class TradingEngineCapacityTest {
     ) {
         val output = directory.resolve("existing.jfr")
         Files.writeString(output, "preserved")
-        val result = runTradingEngineCapacity(TradingEngineCapacityOptions(warmup = 0, orders = 1, jfrPath = output.toString()))
+        val result = runCapacityFixture(TradingEngineCapacityOptions(warmup = 0, orders = 1, jfrPath = output.toString()))
 
         assertEquals("PROFILE_START_FAILURE", result.stopReason)
         assertEquals("JFR_PROFILE", result.measurementMode)
@@ -390,7 +391,7 @@ class TradingEngineCapacityTest {
         val output = directory.resolve("blocked-dump.jfr")
         var heapChecks = 0
         val result =
-            runTradingEngineCapacity(
+            runCapacityFixture(
                 TradingEngineCapacityOptions(warmup = 0, orders = 129, jfrPath = output.toString()),
                 heapUsedBytes = { if (++heapChecks < 5) 10L else 70L },
                 maxHeapBytes = 100,
@@ -419,7 +420,7 @@ class TradingEngineCapacityTest {
 
     @Test
     fun `시간 모드는 주문 상한에 먼저 닿으면 지속 구간 완료가 아니다`() {
-        val result = runTradingEngineCapacity(TradingEngineCapacityOptions(warmup = 0, orders = 2, durationSeconds = 60))
+        val result = runCapacityFixture(TradingEngineCapacityOptions(warmup = 0, orders = 2, durationSeconds = 60))
 
         assertEquals("ORDER_LIMIT", result.stopReason)
         assertEquals(2, result.measuredCompleted)
@@ -432,7 +433,7 @@ class TradingEngineCapacityTest {
     fun `요청 시간 경계가 지나면 새 거래를 시작하지 않고 남은 SELL 예약도 검증한다`() {
         var time = -2_000_000_000L
         val result =
-            runTradingEngineCapacity(
+            runCapacityFixture(
                 TradingEngineCapacityOptions(warmup = 0, orders = 10, durationSeconds = 1),
                 nanoTime = { time.also { time += 250_000_000 } },
             )
@@ -510,7 +511,7 @@ class TradingEngineCapacityTest {
     fun `paced는 마지막 거래 뒤에도 예정 60초 끝까지 기다리고 대기를 업무 지연에서 제외한다`() {
         val clock = EngineCapacityPacedClock()
         val result =
-            runTradingEngineCapacity(
+            runCapacityFixture(
                 TradingEngineCapacityOptions(warmup = 1, orders = 60, durationSeconds = 60, pacedRate = 1),
                 nanoTime = clock::read,
                 beforeMeasuredExecution = { clock.advance(10) },
@@ -560,7 +561,7 @@ class TradingEngineCapacityTest {
         listOf(-2_000_000_000L, Long.MAX_VALUE - 500_000_000L, Long.MIN_VALUE + 17).forEach { origin ->
             val clock = EngineCapacityPacedClock(origin)
             val result =
-                runTradingEngineCapacity(
+                runCapacityFixture(
                     TradingEngineCapacityOptions(warmup = 0, orders = 1, durationSeconds = 1, pacedRate = 1),
                     nanoTime = clock::read,
                     beforeMeasuredExecution = { clock.advance(10) },
@@ -581,7 +582,7 @@ class TradingEngineCapacityTest {
     fun `예정시각은 느린 이전 호출 때문에 재설정되지 않고 창 밖 완료도 별도로 보존한다`() {
         val clock = EngineCapacityPacedClock()
         val result =
-            runTradingEngineCapacity(
+            runCapacityFixture(
                 TradingEngineCapacityOptions(warmup = 0, orders = 2, durationSeconds = 1, pacedRate = 2),
                 nanoTime = clock::read,
                 beforeMeasuredExecution = { clock.advance(600_000_000) },
@@ -628,7 +629,7 @@ class TradingEngineCapacityTest {
     fun `정확히 창 끝에 완료된 거래도 창 안 목표 달성으로 표시하지 않는다`() {
         val clock = EngineCapacityPacedClock()
         val result =
-            runTradingEngineCapacity(
+            runCapacityFixture(
                 TradingEngineCapacityOptions(warmup = 0, orders = 1, durationSeconds = 1, pacedRate = 1),
                 nanoTime = clock::read,
                 beforeMeasuredExecution = { clock.advance(1_000_000_000) },
@@ -659,7 +660,7 @@ class TradingEngineCapacityTest {
     fun `창을 넘긴 호출 뒤에는 미실행 예정 구간을 보존하고 남은 SELL까지 금융 검증한다`() {
         val clock = EngineCapacityPacedClock()
         val result =
-            runTradingEngineCapacity(
+            runCapacityFixture(
                 TradingEngineCapacityOptions(warmup = 0, orders = 4, durationSeconds = 1, pacedRate = 4),
                 nanoTime = clock::read,
                 beforeMeasuredExecution = { clock.advance(1_200_000_000) },
@@ -697,7 +698,7 @@ class TradingEngineCapacityTest {
     fun `paced도 실패한 시도의 업무 분포와 예정 지연을 보존하고 미실행을 구별한다`() {
         val clock = EngineCapacityPacedClock()
         val result =
-            runTradingEngineCapacity(
+            runCapacityFixture(
                 TradingEngineCapacityOptions(warmup = 0, orders = 3, durationSeconds = 1, pacedRate = 3),
                 nanoTime = clock::read,
                 beforeMeasuredExecution = { index ->
@@ -734,7 +735,7 @@ class TradingEngineCapacityTest {
     fun `마지막 창 대기의 실패도 숨기지 않고 이미 완료한 금융 상태와 지연은 보존한다`() {
         val clock = EngineCapacityPacedClock()
         val result =
-            runTradingEngineCapacity(
+            runCapacityFixture(
                 TradingEngineCapacityOptions(warmup = 0, orders = 1, durationSeconds = 1, pacedRate = 1),
                 nanoTime = clock::read,
                 beforeMeasuredExecution = { clock.advance(10) },
@@ -788,6 +789,17 @@ class TradingEngineCapacityTest {
         assertEquals(Long.MAX_VALUE, maximum.summary().p99UpperBoundNs)
     }
 }
+
+/** Small financial/control fixtures must not inherit the full test worker's accumulated heap pressure. */
+private fun runCapacityFixture(
+    options: TradingEngineCapacityOptions,
+    nanoTime: () -> Long = System::nanoTime,
+    heapUsedBytes: () -> Long = { 10L },
+    maxHeapBytes: Long = 100,
+    beforeMeasuredExecution: ((Int) -> Unit)? = null,
+    parkNanos: (Long) -> Unit = { LockSupport.parkNanos(it) },
+): TradingEngineCapacityResult =
+    runTradingEngineCapacity(options, nanoTime, heapUsedBytes, maxHeapBytes, beforeMeasuredExecution, parkNanos)
 
 private class EngineCapacityPacedClock(
     private var nowNs: Long = 0L,

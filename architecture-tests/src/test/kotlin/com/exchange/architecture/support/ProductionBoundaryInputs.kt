@@ -25,7 +25,13 @@ object ProductionBoundaryInputs {
     private val applicationHttpData =
         setOf("Registration", "Release", "Summary", "Error", "Exception")
             .map { "$MARKET_APPLICATION.MarketConfiguration$it" }
-            .toSet() + setOf("$TRADING_APPLICATION.TradingAdmissionResult", "$TRADING_APPLICATION.TradingOrderSubmission")
+            .toSet() +
+            setOf(
+                "$TRADING_APPLICATION.TradingAdmissionResult",
+                "$TRADING_APPLICATION.TradingOrderSubmission",
+                "$TRADING_APPLICATION.BoundedTradingResult",
+                "$TRADING_APPLICATION.BoundedTradingOrderSubmission",
+            )
 
     // 기존 공개 진입점의 삭제를 잡는 최소 기대이며, 전체 검사 대상의 등록표가 아니다.
     val requiredTypes =

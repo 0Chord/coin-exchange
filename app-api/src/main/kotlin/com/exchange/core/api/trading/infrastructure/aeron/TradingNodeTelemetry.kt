@@ -148,12 +148,14 @@ internal class TradingNodeMetrics(
     registry: MeterRegistry,
     asynchronous: Boolean = false,
     queueCapacity: Int = 4096,
+    private val dropOnSaturation: Boolean = false,
     onFatal: (Error) -> Unit = {},
 ) : TradingNodeTelemetry,
     CompletedCaptureSink,
     AutoCloseable {
     private val degraded = AtomicInteger()
     private val recordingFailures = AtomicLong()
+    private val droppedSamples = AtomicLong()
     private var timers: List<Timer> = emptyList()
     private var callbacks: Map<TradingNodeCallbackKind, Counter> = emptyMap()
     private var failures: Counter? = null
@@ -164,6 +166,7 @@ internal class TradingNodeMetrics(
     init {
         try {
             val gauge = Gauge.builder("$PREFIX.degraded", degraded) { it.get().toDouble() }.register(registry)
+            Gauge.builder("$PREFIX.dropped_samples", droppedSamples) { it.get().toDouble() }.register(registry)
             failures = Counter.builder("$PREFIX.observation_failures").register(registry)
             timers =
                 TradingNodePhase.entries.map { phase ->
@@ -262,6 +265,13 @@ internal class TradingNodeMetrics(
                     capture.timingErrors,
                 )
             if (!queued) {
+                if (dropOnSaturation) {
+                    // Optional monitoring cannot stall the financial service behind a slow exporter.
+                    // The explicit loss gauge prevents treating the sample set as complete evidence.
+                    droppedSamples.incrementAndGet()
+                    degraded.set(1)
+                    return
+                }
                 // Micrometer meters are thread-safe: retain every sample instead of dropping monitoring data.
                 // A later metric failure must not overtake the already accepted prefix.
                 try {
@@ -356,6 +366,10 @@ internal class TradingNodeMetricHandoff(
     private val terminated = AtomicBoolean()
     private val producer = AtomicReference<Thread?>()
     private val producerActive = AtomicInteger()
+
+    // Only the bound producer writes these; the atomic prefix remains visible to other threads.
+    private var producerPosition = 0L
+    private var producerSlotIndex = 0
     private val worker: Thread
 
     init {
@@ -373,21 +387,28 @@ internal class TradingNodeMetricHandoff(
         timingErrors: Int,
     ): Boolean {
         val current = Thread.currentThread()
-        if (producer.get() == null) producer.compareAndSet(null, current)
-        if (producer.get() !== current || !producerActive.compareAndSet(0, 1)) {
+        var owner = producer.get()
+        if (owner == null) {
+            producer.compareAndSet(null, current)
+            owner = producer.get()
+        }
+        if (owner !== current || !producerActive.compareAndSet(0, 1)) {
             return false
         }
         try {
             if (closing.get() || terminated.get()) return false
-            val next = published.get()
+            val next = producerPosition
             if (next - consumed.get() >= capacity) return false
-            val slot = slots[(next % capacity).toInt()]
+            val slot = slots[producerSlotIndex]
             durations.copyInto(slot.durations)
             slot.kind = kind
             slot.executionAttempts = executionAttempts
             slot.replyAttempts = replyAttempts
             slot.timingErrors = timingErrors
             published.lazySet(next + 1)
+            producerPosition = next + 1
+            producerSlotIndex++
+            if (producerSlotIndex == capacity) producerSlotIndex = 0
             // An already active consumer observes published without a syscall.
             if (next == consumed.get()) LockSupport.unpark(worker)
             return true
@@ -407,13 +428,17 @@ internal class TradingNodeMetricHandoff(
     }
 
     private fun consume() {
+        var next = 0L
+        var slotIndex = 0
         try {
             while (true) {
-                val next = consumed.get()
                 if (next < published.get()) {
-                    val slot = slots[(next % capacity).toInt()]
+                    val slot = slots[slotIndex]
                     record(slot.kind, slot.durations, slot.executionAttempts, slot.replyAttempts, slot.timingErrors)
-                    consumed.lazySet(next + 1)
+                    next++
+                    slotIndex++
+                    if (slotIndex == capacity) slotIndex = 0
+                    consumed.lazySet(next)
                 } else {
                     // A final producer can publish after the empty read above. Re-read the prefix
                     // only after closing excludes new publications and the admitted writer has left.

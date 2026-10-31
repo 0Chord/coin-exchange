@@ -63,16 +63,27 @@ interface TradingExecutionObserver {
  * 복구 값의 검증·반영을 제공하며, Aeron 실행·저장 매체·로그 재생은 바깥 실행자가 소유한다.
  */
 class TradingState(
-    admissionCalculator: OrderAdmissionCalculator,
+    private val admissionCalculator: OrderAdmissionCalculator,
     private val settlementCalculator: OrderSettlementCalculator,
     historyStore: TradingHistoryStore? = null,
     historyBatchLimit: Int = 1_024,
+    val boundedMode: Boolean = false,
 ) {
-    private val admission =
-        OrderAdmissionState(emptyList(), admissionCalculator, historyStore, historyBatchLimit, ::evictHistory)
+    private lateinit var admission: OrderAdmissionState
+
+    init {
+        require(!boundedMode || historyStore == null) { "bounded mode cannot own a historical index" }
+        if (!boundedMode) {
+            admission = OrderAdmissionState(emptyList(), admissionCalculator, historyStore, historyBatchLimit, ::evictHistory)
+        }
+    }
+
     private var engine = MatchingEngine()
     private var resultState = MatchingResultState()
     private val completions: MutableMap<Long, Completion> = linkedMapOf()
+    private var bounded: BoundedTradingData? = null
+    val lifecycle: TradingLifecycle
+        get() = if (!boundedMode) TradingLifecycle.RUNNING else bounded?.lifecycle ?: TradingLifecycle.UNINITIALIZED
 
     var isBlocked: Boolean = false
         private set
@@ -103,7 +114,14 @@ class TradingState(
         opening: OpeningBalance,
         ledgerTransactionId: String,
         occurredAt: Instant,
-    ): OpeningBalanceResult = admissionCall { admission.prepareDevelopmentBalance(opening, ledgerTransactionId, occurredAt) }
+    ): OpeningBalanceResult =
+        if (boundedMode) {
+            prepareBoundedBalance(opening, occurredAt)
+        } else {
+            admissionCall {
+                admission.prepareDevelopmentBalance(opening, ledgerTransactionId, occurredAt)
+            }
+        }
 
     fun admit(
         requestId: String,
@@ -269,6 +287,8 @@ class TradingState(
                 // VM 오류는 숨기지 않는다. 업무 실패가 있으면 원본을 유지하며 함께 전달한다.
                 val businessFailure = failure
                 if (businessFailure == null) throw observerFailure
+                // A classified validation failure must not turn a fatal observer error into recoverable quarantine.
+                isBlocked = true
                 if (observerFailure !== businessFailure) businessFailure.addSuppressed(observerFailure)
             }
         }
@@ -549,21 +569,887 @@ class TradingState(
     }
 
     private fun TradeExecuted.toSettlement(occurredAt: Instant) =
-        SettlementExecution(
-            marketId,
-            engineSequence,
-            makerOrderId,
-            takerOrderId,
-            makerUserId,
-            takerUserId,
-            side,
-            price,
-            quantity,
-            settlementTransactionId(marketId, engineSequence),
-            occurredAt,
+        toSettlement(occurredAt, settlementTransactionId(marketId, engineSequence))
+
+    private fun TradeExecuted.toSettlement(
+        occurredAt: Instant,
+        ledgerTransactionId: String,
+    ) = SettlementExecution(
+        marketId,
+        engineSequence,
+        makerOrderId,
+        takerOrderId,
+        makerUserId,
+        takerUserId,
+        side,
+        price,
+        quantity,
+        ledgerTransactionId,
+        occurredAt,
+    )
+
+    /** Explicit opt-in genesis. This owner never constructs legacy history storage in this mode. */
+    fun initialize(manifest: TradingClusterManifest): InitializationReceipt {
+        check(boundedMode && !isBlocked) { "bounded initialization requires a usable bounded owner" }
+        bounded?.let {
+            require(it.manifest == manifest) { "cluster manifest cannot change" }
+            return InitializationReceipt.ALREADY_INITIALIZED
+        }
+        validateBoundedManifest(manifest)
+        bounded = BoundedTradingData(manifest)
+        return InitializationReceipt.INITIALIZED
+    }
+
+    private fun validateBoundedManifest(manifest: TradingClusterManifest) {
+        require(manifest.markets.size <= manifest.limits.maxMarkets)
+        val assets = manifest.markets.flatMap { listOf(it.market.baseAssetId, it.market.quoteAssetId) }.toSet()
+        require(assets.size <= manifest.limits.maxAssets)
+        for (context in manifest.markets) {
+            require(context.feePolicySnapshot.productType == com.exchange.core.fee.FeeProductType.SPOT)
+            require(admissionCalculator.validIdentifier(context.market.marketId.value))
+            require(admissionCalculator.validIdentifier(context.market.baseAssetId.value, accountPart = true))
+            require(admissionCalculator.validIdentifier(context.market.quoteAssetId.value, accountPart = true))
+            require(tradingTextBytes(context.market.marketId.value) <= manifest.limits.maxIdentifierBytes)
+            require(tradingTextBytes(context.market.baseAssetId.value) <= manifest.limits.maxIdentifierBytes)
+            require(tradingTextBytes(context.market.quoteAssetId.value) <= manifest.limits.maxIdentifierBytes)
+        }
+    }
+
+    fun rotateEpoch(
+        userId: UserId,
+        channel: Int,
+        expectedEpoch: Long,
+    ): EpochReceipt {
+        val current = runningBounded()
+        if (!admissionCalculator.validIdentifier(userId.value, accountPart = true) ||
+            tradingTextBytes(userId.value) > current.manifest.limits.maxIdentifierBytes
+        ) {
+            return EpochReceipt(EpochStatus.INVALID_CHANNEL, 0)
+        }
+        if (userId !in current.accounts && current.accounts.size >= current.manifest.limits.maxAccounts) {
+            return EpochReceipt(EpochStatus.RETRYABLE_CAPACITY, 0)
+        }
+        return boundedMutation {
+            val result = current.inbox.rotateEpoch(userId, channel, expectedEpoch)
+            if (result.status == EpochStatus.ISSUED || result.status == EpochStatus.ALREADY_ISSUED ||
+                result.status == EpochStatus.SUPERSEDED
+            ) {
+                current.accounts.add(userId)
+            }
+            result
+        }
+    }
+
+    fun acknowledgeReceipts(
+        userId: UserId,
+        channel: Int,
+        epoch: Long,
+        through: Long,
+    ): AckReceipt {
+        val current = runningBounded()
+        return boundedMutation { current.inbox.acknowledge(userId, channel, epoch, through) }
+    }
+
+    fun admit(
+        token: RequestToken,
+        intent: OrderIntent,
+        at: Instant,
+    ): AdmissionReply {
+        val current = runningBounded()
+        when (val lookup = current.inbox.lookup(token, intent)) {
+            is InboxLookup.Repeated -> return AdmissionReply.Recorded(lookup.receipt, newlyRecorded = false)
+            is InboxLookup.Rejected -> return AdmissionReply.Refused(lookup.reason.name)
+            InboxLookup.Ready -> Unit
+        }
+        val context = current.contexts[intent.marketId]
+        if (context == null || intent.expectedConfigurationVersion != current.manifest.configurationVersion) {
+            return AdmissionReply.Refused("EXECUTION_CONTEXT_MISMATCH")
+        }
+        val progress = current.markets.getValue(intent.marketId)
+        val limits = current.manifest.limits
+        val baseKey = TradingBalanceKey(token.userId, context.market.baseAssetId)
+        val quoteKey = TradingBalanceKey(token.userId, context.market.quoteAssetId)
+        val baseExists = baseKey in current.balances
+        val quoteExists = quoteKey in current.balances
+        val requiredKeys = (if (baseExists) 0 else 1) + (if (quoteExists) 0 else 1)
+        if (current.liveBySequence.size >= limits.maxActiveOrders || progress.activeCount >= limits.maxMarketActiveOrders ||
+            current.pendingCount >= limits.maxPendingOrders || progress.pending.size >= limits.maxMarketPendingOrders ||
+            requiredKeys > limits.maxBalanceKeys - current.balances.size ||
+            (token.userId !in current.accounts && current.accounts.size >= limits.maxAccounts)
+        ) {
+            return AdmissionReply.Refused("RETRYABLE_CAPACITY")
+        }
+        val sequence = Math.addExact(current.lastAdmissionSequence, 1L)
+        val marketSequence = Math.addExact(progress.lastAssigned, 1L)
+        val identifiers = TradingIdentifiers.admission(current.manifest.lineage, sequence)
+        val input =
+            OrderAdmissionInput(
+                intent.marketId,
+                identifiers.orderId,
+                token.userId,
+                intent.side,
+                intent.orderType,
+                intent.timeInForce,
+                intent.price,
+                intent.quantity,
+            )
+        val reservedKey = if (intent.side == Side.BUY) quoteKey else baseKey
+        val balance = current.balances[reservedKey] ?: Balance(token.userId, reservedKey.assetId, Amount.ZERO, Amount.ZERO)
+        val calculation =
+            admissionCalculator.calculateTransition(
+                input,
+                context.market,
+                context.feePolicySnapshot,
+                balance,
+            )
+        if (calculation is AdmissionTransitionResult.Rejected) {
+            val receipt =
+                AdmissionReceipt(AdmissionCode.REJECTED, reason = calculation.reason, insufficientBalance = calculation.insufficientBalance)
+            boundedMutation { current.inbox.remember(token, intent, receipt) }
+            return AdmissionReply.Recorded(receipt, newlyRecorded = true)
+        }
+        val candidate = calculation as AdmissionTransitionResult.Calculated
+        check(candidate.hasPreviousBalance(balance))
+        val live = BoundedLiveOrder(sequence, marketSequence, input, candidate.reservation, LiveOrderPhase.PENDING)
+        val receipt = AdmissionReceipt(AdmissionCode.ACCEPTED, input.orderId, sequence, marketSequence)
+        boundedMutation {
+            current.accounts.add(token.userId)
+            if (!baseExists) current.balances[baseKey] = Balance(baseKey.userId, baseKey.assetId, Amount.ZERO, Amount.ZERO)
+            if (!quoteExists) current.balances[quoteKey] = Balance(quoteKey.userId, quoteKey.assetId, Amount.ZERO, Amount.ZERO)
+            current.usedBalances.add(baseKey)
+            current.usedBalances.add(quoteKey)
+            current.balances[reservedKey] = candidate.nextBalance
+            current.liveBySequence[sequence] = live
+            current.liveByOrder[input.marketId to input.orderId] = live
+            progress.pending.addLast(live)
+            progress.activeCount++
+            current.pendingCount++
+            progress.lastAssigned = marketSequence
+            current.lastAdmissionSequence = sequence
+            current.inbox.remember(token, intent, receipt)
+        }
+        return AdmissionReply.Recorded(receipt, newlyRecorded = true)
+    }
+
+    private fun prepareBoundedBalance(
+        opening: OpeningBalance,
+        at: Instant,
+    ): OpeningBalanceResult {
+        val current = runningBounded()
+        current.preparations[opening.preparationId]?.let {
+            if (it.opening !=
+                opening
+            ) {
+                throw com.exchange.core.ledger.OpeningBalanceRequestConflictException(
+                    "same preparation ID has different funding content",
+                )
+            }
+            return it.copy(alreadyPrepared = true)
+        }
+        val limits = current.manifest.limits
+        if (opening.assetId !in current.assets) throw TradingFundingInputException(TradingFundingRejection.UNKNOWN_ASSET)
+        if (tradingTextBytes(opening.userId.value) > limits.maxIdentifierBytes ||
+            tradingTextBytes(opening.preparationId) > limits.maxIdentifierBytes
+        ) {
+            throw TradingFundingInputException(TradingFundingRejection.INVALID_IDENTIFIER)
+        }
+        val key = TradingBalanceKey(opening.userId, opening.assetId)
+        val old = current.balances[key] ?: Balance(opening.userId, opening.assetId, Amount.ZERO, Amount.ZERO)
+        opening.requireUnused(old, key in current.usedBalances)
+        val bytes = preparationBytes(opening)
+        if (current.preparations.size >= limits.maxPreparations || bytes > limits.maxPreparationBytes - current.preparationBytes ||
+            (key !in current.balances && current.balances.size >= limits.maxBalanceKeys) ||
+            (opening.userId !in current.accounts && current.accounts.size >= limits.maxAccounts)
+        ) {
+            throw TradingCapacityException("development funding capacity exceeded")
+        }
+        val sequence = Math.addExact(current.lastPreparationSequence, 1L)
+        val ledgerId = TradingIdentifiers.opening(current.manifest.lineage, sequence)
+        val next = old.credit(opening.amount)
+        opening.transaction(ledgerId, at) // Validate the same balanced OPENING without retaining its posting graph.
+        val result = OpeningBalanceResult(opening, ledgerId, at, alreadyPrepared = false)
+        boundedMutation {
+            current.accounts.add(opening.userId)
+            current.balances[key] = next
+            current.usedBalances.add(key)
+            current.preparations[opening.preparationId] = result
+            current.preparationBytes = Math.addExact(current.preparationBytes, bytes)
+            current.lastPreparationSequence = sequence
+        }
+        return result
+    }
+
+    @JvmOverloads
+    fun executePending(
+        command: ExecuteAdmission,
+        at: Instant,
+        observer: TradingExecutionObserver = TradingExecutionObserver.NONE,
+    ): ExecutionReply {
+        val current = runningBounded()
+        require(command.lineage == current.manifest.lineage) { "execution lineage differs" }
+        val context = requireNotNull(current.contexts[command.marketId]) { "execution market is not registered" }
+        val progress = current.markets.getValue(command.marketId)
+        require(command.marketAdmissionSequence > 0 && command.admissionSequence > 0)
+        if (command.marketAdmissionSequence <= progress.executedThrough) return ExecutionReply.AlreadyPassed
+        require(command.marketAdmissionSequence == Math.addExact(progress.executedThrough, 1L)) { "execution is out of order" }
+        val live = requireNotNull(progress.pending.firstOrNull()) { "execution has no pending order" }
+        require(live.admissionSequence == command.admissionSequence && live.marketAdmissionSequence == command.marketAdmissionSequence) {
+            "execution target differs from first pending order"
+        }
+        var applying = false
+        try {
+            validateBoundedStage(TradingInvariantReason.PARTICIPANT_RELATION_INVALID, TradingExecutionPhase.SETTLEMENT_INPUT_VALIDATION) {
+                check(live.phase == LiveOrderPhase.PENDING)
+            }
+            val order = live.order
+            val matchingCommand =
+                SubmitOrderCommand(
+                    order.marketId,
+                    order.orderId,
+                    order.userId,
+                    order.side,
+                    order.orderType,
+                    order.timeInForce,
+                    order.price,
+                    order.quantity,
+                )
+            val plan =
+                observedExecutionPhase(command.admissionSequence, TradingExecutionPhase.MATCHING_CANDIDATE, observer) {
+                    validateBoundedStage(TradingInvariantReason.MATCHING_CANDIDATE_INVALID, TradingExecutionPhase.MATCHING_CANDIDATE) {
+                        engine.prepareSubmit(matchingCommand)
+                    }
+                }
+            val restingQuantity =
+                (plan.events.lastOrNull() as? OrderEnteredBook)?.remainingQuantity ?: com.exchange.core.common.Quantity.ZERO
+            val participants = ArrayList<OrderReservation>(plan.fills.size + 1)
+            val participantBalances =
+                observedExecutionPhase(command.admissionSequence, TradingExecutionPhase.SETTLEMENT_INPUT_VALIDATION, observer) {
+                    validateBoundedStage(
+                        TradingInvariantReason.PARTICIPANT_RELATION_INVALID,
+                        TradingExecutionPhase.SETTLEMENT_INPUT_VALIDATION,
+                    ) {
+                        validateBoundedReservationRelationship(live, context)
+                        if (plan.fills.isEmpty()) settlementCalculator.validateReservation(context.market, live.reservation)
+                        check(
+                            live.reservation.remainingQuantity == order.quantity &&
+                                live.reservation.remainingAmount == live.reservation.reservedAmount,
+                        )
+                        participants.add(live.reservation)
+                        for (fill in plan.fills) {
+                            val maker = checkNotNull(current.liveByOrder[order.marketId to fill.orderId]) { "book maker has no live order" }
+                            check(maker.phase == LiveOrderPhase.RESTING) { "book maker has not completed first execution" }
+                            validateBoundedReservationRelationship(maker, context)
+                            check(
+                                maker.order.userId == fill.userId && maker.order.side == fill.side && maker.order.price == fill.price &&
+                                    maker.order.quantity == fill.originalQuantity &&
+                                    maker.reservation.remainingQuantity == fill.remainingQuantity,
+                            )
+                            participants.add(maker.reservation)
+                        }
+                    }
+                    validateBoundedStage(
+                        TradingInvariantReason.PARTICIPANT_RELATION_INVALID,
+                        TradingExecutionPhase.SETTLEMENT_INPUT_VALIDATION,
+                    ) {
+                        if (plan.fills.isEmpty()) {
+                            validateBoundedNoFillBalances(current, live, context)
+                            emptyList()
+                        } else {
+                            val keys = linkedSetOf<TradingBalanceKey>()
+                            for (reservation in participants) {
+                                keys.add(TradingBalanceKey(reservation.userId, context.market.baseAssetId))
+                                keys.add(TradingBalanceKey(reservation.userId, context.market.quoteAssetId))
+                            }
+                            keys.map { checkNotNull(current.balances[it]) { "participant balance capacity was not reserved" } }
+                        }
+                    }
+                }
+            lateinit var executions: List<SettlementExecution>
+            val settlement =
+                observedExecutionPhase(command.admissionSequence, TradingExecutionPhase.SETTLEMENT_CANDIDATE, observer) {
+                    executions = boundedSettlementExecutions(current, context, plan, at)
+                    validateBoundedStage(
+                        TradingInvariantReason.SETTLEMENT_CALCULATION_INVALID,
+                        TradingExecutionPhase.SETTLEMENT_CANDIDATE,
+                    ) {
+                        try {
+                            if (executions.isEmpty()) {
+                                settlementCalculator.calculateEmpty(order, context.market)
+                            } else {
+                                settlementCalculator.calculate(order, context.market, executions, participants, participantBalances)
+                            }
+                        } catch (_: InitialReservationValidationFailure) {
+                            throw TradingInvariantViolation(
+                                TradingInvariantReason.PARTICIPANT_RELATION_INVALID,
+                                TradingExecutionPhase.SETTLEMENT_INPUT_VALIDATION,
+                            )
+                        }
+                    }
+                }
+            val feeAsset = context.market.quoteAssetId
+            val nextFeeRevenue =
+                observedExecutionPhase(command.admissionSequence, TradingExecutionPhase.RESULT_VALIDATION, observer) {
+                    validateBoundedExecutionResult(current, live, matchingCommand, plan, settlement, executions)
+                    validateBoundedFeeRevenue(current, settlement, feeAsset)
+                }
+            val receipt =
+                ExecutionReceipt(
+                    live.admissionSequence,
+                    live.marketAdmissionSequence,
+                    order.marketId,
+                    plan.lastEngineSequence,
+                    executions.size,
+                    !restingQuantity.isZero(),
+                )
+            applying = true
+            observedExecutionPhase(command.admissionSequence, TradingExecutionPhase.APPLY, observer) {
+                boundedMutation {
+                    engine.apply(plan)
+                    for (change in settlement.balanceChanges) {
+                        current.balances[TradingBalanceKey(change.next.userId, change.next.assetId)] =
+                            change.next
+                    }
+                    for (change in settlement.reservationChanges) {
+                        current.liveByOrder.getValue(change.next.marketId to change.next.orderId).reservation = change.next
+                    }
+                    nextFeeRevenue?.let { current.feeRevenue[feeAsset] = it }
+                    if (!restingQuantity.isZero()) live.phase = LiveOrderPhase.RESTING
+                    val terminal = ArrayList<BoundedLiveOrder>()
+                    for (reservation in participants) {
+                        val participant = current.liveByOrder.getValue(reservation.marketId to reservation.orderId)
+                        if (participant.reservation.status != OrderReservationStatus.ACTIVE) terminal.add(participant)
+                    }
+                    // A fully matched taker has a terminal reservation. A no-fill taker becomes RESTING.
+                    for (finished in terminal) {
+                        current.liveByOrder.remove(finished.order.marketId to finished.order.orderId)
+                        current.liveBySequence.remove(finished.admissionSequence)
+                        engine.releaseTerminalOrderIdentity(finished.order.marketId, finished.order.orderId)
+                        progress.activeCount--
+                    }
+                    check(progress.pending.removeFirst() === live)
+                    current.pendingCount--
+                    progress.executedThrough = live.marketAdmissionSequence
+                }
+            }
+            return observedExecutionPhase(command.admissionSequence, TradingExecutionPhase.COMPLETION, observer) {
+                ExecutionReply.Applied(receipt)
+            }
+        } catch (failure: TradingInvariantViolation) {
+            // Only an explicitly classified pre-write validation is safe to persist as quarantine.
+            if (applying) isBlocked = true
+            throw failure
+        } catch (failure: Throwable) {
+            isBlocked = true
+            throw failure
+        }
+    }
+
+    private fun validateBoundedNoFillBalances(
+        current: BoundedTradingData,
+        live: BoundedLiveOrder,
+        context: TradingMarketContext,
+    ) {
+        val order = live.order
+        val baseKey = TradingBalanceKey(order.userId, context.market.baseAssetId)
+        val quoteKey = TradingBalanceKey(order.userId, context.market.quoteAssetId)
+        val base = checkNotNull(current.balances[baseKey]) { "participant balance capacity was not reserved" }
+        val quote = checkNotNull(current.balances[quoteKey]) { "participant balance capacity was not reserved" }
+        check(base.userId == baseKey.userId && base.assetId == baseKey.assetId)
+        check(quote.userId == quoteKey.userId && quote.assetId == quoteKey.assetId)
+        val reserved = if (order.side == Side.BUY) quote else base
+        check(reserved.hold >= live.reservation.remainingAmount)
+    }
+
+    private fun boundedSettlementExecutions(
+        current: BoundedTradingData,
+        context: TradingMarketContext,
+        plan: SubmitOrderPlan,
+        at: Instant,
+    ): List<SettlementExecution> {
+        val executions = ArrayList<SettlementExecution>(plan.fills.size)
+        for (event in plan.events) {
+            if (event is TradeExecuted) {
+                executions.add(
+                    event.toSettlement(
+                        at,
+                        TradingIdentifiers.settlement(current.manifest.lineage, context.ordinal, event.engineSequence),
+                    ),
+                )
+            }
+        }
+        return executions
+    }
+
+    private fun validateBoundedExecutionResult(
+        current: BoundedTradingData,
+        live: BoundedLiveOrder,
+        matchingCommand: SubmitOrderCommand,
+        plan: SubmitOrderPlan,
+        settlement: OrderSettlementCandidate,
+        executions: List<SettlementExecution>,
+    ) {
+        validateBoundedStage(TradingInvariantReason.RESULT_RELATION_INVALID, TradingExecutionPhase.RESULT_VALIDATION) {
+            validateBoundedJoint(live, plan, settlement, executions)
+            MatchingResultState.validateCompleteResult(
+                "EXECUTE:${live.marketAdmissionSequence}",
+                matchingCommand,
+                plan.events.size,
+                plan.firstEngineSequence,
+                plan.lastEngineSequence,
+                plan.events,
+            )
+            for (change in settlement.balanceChanges) {
+                check(current.balances[TradingBalanceKey(change.previous.userId, change.previous.assetId)] == change.previous)
+            }
+            for (change in settlement.reservationChanges) {
+                check(current.liveByOrder[change.previous.marketId to change.previous.orderId]?.reservation == change.previous)
+            }
+        }
+    }
+
+    private fun validateBoundedFeeRevenue(
+        current: BoundedTradingData,
+        settlement: OrderSettlementCandidate,
+        feeAsset: AssetId,
+    ): java.math.BigInteger? {
+        // SPOT settlement charges both participants in this market's quote asset.
+        // Accumulate exact revenue once, without temporary per-fill maps or maker/taker lists.
+        val transactionIds = hashSetOf<String>()
+        val eventIds = hashSetOf<String>()
+        return validateBoundedStage(TradingInvariantReason.FEE_REVENUE_INVALID, TradingExecutionPhase.RESULT_VALIDATION) {
+            var feeDelta = java.math.BigInteger.ZERO
+            var ledgerRevenue = java.math.BigInteger.ZERO
+            for (fill in settlement.settlements) {
+                check(transactionIds.add(fill.transaction.ledgerTransactionId) && eventIds.add(fill.transaction.sourceEventId))
+                check(fill.makerPlan.feeAssetId == feeAsset && fill.takerPlan.feeAssetId == feeAsset)
+                feeDelta =
+                    feeDelta
+                        .add(java.math.BigInteger.valueOf(fill.makerPlan.actualFeeAmount.value))
+                        .add(java.math.BigInteger.valueOf(fill.takerPlan.actualFeeAmount.value))
+                for (posting in fill.transaction.postings) {
+                    if (posting.accountId == "SYSTEM:${posting.assetId.value}:FEE_REVENUE") {
+                        check(posting.assetId == feeAsset && posting.side == com.exchange.core.ledger.LedgerPostingSide.CREDIT)
+                        ledgerRevenue = ledgerRevenue.add(java.math.BigInteger.valueOf(posting.amount.value))
+                    }
+                }
+            }
+            check(feeDelta == ledgerRevenue) { "fee delta differs from ledger revenue" }
+            if (settlement.settlements.isEmpty()) {
+                null
+            } else {
+                val next = (current.feeRevenue[feeAsset] ?: java.math.BigInteger.ZERO).add(feeDelta)
+                check(next.signum() >= 0 && next.bitLength() <= feeBitLimit(current.manifest.limits))
+                if (next.signum() != 0) next else null
+            }
+        }
+    }
+
+    private inline fun <T> validateBoundedStage(
+        reason: TradingInvariantReason,
+        stage: TradingExecutionPhase,
+        action: () -> T,
+    ): T =
+        try {
+            action()
+        } catch (failure: TradingInvariantViolation) {
+            throw failure
+        } catch (_: IllegalArgumentException) {
+            throw TradingInvariantViolation(reason, stage)
+        } catch (_: IllegalStateException) {
+            throw TradingInvariantViolation(reason, stage)
+        }
+
+    private fun validateBoundedReservation(
+        live: BoundedLiveOrder,
+        context: TradingMarketContext,
+    ) {
+        validateBoundedReservationRelationship(live, context)
+        settlementCalculator.validateReservation(context.market, live.reservation)
+    }
+
+    private fun validateBoundedReservationRelationship(
+        live: BoundedLiveOrder,
+        context: TradingMarketContext,
+    ) {
+        val order = live.order
+        val reservation = live.reservation
+        check(order.marketId == context.market.marketId && reservation.marketId == order.marketId && reservation.orderId == order.orderId)
+        check(reservation.userId == order.userId && reservation.side == order.side && reservation.limitPrice == order.price)
+        check(reservation.initialQuantity == order.quantity && reservation.feePolicySnapshot == context.feePolicySnapshot)
+        check(reservation.status == OrderReservationStatus.ACTIVE)
+    }
+
+    private fun validateBoundedJoint(
+        live: BoundedLiveOrder,
+        plan: SubmitOrderPlan,
+        settlement: OrderSettlementCandidate,
+        executions: List<SettlementExecution>,
+    ) {
+        check(settlement.order == live.order && settlement.settlements.size == executions.size)
+        for (index in executions.indices) check(settlement.settlements[index].execution == executions[index])
+        if (executions.isEmpty()) {
+            check(settlement.balanceChanges.isEmpty() && settlement.reservationChanges.isEmpty())
+            return
+        }
+        val next = settlement.reservationChanges.associate { it.next.orderId to it.next }
+        for (fill in plan.fills) {
+            check(next.getValue(fill.orderId).remainingQuantity.value == fill.remainingQuantity.value - fill.filledQuantity.value)
+        }
+        val restingQuantity = (plan.events.lastOrNull() as? OrderEnteredBook)?.remainingQuantity ?: com.exchange.core.common.Quantity.ZERO
+        check(next.getValue(live.order.orderId).remainingQuantity == restingQuantity)
+        for (fill in settlement.settlements) {
+            check(fill.transaction.transactionType == LedgerTransactionType.SETTLEMENT)
+            check(
+                fill.transaction.ledgerTransactionId == fill.execution.ledgerTransactionId &&
+                    fill.transaction.occurredAt == fill.execution.occurredAt,
+            )
+            check(fill.transaction.sourceEventId == "MATCHING:${fill.execution.marketId.value}:${fill.execution.engineSequence}")
+        }
+    }
+
+    fun quarantine(
+        position: Long,
+        reason: String,
+    ) {
+        check(boundedMode && !isBlocked)
+        val current = checkNotNull(bounded) { "trading is not initialized" }
+        require(position >= 0 && reason.isNotBlank() && reason.length <= 128)
+        val incident = TradingIncident(position, reason)
+        if (current.lifecycle == TradingLifecycle.QUARANTINED) {
+            require(current.incident == incident) { "first quarantine incident cannot change" }
+            return
+        }
+        boundedMutation {
+            current.incident = incident
+            current.lifecycle = TradingLifecycle.QUARANTINED
+        }
+    }
+
+    fun boundedRetention(): TradingBoundedRetention {
+        val current = runningBounded()
+        return TradingBoundedRetention(
+            current.balances.size,
+            current.accounts.size,
+            current.preparations.size,
+            current.liveBySequence.size,
+            current.pendingCount,
+            current.inbox.entryCount,
+            current.inbox.canonicalBytes,
         )
+    }
+
+    fun currentBalance(
+        userId: UserId,
+        assetId: AssetId,
+    ): Balance {
+        val current = runningBounded()
+        return current.balances[TradingBalanceKey(userId, assetId)] ?: Balance(userId, assetId, Amount.ZERO, Amount.ZERO)
+    }
+
+    fun recoveryState(): TradingRecoveryState {
+        check(boundedMode && !isBlocked) { "cannot snapshot a failed or legacy owner" }
+        val current = checkNotNull(bounded) { "trading is not initialized" }
+        return TradingRecoveryState(
+            current.manifest,
+            current.lifecycle,
+            current.balances.values.sortedWith(compareBy({ it.userId.value }, { it.assetId.value })),
+            current.feeRevenue.toSortedMap(compareBy { it.value }),
+            current.usedBalances.sortedWith(compareBy({ it.userId.value }, { it.assetId.value })),
+            current.preparations.values.toList(),
+            current.accounts.sortedBy { it.value },
+            current.liveBySequence.values
+                .sortedBy { it.admissionSequence }
+                .map { it.snapshot() },
+            current.markets.entries.sortedBy { it.key.value }.map { (market, progress) ->
+                TradingMarketProgressSnapshot(
+                    market,
+                    progress.lastAssigned,
+                    progress.executedThrough,
+                    progress.pending.map { it.admissionSequence },
+                )
+            },
+            engine.activeCheckpoint(),
+            current.inbox.snapshot(),
+            current.lastAdmissionSequence,
+            current.lastPreparationSequence,
+            current.preparationBytes,
+            current.incident,
+        )
+    }
+
+    val isBounded: Boolean get() = boundedMode
+
+    /** Constant in order/history count: only the bounded configured market vector is copied. */
+    fun progress(): BoundedTradingProgress {
+        check(boundedMode && !isBlocked)
+        val current = bounded ?: return BoundedTradingProgress(TradingLifecycle.UNINITIALIZED, 0L, emptyList())
+        return BoundedTradingProgress(
+            current.lifecycle,
+            current.lastAdmissionSequence,
+            current.markets.entries.map { (market, state) ->
+                BoundedMarketExecutionProgress(market, state.lastAssigned, state.executedThrough)
+            },
+        )
+    }
+
+    /** Validates a private candidate before replacing this empty owner's current state. */
+    fun restoreRecoveryState(saved: TradingRecoveryState) {
+        check(boundedMode && !isBlocked && bounded == null) { "bounded restore requires an empty owner" }
+        try {
+            val manifest = saved.manifest
+            val limits = manifest.limits
+            validateBoundedManifest(manifest)
+            val candidate = BoundedTradingData(manifest)
+            require(candidate.assets.size <= limits.maxAssets)
+            require(saved.lifecycle != TradingLifecycle.UNINITIALIZED)
+            require((saved.lifecycle == TradingLifecycle.QUARANTINED) == (saved.incident != null))
+            saved.incident?.let { require(it.position >= 0 && it.reason.isNotBlank() && it.reason.length <= 128) }
+            require(saved.lastAdmissionSequence >= 0 && saved.lastPreparationSequence >= 0 && saved.preparationCanonicalBytes >= 0)
+            require(saved.accounts.size <= limits.maxAccounts && saved.accounts.size == saved.accounts.distinct().size)
+            for (account in saved.accounts) {
+                require(admissionCalculator.validIdentifier(account.value, accountPart = true))
+                require(tradingTextBytes(account.value) <= limits.maxIdentifierBytes)
+                candidate.accounts.add(account)
+            }
+            require(saved.balances.size <= limits.maxBalanceKeys)
+            for (balance in saved.balances) {
+                require(balance.userId in candidate.accounts && balance.assetId in candidate.assets)
+                require(
+                    candidate.balances.put(TradingBalanceKey(balance.userId, balance.assetId), balance) == null,
+                ) { "duplicate recovery balance" }
+            }
+            require(saved.usedBalances.size == saved.usedBalances.distinct().size && saved.usedBalances.toSet() == candidate.balances.keys)
+            candidate.usedBalances.addAll(saved.usedBalances)
+            require(saved.preparations.size <= limits.maxPreparations && saved.lastPreparationSequence == saved.preparations.size.toLong())
+            val supplied = linkedMapOf<AssetId, java.math.BigInteger>()
+            val preparedKeys = hashSetOf<TradingBalanceKey>()
+            for ((index, preparation) in saved.preparations.withIndex()) {
+                val opening = preparation.opening
+                val key = TradingBalanceKey(opening.userId, opening.assetId)
+                require(key in candidate.usedBalances && preparedKeys.add(key)) { "duplicate or unknown prepared balance" }
+                require(!preparation.alreadyPrepared)
+                require(preparation.ledgerTransactionId == TradingIdentifiers.opening(manifest.lineage, index.toLong() + 1))
+                require(candidate.preparations.put(opening.preparationId, preparation) == null) { "duplicate preparation identity" }
+                val bytes = preparationBytes(opening)
+                require(tradingTextBytes(opening.preparationId) <= limits.maxIdentifierBytes)
+                candidate.preparationBytes = Math.addExact(candidate.preparationBytes, bytes)
+                supplied[opening.assetId] =
+                    (supplied[opening.assetId] ?: java.math.BigInteger.ZERO).add(java.math.BigInteger.valueOf(opening.amount.value))
+            }
+            require(
+                candidate.preparationBytes == saved.preparationCanonicalBytes && candidate.preparationBytes <= limits.maxPreparationBytes,
+            )
+            for ((asset, fee) in saved.feeRevenueByAsset) {
+                require(asset in candidate.assets && fee.signum() >= 0 && fee.bitLength() <= feeBitLimit(limits))
+                if (fee.signum() != 0) candidate.feeRevenue[asset] = fee
+            }
+            require(saved.liveOrders.size <= limits.maxActiveOrders)
+            val marketOrderSequences = hashSetOf<Pair<MarketId, Long>>()
+            for (order in saved.liveOrders) {
+                require(order.admissionSequence in 1..saved.lastAdmissionSequence && order.marketAdmissionSequence > 0)
+                require(order.order.orderId == TradingIdentifiers.order(manifest.lineage, order.admissionSequence))
+                require(order.order.userId in candidate.accounts)
+                require(
+                    marketOrderSequences.add(order.order.marketId to order.marketAdmissionSequence),
+                ) { "duplicate live market sequence" }
+                val context = requireNotNull(candidate.contexts[order.order.marketId])
+                require(admissionCalculator.validOrderIdentifiers(order.order))
+                require(admissionCalculator.supports(order.order.orderType, order.order.timeInForce))
+                val live =
+                    BoundedLiveOrder(order.admissionSequence, order.marketAdmissionSequence, order.order, order.reservation, order.phase)
+                validateBoundedReservation(live, context)
+                require(candidate.liveBySequence.put(order.admissionSequence, live) == null)
+                require(candidate.liveByOrder.put(order.order.marketId to order.order.orderId, live) == null)
+                require(TradingBalanceKey(order.order.userId, context.market.baseAssetId) in candidate.balances)
+                require(TradingBalanceKey(order.order.userId, context.market.quoteAssetId) in candidate.balances)
+                candidate.markets.getValue(order.order.marketId).activeCount++
+            }
+            require(
+                saved.markets.size == candidate.markets.size && saved.markets
+                    .map { it.marketId }
+                    .distinct()
+                    .size == saved.markets.size,
+            )
+            var assignedTotal = 0L
+            val pendingSequences = hashSetOf<Long>()
+            for (market in saved.markets) {
+                val progress = requireNotNull(candidate.markets[market.marketId])
+                require(market.executedThrough >= 0 && market.lastAssigned >= market.executedThrough)
+                require(progress.activeCount <= limits.maxMarketActiveOrders)
+                require(market.pendingAdmissionSequences.size <= limits.maxMarketPendingOrders)
+                require(market.lastAssigned - market.executedThrough == market.pendingAdmissionSequences.size.toLong())
+                progress.lastAssigned = market.lastAssigned
+                progress.executedThrough = market.executedThrough
+                assignedTotal = Math.addExact(assignedTotal, market.lastAssigned)
+                for ((index, sequence) in market.pendingAdmissionSequences.withIndex()) {
+                    val order = requireNotNull(candidate.liveBySequence[sequence])
+                    require(
+                        order.order.marketId == market.marketId && order.phase == LiveOrderPhase.PENDING && pendingSequences.add(sequence),
+                    )
+                    require(order.marketAdmissionSequence == Math.addExact(market.executedThrough, index.toLong() + 1L))
+                    require(
+                        order.reservation.remainingQuantity == order.order.quantity &&
+                            order.reservation.remainingAmount == order.reservation.reservedAmount,
+                    )
+                    require(
+                        order.reservation.remainingFeeReserveAmount == order.reservation.initialFeeReserveAmount &&
+                            order.reservation.feeRemainder == com.exchange.core.fee.FeeRemainder.ZERO,
+                    )
+                    progress.pending.addLast(order)
+                }
+                candidate.pendingCount = Math.addExact(candidate.pendingCount, progress.pending.size)
+            }
+            require(assignedTotal == saved.lastAdmissionSequence && candidate.pendingCount <= limits.maxPendingOrders)
+            val holds = linkedMapOf<TradingBalanceKey, Long>()
+            for (order in candidate.liveBySequence.values) {
+                val progress = candidate.markets.getValue(order.order.marketId)
+                require(order.marketAdmissionSequence <= progress.lastAssigned)
+                require((order.phase == LiveOrderPhase.PENDING) == (order.admissionSequence in pendingSequences))
+                if (order.phase == LiveOrderPhase.RESTING) require(order.marketAdmissionSequence <= progress.executedThrough)
+                val key = TradingBalanceKey(order.reservation.userId, order.reservation.assetId)
+                holds[key] = Math.addExact(holds[key] ?: 0L, order.reservation.remainingAmount.value)
+            }
+            val totals = linkedMapOf<AssetId, java.math.BigInteger>()
+            for ((key, balance) in candidate.balances) {
+                require(balance.hold.value == (holds.remove(key) ?: 0L)) { "hold differs from active reservations" }
+                val amount =
+                    java.math.BigInteger
+                        .valueOf(balance.available.value)
+                        .add(java.math.BigInteger.valueOf(balance.hold.value))
+                totals[balance.assetId] = (totals[balance.assetId] ?: java.math.BigInteger.ZERO).add(amount)
+            }
+            require(holds.isEmpty())
+            for (asset in candidate.assets) {
+                require(
+                    (totals[asset] ?: java.math.BigInteger.ZERO).add(candidate.feeRevenue[asset] ?: java.math.BigInteger.ZERO) ==
+                        (supplied[asset] ?: java.math.BigInteger.ZERO),
+                ) {
+                    "recovery asset conservation differs from opening funding"
+                }
+            }
+            val restoredEngine = MatchingEngine().also { it.restoreActiveCheckpoint(saved.matching) }
+            val restingSequences = hashSetOf<Long>()
+            for (market in saved.matching.markets) {
+                val progress = requireNotNull(candidate.markets[market.marketId])
+                require(progress.executedThrough > 0 && market.lastEngineSequence >= progress.executedThrough)
+                val pricePriority = hashMapOf<Pair<Side, com.exchange.core.common.Price>, Long>()
+                for (bookOrder in market.orders) {
+                    val order = requireNotNull(candidate.liveByOrder[market.marketId to bookOrder.orderId])
+                    require(order.phase == LiveOrderPhase.RESTING && restingSequences.add(order.admissionSequence))
+                    require(
+                        bookOrder.userId == order.order.userId && bookOrder.side == order.order.side &&
+                            bookOrder.price == order.order.price,
+                    )
+                    require(
+                        bookOrder.originalQuantity == order.order.quantity &&
+                            bookOrder.remainingQuantity == order.reservation.remainingQuantity,
+                    )
+                    val key = bookOrder.side to bookOrder.price
+                    require(order.marketAdmissionSequence > (pricePriority[key] ?: 0L)) { "recovery maker FIFO differs" }
+                    pricePriority[key] = order.marketAdmissionSequence
+                }
+            }
+            require(
+                saved.matching.markets
+                    .map { it.marketId }
+                    .toSet() == candidate.markets.filterValues { it.executedThrough > 0 }.keys,
+            )
+            require(
+                restingSequences ==
+                    candidate.liveBySequence.values
+                        .filter { it.phase == LiveOrderPhase.RESTING }
+                        .map { it.admissionSequence }
+                        .toSet(),
+            )
+            candidate.inbox.restore(saved.inbox)
+            val acceptedSequences = hashSetOf<Long>()
+            val acceptedMarketSequences = hashSetOf<Pair<MarketId, Long>>()
+            for (channel in saved.inbox.channels) {
+                require(channel.userId in candidate.accounts)
+                for (entry in channel.entries) {
+                    val context = requireNotNull(candidate.contexts[entry.intent.marketId])
+                    require(entry.intent.expectedConfigurationVersion == manifest.configurationVersion)
+                    val receipt = entry.receipt
+                    if (receipt.code == AdmissionCode.ACCEPTED) {
+                        val sequence = requireNotNull(receipt.admissionSequence)
+                        require(acceptedSequences.add(sequence)) { "multiple request tokens claim one admission" }
+                        require(
+                            sequence <= saved.lastAdmissionSequence &&
+                                receipt.orderId == TradingIdentifiers.order(manifest.lineage, sequence),
+                        )
+                        require(
+                            requireNotNull(receipt.marketAdmissionSequence) <=
+                                candidate.markets.getValue(context.market.marketId).lastAssigned,
+                        )
+                        require(acceptedMarketSequences.add(context.market.marketId to receipt.marketAdmissionSequence)) {
+                            "multiple request tokens claim one market admission"
+                        }
+                        admissionCalculator.validateAcceptedOrder(
+                            OrderAdmissionInput(
+                                entry.intent.marketId,
+                                requireNotNull(receipt.orderId),
+                                channel.userId,
+                                entry.intent.side,
+                                entry.intent.orderType,
+                                entry.intent.timeInForce,
+                                entry.intent.price,
+                                entry.intent.quantity,
+                            ),
+                            context.market,
+                            context.feePolicySnapshot,
+                        )
+                        candidate.liveBySequence[sequence]?.let { live ->
+                            require(
+                                live.order.userId == channel.userId && live.order.marketId == entry.intent.marketId &&
+                                    live.marketAdmissionSequence == receipt.marketAdmissionSequence &&
+                                    live.order.side == entry.intent.side &&
+                                    live.order.orderType == entry.intent.orderType && live.order.timeInForce == entry.intent.timeInForce &&
+                                    live.order.price == entry.intent.price && live.order.quantity == entry.intent.quantity,
+                            )
+                        }
+                    }
+                }
+            }
+            candidate.lastAdmissionSequence = saved.lastAdmissionSequence
+            candidate.lastPreparationSequence = saved.lastPreparationSequence
+            candidate.lifecycle = saved.lifecycle
+            candidate.incident = saved.incident
+            isBlocked = true
+            engine = restoredEngine
+            bounded = candidate
+            isBlocked = false
+        } catch (failure: Throwable) {
+            isBlocked = true
+            throw failure
+        }
+    }
+
+    private fun runningBounded(): BoundedTradingData {
+        check(boundedMode && !isBlocked) { "bounded trading owner is not usable" }
+        val current = checkNotNull(bounded) { "trading is not initialized" }
+        check(current.lifecycle == TradingLifecycle.RUNNING) { "trading lineage is quarantined" }
+        return current
+    }
+
+    private inline fun <T> boundedMutation(action: () -> T): T {
+        check(!isBlocked)
+        isBlocked = true
+        val result = action()
+        isBlocked = false
+        return result
+    }
+
+    private fun preparationBytes(opening: OpeningBalance): Long =
+        128L + tradingTextBytes(opening.preparationId) + tradingTextBytes(opening.userId.value) + tradingTextBytes(opening.assetId.value)
+
+    private fun feeBitLimit(limits: TradingResourceLimits): Int =
+        java.math.BigInteger
+            .valueOf(limits.maxBalanceKeys.toLong())
+            .multiply(java.math.BigInteger.valueOf(Long.MAX_VALUE))
+            .bitLength()
 
     private inline fun <T> admissionCall(action: () -> T): T {
+        check(!boundedMode) { "legacy history API is unavailable in bounded mode" }
         checkUsable()
         try {
             return action()
@@ -572,7 +1458,10 @@ class TradingState(
         }
     }
 
-    private fun checkUsable() = check(!isBlocked) { "공통 거래 상태가 차단됐습니다" }
+    private fun checkUsable() {
+        check(!isBlocked) { "공통 거래 상태가 차단됐습니다" }
+        if (boundedMode) check(bounded?.lifecycle == TradingLifecycle.RUNNING) { "bounded trading is not ready or quarantined" }
+    }
 
     private fun <T> immutableList(values: Collection<T>): List<T> = Collections.unmodifiableList(values.toList())
 }

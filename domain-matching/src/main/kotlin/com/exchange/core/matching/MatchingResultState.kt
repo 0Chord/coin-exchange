@@ -216,111 +216,130 @@ class MatchingResultState {
         )
     }
 
-    internal fun validateHistoricalResult(result: MatchingCommandResult) {
-        requireResult(result.commandId.isNotBlank(), "내부 명령 ID가 비어 있습니다")
-        validate(result)
-    }
-
-    private fun validate(result: MatchingCommandResult) {
-        requireResult(result.expectedEventCount > 0 && result.events.size == result.expectedEventCount, "전체 이벤트 개수가 다릅니다")
-        requireResult(result.firstEngineSequence > 0 && result.lastEngineSequence >= result.firstEngineSequence, "이벤트 순번 범위가 잘못됐습니다")
-        requireResult(
-            exactAdd(result.firstEngineSequence, result.expectedEventCount.toLong() - 1) == result.lastEngineSequence,
-            "이벤트 개수와 순번 범위가 다릅니다",
-        )
-        result.events.forEachIndexed { index, event ->
-            requireResult(event.marketId == result.command.marketId, "다른 마켓의 이벤트입니다")
-            requireResult(event.engineSequence == exactAdd(result.firstEngineSequence, index.toLong()), "이벤트 순서가 연속되지 않습니다")
-        }
-        when (val command = result.command) {
-            is SubmitOrderCommand -> validateSubmit(command, result.events)
-            is CancelOrderCommand -> validateCancel(command, result.events)
-        }
-    }
-
-    private fun validateSubmit(
-        command: SubmitOrderCommand,
-        events: List<MatchingEvent>,
-    ) {
-        requireResult(command.orderType == OrderType.LIMIT && command.timeInForce == TimeInForce.GTC, "LIMIT/GTC 결과만 등록할 수 있습니다")
-        var totalQuantity = 0L
-        events.forEachIndexed { index, event ->
-            when (event) {
-                is TradeExecuted -> {
-                    requireResult(
-                        event.takerOrderId == command.orderId && event.takerUserId == command.userId && event.side == command.side,
-                        "체결의 taker 정보가 원본 제출과 다릅니다",
-                    )
-                    requireResult(event.makerOrderId != command.orderId && event.quantity.value > 0, "체결 상대 또는 수량이 잘못됐습니다")
-                    requireResult(
-                        if (command.side == Side.BUY) event.price <= command.price else event.price >= command.price,
-                        "체결가가 지정가 조건을 위반합니다",
-                    )
-                    totalQuantity = exactAdd(totalQuantity, event.quantity.value)
-                }
-
-                is OrderEnteredBook -> {
-                    requireResult(index == events.lastIndex, "잔량 대기는 마지막 이벤트 하나여야 합니다")
-                    requireResult(
-                        event.orderId == command.orderId && event.userId == command.userId && event.side == command.side &&
-                            event.price == command.price && event.remainingQuantity.value > 0,
-                        "잔량 대기 정보가 원본 제출과 다릅니다",
-                    )
-                    totalQuantity = exactAdd(totalQuantity, event.remainingQuantity.value)
-                }
-
-                else -> {
-                    requireResult(false, "제출 결과에 취소 이벤트가 포함됐습니다")
-                }
-            }
-        }
-        requireResult(totalQuantity == command.quantity.value, "체결 수량과 잔량의 합이 원수량과 다릅니다")
-    }
-
-    private fun validateCancel(
-        command: CancelOrderCommand,
-        events: List<MatchingEvent>,
-    ) {
-        requireResult(events.size == 1, "취소 결과는 이벤트 한 개여야 합니다")
-        when (val event = events.single()) {
-            is OrderCancelled -> {
-                requireResult(
-                    event.orderId == command.orderId && event.userId == command.userId && event.remainingQuantity.value > 0,
-                    "취소 성공 결과가 원본 요청과 다릅니다",
-                )
-            }
-
-            is OrderCancelRejected -> {
-                requireResult(
-                    event.orderId == command.orderId && event.userId == command.userId && event.reason.isNotBlank(),
-                    "취소 거절 결과가 원본 요청과 다릅니다",
-                )
-            }
-
-            else -> {
-                requireResult(false, "취소 결과에 제출 이벤트가 포함됐습니다")
-            }
-        }
-    }
+    internal fun validateHistoricalResult(result: MatchingCommandResult) = validateCompleteResult(result)
 
     private fun checkUsable() = check(!isBlocked) { "반영 중 오류로 결과 등록 상태가 차단됐습니다" }
 
-    private fun requireResult(
-        valid: Boolean,
-        message: String,
-    ) {
-        if (!valid) throw MatchingResultException(MatchingResultException.Reason.INVALID_RESULT, message)
-    }
-
-    private fun exactAdd(
-        left: Long,
-        right: Long,
-    ): Long =
-        try {
-            Math.addExact(left, right)
-        } catch (_: ArithmeticException) {
-            throw MatchingResultException(MatchingResultException.Reason.INVALID_RESULT, "수량 또는 순번의 정수 범위를 넘었습니다")
+    companion object {
+        /** Checks a transient result without opening the module-private result constructor. */
+        fun validateCompleteResult(
+            commandId: String,
+            command: MatchingCommand,
+            expectedEventCount: Int,
+            firstEngineSequence: Long,
+            lastEngineSequence: Long,
+            events: List<MatchingEvent>,
+        ) {
+            validateCompleteResult(
+                MatchingCommandResult(commandId, command, expectedEventCount, firstEngineSequence, lastEngineSequence, events),
+            )
         }
+
+        /** Pure completeness validation; no command, result, or duplicate identity is retained. */
+        fun validateCompleteResult(result: MatchingCommandResult) {
+            requireResult(result.commandId.isNotBlank(), "내부 명령 ID가 비어 있습니다")
+            validate(result)
+        }
+
+        private fun validate(result: MatchingCommandResult) {
+            requireResult(result.expectedEventCount > 0 && result.events.size == result.expectedEventCount, "전체 이벤트 개수가 다릅니다")
+            requireResult(result.firstEngineSequence > 0 && result.lastEngineSequence >= result.firstEngineSequence, "이벤트 순번 범위가 잘못됐습니다")
+            requireResult(
+                exactAdd(result.firstEngineSequence, result.expectedEventCount.toLong() - 1) == result.lastEngineSequence,
+                "이벤트 개수와 순번 범위가 다릅니다",
+            )
+            result.events.forEachIndexed { index, event ->
+                requireResult(event.marketId == result.command.marketId, "다른 마켓의 이벤트입니다")
+                requireResult(event.engineSequence == exactAdd(result.firstEngineSequence, index.toLong()), "이벤트 순서가 연속되지 않습니다")
+            }
+            when (val command = result.command) {
+                is SubmitOrderCommand -> validateSubmit(command, result.events)
+                is CancelOrderCommand -> validateCancel(command, result.events)
+            }
+        }
+
+        private fun validateSubmit(
+            command: SubmitOrderCommand,
+            events: List<MatchingEvent>,
+        ) {
+            requireResult(command.orderType == OrderType.LIMIT && command.timeInForce == TimeInForce.GTC, "LIMIT/GTC 결과만 등록할 수 있습니다")
+            var totalQuantity = 0L
+            events.forEachIndexed { index, event ->
+                when (event) {
+                    is TradeExecuted -> {
+                        requireResult(
+                            event.takerOrderId == command.orderId && event.takerUserId == command.userId && event.side == command.side,
+                            "체결의 taker 정보가 원본 제출과 다릅니다",
+                        )
+                        requireResult(event.makerOrderId != command.orderId && event.quantity.value > 0, "체결 상대 또는 수량이 잘못됐습니다")
+                        requireResult(
+                            if (command.side == Side.BUY) event.price <= command.price else event.price >= command.price,
+                            "체결가가 지정가 조건을 위반합니다",
+                        )
+                        totalQuantity = exactAdd(totalQuantity, event.quantity.value)
+                    }
+
+                    is OrderEnteredBook -> {
+                        requireResult(index == events.lastIndex, "잔량 대기는 마지막 이벤트 하나여야 합니다")
+                        requireResult(
+                            event.orderId == command.orderId && event.userId == command.userId && event.side == command.side &&
+                                event.price == command.price && event.remainingQuantity.value > 0,
+                            "잔량 대기 정보가 원본 제출과 다릅니다",
+                        )
+                        totalQuantity = exactAdd(totalQuantity, event.remainingQuantity.value)
+                    }
+
+                    else -> {
+                        requireResult(false, "제출 결과에 취소 이벤트가 포함됐습니다")
+                    }
+                }
+            }
+            requireResult(totalQuantity == command.quantity.value, "체결 수량과 잔량의 합이 원수량과 다릅니다")
+        }
+
+        private fun validateCancel(
+            command: CancelOrderCommand,
+            events: List<MatchingEvent>,
+        ) {
+            requireResult(events.size == 1, "취소 결과는 이벤트 한 개여야 합니다")
+            when (val event = events.single()) {
+                is OrderCancelled -> {
+                    requireResult(
+                        event.orderId == command.orderId && event.userId == command.userId && event.remainingQuantity.value > 0,
+                        "취소 성공 결과가 원본 요청과 다릅니다",
+                    )
+                }
+
+                is OrderCancelRejected -> {
+                    requireResult(
+                        event.orderId == command.orderId && event.userId == command.userId && event.reason.isNotBlank(),
+                        "취소 거절 결과가 원본 요청과 다릅니다",
+                    )
+                }
+
+                else -> {
+                    requireResult(false, "취소 결과에 제출 이벤트가 포함됐습니다")
+                }
+            }
+        }
+
+        private fun requireResult(
+            valid: Boolean,
+            message: String,
+        ) {
+            if (!valid) throw MatchingResultException(MatchingResultException.Reason.INVALID_RESULT, message)
+        }
+
+        private fun exactAdd(
+            left: Long,
+            right: Long,
+        ): Long =
+            try {
+                Math.addExact(left, right)
+            } catch (_: ArithmeticException) {
+                throw MatchingResultException(MatchingResultException.Reason.INVALID_RESULT, "수량 또는 순번의 정수 범위를 넘었습니다")
+            }
+    }
 }
 
 class MatchingResultException(

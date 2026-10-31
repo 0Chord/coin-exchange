@@ -41,6 +41,9 @@ class HttpPerformanceMarkerPlanTest {
         assertEquals(8192, sixtyThousand.fields()["senderPendingCapacity"])
         // 상한 계산만 검증한다. 이 크기에서 실제 노드 heap/처리량을 입증하지 않는다.
         assertEquals(1_200_400, HttpPerformanceMarkerPlan("marker-test", 200, 600_000).identitiesPerMember)
+        val maximum = HttpPerformanceMarkerPlan("marker-test", 12_000, 3_000_000)
+        assertEquals(6_024_000, maximum.identitiesPerMember)
+        assertEquals(18_072_000, maximum.fields()["identityCapacityAllMembers"])
     }
 
     @Test
@@ -48,7 +51,7 @@ class HttpPerformanceMarkerPlanTest {
         listOf(0, -1, 12_001, Int.MAX_VALUE).forEach { warmup ->
             assertFailsWith<IllegalArgumentException> { HttpPerformanceMarkerPlan("marker-test", warmup, 2) }
         }
-        listOf(0, -1, 600_001, Int.MAX_VALUE).forEach { orders ->
+        listOf(0, -1, 3_000_001, Int.MAX_VALUE).forEach { orders ->
             assertFailsWith<IllegalArgumentException> { HttpPerformanceMarkerPlan("marker-test", 1, orders) }
         }
         listOf("", "UPPER", "x".repeat(65)).forEach { run ->
