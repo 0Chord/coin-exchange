@@ -49,6 +49,7 @@ dependencies {
     implementation(project(":domain-trading"))
     implementation("com.google.protobuf:protobuf-java:$protobufVersion")
     implementation("io.aeron:aeron-cluster:$aeronVersion")
+    implementation("org.rocksdb:rocksdbjni:10.1.3")
 
     implementation("org.springframework.boot:spring-boot-starter-actuator")
     implementation("org.springframework.boot:spring-boot-starter-data-jpa")

@@ -1,5 +1,6 @@
 package com.exchange.core.api.trading.infrastructure.aeron
 
+import com.exchange.core.api.trading.infrastructure.history.RocksDbTradingHistoryStore
 import com.exchange.core.fee.TradingFeeCalculator
 import com.exchange.core.fee.TradingFeePolicySnapshot
 import com.exchange.core.fee.TradingFeeReserveCalculator
@@ -28,14 +29,13 @@ import io.aeron.exceptions.AeronException
 import org.agrona.ErrorHandler
 import java.net.DatagramSocket
 import java.net.InetSocketAddress
-import java.nio.file.Files
 import java.nio.file.Path
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicReference
 
-/** 기존 단일 실행과 세 노드 실행의 주소·멤버·경로. 기존 실행 디렉터리는 재사용하지 않는다. */
+/** 단일 실행과 세 노드 실행의 주소·멤버·경로. 기존 기록의 복구는 명시적으로 선택한다. */
 internal data class DevelopmentFundingSettings(
     val runRoot: Path,
     val basePort: Int = 19700,
@@ -49,6 +49,8 @@ internal data class DevelopmentFundingSettings(
     val bindHost: String = advertisedHost,
     val clusterMembers: String? = null,
     val runId: String? = null,
+    val archiveFileSyncLevel: Int = 2,
+    val recoverExisting: Boolean = false,
 ) {
     init {
         require(runRoot.isAbsolute) { "실행 루트는 절대 경로여야 합니다" }
@@ -62,6 +64,7 @@ internal data class DevelopmentFundingSettings(
         require(configured.map { it.id() }.distinct().size == configured.size)
         require(configured.any { it.id() == memberId }) { "멤버 목록에 자기 ID가 없습니다" }
         require(runId == null || runId.matches(Regex("[a-z0-9-]{1,64}")))
+        require(archiveFileSyncLevel in 0..2)
     }
 
     val market: MarketDefinition get() = markets.single().market
@@ -111,6 +114,8 @@ internal class DevelopmentFundingNode private constructor(
     private var archive: Archive? = null
     private var consensus: ConsensusModule? = null
     private var container: ClusteredServiceContainer? = null
+    private var history: RocksDbTradingHistoryStore? = null
+    private var run: DevelopmentFundingRun? = null
 
     /** 요청 ID를 tag로 쓰지 않는 운영용 고정 구간 지표. 서비스 상태·복제 로그와 분리한다. */
     private val metricsRegistry: io.micrometer.core.instrument.MeterRegistry =
@@ -122,9 +127,22 @@ internal class DevelopmentFundingNode private constructor(
             metricRecorder.awaitRecorded()
             return metricsRegistry
         }
-    private val service =
+    private val service by lazy {
         DevelopmentFundingAdapter(
             run {
+                // 복구에서도 새 파생 이력을 사용한다. Snapshot과 Archive만 살아 있는 상태를 복원한다.
+                val historyStore =
+                    (
+                        if (config.archiveFileSyncLevel == 2) {
+                            // sync2 Archive가 확정 callback 전에 원본을 보존한다. 이 DB는 매번 새로 재구성한다.
+                            RocksDbTradingHistoryStore.createRebuildableIndex(checkNotNull(run).historyDirectory, onFatal = ::fail)
+                        } else {
+                            RocksDbTradingHistoryStore.create(checkNotNull(run).historyDirectory, onFatal = ::fail)
+                        }
+                    ).also {
+                        history =
+                            it
+                    }
                 val fees = TradingFeeReserveCalculator()
                 val reservation = OrderReservationCalculator(BuyOrderFundingQuoteCalculator(fees))
                 TradingState(
@@ -135,6 +153,7 @@ internal class DevelopmentFundingNode private constructor(
                         fees,
                         SettlementLedgerTransactions(),
                     ),
+                    historyStore = historyStore,
                 )
             },
             config.maxReplyAttempts,
@@ -142,8 +161,10 @@ internal class DevelopmentFundingNode private constructor(
             markets = config.markets,
             serviceId = config.serviceId,
             telemetry = metricRecorder,
+            snapshots = TradingStateSnapshotPersistence(checkNotNull(history), checkNotNull(run).snapshotIdentitySha256),
             onFatal = ::fail,
         )
+    }
     val observation: FundingObservation? get() = service.observation
 
     /** 전체 조회는 서비스 스레드에 요청한다. 일반 명령은 누적 상태를 복사하지 않는다. */
@@ -195,8 +216,8 @@ internal class DevelopmentFundingNode private constructor(
 
     private fun launch() {
         val deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(config.startupTimeoutMs)
-        // 루트를 배타적으로 만들어 동시 실행도 거절한다. 기존 기록을 Aeron에 넘기지 않는다.
-        Files.createDirectory(config.runRoot)
+        // 복구 정체성 검증과 실행 잠금은 Archive나 파생 이력을 열기 전에 끝낸다.
+        run = DevelopmentFundingRun.open(config)
         // Aeron의 UDP 재사용 옵션으로 다른 프로세스의 포트를 공유하지 않도록 먼저 확인한다.
         val ports = mutableListOf<DatagramSocket>()
         try {
@@ -243,7 +264,7 @@ internal class DevelopmentFundingNode private constructor(
                     .replicationChannel(config.udp(5))
                     .recordingEventsEnabled(false)
                     .segmentFileLength(TradingAeronRuntime.TERM_LENGTH_BYTES)
-                    .fileSyncLevel(2)
+                    .fileSyncLevel(config.archiveFileSyncLevel)
                     .catalogFileSyncLevel(2)
                     .threadingMode(ArchiveThreadingMode.SHARED)
                     .idleStrategySupplier(TradingAeronRuntime::idleStrategy)
@@ -266,6 +287,7 @@ internal class DevelopmentFundingNode private constructor(
                     .logChannel("${TradingAeronRuntime.LOG_CHANNEL}|control-mode=manual|control=${config.endpoint(2)}")
                     .replicationChannel(config.udp(6))
                     .archiveContext(config.archiveClient())
+                    .snapshotChannel("aeron:ipc?term-length=64k|alias=snapshot")
                     .sessionTimeoutNs(TimeUnit.MILLISECONDS.toNanos(config.sessionTimeoutMs))
                     .fileSyncLevel(2)
                     .idleStrategySupplier(TradingAeronRuntime::idleStrategy)
@@ -281,12 +303,13 @@ internal class DevelopmentFundingNode private constructor(
                     .serviceId(config.serviceId)
                     .clusterDir(config.clusterDirectory.toFile())
                     .archiveContext(config.archiveClient())
+                    .snapshotChannel("aeron:ipc?term-length=64k|alias=snapshot")
                     .clusteredService(serviceDecorator(service))
                     .idleStrategySupplier(TradingAeronRuntime::idleStrategy)
                     .errorHandler(errors)
                     .terminationHook { fail(IllegalStateException("자금 준비 서비스가 종료됐습니다")) },
             )
-        check(storageLevels == listOf(2, 2, 2)) { "실제 저장 설정이 다릅니다" }
+        check(storageLevels == listOf(config.archiveFileSyncLevel, 2, 2)) { "실제 저장 설정이 다릅니다" }
         while (!service.started ||
             requireNotNull(consensus).context().electionStateCounter().get() != ElectionState.CLOSED.code().toLong() ||
             (!config.clustered && role != Cluster.Role.LEADER)
@@ -323,12 +346,19 @@ internal class DevelopmentFundingNode private constructor(
         if (!stopping.compareAndSet(false, true)) return
         stopSignal.countDown()
         try {
-            listOf(container, consensus, archive, driver).forEach { resource ->
+            var historyClosed = true
+            listOf(container, consensus, archive, driver, history).forEach { resource ->
                 try {
                     resource?.close()
                 } catch (error: Throwable) {
+                    if (resource === history) historyClosed = false
                     failure.compareAndSet(null, error)
                 }
+            }
+            try {
+                run?.close(removeHistory = historyClosed)
+            } catch (error: Throwable) {
+                failure.compareAndSet(null, error)
             }
             try {
                 try {

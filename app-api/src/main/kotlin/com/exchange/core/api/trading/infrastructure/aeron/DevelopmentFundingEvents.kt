@@ -30,6 +30,7 @@ internal fun developmentClusterSettings(environment: Map<String, String> = Syste
         bindHost = environment["FUNDING_BIND_HOST"] ?: "0.0.0.0",
         clusterMembers = required("FUNDING_MEMBERS"),
         runId = required("FUNDING_RUN_ID"),
+        recoverExisting = environment["FUNDING_RECOVER_EXISTING"]?.toBooleanStrict() ?: false,
     )
 }
 
@@ -61,6 +62,7 @@ internal fun fundingReadyFields(
                 "driverDirectory" to config.driverDirectory,
                 "archiveDirectory" to config.archiveDirectory.toString(),
                 "clusterDirectory" to config.clusterDirectory.toString(),
+                "recoverExisting" to config.recoverExisting,
                 "storageLevels" to node.storageLevels,
                 "markets" to fundingMarketFields(config.markets),
                 "marketConfigVersion" to config.markets.configurationVersion,
