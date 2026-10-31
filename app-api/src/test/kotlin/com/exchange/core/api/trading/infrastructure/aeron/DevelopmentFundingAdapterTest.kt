@@ -35,11 +35,13 @@ import org.junit.jupiter.api.Test
 import org.mockito.ArgumentMatchers.any
 import org.mockito.ArgumentMatchers.anyInt
 import org.mockito.ArgumentMatchers.anyLong
+import org.mockito.ArgumentMatchers.eq
 import org.mockito.Mockito.CALLS_REAL_METHODS
 import org.mockito.Mockito.doAnswer
 import org.mockito.Mockito.doReturn
 import org.mockito.Mockito.mock
 import org.mockito.Mockito.mockConstruction
+import org.mockito.Mockito.never
 import org.mockito.Mockito.spy
 import org.mockito.Mockito.times
 import org.mockito.Mockito.verify
@@ -558,14 +560,16 @@ class DevelopmentFundingAdapterTest {
         verify(
             fixture.state,
             times(1),
-        ).admit(
-            command.requestId,
-            command.order,
-            command.market,
-            command.feePolicySnapshot,
-            command.ledgerTransactionId,
-            command.occurredAt,
+        ).admitWithContextCheck(
+            matchedEq(command.requestId),
+            matchedEq(command.order),
+            matchedEq(command.market),
+            matchedEq(command.feePolicySnapshot),
+            matchedEq(command.ledgerTransactionId),
+            matchedEq(command.occurredAt),
+            any<(Boolean) -> Boolean>() ?: { false },
         )
+        verify(fixture.state, never()).hasRequest(command.order.userId, command.requestId)
     }
 
     @Test
@@ -991,6 +995,8 @@ class DevelopmentFundingAdapterTest {
         val failures: MutableList<Throwable>,
         val executionClaims: ClusterExecutionClaimStub,
     )
+
+    private fun <T : Any> matchedEq(value: T): T = eq(value) ?: value
 
     /** 기존 코어 오류 검증처럼 실제 쓰기 한 지점만 실패시킨다. */
     private fun failOnPreparationWrite(

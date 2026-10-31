@@ -639,7 +639,7 @@ class DevelopmentMultiMarketOrderNodeTest {
         fundingValues(snapshot) +
             listOf(
                 snapshot.pendingOrders.map(::recordValues),
-                snapshot.completions.map { listOf(it.executionId, it.occurredAt, it.matchingResult, it.settlement) },
+                snapshot.completions.map { tradingCompletionValues(it) },
                 snapshot.requests.map {
                     listOf(
                         it.requestId,

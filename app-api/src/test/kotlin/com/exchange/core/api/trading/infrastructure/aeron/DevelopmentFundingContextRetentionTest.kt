@@ -81,6 +81,7 @@ class DevelopmentFundingContextRetentionTest {
         assertEquals(400_000_000L, balance.available.value)
         assertEquals(600_000_000L, balance.hold.value)
         assertEquals(3, completed.ledgerTransactions.size)
+        assertEquals(2, f.executionClaims.committedMessages.size)
         assertTrue(f.failures.isEmpty())
     }
 
@@ -101,6 +102,7 @@ class DevelopmentFundingContextRetentionTest {
         assertEquals(command.occurredAt, request.occurredAt)
         assertTrue(snapshot.ledgerTransactions.isEmpty())
         assertTrue(snapshot.pendingOrders.isEmpty())
+        assertTrue(f.executionClaims.committedMessages.isEmpty())
         assertTrue(f.failures.isEmpty())
     }
 
@@ -151,6 +153,7 @@ class DevelopmentFundingContextRetentionTest {
             assertEquals(before.balances, after.balances)
             assertEquals(before.pendingOrders, after.pendingOrders)
             assertEquals(before.lastAdmissionSequence, after.lastAdmissionSequence)
+            assertTrue(f.executionClaims.committedMessages.isEmpty(), "기존 승인과 거절은 내부 실행 명령을 다시 만들지 않는다")
             assertFalse(f.state.isBlocked)
             assertTrue(f.failures.isEmpty())
         }
@@ -176,12 +179,14 @@ class DevelopmentFundingContextRetentionTest {
             assertTrue(rejectedState.pendingOrders.isEmpty())
             assertEquals(before.ledgerTransactions, rejectedState.ledgerTransactions)
             assertEquals(before.balances, rejectedState.balances)
+            assertTrue(f.executionClaims.committedMessages.isEmpty())
             assertIs<AdmissionResultPayload.Accepted>(admit(f, prototype))
             val acceptedState = f.state.snapshot()
             val request = acceptedState.requests.single()
             assertSame(context.market, request.market)
             assertSame(context.feePolicySnapshot, request.feePolicySnapshot)
             assertEquals(prototype.order, request.order)
+            assertEquals(1, f.executionClaims.committedMessages.size)
             assertTrue(f.failures.isEmpty())
         }
     }
@@ -239,18 +244,19 @@ class DevelopmentFundingContextRetentionTest {
         val state = tradingState()
         val cluster = mock(Cluster::class.java)
         `when`(cluster.timeUnit()).thenReturn(TimeUnit.MILLISECONDS)
-        ClusterExecutionClaimStub(cluster)
+        val executionClaims = ClusterExecutionClaimStub(cluster)
         `when`(cluster.role()).thenReturn(Cluster.Role.LEADER)
         `when`(cluster.logPosition()).thenReturn(256L)
         val failures = mutableListOf<Throwable>()
         val service = DevelopmentFundingAdapter(state, markets = DevelopmentMarketRegistry(listOf(context))) { failures += it }
         service.onStart(cluster, null)
-        return Fixture(state, service, failures)
+        return Fixture(state, service, failures, executionClaims)
     }
 
     private data class Fixture(
         val state: TradingState,
         val service: DevelopmentFundingAdapter,
         val failures: MutableList<Throwable>,
+        val executionClaims: ClusterExecutionClaimStub,
     )
 }
