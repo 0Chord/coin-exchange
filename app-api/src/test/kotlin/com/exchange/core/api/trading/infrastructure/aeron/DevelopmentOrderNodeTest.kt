@@ -719,13 +719,7 @@ class DevelopmentOrderNodeTest {
             snapshot.ledgerTransactions.map(::transactionValues),
             snapshot.completions.map {
                 // 서로 독립된 노드는 확정 콜백 시각이 다르므로 시각은 동등성 대상이 아니다.
-                listOf(
-                    it.admission.sequence,
-                    it.executionId,
-                    it.matchingResult,
-                    it.settlement.balanceChanges,
-                    it.settlement.reservationChanges,
-                )
+                tradingCompletionValues(it, includeExecutionTime = false)
             },
             snapshot.pendingOrders.map { recordValues(it) },
             snapshot.preparations.map { listOf(it.result, transactionValues(it.transaction)) },

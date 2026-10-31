@@ -55,6 +55,7 @@ internal class DevelopmentFundingRun private constructor(
         fun open(config: DevelopmentFundingSettings): DevelopmentFundingRun {
             val root = config.runRoot
             require(root.normalize() == root && !Files.isSymbolicLink(root)) { "실행 루트는 정규 경로여야 합니다" }
+            validateDriverDirectory(config)
             if (config.recoverExisting) {
                 require(Files.isDirectory(root, NOFOLLOW_LINKS)) { "복구할 실행 루트가 없습니다" }
             } else {
@@ -71,7 +72,7 @@ internal class DevelopmentFundingRun private constructor(
                         "복구 정체성 파일이 없거나 잘못됐습니다"
                     }
                     require(Files.readAllBytes(identityFile).contentEquals(bytes)) {
-                        "복구 설정이 원래 클러스터·마켓·수수료 정책과 다릅니다"
+                        "복구 설정이 원래 클러스터·마켓·수수료 정책·한도형 제어 설정과 다릅니다"
                     }
                     require(Files.isDirectory(config.archiveDirectory, NOFOLLOW_LINKS)) { "복구할 Archive가 없습니다" }
                     require(Files.isDirectory(config.clusterDirectory, NOFOLLOW_LINKS)) { "복구할 클러스터 기록이 없습니다" }
@@ -101,6 +102,30 @@ internal class DevelopmentFundingRun private constructor(
 
         private fun requireRecordedFile(path: Path) {
             require(Files.isRegularFile(path, NOFOLLOW_LINKS) && Files.size(path) > 0) { "복구 기록이 없거나 비어 있습니다: $path" }
+        }
+
+        /** Driver 파일은 다시 만들 수 있으며, 그 경로나 내용을 복구 원본으로 삼지 않는다. */
+        private fun validateDriverDirectory(config: DevelopmentFundingSettings) {
+            val driverRoot = config.driverRoot ?: return
+            require(Files.isDirectory(driverRoot, NOFOLLOW_LINKS) && Files.isWritable(driverRoot)) {
+                "Driver 루트는 심링크가 아닌 쓰기 가능한 기존 디렉터리여야 합니다"
+            }
+            val driver = Path.of(config.driverDirectory)
+            require(!Files.isSymbolicLink(driver) && (!Files.exists(driver, NOFOLLOW_LINKS) || Files.isDirectory(driver, NOFOLLOW_LINKS))) {
+                "Driver 경로는 심링크나 일반 파일일 수 없습니다"
+            }
+            val actualDriver = driverRoot.toRealPath().resolve(driver.fileName)
+            val actualRun =
+                if (Files.exists(config.runRoot, NOFOLLOW_LINKS)) {
+                    config.runRoot.toRealPath()
+                } else {
+                    config.runRoot.parent
+                        .toRealPath()
+                        .resolve(config.runRoot.fileName)
+                }
+            require(!actualDriver.startsWith(actualRun) && !actualRun.startsWith(actualDriver)) {
+                "휘발성 Driver 경로는 Archive·클러스터를 포함한 영속 실행 루트와 분리해야 합니다"
+            }
         }
 
         private fun writeIdentity(
@@ -136,7 +161,7 @@ internal class DevelopmentFundingRun private constructor(
                     output.writeInt(config.archiveFileSyncLevel)
                     output.writeBoolean(config.runId != null)
                     config.runId?.let(output::writeUTF)
-                    output.writeMarkets(config.markets)
+                    output.writeExecutionSettings(config)
                 }
                 bytes.toByteArray().also { require(it.size <= IDENTITY_LIMIT) { "복구 설정 크기 한도를 초과했습니다" } }
             }
@@ -152,7 +177,7 @@ internal class DevelopmentFundingRun private constructor(
                     output.writeUTF(config.members)
                     output.writeBoolean(config.runId != null)
                     config.runId?.let(output::writeUTF)
-                    output.writeMarkets(config.markets)
+                    output.writeExecutionSettings(config)
                 }
                 bytes.toByteArray()
             }
@@ -188,6 +213,23 @@ internal class DevelopmentFundingRun private constructor(
                 writeLong(policy.scheduleVersion)
                 writeLong(policy.feeRates.makerFeeRate.partsPerMillion)
                 writeLong(policy.feeRates.takerFeeRate.partsPerMillion)
+            }
+        }
+
+        private fun DataOutputStream.writeExecutionSettings(config: DevelopmentFundingSettings) {
+            val manifest = config.boundedManifest
+            if (manifest == null) {
+                writeMarkets(config.markets)
+            } else {
+                writeUTF("bounded-wire3-snapshot2")
+                // 확정 명령의 재생 결과를 바꾸는 제어 설정도 복구 전에 원래 값과 대조한다.
+                writeBoolean(config.trustedBoundedControl)
+                val bytes =
+                    com.exchange.core.api.trading.infrastructure.history
+                        .BoundedTradingStateCodec()
+                        .encodeManifest(manifest)
+                writeInt(bytes.size)
+                write(bytes)
             }
         }
 

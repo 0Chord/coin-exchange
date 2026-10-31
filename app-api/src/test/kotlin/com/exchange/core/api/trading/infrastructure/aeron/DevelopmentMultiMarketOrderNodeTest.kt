@@ -26,10 +26,12 @@ import com.exchange.core.trading.OrderAdmissionInput
 import com.exchange.core.trading.OrderAdmissionResult
 import com.exchange.core.trading.OrderAdmissionState
 import com.exchange.core.trading.TradingState
+import org.junit.jupiter.api.io.TempDir
 import tools.jackson.databind.JsonNode
 import tools.jackson.module.kotlin.jacksonObjectMapper
 import java.net.DatagramSocket
 import java.nio.file.Files
+import java.nio.file.Path
 import java.time.Instant
 import java.util.concurrent.TimeUnit
 import kotlin.test.Test
@@ -43,6 +45,9 @@ import kotlin.test.assertTrue
 
 /** 등록된 두 문맥의 기존 Protobuf 요청을 같은 실제 Aeron 노드와 자금 상태에 보낸다. */
 class DevelopmentMultiMarketOrderNodeTest {
+    @TempDir
+    lateinit var temporaryDirectory: Path
+
     @Test
     fun `BTC 600 예약 뒤 SUI 500은 부족하고 SUI 400 승인 뒤에도 최초 부족값은 유지된다`() {
         val config = config()
@@ -689,7 +694,7 @@ class DevelopmentMultiMarketOrderNodeTest {
             try {
                 (0..7).forEach { sockets.add(DatagramSocket(base + it)) }
                 return DevelopmentFundingSettings(
-                    Files.createTempDirectory("multi-market114-").resolve("run"),
+                    Files.createTempDirectory(temporaryDirectory, "multi-market114-").resolve("run"),
                     base,
                     markets = DevelopmentMarketRegistry(listOf(BTC, SUI)),
                 )
