@@ -33,6 +33,8 @@ internal object AdmissionMessageFormat {
 
     fun text(value: String): String {
         verify(value.length <= MAX_IDENTIFIER_LENGTH, "식별자의 전송 길이를 초과했습니다")
+        // ASCII는 코드 단위와 UTF-8 바이트 수가 같다. 비 ASCII는 기존의 엄격한 인코더로 검증한다.
+        if (value.all { it <= '\u007f' }) return value
         val encoded =
             try {
                 Charsets.UTF_8
@@ -106,14 +108,15 @@ internal class AdmissionMessageReader(
                 length <= AdmissionMessageFormat.MAX_MESSAGE_LENGTH && offset <= bytes.size - length,
             "메시지 구간 또는 전체 길이가 잘못됐습니다",
         )
-        val header = ByteBuffer.wrap(bytes, offset, AdmissionMessageFormat.HEADER_LENGTH).order(ByteOrder.LITTLE_ENDIAN)
-        val bodyLength = header.short.toInt() and 0xFFFF
-        kind = header.short.toInt() and 0xFFFF
-        val schema = header.short.toInt() and 0xFFFF
-        val version = header.short.toInt() and 0xFFFF
+        val bodyLength = unsignedShort(offset)
+        kind = unsignedShort(offset + 2)
+        val schema = unsignedShort(offset + 4)
+        val version = unsignedShort(offset + 6)
         AdmissionMessageFormat.verify(schema == 87 && version == 2, "지원하지 않는 스키마 또는 버전입니다")
         AdmissionMessageFormat.verify(bodyLength == length - AdmissionMessageFormat.HEADER_LENGTH, "본문 길이와 메시지 구간이 다릅니다")
     }
+
+    private fun unsignedShort(index: Int): Int = (bytes[index].toInt() and 0xFF) or ((bytes[index + 1].toInt() and 0xFF) shl 8)
 
     fun <T : Message> parse(parser: Parser<T>): T {
         val message = parser.parseFrom(bytes, offset + AdmissionMessageFormat.HEADER_LENGTH, length - AdmissionMessageFormat.HEADER_LENGTH)

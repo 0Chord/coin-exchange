@@ -156,5 +156,5 @@ tasks.register<JavaExec>("runTradingGateway") {
     classpath = sourceSets["main"].runtimeClasspath
     mainClass.set("com.exchange.core.TradingGatewayApplicationKt")
     javaLauncher.set(javaToolchains.launcherFor(java.toolchain))
-    jvmArgs("--add-opens=java.base/jdk.internal.misc=ALL-UNNAMED", "--add-opens=java.base/java.util.zip=ALL-UNNAMED")
+    jvmArgs("-XX:+UseG1GC", "--add-opens=java.base/jdk.internal.misc=ALL-UNNAMED", "--add-opens=java.base/java.util.zip=ALL-UNNAMED")
 }

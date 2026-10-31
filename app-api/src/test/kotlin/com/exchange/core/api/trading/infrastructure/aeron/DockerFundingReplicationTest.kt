@@ -555,7 +555,8 @@ internal class DockerFundingVerification(
     ): VerificationCommandResult {
         val name = "$runId-client-$suffix"
         clients.add(name) // Compose 명령이 중간에 실패해도 실제 JVM을 추적한다.
-        val result = compose(listOf("run", "--use-aliases", "--name", name, "client") + arguments, 100_000)
+        // 순차 JVM마다 다른 DNS 이름을 광고해 이전 client 응답 목적지와 섞이지 않게 한다.
+        val result = compose(listOf("run", "--name", name, "--env", "FUNDING_HOST=$name", "client") + arguments, 100_000)
         Files.writeString(reportDirectory.resolve("$suffix-client.stdout.log"), result.stdout)
         Files.writeString(reportDirectory.resolve("$suffix-client.stderr.log"), result.stderr)
         return result

@@ -22,6 +22,7 @@ import org.mockito.Mockito.doAnswer
 import org.mockito.Mockito.mock
 import org.mockito.Mockito.`when`
 import java.time.Instant
+import java.util.concurrent.CompletableFuture
 import java.util.concurrent.TimeUnit
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -66,7 +67,7 @@ class FundingVerificationCollectorTest {
         assertEquals(256L, applied.position)
         assertEquals("OFFERED", applied.replyStatus)
         assertEquals(3, applied.replyAttempts)
-        assertSame(fixture.service.observation, applied)
+        assertEquals(fixture.service.observation, applied.copy(snapshot = null))
         assertTrue(fixture.collector.drainObservations().isEmpty())
     }
 
@@ -149,6 +150,23 @@ class FundingVerificationCollectorTest {
         assertEquals(1, fixture.replyCount())
         assertFalse(fixture.service.started)
         assertTrue(fixture.collector.drainObservations().isEmpty())
+    }
+
+    @Test
+    fun `검증 decorator도 외부 상태 관찰의 background 처리를 실제 서비스에 전달한다`() {
+        val fixture = fixture()
+        send(fixture, command())
+        val capture =
+            CompletableFuture.supplyAsync { fixture.service.captureObservation() }.get(1, TimeUnit.SECONDS)
+        assertFalse(capture.isDone)
+
+        assertEquals(1, fixture.decorated.doBackgroundWork(0))
+
+        val snapshot = assertNotNull(capture.get(1, TimeUnit.SECONDS)?.snapshot)
+        assertEquals(listOf("U1"), snapshot.balances.map { it.userId.value })
+        assertEquals(1, snapshot.preparations.size)
+        assertNull(fixture.service.observation?.snapshot, "명시적 조회가 일반 명령 슬롯에 전체 상태를 붙이지 않는다")
+        assertTrue(fixture.failures.isEmpty())
     }
 
     @Test

@@ -203,15 +203,18 @@ class AutomaticOrderExecutionTest {
     }
 
     @Test
-    fun `역압력과 ADMIN_ACTION은 같은 바이트와 버퍼를 재시도하고 수용만으로 실행하지 않는다`() {
-        val f = fixture(offerResults = listOf(Publication.BACK_PRESSURED, Publication.ADMIN_ACTION, 1L))
+    fun `역압력과 ADMIN_ACTION은 같은 길이와 claim을 재시도하고 commit만으로 실행하지 않는다`() {
+        val f = fixture(claimResults = listOf(Publication.BACK_PRESSURED, Publication.ADMIN_ACTION, 1L))
         fund(f, "seller", "BTC", 1)
 
         assertIs<AdmissionResultPayload.Accepted>(admit(f, command(f, "S1", "seller", Side.SELL, 100, 1)))
 
-        assertEquals(3, f.offers.size)
-        f.offers.forEach { assertContentEquals(f.offers.first(), it) }
-        f.offerBuffers.forEach { assertSame(f.offerBuffers.first(), it) }
+        assertEquals(List(3) { executions.encode(ExecuteAdmissionPayload(1)).size }, f.executionClaims.attempts)
+        f.executionClaims.attemptClaims.forEach { assertSame(f.executionClaims.attemptClaims.first(), it) }
+        assertContentEquals(executions.encode(ExecuteAdmissionPayload(1)), f.offers.single())
+        assertEquals(ExecuteAdmissionPayload(1), executions.decode(f.offers.single()))
+        assertTrue(f.executionClaims.sessionHeaderIntact())
+        assertTrue(f.executionClaims.boundariesIntact())
         verify(f.idle, times(2)).idle()
         assertEquals(listOf("INTERNAL", "INTERNAL", "INTERNAL", "REPLY"), f.trace)
         assertEquals(
@@ -235,12 +238,13 @@ class AutomaticOrderExecutionTest {
                 .snapshot()
                 .completions.size,
         )
-        assertEquals(3, f.offers.size, "실행 callback은 새 실행을 제출하지 않는다")
+        assertEquals(3, f.executionClaims.attempts.size, "실행 callback은 새 실행을 제출하지 않는다")
+        assertEquals(1, f.offers.size)
     }
 
     @Test
     fun `내부 제출 횟수 초과는 예약을 유지하고 노드 실패를 알리며 접수 성공을 보내지 않는다`() {
-        val f = fixture(offerResults = listOf(Publication.BACK_PRESSURED), maxExecutionAttempts = 3)
+        val f = fixture(claimResults = listOf(Publication.BACK_PRESSURED), maxExecutionAttempts = 3)
         fund(f, "seller", "BTC", 1)
 
         val fatal =
@@ -248,7 +252,8 @@ class AutomaticOrderExecutionTest {
                 admit(f, command(f, "S1", "seller", Side.SELL, 100, 1))
             }
 
-        assertEquals(3, f.offers.size)
+        assertEquals(3, f.executionClaims.attempts.size)
+        assertTrue(f.offers.isEmpty())
         assertSame(fatal.cause, f.failures.single())
         assertFalse(f.service.started)
         assertFalse(f.state.isBlocked, "전송 실패는 돈 계산 오류와 다르다")
@@ -266,19 +271,20 @@ class AutomaticOrderExecutionTest {
                 .isEmpty(),
         )
         assertTrue(f.replies.isEmpty())
-        assertFailsWith<AgentTerminationException> { execute(f, 0) }
+        assertFailsWith<AgentTerminationException> { dispatch(f, executions.encode(ExecuteAdmissionPayload(1)), true) }
         assertEquals(1, f.failures.size)
     }
 
     @Test
     fun `내부 제출 시간 한도를 넘기면 같은 콜백을 무한 반복하지 않는다`() {
-        val f = fixture(offerResults = listOf(Publication.BACK_PRESSURED), executionTimeoutNs = 1_000_000)
+        val f = fixture(claimResults = listOf(Publication.BACK_PRESSURED), executionTimeoutNs = 1_000_000)
         doAnswer { Thread.sleep(20) }.`when`(f.idle).idle()
         fund(f, "seller", "BTC", 1)
 
         assertFailsWith<AgentTerminationException> { admit(f, command(f, "S1", "seller", Side.SELL, 100, 1)) }
 
-        assertEquals(1, f.offers.size)
+        assertEquals(1, f.executionClaims.attempts.size)
+        assertTrue(f.offers.isEmpty())
         assertFalse(f.service.started)
         assertTrue(f.replies.isEmpty())
         assertBalance(f, "seller", "BTC", 0, 1)
@@ -287,21 +293,24 @@ class AutomaticOrderExecutionTest {
     @Test
     fun `내부 전송의 종단 반환과 예외는 정상 거절로 변환하지 않는다`() {
         listOf(Publication.NOT_CONNECTED, Publication.CLOSED, Publication.MAX_POSITION_EXCEEDED, 0L).forEach { terminal ->
-            val f = fixture(offerResults = listOf(terminal))
+            val f = fixture(claimResults = listOf(terminal))
             fund(f, "seller", "BTC", 1)
             assertFailsWith<AgentTerminationException> { admit(f, command(f, "S1", "seller", Side.SELL, 100, 1)) }
-            assertEquals(1, f.offers.size)
+            assertEquals(1, f.executionClaims.attempts.size)
+            assertTrue(f.offers.isEmpty())
             assertEquals(1, f.failures.size)
             assertFalse(f.service.started)
             assertTrue(f.replies.isEmpty())
             assertBalance(f, "seller", "BTC", 0, 1)
         }
         val failure = ClusterException("통제한 내부 publication 오류")
-        val f = fixture(offerFailure = failure)
+        val f = fixture(claimFailure = failure)
         fund(f, "seller", "BTC", 1)
         val fatal = assertFailsWith<AgentTerminationException> { admit(f, command(f, "S1", "seller", Side.SELL, 100, 1)) }
         assertSame(failure, fatal.cause)
         assertSame(failure, f.failures.single())
+        assertEquals(1, f.executionClaims.attempts.size)
+        assertTrue(f.offers.isEmpty())
         assertTrue(f.replies.isEmpty())
         assertBalance(f, "seller", "BTC", 0, 1)
     }
@@ -366,6 +375,7 @@ class AutomaticOrderExecutionTest {
 
         assertEquals(AdmissionResultPayload.Reason.INSUFFICIENT_BALANCE, rejected.reason)
         assertTrue(f.offers.isEmpty())
+        assertTrue(f.executionClaims.attempts.isEmpty())
         assertTrue(
             f.state
                 .snapshot()
@@ -534,6 +544,7 @@ class AutomaticOrderExecutionTest {
                     .isEmpty(),
             )
             assertTrue(f.offers.isEmpty())
+            assertTrue(f.executionClaims.attempts.isEmpty())
         }
     }
 
@@ -549,8 +560,8 @@ class AutomaticOrderExecutionTest {
     private fun fixture(
         role: Cluster.Role = Cluster.Role.LEADER,
         feePpm: Long = 0,
-        offerResults: List<Long> = listOf(1L),
-        offerFailure: Throwable? = null,
+        claimResults: List<Long> = listOf(1L),
+        claimFailure: Throwable? = null,
         replyFailure: Throwable? = null,
         maxExecutionAttempts: Int = 1_000,
         executionTimeoutNs: Long = TimeUnit.SECONDS.toNanos(1),
@@ -568,8 +579,6 @@ class AutomaticOrderExecutionTest {
         val cluster = mock(Cluster::class.java)
         val session = mock(ClientSession::class.java)
         val idle = mock(IdleStrategy::class.java)
-        val offers = mutableListOf<ByteArray>()
-        val offerBuffers = mutableListOf<DirectBuffer>()
         val replies = mutableListOf<ByteArray>()
         val trace = mutableListOf<String>()
         val failures = mutableListOf<Throwable>()
@@ -577,16 +586,7 @@ class AutomaticOrderExecutionTest {
         `when`(cluster.timeUnit()).thenReturn(clockUnit)
         `when`(cluster.logPosition()).thenReturn(128L)
         `when`(cluster.idleStrategy()).thenReturn(idle)
-        doAnswer { call ->
-            trace += "INTERNAL"
-            val buffer = call.getArgument<DirectBuffer>(0)
-            val bytes = ByteArray(call.getArgument<Int>(2))
-            buffer.getBytes(call.getArgument<Int>(1), bytes)
-            offers += bytes
-            offerBuffers += buffer
-            if (offerFailure != null) throw offerFailure
-            offerResults[(offers.size - 1).coerceAtMost(offerResults.lastIndex)]
-        }.`when`(cluster).offer(any(DirectBuffer::class.java), anyInt(), anyInt())
+        val executionClaims = ClusterExecutionClaimStub(cluster, claimResults, claimFailure) { trace += "INTERNAL" }
         doAnswer { call ->
             trace += "REPLY"
             val buffer = call.getArgument<DirectBuffer>(0)
@@ -605,7 +605,7 @@ class AutomaticOrderExecutionTest {
                 onFatal = { failures += it },
             )
         if (start) service.onStart(cluster, null)
-        return Fixture(state, context, cluster, session, idle, service, offers, offerBuffers, replies, trace, failures)
+        return Fixture(state, context, cluster, session, idle, service, executionClaims, replies, trace, failures)
     }
 
     private fun fund(
@@ -751,10 +751,11 @@ class AutomaticOrderExecutionTest {
         val session: ClientSession,
         val idle: IdleStrategy,
         val service: DevelopmentFundingAdapter,
-        val offers: MutableList<ByteArray>,
-        val offerBuffers: MutableList<DirectBuffer>,
+        val executionClaims: ClusterExecutionClaimStub,
         val replies: MutableList<ByteArray>,
         val trace: MutableList<String>,
         val failures: MutableList<Throwable>,
-    )
+    ) {
+        val offers: List<ByteArray> get() = executionClaims.committedMessages
+    }
 }

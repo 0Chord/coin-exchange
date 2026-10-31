@@ -31,6 +31,9 @@ internal class FundingVerificationCollector(
 
     fun decorate(service: DevelopmentFundingAdapter): ClusteredService =
         object : ClusteredService by service {
+            // Java의 default callback은 Kotlin 위임만으로 전달되지 않는다.
+            override fun doBackgroundWork(nowNs: Long): Int = service.doBackgroundWork(nowNs)
+
             override fun onSessionMessage(
                 session: ClientSession?,
                 timestamp: Long,
@@ -43,7 +46,17 @@ internal class FundingVerificationCollector(
                 try {
                     service.onSessionMessage(session, timestamp, buffer, offset, length, header)
                 } finally {
-                    service.observation?.takeIf { it !== previous }?.let { retain(it, service, timestamp) }
+                    service.observation?.takeIf { it !== previous }?.let { current ->
+                        val observed =
+                            if (current.failure == null &&
+                                (current.result != null || current.admissionResult != null || current.executionCompletion != null)
+                            ) {
+                                checkNotNull(service.captureObservation().join())
+                            } else {
+                                current
+                            }
+                        retain(observed, service, timestamp)
+                    }
                 }
             }
         }
@@ -66,7 +79,7 @@ internal class FundingVerificationCollector(
                 ) {
                     emptyMap()
                 } else {
-                    tradingVerificationEvidence(service) + ("callbackTimestamp" to timestamp)
+                    tradingVerificationEvidence(service, observation.snapshot) + ("callbackTimestamp" to timestamp)
                 },
             )
         if (observation.failure != null) {
