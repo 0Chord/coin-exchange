@@ -151,6 +151,97 @@ class TradingCheckpointTest {
     }
 
     @Test
+    fun `terminal checkpoint rejects an admission sequence reset to zero`() {
+        assertTerminalCheckpointRejected { checkpoint -> copy(checkpoint, lastSequence = 0) }
+    }
+
+    @Test
+    fun `terminal checkpoint rejects an admission sequence below durable history`() {
+        assertTerminalCheckpointRejected { checkpoint -> copy(checkpoint, lastSequence = checkpoint.lastAdmissionSequence - 1) }
+    }
+
+    @Test
+    fun `terminal checkpoint rejects an admission sequence above durable history`() {
+        assertTerminalCheckpointRejected { checkpoint -> copy(checkpoint, lastSequence = checkpoint.lastAdmissionSequence + 1) }
+    }
+
+    @Test
+    fun `terminal checkpoint rejects an omitted empty market`() {
+        assertTerminalCheckpointRejected { checkpoint -> copy(checkpoint, matching = MatchingCheckpoint(emptyList())) }
+    }
+
+    @Test
+    fun `terminal checkpoint rejects a market sequence below durable completions`() {
+        assertTerminalCheckpointRejected { checkpoint ->
+            val market = checkpoint.matching.markets.single()
+            val staleMarket = MatchingCheckpoint.Market(market.marketId, market.lastEngineSequence - 1, emptyList())
+            copy(checkpoint, matching = MatchingCheckpoint(listOf(staleMarket)))
+        }
+    }
+
+    @Test
+    fun `terminal checkpoint rejects a market sequence above durable completions`() {
+        assertTerminalCheckpointRejected { checkpoint ->
+            val market = checkpoint.matching.markets.single()
+            val advancedMarket = MatchingCheckpoint.Market(market.marketId, market.lastEngineSequence + 1, emptyList())
+            copy(checkpoint, matching = MatchingCheckpoint(listOf(advancedMarket)))
+        }
+    }
+
+    @Test
+    fun `terminal checkpoint rejects a market absent from durable completions`() {
+        assertTerminalCheckpointRejected { checkpoint ->
+            val inventedMarket = MatchingCheckpoint.Market(MarketId("ETH-USDT"), 1, emptyList())
+            copy(checkpoint, matching = MatchingCheckpoint(checkpoint.matching.markets + inventedMarket))
+        }
+    }
+
+    @Test
+    fun `empty genesis and funding-only checkpoints recover without market sequences`() {
+        for (withFunding in listOf(false, true)) {
+            val history = CheckpointHistory()
+            val original = state(history)
+            if (withFunding) fund(original, buyer, usdt, 100)
+            history.forbidScans = true
+            val checkpoint = original.checkpoint()
+            val recoveredHistory = CheckpointHistory()
+            val recovered = state(recoveredHistory)
+            recoveredHistory.load(history)
+            recoveredHistory.forbidScans = true
+
+            recovered.restoreCheckpoint(checkpoint)
+
+            assertEquals(0L, checkpoint.lastAdmissionSequence)
+            assertEquals(emptyList(), checkpoint.matching.markets)
+            assertEquals(checkpoint.balances, recovered.checkpoint().balances)
+            assertEquals(0L, recovered.lastEngineSequence(market.marketId))
+            assertFalse(recovered.isBlocked)
+        }
+    }
+
+    @Test
+    fun `pending admission checkpoint recovers before its market has any completion`() {
+        val history = CheckpointHistory()
+        val original = state(history)
+        fund(original, buyer, usdt, 100)
+        val pending = admit(original, order("pending-buy", buyer, Side.BUY, 100, 1))
+        history.forbidScans = true
+        val checkpoint = original.checkpoint()
+        val recoveredHistory = CheckpointHistory()
+        val recovered = state(recoveredHistory)
+        recoveredHistory.load(history)
+        recoveredHistory.forbidScans = true
+
+        recovered.restoreCheckpoint(checkpoint)
+
+        assertEquals(1L, checkpoint.lastAdmissionSequence)
+        assertEquals(emptyList(), checkpoint.matching.markets)
+        assertEquals(0L, recovered.lastEngineSequence(market.marketId))
+        assertFalse(recovered.isBlocked)
+        assertEquals(1L, recovered.executePending(pending.record.sequence, time).matchingResult.firstEngineSequence)
+    }
+
+    @Test
     fun `invalid hold FIFO status duplicates and sequence checkpoints block before live values are installed`() {
         val history = CheckpointHistory()
         val original = state(history)
@@ -236,6 +327,38 @@ class TradingCheckpointTest {
 
         val again = restored.checkpoint()
         assertSame(again.admissions.single(), again.completions.single().admission)
+    }
+
+    private fun assertTerminalCheckpointRejected(mutate: (TradingCheckpoint) -> TradingCheckpoint) {
+        val history = CheckpointHistory()
+        val original = state(history)
+        fund(original, seller, btc, 2)
+        fund(original, buyer, usdt, 200)
+        repeat(2) { index ->
+            val sell = admit(original, order("terminal-sell-$index", seller, Side.SELL, 100, 1))
+            original.executePending(sell.record.sequence, time)
+            val buy = admit(original, order("terminal-buy-$index", buyer, Side.BUY, 100, 1))
+            original.executePending(buy.record.sequence, time)
+        }
+        val checkpoint = original.checkpoint()
+        assertEquals(4L, checkpoint.lastAdmissionSequence)
+        assertEquals(emptyList(), checkpoint.admissions)
+        assertEquals(emptyList(), checkpoint.completions)
+        assertEquals(
+            emptyList(),
+            checkpoint.matching.markets
+                .single()
+                .orders,
+        )
+        val recoveredHistory = CheckpointHistory()
+        val recovered = state(recoveredHistory)
+        recoveredHistory.load(history)
+
+        assertFailsWith<RuntimeException> { recovered.restoreCheckpoint(mutate(checkpoint)) }
+
+        assertTrue(recovered.isBlocked)
+        assertEquals(0, installedBalanceCount(recovered))
+        assertFailsWith<IllegalStateException> { recovered.snapshot() }
     }
 
     private fun installedBalanceCount(state: TradingState): Int {
@@ -341,6 +464,15 @@ private class CheckpointHistory : TradingHistoryStore {
     override fun admissions() = scan(admissions.values)
 
     override fun completions() = scan(completions.values)
+
+    override fun recoveryWatermarks(): TradingHistoryWatermarks {
+        if (!forbidScans) return super<TradingHistoryStore>.recoveryWatermarks()
+        val lastEngineSequences =
+            completions.values
+                .groupBy { it.admission.candidate.order.marketId }
+                .mapValues { (_, values) -> values.maxOf { it.matchingResult.lastEngineSequence } }
+        return TradingHistoryWatermarks(admissions.keys.maxOrNull() ?: 0L, lastEngineSequences)
+    }
 
     override fun preparations() = scan(preparations.values)
 
