@@ -11,8 +11,10 @@ import com.exchange.core.ledger.LedgerTransaction
 import com.exchange.core.ledger.OpeningBalance
 import com.exchange.core.ledger.OpeningBalanceRequestConflictException
 import com.exchange.core.ledger.OpeningBalanceResult
+import com.exchange.core.matching.MatchingCheckpoint
 import com.exchange.core.order.MarketDefinition
 import com.exchange.core.order.OrderReservation
+import com.exchange.core.order.OrderReservationStatus
 import com.exchange.core.order.Side
 import java.time.Instant
 import java.util.Collections
@@ -21,11 +23,15 @@ private const val ADMISSION_SEQUENCE_SEGMENT_SIZE = 1_024
 
 /**
  * 한 실행자가 순서대로 호출하는 접수 상태. 여러 마켓이 사용자·자산별 최신 잔고를 공유한다.
- * 영구 저장·동시 호출·복구는 제공하지 않으며, 반영 중 오류 뒤에는 재전송과 정상 조회도 차단한다.
+ * 저장 매체와 동시 호출은 소유하지 않는다. 공통 거래 소유자가 복구를 조율하며,
+ * 반영 중 오류 뒤에는 재전송과 정상 조회도 차단한다.
  */
 class OrderAdmissionState(
     initialBalances: List<Balance>,
     private val calculator: OrderAdmissionCalculator,
+    private val historyStore: TradingHistoryStore? = null,
+    private val historyBatchLimit: Int = 1_024,
+    private val onHistoryEvicted: (TradingHistoryBatch) -> Unit = {},
 ) {
     private data class BalanceKey(
         val userId: UserId,
@@ -47,9 +53,11 @@ class OrderAdmissionState(
 
     // 순번 순회는 하지 않는다. Long 구간 키마다 고정 크기의 원본 참조만 보관한다.
     private val recordsBySequence: MutableMap<Long, MutableList<Record?>> = hashMapOf()
+    private val sequenceSegmentSizes: MutableMap<Long, Int> = hashMapOf()
+    private val terminalOrdinals: MutableMap<OrderKey, Long> = hashMapOf()
     private val pendingByMarket: MutableMap<MarketId, ArrayDeque<Record>> = linkedMapOf()
     private val currentReservations: MutableMap<OrderKey, OrderReservation> = linkedMapOf()
-    private val ledgerTransactions: MutableList<LedgerTransaction> = mutableListOf()
+    private val ledgerTransactions: MutableList<LedgerTransaction> = if (historyStore == null) mutableListOf() else java.util.LinkedList()
     private val transactionIds = mutableSetOf<String>()
     private val sourceEventIds = mutableSetOf<String>()
     private val requestRecords: MutableMap<RequestKey, RequestRecord> = linkedMapOf()
@@ -65,12 +73,19 @@ class OrderAdmissionState(
                 )
             }.toMutableSet()
     private var lastSequence = 0L
+    private var lastHistoryOrdinal = 0L
+    private var durableHistoryOrdinal = 0L
+    private val historyBatches = ArrayDeque<TradingHistoryBatch>()
+    private var checkpointRestored = false
+    private var contextCheckInProgress = false
 
     /** 차단 여부만 진단할 수 있다. 부분 반영 가능성이 있는 잔고를 정상 조회로 내보내지 않는다. */
     var isBlocked: Boolean = false
         private set
 
     init {
+        require(historyBatchLimit > 0) { "history batch limit must be positive" }
+        require(historyStore == null || historyStore.durableOrdinal == 0L) { "history requires a fresh live-state generation" }
         initialBalances.forEach { balance ->
             require(balance.hold == Amount.ZERO) { "초기 예약이 없는 상태의 hold는 0이어야 합니다" }
             val key = BalanceKey(balance.userId, balance.assetId)
@@ -128,7 +143,7 @@ class OrderAdmissionState(
         occurredAt: Instant,
     ): OpeningBalanceResult {
         checkUsable()
-        val previous = preparations[opening.preparationId]
+        val previous = preparations[opening.preparationId] ?: historyRead { findPreparation(opening.preparationId) }
         if (previous != null) {
             if (previous.result.opening != opening) {
                 throw OpeningBalanceRequestConflictException("같은 준비 ID의 사용자·자산·금액이 다릅니다")
@@ -136,6 +151,7 @@ class OrderAdmissionState(
             return previous.result.copy(alreadyPrepared = true)
         }
 
+        prepareHistoryCapacity()
         val key = BalanceKey(opening.userId, opening.assetId)
         val current = balances[key] ?: Balance(opening.userId, opening.assetId, Amount.ZERO, Amount.ZERO)
         val hasHistory =
@@ -158,6 +174,9 @@ class OrderAdmissionState(
         sourceEventIds.add(transaction.sourceEventId)
         ledgerTransactions.add(transaction)
         usedBalances.add(key)
+        if (historyStore != null) {
+            appendHistory(TradingHistoryBatch(nextHistoryOrdinal(), preparation = record, ledgerTransactions = listOf(transaction)))
+        }
         isBlocked = false
         return result
     }
@@ -168,7 +187,7 @@ class OrderAdmissionState(
         requestId: String,
     ): Boolean {
         checkUsable()
-        return RequestKey(userId, requestId) in requestRecords
+        return RequestKey(userId, requestId) in requestRecords || historyRead { findRequest(userId, requestId) } != null
     }
 
     /**
@@ -184,15 +203,67 @@ class OrderAdmissionState(
         occurredAt: Instant,
     ): Result {
         checkUsable()
-        if (!calculator.validIdentifier(requestId)) return Result.Rejected(OrderAdmissionResult.Reason.INVALID_REQUEST_IDENTIFIER)
-        if (!calculator.validOrderIdentifiers(order)) return Result.Rejected(OrderAdmissionResult.Reason.INVALID_ORDER_IDENTIFIER)
+        invalidIdentifiers(requestId, order)?.let { return it }
 
         val key = RequestKey(order.userId, requestId)
-        val previous = requestRecords[key]
+        val previous = requestRecords[key] ?: historyRead { findRequest(order.userId, requestId) }
+        return admitResolved(requestId, order, market, feePolicySnapshot, ledgerTransactionId, occurredAt, previous)
+    }
+
+    /**
+     * 한 소유 호출 안에서 최초 요청을 한 번 조회하고 외부 문맥 검사 뒤에 같은 원본으로 판단한다.
+     * 문맥 거절의 null은 요청 이력에 남지 않는다. 문맥 검사에서 상태에 재진입할 수 없으며,
+     * 그 결과나 조회한 원본을 외부에 넘겨 다음 호출의 검증을 생략하지 않는다.
+     */
+    fun admitWithContextCheck(
+        requestId: String,
+        order: OrderAdmissionInput,
+        market: MarketDefinition,
+        feePolicySnapshot: TradingFeePolicySnapshot,
+        ledgerTransactionId: String,
+        occurredAt: Instant,
+        checkContext: (knownRequest: Boolean) -> Boolean,
+    ): Result? {
+        checkUsable()
+        val key = RequestKey(order.userId, requestId)
+        val previous = requestRecords[key] ?: historyRead { findRequest(order.userId, requestId) }
+        contextCheckInProgress = true
+        val acceptedContext =
+            try {
+                checkContext(previous != null)
+            } finally {
+                contextCheckInProgress = false
+            }
+        checkUsable()
+        if (!acceptedContext) return null
+        invalidIdentifiers(requestId, order)?.let { return it }
+        return admitResolved(requestId, order, market, feePolicySnapshot, ledgerTransactionId, occurredAt, previous)
+    }
+
+    private fun invalidIdentifiers(
+        requestId: String,
+        order: OrderAdmissionInput,
+    ): Result.Rejected? =
+        when {
+            !calculator.validIdentifier(requestId) -> Result.Rejected(OrderAdmissionResult.Reason.INVALID_REQUEST_IDENTIFIER)
+            !calculator.validOrderIdentifiers(order) -> Result.Rejected(OrderAdmissionResult.Reason.INVALID_ORDER_IDENTIFIER)
+            else -> null
+        }
+
+    private fun admitResolved(
+        requestId: String,
+        order: OrderAdmissionInput,
+        market: MarketDefinition,
+        feePolicySnapshot: TradingFeePolicySnapshot,
+        ledgerTransactionId: String,
+        occurredAt: Instant,
+        previous: RequestRecord?,
+    ): Result {
         if (previous != null) {
             return if (previous.order == order) previous.result else Result.Rejected(OrderAdmissionResult.Reason.REQUEST_CONTENT_CONFLICT)
         }
 
+        prepareHistoryCapacity()
         val result = prepare(order, market, feePolicySnapshot, ledgerTransactionId, occurredAt)
         val request = RequestRecord(requestId, order, market, feePolicySnapshot, ledgerTransactionId, occurredAt, result)
         when (result) {
@@ -214,6 +285,7 @@ class OrderAdmissionState(
         occurredAt: Instant,
     ): Result {
         checkUsable()
+        prepareHistoryCapacity()
         val result = prepare(order, market, feePolicySnapshot, ledgerTransactionId, occurredAt)
         if (result is Result.Accepted) applyAccepted(result.record)
         return result
@@ -226,9 +298,115 @@ class OrderAdmissionState(
             immutableList(balances.values),
             immutableList(pendingByMarket.values.flatMap { it }.sortedBy { it.sequence }),
             lastSequence,
-            immutableList(requestRecords.values),
-            immutableList(preparations.values),
+            historyRead { requests().toList() }?.let(::immutableList) ?: immutableList(requestRecords.values),
+            historyRead { preparations().toList() }?.let(::immutableList) ?: immutableList(preparations.values),
         )
+    }
+
+    internal fun checkpoint(
+        matching: MatchingCheckpoint,
+        completions: List<TradingState.Completion>,
+    ): TradingCheckpoint {
+        checkUsable()
+        check(historyStore != null) { "live checkpoint requires exact durable history" }
+        check(historyBatches.isEmpty() && durableHistoryOrdinal == lastHistoryOrdinal) { "checkpoint history is not durable" }
+        check(currentReservations.values.all { it.status == OrderReservationStatus.ACTIVE }) { "checkpoint retained terminal state" }
+        return TradingCheckpoint(
+            balances.values.toList(),
+            usedBalances.map { TradingBalanceKey(it.userId, it.assetId) },
+            records.values.sortedBy { it.sequence },
+            currentReservations.values.toList(),
+            pendingByMarket.values
+                .flatMap { it }
+                .map { it.sequence }
+                .sorted(),
+            completions,
+            lastSequence,
+            lastHistoryOrdinal,
+            matching,
+        )
+    }
+
+    internal fun requireEmptyForRestore() {
+        checkUsable()
+        check(
+            !checkpointRestored && lastSequence == 0L && lastHistoryOrdinal == 0L && balances.isEmpty() &&
+                records.isEmpty() && currentReservations.isEmpty() && requestRecords.isEmpty() && preparations.isEmpty() &&
+                pendingByMarket.isEmpty() && historyBatches.isEmpty() && usedBalances.isEmpty(),
+        ) { "trading checkpoint requires an empty state" }
+    }
+
+    /** 현재 상태의 컬렉션을 바꾸기 전에 모든 검사를 마친다. 호출자는 매칭 관계도 검증한다. */
+    internal fun validateCheckpointForRestore(checkpoint: TradingCheckpoint) {
+        requireEmptyForRestore()
+        val store = checkNotNull(historyStore) { "live checkpoint requires exact durable history" }
+        require(checkpoint.historyOrdinal >= 0 && checkpoint.lastAdmissionSequence in 0..checkpoint.historyOrdinal) {
+            "invalid checkpoint admission or history sequence"
+        }
+        check(store.durableOrdinal == checkpoint.historyOrdinal) { "checkpoint and restored history ordinals differ" }
+        check(store.flush() == checkpoint.historyOrdinal) { "restored history has unacknowledged transitions beyond checkpoint" }
+        val balanceKeys = hashSetOf<TradingBalanceKey>()
+        for (balance in checkpoint.balances) {
+            require(balanceKeys.add(TradingBalanceKey(balance.userId, balance.assetId))) { "duplicate checkpoint balance" }
+        }
+        require(checkpoint.usedBalances.size == checkpoint.usedBalances.toSet().size) { "duplicate checkpoint used balance" }
+        require(checkpoint.usedBalances.toSet() == balanceKeys) { "checkpoint used balances must match all touched balances" }
+        val sequenceKeys = hashSetOf<Long>()
+        val orderKeys = hashSetOf<OrderKey>()
+        var previousSequence = 0L
+        for (record in checkpoint.admissions) {
+            require(record.sequence in 1..checkpoint.lastAdmissionSequence && sequenceKeys.add(record.sequence)) {
+                "invalid or duplicate checkpoint admission sequence"
+            }
+            require(record.sequence > previousSequence) { "checkpoint admissions are not ordered" }
+            previousSequence = record.sequence
+            record.candidate.validate()
+            val order = record.candidate.order
+            require(orderKeys.add(OrderKey(order.marketId, order.orderId))) { "duplicate checkpoint order" }
+            val historical = checkNotNull(store.findAdmission(record.sequence)) { "checkpoint admission is absent from history" }
+            requireSameAdmission(record, historical)
+            val indexed = checkNotNull(store.findAdmission(order.marketId, order.orderId)) { "checkpoint order index is absent" }
+            requireSameAdmission(record, indexed)
+        }
+        val reservationKeys = hashSetOf<OrderKey>()
+        for (reservation in checkpoint.reservations) {
+            require(reservation.status == OrderReservationStatus.ACTIVE) { "checkpoint reservation is not active" }
+            require(reservationKeys.add(OrderKey(reservation.marketId, reservation.orderId))) { "duplicate checkpoint reservation" }
+        }
+        require(orderKeys == reservationKeys) { "checkpoint admissions and reservations differ" }
+        var lastPending = 0L
+        for (sequence in checkpoint.pendingAdmissionSequences) {
+            require(sequence > lastPending && sequence in sequenceKeys) { "invalid checkpoint pending order sequence" }
+            require(store.findCompletion(sequence) == null) { "checkpoint pending order is already completed in history" }
+            lastPending = sequence
+        }
+    }
+
+    /** 공통 소유자가 전체 체크포인트를 검사한 뒤에만 호출한다. */
+    internal fun applyCheckpoint(checkpoint: TradingCheckpoint) {
+        requireEmptyForRestore()
+        isBlocked = true
+        for (balance in checkpoint.balances) balances[BalanceKey(balance.userId, balance.assetId)] = balance
+        for (key in checkpoint.usedBalances) usedBalances.add(BalanceKey(key.userId, key.assetId))
+        val pending = checkpoint.pendingAdmissionSequences.toHashSet()
+        for (record in checkpoint.admissions) {
+            val order = record.candidate.order
+            records[OrderKey(order.marketId, order.orderId)] = record
+            val index = record.sequence - 1
+            val segmentKey = index / ADMISSION_SEQUENCE_SEGMENT_SIZE
+            val segment = recordsBySequence.getOrPut(segmentKey) { MutableList(ADMISSION_SEQUENCE_SEGMENT_SIZE) { null } }
+            segment[(index % ADMISSION_SEQUENCE_SEGMENT_SIZE).toInt()] = record
+            sequenceSegmentSizes[segmentKey] = (sequenceSegmentSizes[segmentKey] ?: 0) + 1
+            if (record.sequence in pending) pendingByMarket.getOrPut(order.marketId) { ArrayDeque() }.addLast(record)
+        }
+        for (reservation in checkpoint.reservations) {
+            currentReservations[OrderKey(reservation.marketId, reservation.orderId)] = reservation
+        }
+        lastSequence = checkpoint.lastAdmissionSequence
+        lastHistoryOrdinal = checkpoint.historyOrdinal
+        durableHistoryOrdinal = checkpoint.historyOrdinal
+        checkpointRestored = true
+        isBlocked = false
     }
 
     fun pendingOrders(marketId: MarketId): List<Record> {
@@ -244,7 +422,11 @@ class OrderAdmissionState(
         occurredAt: Instant,
     ): Result {
         val orderKey = OrderKey(order.marketId, order.orderId)
-        if (orderKey in records) return Result.Rejected(OrderAdmissionResult.Reason.DUPLICATE_ORDER)
+        if (orderKey in records ||
+            historyRead { findAdmission(order.marketId, order.orderId) } != null
+        ) {
+            return Result.Rejected(OrderAdmissionResult.Reason.DUPLICATE_ORDER)
+        }
 
         val assetId = if (order.side == Side.BUY) market.quoteAssetId else market.baseAssetId
         val balanceKey = BalanceKey(order.userId, assetId)
@@ -282,6 +464,7 @@ class OrderAdmissionState(
                 MutableList(ADMISSION_SEQUENCE_SEGMENT_SIZE) { null }
             }
         segment[segmentOffset] = record
+        if (historyStore != null) sequenceSegmentSizes[segmentKey] = (sequenceSegmentSizes[segmentKey] ?: 0) + 1
         pendingByMarket.getOrPut(candidate.order.marketId) { ArrayDeque() }.addLast(record)
         currentReservations[orderKey] = candidate.reservation
         ledgerTransactions.add(candidate.reserveTransaction)
@@ -292,6 +475,17 @@ class OrderAdmissionState(
         if (request != null) {
             requestRecords[RequestKey(request.order.userId, request.requestId)] = request
         }
+        if (historyStore != null) {
+            appendHistory(
+                TradingHistoryBatch(
+                    nextHistoryOrdinal(),
+                    request = request,
+                    admission = record,
+                    reservations = listOf(candidate.reservation),
+                    ledgerTransactions = listOf(candidate.reserveTransaction),
+                ),
+            )
+        }
         isBlocked = false
     }
 
@@ -300,6 +494,7 @@ class OrderAdmissionState(
         // 정상 거절도 요청 이력은 바뀐다. 기록이 끝나지 않으면 첫 답을 신뢰할 수 없다.
         isBlocked = true
         requestRecords[key] = request
+        if (historyStore != null) appendHistory(TradingHistoryBatch(nextHistoryOrdinal(), request = request))
         isBlocked = false
     }
 
@@ -310,7 +505,7 @@ class OrderAdmissionState(
         val sequenceIndex = sequence - 1
         val segmentKey = sequenceIndex / ADMISSION_SEQUENCE_SEGMENT_SIZE
         val segmentOffset = (sequenceIndex % ADMISSION_SEQUENCE_SEGMENT_SIZE).toInt()
-        return recordsBySequence[segmentKey]?.get(segmentOffset)
+        return recordsBySequence[segmentKey]?.get(segmentOffset) ?: historyRead { findAdmission(sequence) }
     }
 
     internal fun accepted(
@@ -318,7 +513,7 @@ class OrderAdmissionState(
         orderId: OrderId,
     ): Record {
         checkUsable()
-        return checkNotNull(records[OrderKey(marketId, orderId)]) { "승인 원본이 없습니다" }
+        return checkNotNull(records[OrderKey(marketId, orderId)] ?: historyRead { findAdmission(marketId, orderId) }) { "승인 원본이 없습니다" }
     }
 
     internal fun firstPending(marketId: MarketId): Record? {
@@ -344,12 +539,12 @@ class OrderAdmissionState(
 
     internal fun reservations(): List<OrderReservation> {
         checkUsable()
-        return immutableList(currentReservations.values)
+        return historyRead { reservations().toList() }?.let(::immutableList) ?: immutableList(currentReservations.values)
     }
 
     internal fun transactions(): List<LedgerTransaction> {
         checkUsable()
-        return immutableList(ledgerTransactions)
+        return historyRead { transactions().toList() }?.let(::immutableList) ?: immutableList(ledgerTransactions)
     }
 
     private fun validateSettlement(candidate: OrderSettlementCandidate) {
@@ -423,11 +618,195 @@ class OrderAdmissionState(
         isBlocked = true
     }
 
-    private fun checkUsable() = check(!isBlocked) { "반영 중 오류로 접수 상태가 차단됐습니다" }
+    internal fun completion(sequence: Long): TradingState.Completion? = historyRead { findCompletion(sequence) }
+
+    internal fun completionHistory(): List<TradingState.Completion>? = historyRead { completions().toList() }
+
+    internal fun retainedAdmission(
+        marketId: MarketId,
+        orderId: OrderId,
+    ): Record? = records[OrderKey(marketId, orderId)]
+
+    internal fun isActive(
+        marketId: MarketId,
+        orderId: OrderId,
+    ): Boolean = currentReservations[OrderKey(marketId, orderId)]?.status == OrderReservationStatus.ACTIVE
+
+    internal fun recordCompletion(completion: TradingState.Completion) {
+        if (historyStore == null) return
+        isBlocked = true
+        appendHistory(
+            TradingHistoryBatch(
+                nextHistoryOrdinal(),
+                completion = completion,
+                reservations = completion.settlement.reservationChanges.map { it.next },
+                ledgerTransactions = completion.settlement.settlements.map { it.transaction },
+            ),
+        )
+        isBlocked = false
+    }
+
+    internal fun prepareHistoryCapacity() {
+        if (historyStore == null) return
+        try {
+            drainHistory()
+            if (historyBatches.size >= historyBatchLimit) {
+                // 저장을 확인한 연속 구간 하나의 용량을 비운다. 이후 쓰기는 병렬로 계속될 수 있다.
+                val target = historyBatches.first().ordinal
+                val durable = historyStore.awaitDurable(target)
+                check(durable in target..lastHistoryOrdinal) { "invalid history capacity acknowledgement" }
+                drainHistory()
+                check(historyBatches.size < historyBatchLimit) { "history staging did not drain" }
+            }
+        } catch (failure: Throwable) {
+            isBlocked = true
+            throw failure
+        }
+    }
+
+    /** 추가 명령이 오지 않아도 영속 저장을 명시적으로 기다리는 장벽이다. */
+    fun flushHistory() {
+        checkUsable()
+        val store = historyStore ?: return
+        try {
+            val durable = store.flush()
+            check(durable == lastHistoryOrdinal) { "history flush did not acknowledge all appends" }
+            drainHistory()
+        } catch (failure: Throwable) {
+            isBlocked = true
+            throw failure
+        }
+    }
+
+    fun historyRetention(): TradingHistoryRetention {
+        checkUsable()
+        return TradingHistoryRetention(
+            lastHistoryOrdinal,
+            durableHistoryOrdinal,
+            historyBatches.size,
+            requestRecords.size,
+            records.size,
+            currentReservations.size,
+            ledgerTransactions.size,
+            transactionIds.size,
+            sourceEventIds.size,
+            preparations.size,
+            pendingByMarket.values.sumOf { it.size },
+            currentReservations.values.count { it.status == OrderReservationStatus.ACTIVE },
+        )
+    }
+
+    private fun nextHistoryOrdinal(): Long = if (historyStore == null) 0L else Math.addExact(lastHistoryOrdinal, 1L)
+
+    private fun appendHistory(batch: TradingHistoryBatch) {
+        val store = historyStore ?: return
+        try {
+            check(batch.ordinal == Math.addExact(lastHistoryOrdinal, 1L))
+            batch.admission?.let { record ->
+                val order = record.candidate.order
+                check(records[OrderKey(order.marketId, order.orderId)] === record) { "history admission is not the live original" }
+            }
+            batch.completion?.let { completion ->
+                val original = completion.admission
+                val order = original.candidate.order
+                check(records[OrderKey(order.marketId, order.orderId)] === original) { "history completion is not the live original" }
+            }
+            val reservationSequences =
+                batch.reservations.map { reservation ->
+                    checkNotNull(records[OrderKey(reservation.marketId, reservation.orderId)]) {
+                        "history reservation has no live original"
+                    }.sequence
+                }
+            store.appendPrepared(PreparedTradingHistoryBatch(store, batch, reservationSequences))
+            for (reservation in batch.reservations) {
+                if (reservation.status != OrderReservationStatus.ACTIVE) {
+                    terminalOrdinals[OrderKey(reservation.marketId, reservation.orderId)] = batch.ordinal
+                }
+            }
+            lastHistoryOrdinal = batch.ordinal
+            historyBatches.addLast(batch)
+            drainHistory()
+        } catch (failure: Throwable) {
+            isBlocked = true
+            throw failure
+        }
+    }
+
+    private fun drainHistory() {
+        val store = historyStore ?: return
+        val durable = store.durableOrdinal
+        check(durable in durableHistoryOrdinal..lastHistoryOrdinal) { "invalid history durability acknowledgement" }
+        durableHistoryOrdinal = durable
+        while (historyBatches.isNotEmpty() && historyBatches.first().ordinal <= durable) {
+            val batch = historyBatches.first()
+            // 승인 참조를 해제하기 전에 소유자가 매칭 상태를 정리한다.
+            onHistoryEvicted(batch)
+            batch.request?.let { requestRecords.remove(RequestKey(it.order.userId, it.requestId)) }
+            batch.preparation?.let { preparations.remove(it.result.opening.preparationId) }
+            for (reservation in batch.reservations) {
+                if (reservation.status != OrderReservationStatus.ACTIVE) {
+                    records[OrderKey(reservation.marketId, reservation.orderId)]?.let(::evictTerminalAdmission)
+                }
+            }
+            for (transaction in batch.ledgerTransactions) {
+                transactionIds.remove(transaction.ledgerTransactionId)
+                sourceEventIds.remove(transaction.sourceEventId)
+            }
+            for (transaction in batch.ledgerTransactions) {
+                check(ledgerTransactions.first() === transaction) { "history ledger append order changed" }
+                ledgerTransactions.removeAt(0)
+            }
+            historyBatches.removeFirst()
+        }
+    }
+
+    private fun evictTerminalAdmission(record: Record) {
+        val key = OrderKey(record.candidate.order.marketId, record.candidate.order.orderId)
+        if (currentReservations[key]?.status == OrderReservationStatus.ACTIVE) return
+        if ((terminalOrdinals[key] ?: Long.MAX_VALUE) > durableHistoryOrdinal) return
+        // 주문이 대기 큐를 떠난 뒤에만 예약이 종료 상태가 된다.
+        records.remove(key)
+        currentReservations.remove(key)
+        terminalOrdinals.remove(key)
+        val index = record.sequence - 1
+        val segmentKey = index / ADMISSION_SEQUENCE_SEGMENT_SIZE
+        recordsBySequence[segmentKey]?.let { segment ->
+            segment[(index % ADMISSION_SEQUENCE_SEGMENT_SIZE).toInt()] = null
+            val remaining = checkNotNull(sequenceSegmentSizes[segmentKey]) - 1
+            if (remaining == 0) {
+                recordsBySequence.remove(segmentKey)
+                sequenceSegmentSizes.remove(segmentKey)
+            } else {
+                sequenceSegmentSizes[segmentKey] = remaining
+            }
+        }
+    }
+
+    private inline fun <T> historyRead(read: TradingHistoryStore.() -> T): T? {
+        val store = historyStore ?: return null
+        try {
+            return store.read()
+        } catch (failure: Throwable) {
+            isBlocked = true
+            throw failure
+        }
+    }
+
+    private fun checkUsable() {
+        check(!isBlocked) { "반영 중 오류로 접수 상태가 차단됐습니다" }
+        check(!contextCheckInProgress) { "접수 문맥 검사에서 상태에 재진입할 수 없습니다" }
+    }
 
     private fun checkUnusedTransaction(transaction: LedgerTransaction) {
-        check(transaction.ledgerTransactionId !in transactionIds) { "원장 거래 ID가 이미 사용됐습니다" }
-        check(transaction.sourceEventId !in sourceEventIds) { "원장 사건 ID가 이미 사용됐습니다" }
+        check(
+            transaction.ledgerTransactionId !in transactionIds &&
+                historyRead { containsTransactionId(transaction.ledgerTransactionId) } != true,
+        ) { "원장 거래 ID가 이미 사용됐습니다" }
+        check(
+            transaction.sourceEventId !in sourceEventIds && historyRead {
+                containsSourceEventId(transaction.sourceEventId)
+            } != true,
+        ) { "원장 사건 ID가 이미 사용됐습니다" }
     }
 
     private fun <T> immutableList(values: Collection<T>): List<T> = Collections.unmodifiableList(values.toList())

@@ -71,6 +71,10 @@ class ProductionArchitectureTest {
             )
         assertTrue(scope.problems.isEmpty(), "Scope collection failed; ARCH-01 not evaluated:\n${scope.problems.joinToString("\n")}")
         val classified = RoleClassifier.classify(scope.classesByModule, ProductionScope.roles)
+        // 저장 확인을 수행하는 상태 소유자만 실행기로 분류한다. 순수 계산기가 같이 제외되면 실패한다.
+        listOf("OrderAdmissionCalculator", "OrderSettlementCalculator", "SettlementLedgerTransactions").forEach {
+            assertTrue("com.exchange.core.trading.$it" in classified.roles.pureDomain, "순수 계산 역할 누락: $it")
+        }
         assertTrue(
             classified.problems.isEmpty(),
             "Role classification failed; ARCH-01 not evaluated:\n${classified.problems.joinToString("\n")}",

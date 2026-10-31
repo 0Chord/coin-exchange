@@ -306,7 +306,13 @@ object NamingRules {
                             t,
                             input,
                             "store-port",
-                            listOf("domain-order", "domain-ledger", "matching-ports", "market-ports").map { area(policy, it) },
+                            listOf(
+                                "domain-order",
+                                "domain-ledger",
+                                "domain-trading",
+                                "matching-ports",
+                                "market-ports",
+                            ).map { area(policy, it) },
                         )
                 },
             ).allowEmptyShould(true)
@@ -347,7 +353,7 @@ object NamingRules {
                     val ports = actualPorts(t, input, "Store")
                     val failures =
                         (
-                            name(t, input, "store-implementation", "Store", setOf("Postgres", "Jpa")) +
+                            name(t, input, "store-implementation", "Store", setOf("Postgres", "Jpa", "RocksDb")) +
                                 shape(
                                     t,
                                     input,
@@ -368,6 +374,7 @@ object NamingRules {
                                 listOf(
                                     "domain-order",
                                     "domain-ledger",
+                                    "domain-trading",
                                     "matching-ports",
                                     "market-ports",
                                 ).map { area(policy, it) }
