@@ -8,16 +8,41 @@ import com.exchange.core.order.OrderReservation
 import java.util.Collections
 
 /** 전체 계산을 마쳤지만 실제 잔고·예약·원장에는 반영하지 않은 한 주문의 정산 후보. */
-class OrderSettlementCandidate internal constructor(
+class OrderSettlementCandidate private constructor(
     val order: OrderAdmissionInput,
     val market: MarketDefinition,
-    settlements: List<Settlement>,
-    balanceChanges: List<BalanceChange>,
-    reservationChanges: List<ReservationChange>,
+    val settlements: List<Settlement>,
+    val balanceChanges: List<BalanceChange>,
+    val reservationChanges: List<ReservationChange>,
+    private val compactHistory: Boolean,
 ) {
-    val settlements: List<Settlement> = Collections.unmodifiableList(settlements.toList())
-    val balanceChanges: List<BalanceChange> = Collections.unmodifiableList(balanceChanges.toList())
-    val reservationChanges: List<ReservationChange> = Collections.unmodifiableList(reservationChanges.toList())
+    internal constructor(
+        order: OrderAdmissionInput,
+        market: MarketDefinition,
+        settlements: List<Settlement>,
+        balanceChanges: List<BalanceChange>,
+        reservationChanges: List<ReservationChange>,
+    ) : this(
+        order,
+        market,
+        immutableHistoryCopy(settlements),
+        immutableHistoryCopy(balanceChanges),
+        immutableHistoryCopy(reservationChanges),
+        false,
+    )
+
+    /** 완료 이력의 과거 잔고만 숫자로 보관한다. 이미 공유하는 체결·예약·원장은 그대로 유지한다. */
+    internal fun compactForHistory(): OrderSettlementCandidate {
+        if (compactHistory || balanceChanges.isEmpty()) return this
+        return OrderSettlementCandidate(
+            order,
+            market,
+            settlements,
+            Collections.unmodifiableList(CompactSettlementBalanceHistory(balanceChanges)),
+            reservationChanges,
+            true,
+        )
+    }
 
     data class Settlement(
         val execution: SettlementExecution,
@@ -37,3 +62,9 @@ class OrderSettlementCandidate internal constructor(
         val next: OrderReservation,
     )
 }
+
+// 체결 없이 주문장에 들어간 주문마다 빈 목록 wrapper 세 개를 누적하지 않는다.
+private val emptyHistoryList: List<Nothing> = Collections.unmodifiableList(emptyList())
+
+private fun <T> immutableHistoryCopy(values: List<T>): List<T> =
+    if (values.isEmpty()) emptyHistoryList else Collections.unmodifiableList(values.toList())

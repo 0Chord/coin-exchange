@@ -28,6 +28,8 @@ import java.time.Instant
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
+import kotlin.test.assertFalse
+import kotlin.test.assertNotSame
 
 /** 잔고·예약·원장을 독립적으로 준비하여 SELL 후보의 조합 검증을 직접 확인한다. */
 class OrderAdmissionCandidateTest {
@@ -90,6 +92,25 @@ class OrderAdmissionCandidateTest {
         assertEquals(next, candidate.nextBalance)
         assertEquals(reservation, candidate.reservation)
         assertEquals(record, candidate.reserveTransaction)
+    }
+
+    @Test
+    fun `승인 후보는 당시 잔고 값을 보존하지만 이전 Balance 객체를 보관하지 않는다`() {
+        val candidate = candidate()
+        val fields =
+            candidate.javaClass.declaredFields.filterNot {
+                java.lang.reflect.Modifier
+                    .isStatic(it.modifiers)
+            }
+        assertFalse(fields.any { it.apply { isAccessible = true }.get(candidate) is Balance })
+
+        repeat(3) {
+            assertEquals(previous, candidate.previousBalance)
+            assertEquals(next, candidate.nextBalance)
+            assertNotSame(previous, candidate.previousBalance)
+            assertNotSame(next, candidate.nextBalance)
+            candidate.validate()
+        }
     }
 
     @Test
@@ -190,6 +211,116 @@ class OrderAdmissionCandidateTest {
         records.forEach { wrong ->
             assertFailsWith<IllegalArgumentException> { candidate(reserveTransaction = wrong) }
         }
+    }
+
+    @Test
+    fun `예약 계정은 비ASCII UTF16 원문과 콜론 포함 ID를 기존 문자열 조립과 같게 검증한다`() {
+        val accountParts =
+            listOf(
+                "user-1" to "BTC",
+                "사용자😀" to "코인🪙",
+                "😀".repeat(64) to "🪙".repeat(64),
+                "u:x" to "y",
+                "u" to "x:y",
+                " user " to " asset ",
+                // 직접 후보 생성에는 계산기의 64 code point·NUL·서로게이트 제한을 새로 적용하지 않는다.
+                "u".repeat(65) to "a".repeat(65),
+                "u\u0000x" to "a\u0000x",
+                "\uD800" to "\uDC00",
+            )
+
+        accountParts.forEach { (userId, assetId) ->
+            val value = candidateWithAccountParts(userId, assetId)
+
+            value.validate()
+
+            assertEquals("USER:$userId:$assetId:AVAILABLE", value.reserveTransaction.postings[0].accountId)
+            assertEquals("USER:$userId:$assetId:HOLD", value.reserveTransaction.postings[1].accountId)
+        }
+    }
+
+    @Test
+    fun `균형이 맞는 원장도 계정의 사용자 자산 접두사 구분자 접미사가 다르면 생성과 재검증에서 거절한다`() {
+        val cases =
+            listOf(
+                listOf("user-1", "BTC", "user-2", "ETH"),
+                listOf("사용자😀", "코인🪙", "사용자😄", "코인💰"),
+                listOf("u:x", "y", "u:z", "z"),
+                listOf("é", "币", "e\u0301", "幣"),
+            )
+        for ((userId, assetId, otherUserId, otherAssetId) in cases) {
+            val value = candidateWithAccountParts(userId, assetId)
+            val original = value.reserveTransaction
+            val field = value.javaClass.getDeclaredField("reserveTransaction").apply { isAccessible = true }
+            for (postingIndex in original.postings.indices) {
+                val suffix = if (postingIndex == 0) "AVAILABLE" else "HOLD"
+                val accountId = original.postings[postingIndex].accountId
+                val invalidAccounts =
+                    listOf(
+                        "USEX:$userId:$assetId:$suffix",
+                        "user:$userId:$assetId:$suffix",
+                        "$userId:$assetId:$suffix",
+                        "USER:$otherUserId:$assetId:$suffix",
+                        "USER:$userId:$otherAssetId:$suffix",
+                        "USER;$userId:$assetId:$suffix",
+                        "USER:$userId;$assetId:$suffix",
+                        "USER:$userId:$assetId;$suffix",
+                        "USER:$userId:$assetId:${suffix.lowercase()}",
+                        "USER:$userId:$assetId:${if (postingIndex == 0) "HOLD" else "AVAILABLE"}",
+                        "$accountId:extra",
+                        "$accountId ",
+                        "x$accountId",
+                        accountId.dropLast(1),
+                    )
+                for (wrongAccount in invalidAccounts) {
+                    val entries =
+                        original.postings.mapIndexed { index, posting ->
+                            if (index == postingIndex) posting.copy(accountId = wrongAccount) else posting
+                        }
+                    val corrupted = transaction(entries)
+                    val construction =
+                        assertFailsWith<IllegalArgumentException> {
+                            OrderAdmissionCandidate(
+                                value.order,
+                                value.market,
+                                value.feePolicySnapshot,
+                                value.previousBalance,
+                                value.nextBalance,
+                                value.reservation,
+                                corrupted,
+                            )
+                        }
+                    assertEquals("Failed requirement.", construction.message)
+                    // 보존한 최초 원본이 손상된 상황에서도 같은 공개 검증 경로를 다시 호출한다.
+                    field.set(value, corrupted)
+                    val revalidation = assertFailsWith<IllegalArgumentException> { value.validate() }
+                    assertEquals("Failed requirement.", revalidation.message)
+                    field.set(value, original)
+                    value.validate()
+                }
+            }
+        }
+    }
+
+    private fun candidateWithAccountParts(
+        userId: String,
+        assetId: String,
+    ): OrderAdmissionCandidate {
+        val owner = UserId(userId)
+        val asset = AssetId(assetId)
+        val entries =
+            listOf(
+                postings[0].copy(accountId = "USER:$userId:$assetId:AVAILABLE", assetId = asset),
+                postings[1].copy(accountId = "USER:$userId:$assetId:HOLD", assetId = asset),
+            )
+        return candidate(
+            order = order.copy(userId = owner),
+            market = market.copy(baseAssetId = asset),
+            previousBalance = previous.copy(userId = owner, assetId = asset),
+            nextBalance = next.copy(userId = owner, assetId = asset),
+            reservation = reservation.copy(userId = owner, assetId = asset),
+            reserveTransaction = transaction(entries),
+        )
     }
 
     private fun candidate(

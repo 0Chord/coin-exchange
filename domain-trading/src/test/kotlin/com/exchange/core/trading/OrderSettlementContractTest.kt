@@ -48,6 +48,78 @@ class OrderSettlementContractTest {
         )
 
     @Test
+    fun `최초 수량이 그대로여도 수수료 나머지가 있으면 최초 예약액을 그대로 재사용하지 않는다`() {
+        val original = fixture()
+        val invalid =
+            original.copy(
+                reservations =
+                    original.reservations.map {
+                        if (it.side == Side.BUY) it.copy(feeRemainder = FeeRemainder(1)) else it
+                    },
+            )
+
+        assertInvalid(invalid)
+    }
+
+    @Test
+    fun `최초 예약 요구액 재사용은 한 계산 안에서만 하고 다음 입력도 완전히 검증한다`() {
+        val f = fixture()
+        val first = calculate(f)
+        val buyer = f.reservations.first()
+        val seller = f.reservations.last()
+
+        // 현재 잔량과 예약은 맞아도 최초 예약 금액만 손상되면 거절한다.
+        assertInvalid(f.copy(reservations = listOf(buyer.copy(reservedAmount = Amount(301))) + f.reservations.drop(1)))
+        assertInvalid(f.copy(reservations = f.reservations.dropLast(1) + seller.copy(reservedAmount = Amount(2))))
+        assertInvalid(f.copy(reservations = listOf(buyer.copy(remainingAmount = Amount(299))) + f.reservations.drop(1)))
+        assertFailsWith<IllegalArgumentException> {
+            calculator.validateReservation(market, buyer.copy(reservedAmount = Amount(301)))
+        }
+
+        assertBalance(first, "buyer", usdt, available = 715, hold = 100)
+        assertInputsUnchanged(f)
+        val repeated = calculate(f)
+        assertEquals(first.balanceChanges, repeated.balanceChanges)
+        assertEquals(first.reservationChanges, repeated.reservationChanges)
+    }
+
+    @Test
+    fun `같은 주문 ID도 다음 계산의 정책과 최초 예약 요구액을 새로 계산한다`() {
+        val freeFixture = fixture()
+        calculate(freeFixture)
+        val paid = policy(10_000, 20_000)
+        val f =
+            freeFixture.copy(
+                reservations =
+                    freeFixture.reservations.map {
+                        if (it.side == Side.BUY) {
+                            it.copy(
+                                reservedAmount = Amount(306),
+                                remainingAmount = Amount(306),
+                                initialFeeReserveAmount = Amount(6),
+                                remainingFeeReserveAmount = Amount(6),
+                                feePolicySnapshot = paid,
+                            )
+                        } else {
+                            it.copy(feePolicySnapshot = paid)
+                        }
+                    },
+                balances =
+                    freeFixture.balances.map {
+                        if (it.userId == UserId("buyer") && it.assetId == usdt) it.copy(available = Amount(694), hold = Amount(306)) else it
+                    },
+            )
+
+        val candidate = calculate(f)
+
+        assertEquals(listOf(Amount(1), Amount(2)), candidate.settlements.map { it.takerPlan.actualFeeAmount })
+        assertEquals(Amount(6), reservation(candidate, "buy").initialFeeReserveAmount)
+        assertEquals(Amount(3), reservation(candidate, "buy").remainingFeeReserveAmount)
+        assertBalance(candidate, "buyer", usdt, available = 709, hold = 103)
+        assertInputsUnchanged(f)
+    }
+
+    @Test
     fun `같은 판매자의 서로 다른 주문은 지급을 합하고 예약은 각각 끝낸다`() {
         val f = fixture(sameSeller = true)
 
@@ -510,6 +582,132 @@ class OrderSettlementContractTest {
 
         assertFailsWith<IllegalArgumentException> { calculate(f) }
         assertInputsUnchanged(f)
+    }
+
+    @Test
+    fun `단일 BUY 체결은 가격차와 다른 예약을 보존하고 첫 변경 순서와 재계산 결과를 유지한다`() {
+        val f = fixture().let { it.copy(executions = it.executions.take(1)) }.withBalance("buyer", usdt) { it.copy(hold = Amount(350)) }
+
+        val candidate = calculate(f)
+        val repeated = calculate(f)
+
+        assertEquals(
+            listOf(
+                balance("seller-1", btc, 0, 0),
+                balance("seller-1", usdt, 90, 0),
+                balance("buyer", usdt, 710, 250),
+                balance("buyer", btc, 1, 0),
+            ),
+            candidate.balanceChanges.map { it.next },
+        )
+        assertEquals(listOf(OrderId("sell-1"), OrderId("buy")), candidate.reservationChanges.map { it.next.orderId })
+        assertEquals(Quantity(2), reservation(candidate, "buy").remainingQuantity)
+        assertEquals(Amount(200), reservation(candidate, "buy").remainingAmount)
+        assertEquals(balance("buyer", btc, 0, 0), candidate.balanceChanges.last().previous)
+        assertEquals(candidate.balanceChanges, repeated.balanceChanges)
+        assertEquals(candidate.reservationChanges, repeated.reservationChanges)
+        assertEquals(
+            candidate.settlements
+                .single()
+                .transaction.postings,
+            repeated.settlements
+                .single()
+                .transaction.postings,
+        )
+        assertFailsWith<UnsupportedOperationException> { (candidate.balanceChanges as MutableList<*>).clear() }
+        assertInputsUnchanged(f)
+    }
+
+    @Test
+    fun `단일 SELL 부분 체결은 maker 가격으로 지급하고 양쪽 잔여 예약을 보존한다`() {
+        val seller = reservation("sell", "seller", Side.SELL, 95, 3)
+        val buyer = reservation("buy", "buyer", Side.BUY, 105, 2)
+        val f =
+            Fixture(
+                order("sell", "seller", Side.SELL, 95, 3),
+                listOf(execution(10, buyer, seller, 105)),
+                listOf(seller, buyer),
+                listOf(balance("seller", btc, 0, 3), balance("buyer", usdt, 790, 210)),
+            )
+
+        val candidate = calculate(f)
+
+        assertEquals(
+            listOf(
+                balance("buyer", usdt, 790, 105),
+                balance("buyer", btc, 1, 0),
+                balance("seller", btc, 0, 2),
+                balance("seller", usdt, 105, 0),
+            ),
+            candidate.balanceChanges.map { it.next },
+        )
+        assertEquals(Quantity(1), reservation(candidate, "buy").remainingQuantity)
+        assertEquals(Quantity(2), reservation(candidate, "sell").remainingQuantity)
+        assertTrue(candidate.reservationChanges.all { it.next.status == OrderReservationStatus.ACTIVE })
+        assertInputsUnchanged(f)
+    }
+
+    @Test
+    fun `단일 체결의 양쪽 사용자가 같으면 지급과 소비를 같은 슬롯에 누적한다`() {
+        for (side in listOf(Side.BUY, Side.SELL)) {
+            val buyer = reservation("buy", "owner", Side.BUY, 100, 2)
+            val seller = reservation("sell", "owner", Side.SELL, 90, 2)
+            val maker = if (side == Side.BUY) seller else buyer
+            val taker = if (side == Side.BUY) buyer else seller
+            val f =
+                Fixture(
+                    order(taker.orderId.value, "owner", side, taker.limitPrice.value, 2),
+                    listOf(execution(10, maker, taker, maker.limitPrice.value)),
+                    listOf(buyer, seller),
+                    listOf(balance("owner", usdt, 800, 250), balance("owner", btc, 5, 5)),
+                )
+
+            val candidate = calculate(f)
+
+            assertBalance(candidate, "owner", usdt, 900, 150)
+            assertBalance(candidate, "owner", btc, 6, 4)
+            assertEquals(2, candidate.balanceChanges.size)
+            assertEquals(listOf(maker.assetId, taker.assetId), candidate.balanceChanges.map { it.next.assetId })
+            assertTrue(candidate.reservationChanges.all { it.next.status == OrderReservationStatus.ACTIVE })
+            assertInputsUnchanged(f)
+        }
+    }
+
+    @Test
+    fun `단일 체결도 빠진 입력과 쓰지 않는 입력의 중복 및 손상된 현재 예약을 거절한다`() {
+        val f = fixture().let { it.copy(executions = it.executions.take(1)) }
+        val maker = f.reservations[1]
+        val invalid =
+            listOf(
+                f.copy(reservations = listOf(f.reservations.first(), f.reservations.last())),
+                f.copy(balances = f.balances.filterNot { it.userId == maker.userId && it.assetId == btc }),
+                f.copy(reservations = f.reservations + f.reservations.last()),
+                f.copy(balances = f.balances + f.balances.last()),
+                f.copy(reservations = listOf(f.reservations.first(), maker.copy(reservedAmount = Amount(2)), f.reservations.last())),
+                f.copy(reservations = listOf(f.reservations.first(), maker.copy(userId = UserId("other")), f.reservations.last())),
+                f.copy(executions = listOf(f.executions.single().copy(quantity = Quantity(2)))),
+            )
+
+        invalid.forEach { assertInvalid(it) }
+        assertBalance(calculate(f), "buyer", usdt, 710, 200)
+        assertInputsUnchanged(f)
+    }
+
+    @Test
+    fun `단일 체결 지급이 Long 범위를 넘으면 후보 없이 입력을 보존한다`() {
+        val f =
+            fixture().let {
+                it.copy(
+                    executions = it.executions.take(1),
+                    balances =
+                        it.balances + balance("seller-1", usdt, Long.MAX_VALUE, 0),
+                )
+            }
+
+        assertFailsWith<ArithmeticException> { calculate(f) }
+
+        assertInputsUnchanged(f)
+        assertBalance(calculate(fixture().let { it.copy(executions = it.executions.take(1)) }), "buyer", usdt, 710, 200)
     }
 
     private fun fixture(sameSeller: Boolean = false): Fixture {

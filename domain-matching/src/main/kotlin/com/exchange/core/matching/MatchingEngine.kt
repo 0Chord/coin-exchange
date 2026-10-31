@@ -120,31 +120,25 @@ class MatchingEngine {
         val book = orderBooks[command.marketId]
         val makerCursor = (book?.oppositeOrders(command.side) ?: emptySequence()).iterator()
         var filled = 0L
-        val makers = hashSetOf<OrderId>()
+        val makers = if (plan.fills.size > 1) hashSetOf<OrderId>() else null
         plan.fills.forEachIndexed { index, fill ->
             check(makerCursor.hasNext()) { "matching plan maker is missing" }
             val maker = makerCursor.next()
             check(fill.matches(maker)) { "matching plan maker or price/FIFO position changed" }
             check(book?.find(fill.orderId) === maker) { "matching plan maker index changed" }
-            check(makers.add(fill.orderId) && fill.orderId != command.orderId) { "invalid matching plan maker" }
+            check((makers == null || makers.add(fill.orderId)) && fill.orderId != command.orderId) { "invalid matching plan maker" }
             check(
                 fill.side != command.side && priceCrosses(command.side, command.price, fill.price),
             ) { "invalid matching plan price or side" }
             check(fill.filledQuantity.value > 0 && fill.filledQuantity <= fill.remainingQuantity) { "invalid matching plan fill quantity" }
             filled = Math.addExact(filled, fill.filledQuantity.value)
+            val event = plan.events[index]
             check(
-                plan.events[index] ==
-                    TradeExecuted(
-                        command.marketId,
-                        sequenceAt(plan.baseSequence, index),
-                        fill.orderId,
-                        command.orderId,
-                        fill.userId,
-                        command.userId,
-                        command.side,
-                        fill.price,
-                        fill.filledQuantity,
-                    ),
+                event is TradeExecuted && event.marketId == command.marketId &&
+                    event.engineSequence == sequenceAt(plan.baseSequence, index) &&
+                    event.makerOrderId == fill.orderId && event.takerOrderId == command.orderId &&
+                    event.makerUserId == fill.userId && event.takerUserId == command.userId &&
+                    event.side == command.side && event.price == fill.price && event.quantity == fill.filledQuantity,
             ) { "matching plan event does not match maker change" }
         }
         check(Math.addExact(filled, plan.restingQuantity.value) == command.quantity.value) { "matching plan quantity is not conserved" }
@@ -154,17 +148,12 @@ class MatchingEngine {
             if (makerCursor.hasNext()) {
                 check(!priceCrosses(command.side, command.price, makerCursor.next().price)) { "matching plan leaves a matchable maker" }
             }
+            val event = plan.events.last()
             check(
-                plan.events.last() ==
-                    OrderEnteredBook(
-                        command.marketId,
-                        sequenceAt(plan.baseSequence, plan.fills.size),
-                        command.orderId,
-                        command.userId,
-                        command.side,
-                        command.price,
-                        plan.restingQuantity,
-                    ),
+                event is OrderEnteredBook && event.marketId == command.marketId &&
+                    event.engineSequence == sequenceAt(plan.baseSequence, plan.fills.size) &&
+                    event.orderId == command.orderId && event.userId == command.userId &&
+                    event.side == command.side && event.price == command.price && event.remainingQuantity == plan.restingQuantity,
             ) { "matching plan resting event does not match remaining quantity" }
         }
     }

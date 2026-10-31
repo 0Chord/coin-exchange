@@ -16,8 +16,6 @@ import com.exchange.core.order.OrderType
 import com.exchange.core.order.Side
 import com.exchange.core.order.TimeInForce
 import com.exchange.core.trading.OrderAdmissionResult.Reason
-import java.nio.ByteBuffer
-import java.security.MessageDigest
 import java.time.Instant
 import java.util.HexFormat
 
@@ -150,15 +148,13 @@ class OrderAdmissionCalculator(
     private fun reserveSourceId(order: OrderAdmissionInput): String {
         val marketBytes = order.marketId.value.toByteArray(Charsets.UTF_8)
         val orderBytes = order.orderId.value.toByteArray(Charsets.UTF_8)
-        val source =
-            ByteBuffer
-                .allocate(Int.SIZE_BYTES * 2 + marketBytes.size + orderBytes.size)
-                .putInt(marketBytes.size)
-                .put(marketBytes)
-                .putInt(orderBytes.size)
-                .put(orderBytes)
-                .array()
-        val digest = MessageDigest.getInstance("SHA-256").digest(source)
+        val source = ByteArray(Int.SIZE_BYTES * 2 + marketBytes.size + orderBytes.size)
+        writeTradingIdentifierInt(source, 0, marketBytes.size)
+        marketBytes.copyInto(source, Int.SIZE_BYTES)
+        val orderOffset = Int.SIZE_BYTES + marketBytes.size
+        writeTradingIdentifierInt(source, orderOffset, orderBytes.size)
+        orderBytes.copyInto(source, orderOffset + Int.SIZE_BYTES)
+        val digest = tradingIdentifierSha256(source)
         return "RESERVE:v1:${HexFormat.of().formatHex(digest)}"
     }
 }
