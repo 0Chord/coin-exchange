@@ -21,7 +21,65 @@ class MatchingEngine {
     private val seenOrderIds = HashMap<MarketId, MutableSet<OrderId>>()
 
     // 로컬 계획의 발급자 확인에만 쓰며 거래 ID·복제 결과에는 넣지 않는다.
-    private val planToken = Any()
+    private var planToken = Any()
+    private var checkpointRestored = false
+
+    /** 영속 이력으로 중복을 정확히 검출하는 공통 소유자만 이 활성 상태를 복원할 수 있다. */
+    fun activeCheckpoint(): MatchingCheckpoint =
+        MatchingCheckpoint(
+            lastEngineSequences.keys.sortedBy { it.value }.map { marketId ->
+                MatchingCheckpoint.Market(
+                    marketId,
+                    lastEngineSequence(marketId),
+                    restingOrders(marketId).map {
+                        MatchingCheckpoint.Order(it.orderId, it.userId, it.side, it.price, it.originalQuantity, it.remainingQuantity)
+                    },
+                )
+            },
+        )
+
+    /** 주문 실행이나 매칭 이벤트 발행 없이 빈 엔진을 재구성한다. */
+    fun restoreActiveCheckpoint(checkpoint: MatchingCheckpoint) {
+        check(!checkpointRestored && orderBooks.isEmpty() && lastEngineSequences.isEmpty() && seenOrderIds.isEmpty()) {
+            "matching checkpoint requires an empty engine"
+        }
+        val restoredBooks = HashMap<MarketId, OrderBook>()
+        val restoredSequences = HashMap<MarketId, Long>()
+        val restoredIdentities = HashMap<MarketId, MutableSet<OrderId>>()
+        for (market in checkpoint.markets) {
+            require(market.lastEngineSequence > 0) { "checkpoint market sequence must be positive" }
+            require(restoredSequences.put(market.marketId, market.lastEngineSequence) == null) { "duplicate checkpoint market" }
+            val book = OrderBook()
+            val identities = hashSetOf<OrderId>()
+            var previous: MatchingCheckpoint.Order? = null
+            for (order in market.orders) {
+                require(identities.add(order.orderId)) { "duplicate checkpoint resting order" }
+                previous?.let {
+                    require(it.side != Side.SELL || order.side == Side.SELL) { "checkpoint bids must precede asks" }
+                    if (it.side == order.side) {
+                        require(if (order.side == Side.BUY) it.price >= order.price else it.price <= order.price) {
+                            "checkpoint price priority is invalid"
+                        }
+                    }
+                }
+                book.addRestingOrder(
+                    BookOrder(order.orderId, order.userId, order.side, order.price, order.originalQuantity, order.remainingQuantity),
+                )
+                previous = order
+            }
+            val bid = book.bestBid()
+            val ask = book.bestAsk()
+            require(bid == null || ask == null || bid < ask) { "checkpoint contains crossed books" }
+            restoredBooks[market.marketId] = book
+            if (identities.isNotEmpty()) restoredIdentities[market.marketId] = identities
+        }
+        orderBooks.putAll(restoredBooks)
+        lastEngineSequences.putAll(restoredSequences)
+        seenOrderIds.putAll(restoredIdentities)
+        // 빈 체크포인트여도 복원 이전에 준비한 후보는 무효화한다.
+        planToken = Any()
+        checkpointRestored = true
+    }
 
     fun process(command: MatchingCommand): List<MatchingEvent> =
         when (command) {
@@ -49,6 +107,21 @@ class MatchingEngine {
                     }.toList()
             }
         return Collections.unmodifiableList(orders)
+    }
+
+    /**
+     * 영속 이력에서 정확한 중복 검출을 유지하는 소유자에 한해서만 종료 식별자를 해제한다.
+     * 엔진을 독립적으로 호출하면 기존과 같이 엔진 수명 동안 식별자 중복을 막는다.
+     */
+    fun releaseTerminalOrderIdentity(
+        marketId: MarketId,
+        orderId: OrderId,
+    ) {
+        check(orderBooks[marketId]?.find(orderId) == null) { "cannot release a resting order identity" }
+        seenOrderIds[marketId]?.let { seen ->
+            seen.remove(orderId)
+            if (seen.isEmpty()) seenOrderIds.remove(marketId)
+        }
     }
 
     /** 조회만으로 없는 마켓의 주문장이나 순번을 만들지 않는다. */

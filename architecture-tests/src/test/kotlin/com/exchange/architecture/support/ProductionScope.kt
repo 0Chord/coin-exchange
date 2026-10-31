@@ -31,6 +31,7 @@ object ProductionScope {
                     "com.exchange.core.ledger.DevelopmentBalanceStore",
                     "com.exchange.core.ledger.LedgerTransactionStore",
                     "com.exchange.core.ledger.LedgerReconciliationStore",
+                    "com.exchange.core.trading.TradingHistoryStore",
                     "com.exchange.core.api.matching.application.port.MatchingEventStore",
                     "com.exchange.core.api.matching.application.port.MatchingEventPublisher",
                     "com.exchange.core.api.market.application.port.MarketConfigurationStore",
@@ -40,6 +41,9 @@ object ProductionScope {
                     "com.exchange.core.matching.MarketCommandProcessor",
                     "com.exchange.core.matching.InMemoryMarketCommandProcessor",
                     "com.exchange.core.matching.MarketWorker",
+                    // 상태 소유자는 이력 저장 확인·cold 조회를 조율한다. 계산기는 순수 역할을 유지한다.
+                    "com.exchange.core.trading.OrderAdmissionState",
+                    "com.exchange.core.trading.TradingState",
                     // 이 파일의 최상위 함수는 실행기의 failedFuture 보조 함수뿐이므로 실행기 역할로 둔다.
                     "com.exchange.core.matching.MarketCommandProcessorKt",
                 ),

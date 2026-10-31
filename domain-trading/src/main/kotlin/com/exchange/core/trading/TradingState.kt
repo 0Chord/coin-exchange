@@ -22,6 +22,7 @@ import com.exchange.core.matching.TradeExecuted
 import com.exchange.core.order.MarketDefinition
 import com.exchange.core.order.OrderReservation
 import com.exchange.core.order.OrderReservationStatus
+import com.exchange.core.order.Side
 import java.time.Instant
 import java.util.Base64
 import java.util.Collections
@@ -59,15 +60,18 @@ interface TradingExecutionObserver {
 /**
  * 한 실행자가 접수·매칭·정산을 순서대로 처리하는 공통 소유자.
  * 계산을 모두 검사한 뒤 실제 상태를 쓰며, 쓰기 중 오류는 원상복구 대신 모든 정상 입구를 차단한다.
- * Aeron 자동 실행·영구 저장·재시작 복구는 이 코어의 역할이 아니다.
+ * 복구 값의 검증·반영을 제공하며, Aeron 실행·저장 매체·로그 재생은 바깥 실행자가 소유한다.
  */
 class TradingState(
     admissionCalculator: OrderAdmissionCalculator,
     private val settlementCalculator: OrderSettlementCalculator,
+    historyStore: TradingHistoryStore? = null,
+    historyBatchLimit: Int = 1_024,
 ) {
-    private val admission = OrderAdmissionState(emptyList(), admissionCalculator)
-    private val engine = MatchingEngine()
-    private val resultState = MatchingResultState()
+    private val admission =
+        OrderAdmissionState(emptyList(), admissionCalculator, historyStore, historyBatchLimit, ::evictHistory)
+    private var engine = MatchingEngine()
+    private var resultState = MatchingResultState()
     private val completions: MutableMap<Long, Completion> = linkedMapOf()
 
     var isBlocked: Boolean = false
@@ -111,6 +115,19 @@ class TradingState(
     ): OrderAdmissionState.Result =
         admissionCall { admission.admit(requestId, order, market, feePolicySnapshot, ledgerTransactionId, occurredAt) }
 
+    fun admitWithContextCheck(
+        requestId: String,
+        order: OrderAdmissionInput,
+        market: MarketDefinition,
+        feePolicySnapshot: TradingFeePolicySnapshot,
+        ledgerTransactionId: String,
+        occurredAt: Instant,
+        checkContext: (knownRequest: Boolean) -> Boolean,
+    ): OrderAdmissionState.Result? =
+        admissionCall {
+            admission.admitWithContextCheck(requestId, order, market, feePolicySnapshot, ledgerTransactionId, occurredAt, checkContext)
+        }
+
     fun admit(
         order: OrderAdmissionInput,
         market: MarketDefinition,
@@ -122,10 +139,7 @@ class TradingState(
     fun hasRequest(
         userId: UserId,
         requestId: String,
-    ): Boolean {
-        checkUsable()
-        return admission.hasRequest(userId, requestId)
-    }
+    ): Boolean = admissionCall { admission.hasRequest(userId, requestId) }
 
     fun pendingOrders(marketId: MarketId): List<OrderAdmissionState.Record> {
         checkUsable()
@@ -141,8 +155,10 @@ class TradingState(
     ): Completion {
         checkUsable()
         completions[admissionSequence]?.let { return it }
+        admissionCall { admission.completion(admissionSequence) }?.let { return it }
+        admissionCall { admission.prepareHistoryCapacity() }
         require(admissionSequence > 0) { "승인 순번은 양수여야 합니다" }
-        val record = requireNotNull(admission.accepted(admissionSequence)) { "승인된 주문이 없습니다" }
+        val record = requireNotNull(admissionCall { admission.accepted(admissionSequence) }) { "승인된 주문이 없습니다" }
         val first = admission.firstPending(record.candidate.order.marketId)
         if (first != null) require(first.sequence == admissionSequence) { "같은 마켓의 앞선 대기 주문부터 처리해야 합니다" }
 
@@ -215,6 +231,7 @@ class TradingState(
                 admission.completePending(record)
                 val completion = Completion(record, executionId, occurredAt, matchingResult, completedSettlement)
                 completions[admissionSequence] = completion
+                admission.recordCompletion(completion)
                 isBlocked = false
                 completion
             }
@@ -258,20 +275,155 @@ class TradingState(
     }
 
     /** 정상 조회만 복사한다. 주문 실행 중에는 전체 상태 snapshot을 만들지 않는다. */
-    fun snapshot(): Snapshot {
+    fun snapshot(): Snapshot =
+        admissionCall {
+            val current = admission.snapshot()
+            val coldHistory = admission.completionHistory()
+            val history = if (coldHistory == null) immutableList(completions.values) else immutableList(coldHistory)
+            Snapshot(
+                current.balances,
+                admission.reservations(),
+                current.pendingOrders,
+                history,
+                admission.transactions(),
+                if (coldHistory == null) resultState.snapshot().results else immutableList(history.map { it.matchingResult }),
+                current.lastSequence,
+                current.requests,
+                current.preparations,
+            )
+        }
+
+    /** 이력의 영속 저장을 기다린 뒤 저장이 확인된 과거 객체를 해제한다. */
+    fun flushHistory() = admissionCall { admission.flushHistory() }
+
+    fun historyRetention(): TradingHistoryRetention =
+        admissionCall { admission.historyRetention().copy(retainedCompletions = completions.size) }
+
+    /** 한도가 있는 대기 공간의 연속 구간을 flush한 뒤 현재 잔고·주문·활성 최초 결과만 복사한다. */
+    fun checkpoint(): TradingCheckpoint =
+        admissionCall {
+            admission.flushHistory()
+            admission.checkpoint(engine.activeCheckpoint(), completions.values.sortedBy { it.admission.sequence })
+        }
+
+    /**
+     * 외부 Snapshot reader가 먼저 이 빈 소유자의 저장소에 정확한 과거 이력을 복원한다.
+     * 검증이 실패하면 소유자를 차단하며, 일부만 복원한 상태를 정상 조회에 공개하지 않는다.
+     */
+    fun restoreCheckpoint(checkpoint: TradingCheckpoint) {
         checkUsable()
-        val current = admission.snapshot()
-        return Snapshot(
-            current.balances,
-            admission.reservations(),
-            current.pendingOrders,
-            immutableList(completions.values),
-            admission.transactions(),
-            resultState.snapshot().results,
-            current.lastSequence,
-            current.requests,
-            current.preparations,
-        )
+        try {
+            admission.validateCheckpointForRestore(checkpoint)
+            check(completions.isEmpty() && resultState.snapshot().results.isEmpty()) { "trading checkpoint requires an empty owner" }
+            val restoredCompletions = validateCheckpoint(checkpoint)
+            val restoredEngine = MatchingEngine().also { it.restoreActiveCheckpoint(checkpoint.matching) }
+            val restoredResults =
+                MatchingResultState().also {
+                    it.restoreActiveCheckpoint(
+                        checkpoint.matching.markets.associate { market -> market.marketId to market.lastEngineSequence },
+                        restoredCompletions.values.map { completion -> completion.matchingResult },
+                    )
+                }
+            isBlocked = true
+            admission.applyCheckpoint(checkpoint)
+            engine = restoredEngine
+            resultState = restoredResults
+            completions.putAll(restoredCompletions)
+            isBlocked = false
+        } catch (failure: Throwable) {
+            isBlocked = true
+            admission.block()
+            throw failure
+        }
+    }
+
+    private fun validateCheckpoint(checkpoint: TradingCheckpoint): Map<Long, Completion> {
+        val records = checkpoint.admissions.associateBy { it.sequence }
+        val orderRecords = checkpoint.admissions.associateBy { it.candidate.order.marketId to it.candidate.order.orderId }
+        val reservations = checkpoint.reservations.associateBy { it.marketId to it.orderId }
+        val pending = checkpoint.pendingAdmissionSequences.toHashSet()
+        val restoredCompletions = linkedMapOf<Long, Completion>()
+        val markets = linkedMapOf<MarketId, MarketDefinition>()
+        val expectedHold = hashMapOf<TradingBalanceKey, Long>()
+        for (record in checkpoint.admissions) {
+            val candidate = record.candidate
+            val previousMarket = markets.putIfAbsent(candidate.market.marketId, candidate.market)
+            require(previousMarket == null || previousMarket == candidate.market) { "checkpoint market definitions differ" }
+            val reservation = reservations.getValue(candidate.order.marketId to candidate.order.orderId)
+            validateReservation(record, reservation)
+            settlementCalculator.validateReservation(candidate.market, reservation)
+            if (record.sequence in pending) {
+                require(reservation == candidate.reservation) { "checkpoint pending reservation differs from admission" }
+            }
+            val balanceKey = TradingBalanceKey(reservation.userId, reservation.assetId)
+            expectedHold[balanceKey] = Math.addExact(expectedHold[balanceKey] ?: 0L, reservation.remainingAmount.value)
+        }
+        for (balance in checkpoint.balances) {
+            val key = TradingBalanceKey(balance.userId, balance.assetId)
+            require(balance.hold.value == (expectedHold.remove(key) ?: 0L)) { "checkpoint hold does not match active reservations" }
+        }
+        require(expectedHold.isEmpty()) { "checkpoint reservation balance is missing" }
+        for (completion in checkpoint.completions) {
+            val record = requireNotNull(records[completion.admission.sequence]) { "checkpoint completion has no live admission" }
+            require(record.sequence !in pending) { "checkpoint order is both pending and complete" }
+            requireSameAdmission(record, completion.admission)
+            val historical = checkNotNull(admission.completion(record.sequence)) { "checkpoint completion is absent from history" }
+            requireSameCompletion(completion, historical)
+            val canonical =
+                TradingHistoryValues.completion(
+                    record,
+                    completion.executionId,
+                    completion.occurredAt,
+                    completion.matchingResult,
+                    completion.settlement,
+                )
+            require(restoredCompletions.put(record.sequence, canonical) == null) { "duplicate checkpoint completion" }
+        }
+        require(restoredCompletions.keys + pending == records.keys) { "checkpoint admission has no execution status" }
+        val resting = hashSetOf<Long>()
+        for (market in checkpoint.matching.markets) {
+            val lastAtPrice = hashMapOf<Pair<Side, com.exchange.core.common.Price>, Long>()
+            for (order in market.orders) {
+                val record = requireNotNull(orderRecords[market.marketId to order.orderId]) { "checkpoint book order has no admission" }
+                require(
+                    record.sequence in restoredCompletions && resting.add(record.sequence),
+                ) { "checkpoint book order is not a distinct maker" }
+                val reservation = reservations.getValue(market.marketId to order.orderId)
+                require(
+                    order.userId == reservation.userId && order.side == reservation.side && order.price == reservation.limitPrice &&
+                        order.originalQuantity == reservation.initialQuantity && order.remainingQuantity == reservation.remainingQuantity,
+                ) { "checkpoint book and reservation differ" }
+                val key = order.side to order.price
+                require(record.sequence > (lastAtPrice[key] ?: 0L)) { "checkpoint book FIFO differs from admission order" }
+                lastAtPrice[key] = record.sequence
+            }
+            val firstPending =
+                checkpoint.admissions.firstOrNull {
+                    it.sequence in pending && it.candidate.order.marketId == market.marketId
+                }
+            require(
+                firstPending == null ||
+                    restoredCompletions.values.none {
+                        it.admission.candidate.order.marketId == market.marketId && it.admission.sequence > firstPending.sequence
+                    },
+            ) { "checkpoint pending order precedes a completed order in its market" }
+        }
+        require(resting == restoredCompletions.keys) { "checkpoint active completions and resting orders differ" }
+        return restoredCompletions
+    }
+
+    private fun evictHistory(batch: TradingHistoryBatch) {
+        for (reservation in batch.reservations) {
+            if (reservation.status != OrderReservationStatus.ACTIVE) {
+                val record = admission.retainedAdmission(reservation.marketId, reservation.orderId)
+                if (record != null) {
+                    completions.remove(record.sequence)?.let { completion ->
+                        resultState.releaseHistory(reservation.marketId, completion.executionId, reservation.orderId)
+                    }
+                    engine.releaseTerminalOrderIdentity(reservation.marketId, reservation.orderId)
+                }
+            }
+        }
     }
 
     fun book(marketId: MarketId): List<RestingOrderSnapshot> {
