@@ -347,13 +347,17 @@ class AeronOrderGatewayMetricsTest {
                         val pending = submission("held-$index")
                         val result = gateway.submit(pending)
                         transport.awaitOffer()
+                        val callbackEntered = CountDownLatch(1)
                         val callback =
                             result.thenRun {
                                 heldThreads.add(Thread.currentThread())
                                 enteredCallbacks.countDown()
-                                check(releaseCallbacks.await(3, TimeUnit.SECONDS))
+                                callbackEntered.countDown()
+                                releaseCallbacks.await()
                             }
                         transport.respond(accepted(pending))
+                        // 원본 future의 get이 callback을 대신 실행하지 않도록 진입부터 확인한다.
+                        assertTrue(callbackEntered.await(3, TimeUnit.SECONDS))
                         assertEquals(TradingAdmissionResult.Accepted(1), result.await())
                         callback
                     }
@@ -482,12 +486,15 @@ class AeronOrderGatewayMetricsTest {
                         val result = gateway.submit(pending)
                         results += result
                         transport.awaitOffer()
+                        val callbackEntered = CountDownLatch(1)
                         val callback =
                             result.thenRun {
                                 if (Thread.currentThread().isVirtual) enteredVirtual.countDown() else enteredInline.countDown()
+                                callbackEntered.countDown()
                                 releaseCallbacks.await()
                             }
                         transport.respond(accepted(pending))
+                        assertTrue(callbackEntered.await(3, TimeUnit.SECONDS))
                         assertEquals(TradingAdmissionResult.Accepted(1), result.await())
                         callback
                     }
