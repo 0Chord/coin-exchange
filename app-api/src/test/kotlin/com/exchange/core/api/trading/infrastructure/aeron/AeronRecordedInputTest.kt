@@ -21,8 +21,10 @@ import com.exchange.core.order.MarketDefinition
 import com.exchange.core.trading.OrderAdmissionState
 import com.exchange.core.trading.TradingState
 import io.aeron.ChannelUri
+import org.junit.jupiter.api.io.TempDir
 import java.net.DatagramSocket
 import java.nio.file.Files
+import java.nio.file.Path
 import java.time.Instant
 import java.util.HexFormat
 import java.util.concurrent.TimeUnit
@@ -37,6 +39,9 @@ import kotlin.test.assertTrue
 
 /** 같은 실행의 실제 UDP 전송 원본과 Archive 기록을 대조한다. 코어 재적용·복구는 하지 않는다. */
 class AeronRecordedInputTest {
+    @TempDir
+    lateinit var temporaryDirectory: Path
+
     @Test
     fun `자금 준비와 주문의 실제 Archive 내용과 끝 위치가 원본과 같고 읽기는 돈을 바꾸지 않는다`() {
         val config = config()
@@ -457,7 +462,7 @@ class AeronRecordedInputTest {
             snapshot.lastAdmissionSequence,
             snapshot.reservations,
             snapshot.ledgerTransactions.map(::transactionValues),
-            snapshot.completions.map { listOf(it.executionId, it.occurredAt, it.matchingResult, it.settlement) },
+            snapshot.completions.map { tradingCompletionValues(it) },
             snapshot.pendingOrders.map { recordValues(it) },
             snapshot.preparations.map { listOf(it.result, transactionValues(it.transaction)) },
             snapshot.requests.map {
@@ -508,7 +513,7 @@ class AeronRecordedInputTest {
             val sockets = mutableListOf<DatagramSocket>()
             try {
                 (0..7).forEach { sockets.add(DatagramSocket(base + it)) }
-                return DevelopmentFundingSettings(Files.createTempDirectory("recorded99-").resolve("run"), base)
+                return DevelopmentFundingSettings(Files.createTempDirectory(temporaryDirectory, "recorded99-").resolve("run"), base)
             } catch (_: java.net.BindException) {
                 // 테스트마다 별도 포트 묶음과 새 실행 폴더를 사용한다.
             } finally {

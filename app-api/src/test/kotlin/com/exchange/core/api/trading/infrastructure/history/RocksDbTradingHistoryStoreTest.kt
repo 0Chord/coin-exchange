@@ -88,6 +88,94 @@ class RocksDbTradingHistoryStoreTest {
     }
 
     @Test
+    fun `single transition groups retain reservation writes superseded only by later queued groups`() {
+        val fixture = TradingHistoryFixture().apply { completedTrade() }
+        val singleLimits =
+            limits.copy(
+                maximumPendingBatches = 64,
+                maximumGroupBatches = 1,
+                targetGroupBytes = limits.maximumPendingBytes,
+            )
+        RocksDbTradingHistoryStore.createRebuildableIndex(directory.resolve("reservation-group-boundary"), singleLimits).use { store ->
+            val enqueuedPutCount =
+                synchronized(privateField<Any>(store, "monitor")) {
+                    fixture.batches.forEach(store::append)
+                    assertEquals(7, store.pendingBatchCount)
+                    assertEquals(0L, store.durableOrdinal)
+                    privateField<Collection<Any>>(store, "queue").sumOf { pending ->
+                        privateField<List<Any>>(pending, "puts").size.toLong()
+                    }
+                }
+            assertEquals(44L, enqueuedPutCount)
+            assertEquals(7L, store.flush())
+            val database = privateField<RocksDB>(store, "database")
+            // pendingValues에 같은 키의 더 뒤 묶음 값이 있어도 각 예약은 자기 묶음의
+            // 마지막 값이어야 한다. 각 묶음의 메타데이터도 유지한다.
+            val nativeEntries = database.getLongProperty("rocksdb.num-entries-active-mem-table")
+            assertEquals(enqueuedPutCount, nativeEntries)
+            assertEquals(7L, ByteBuffer.wrap(assertNotNull(database.get(byteArrayOf(20)))).long)
+            assertEquals(0, store.pendingBatchCount)
+            assertEquals(0L, store.retainedPendingBytes)
+            assertHistoryMatches(fixture, store)
+        }
+    }
+
+    @Test
+    fun `partial maker fills restore latest reservations and every original completion from snapshot`() {
+        val fixture = TradingHistoryFixture()
+        fixture.funding("seller", "BTC", 10)
+        fixture.funding("buyer", "KRW", 100_000)
+        val maker = (fixture.admit("maker", "seller", Side.SELL, 3) as OrderAdmissionState.Result.Accepted).record
+        fixture.execute(maker)
+        val first = (fixture.admit("first", "buyer", Side.BUY, 1) as OrderAdmissionState.Result.Accepted).record
+        fixture.execute(first)
+        val partialMaker =
+            fixture.state
+                .snapshot()
+                .reservations
+                .single { it.orderId == maker.candidate.order.orderId }
+        assertEquals(2L, partialMaker.remainingQuantity.value)
+        assertEquals(OrderReservationStatus.ACTIVE, partialMaker.status)
+        val second = (fixture.admit("second", "buyer", Side.BUY, 2) as OrderAdmissionState.Result.Accepted).record
+        fixture.execute(second)
+        val finalMaker =
+            fixture.state
+                .snapshot()
+                .reservations
+                .single { it.orderId == maker.candidate.order.orderId }
+        assertEquals(0L, finalMaker.remainingQuantity.value)
+        assertEquals(OrderReservationStatus.SETTLED, finalMaker.status)
+        val groupedLimits =
+            limits.copy(
+                maximumPendingBatches = 64,
+                maximumGroupBatches = 64,
+                targetGroupBytes = limits.maximumPendingBytes,
+            )
+        RocksDbTradingHistoryStore.createRebuildableIndex(directory.resolve("partial-reservation-source"), groupedLimits).use { source ->
+            synchronized(privateField<Any>(source, "monitor")) {
+                fixture.batches.forEach(source::append)
+                assertEquals(fixture.batches.size, source.pendingBatchCount)
+                assertEquals(0L, source.durableOrdinal)
+                assertTrue(privateField<Long>(source, "queuedEncodedBytes") <= groupedLimits.targetGroupBytes)
+            }
+            assertEquals(fixture.batches.last().ordinal, source.flush())
+            assertHistoryMatches(fixture, source)
+            val restoredDirectory = directory.resolve("partial-reservation-restored")
+            RocksDbTradingHistoryStore.createRebuildableIndex(restoredDirectory, groupedLimits).use { target ->
+                target.beginSnapshotRestore()
+                val ordinal = source.exportSnapshot(target::restoreSnapshotEntry)
+                target.completeSnapshotRestore(ordinal)
+                assertEquals(fixture.batches.last().ordinal, ordinal)
+                assertEquals(ordinal, target.durableOrdinal)
+                assertHistoryMatches(fixture, target)
+                val restoredMaker = target.reservations().single { it.orderId == maker.candidate.order.orderId }
+                assertEquals(0L, restoredMaker.remainingQuantity.value)
+                assertEquals(OrderReservationStatus.SETTLED, restoredMaker.status)
+            }
+        }
+    }
+
+    @Test
     fun `owner prepared derived transitions settle with disabled admission caches and preserve every cold result`() {
         val noIndexes = limits.copy(maximumCachedAdmissionIndexes = 0, maximumCachedAdmissionIndexBytes = 0)
         RocksDbTradingHistoryStore.createRebuildableIndex(directory.resolve("owner-references"), noIndexes).use { store ->
@@ -834,6 +922,58 @@ class RocksDbTradingHistoryStoreTest {
             Thread.interrupted()
             store.close()
         }
+    }
+
+    private fun assertHistoryMatches(
+        fixture: TradingHistoryFixture,
+        store: RocksDbTradingHistoryStore,
+    ) {
+        for (batch in fixture.batches) {
+            batch.request?.let {
+                assertContentEquals(
+                    codec.encodeRequest(it),
+                    codec.encodeRequest(assertNotNull(store.findRequest(it.order.userId, it.requestId))),
+                )
+            }
+            batch.admission?.let {
+                assertContentEquals(
+                    codec.encodeAdmission(it),
+                    codec.encodeAdmission(assertNotNull(store.findAdmission(it.sequence))),
+                )
+                assertContentEquals(
+                    codec.encodeAdmission(it),
+                    codec.encodeAdmission(assertNotNull(store.findAdmission(it.candidate.order.marketId, it.candidate.order.orderId))),
+                )
+            }
+            batch.completion?.let {
+                assertContentEquals(
+                    codec.encodeCompletion(it),
+                    codec.encodeCompletion(assertNotNull(store.findCompletion(it.admission.sequence))),
+                )
+            }
+            batch.preparation?.let {
+                assertContentEquals(
+                    codec.encodePreparation(it),
+                    codec.encodePreparation(assertNotNull(store.findPreparation(it.result.opening.preparationId))),
+                )
+            }
+            for (transaction in batch.ledgerTransactions) {
+                assertTrue(store.containsTransactionId(transaction.ledgerTransactionId))
+                assertTrue(store.containsSourceEventId(transaction.sourceEventId))
+            }
+        }
+        val expectedTransactions = fixture.batches.flatMap { it.ledgerTransactions }.map(codec::encodeTransaction)
+        val actualTransactions = store.transactions().map(codec::encodeTransaction).toList()
+        assertEquals(expectedTransactions.size, actualTransactions.size)
+        expectedTransactions.zip(actualTransactions).forEach { (expected, actual) -> assertContentEquals(expected, actual) }
+        val expectedReservations =
+            fixture.state
+                .snapshot()
+                .reservations
+                .map(codec::encodeReservation)
+        val actualReservations = store.reservations().map(codec::encodeReservation).toList()
+        assertEquals(expectedReservations.size, actualReservations.size)
+        expectedReservations.zip(actualReservations).forEach { (expected, actual) -> assertContentEquals(expected, actual) }
     }
 
     private fun rejected(

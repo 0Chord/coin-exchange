@@ -8,13 +8,28 @@ import io.aeron.Image
 import io.aeron.cluster.service.Cluster
 
 /** Snapshot I/O는 일반 주문 처리 밖의 생명주기 callback에서만 수행한다. */
+internal interface TradingSnapshotPersistence {
+    fun save(
+        state: TradingState,
+        publication: ExclusivePublication,
+        cluster: Cluster,
+        malformedMessages: Long,
+    )
+
+    fun restore(
+        state: TradingState,
+        image: Image,
+        cluster: Cluster,
+    ): Long
+}
+
 internal class TradingStateSnapshotPersistence(
     history: RocksDbTradingHistoryStore,
     identitySha256: String,
-) {
+) : TradingSnapshotPersistence {
     private val codec = TradingSnapshotCodec(history, identitySha256)
 
-    fun save(
+    override fun save(
         state: TradingState,
         publication: ExclusivePublication,
         cluster: Cluster,
@@ -25,7 +40,7 @@ internal class TradingStateSnapshotPersistence(
         output.flush()
     }
 
-    fun restore(
+    override fun restore(
         state: TradingState,
         image: Image,
         cluster: Cluster,
