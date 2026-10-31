@@ -333,6 +333,7 @@ class AeronOrderGatewayMetricsTest {
 
     @Test
     fun `완료 슬롯이 가득 차면 worker에서 결과를 보존하고 슬롯 반환 뒤 다시 넘긴다`() {
+        val testThread = Thread.currentThread()
         val enteredCallbacks = CountDownLatch(2)
         val releaseCallbacks = CountDownLatch(1)
         val inlineThread = AtomicReference<Thread>()
@@ -350,6 +351,7 @@ class AeronOrderGatewayMetricsTest {
                         val callbackEntered = CountDownLatch(1)
                         val callback =
                             result.thenRun {
+                                check(Thread.currentThread() !== testThread) { "완료 callback이 테스트 스레드를 차단하면 안 된다" }
                                 heldThreads.add(Thread.currentThread())
                                 enteredCallbacks.countDown()
                                 callbackEntered.countDown()
@@ -472,6 +474,7 @@ class AeronOrderGatewayMetricsTest {
 
     @Test
     fun `슬롯 포화로 worker callback이 막혀도 외부 close는 제한 시간에 실패한다`() {
+        val testThread = Thread.currentThread()
         val enteredVirtual = CountDownLatch(2)
         val enteredInline = CountDownLatch(1)
         val releaseCallbacks = CountDownLatch(1)
@@ -489,6 +492,7 @@ class AeronOrderGatewayMetricsTest {
                         val callbackEntered = CountDownLatch(1)
                         val callback =
                             result.thenRun {
+                                check(Thread.currentThread() !== testThread) { "완료 callback이 테스트 스레드를 차단하면 안 된다" }
                                 if (Thread.currentThread().isVirtual) enteredVirtual.countDown() else enteredInline.countDown()
                                 callbackEntered.countDown()
                                 releaseCallbacks.await()
