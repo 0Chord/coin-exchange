@@ -13,6 +13,7 @@ import com.exchange.core.ledger.LedgerTransaction
 import com.exchange.core.ledger.OpeningBalanceConflictException
 import com.exchange.core.matching.MatchingCheckpoint
 import com.exchange.core.order.OrderReservation
+import com.exchange.core.order.OrderReservationStatus
 import com.exchange.core.order.Side
 import com.exchange.core.trading.TradingStateFixtures.admit
 import com.exchange.core.trading.TradingStateFixtures.balance
@@ -36,6 +37,84 @@ import kotlin.test.assertSame
 import kotlin.test.assertTrue
 
 class TradingCheckpointTest {
+    @Test
+    fun `부분 매도 예약의 최신 수수료 나머지를 복구하면 다음 체결의 수수료와 잔고가 같다`() {
+        val scenario = partialMakerCheckpoint(Side.SELL)
+        val recoveredHistory = CheckpointHistory()
+        val recovered = state(recoveredHistory)
+        recoveredHistory.load(scenario.history)
+
+        recovered.restoreCheckpoint(scenario.checkpoint)
+
+        assertFalse(recovered.isBlocked)
+        assertEquals(scenario.reservation, recovered.checkpoint().reservations.single())
+        val expected = completePartialSeller(scenario.original)
+        val actual = completePartialSeller(recovered)
+        val expectedSettlement = expected.settlement.settlements.single()
+        val actualSettlement = actual.settlement.settlements.single()
+        val actualMaker = actualSettlement.makerPlan
+        assertEquals(Amount(1), actualMaker.actualFeeAmount)
+        assertEquals(FeeRemainder(20_000), actualMaker.updatedReservation.feeRemainder)
+        assertEquals(expected.matchingResult, actual.matchingResult)
+        assertEquals(expectedSettlement.execution, actualSettlement.execution)
+        assertEquals(expectedSettlement.makerPlan, actualSettlement.makerPlan)
+        assertEquals(expectedSettlement.takerPlan, actualSettlement.takerPlan)
+        assertEquals(expectedSettlement.transaction.postings, actualSettlement.transaction.postings)
+        assertEquals(expected.settlement.balanceChanges, actual.settlement.balanceChanges)
+        assertEquals(expected.settlement.reservationChanges, actual.settlement.reservationChanges)
+        assertEquals(scenario.original.checkpoint().balances, recovered.checkpoint().balances)
+        assertEquals(balance(seller, usdt, 101), recovered.checkpoint().balances.single { it.userId == seller && it.assetId == usdt })
+    }
+
+    @Test
+    fun `부분 매도 예약의 수수료 나머지만 영으로 바꾸면 잔고 설치 전에 복구를 거절한다`() {
+        val scenario = partialMakerCheckpoint(Side.SELL)
+        assertEquals(FeeRemainder(510_000), scenario.reservation.feeRemainder)
+        val changed = scenario.reservation.copy(feeRemainder = FeeRemainder.ZERO)
+
+        assertCheckpointRejected(scenario.history, copy(scenario.checkpoint, reservations = listOf(changed)))
+    }
+
+    @Test
+    fun `부분 매수 예약의 수수료 예약액을 유지하는 나머지 변조도 복구를 거절한다`() {
+        val scenario = partialMakerCheckpoint(Side.BUY)
+        assertEquals(FeeRemainder(510_000), scenario.reservation.feeRemainder)
+        assertEquals(Amount(2), scenario.reservation.remainingFeeReserveAmount)
+        assertEquals(Amount(53), scenario.reservation.remainingAmount)
+        val changed = scenario.reservation.copy(feeRemainder = FeeRemainder(500_000))
+
+        assertCheckpointRejected(scenario.history, copy(scenario.checkpoint, reservations = listOf(changed)))
+    }
+
+    @Test
+    fun `활성 예약을 주문장과 승인에서 지우고 hold까지 맞춰도 영속 이력에 남으면 복구를 거절한다`() {
+        val scenario = partialMakerCheckpoint(Side.SELL)
+        val checkpoint = scenario.checkpoint
+        val omitted =
+            copy(
+                checkpoint,
+                balances =
+                    checkpoint.balances.map {
+                        if (it.userId == seller && it.assetId == btc) {
+                            it.copy(available = Amount(it.available.value + it.hold.value), hold = Amount.ZERO)
+                        } else {
+                            it
+                        }
+                    },
+                admissions = emptyList(),
+                reservations = emptyList(),
+                completions = emptyList(),
+                matching =
+                    MatchingCheckpoint(
+                        checkpoint.matching.markets.map {
+                            MatchingCheckpoint.Market(it.marketId, it.lastEngineSequence, emptyList())
+                        },
+                    ),
+            )
+
+        assertCheckpointRejected(scenario.history, omitted)
+    }
+
     @Test
     fun `active checkpoint resumes a partial maker and pending taker with original fees FIFO and cold first results`() {
         val history = CheckpointHistory()
@@ -329,6 +408,62 @@ class TradingCheckpointTest {
         assertSame(again.admissions.single(), again.completions.single().admission)
     }
 
+    private data class PartialMakerCheckpoint(
+        val original: TradingState,
+        val history: CheckpointHistory,
+        val checkpoint: TradingCheckpoint,
+        val reservation: OrderReservation,
+    )
+
+    private fun partialMakerCheckpoint(side: Side): PartialMakerCheckpoint {
+        val history = CheckpointHistory()
+        val original = state(history)
+        val policy = zeroPolicy.copy(feeRates = MakerTakerFeeRates(FeeRate(10_000), FeeRate(10_000)))
+        fund(original, seller, btc, 2)
+        fund(original, buyer, usdt, 1_000)
+        val makerUser = if (side == Side.SELL) seller else buyer
+        val takerUser = if (side == Side.SELL) buyer else seller
+        val takerSide = if (side == Side.SELL) Side.BUY else Side.SELL
+        val maker = admit(original, order("partial-maker", makerUser, side, 51, 2), policy = policy)
+        original.executePending(maker.record.sequence, time)
+        val taker = admit(original, order("first-taker", takerUser, takerSide, 51, 1), policy = policy)
+        val first = original.executePending(taker.record.sequence, time.plusSeconds(1))
+        assertEquals(
+            Amount.ZERO,
+            first.settlement.settlements
+                .single()
+                .makerPlan.actualFeeAmount,
+        )
+        val checkpoint = original.checkpoint()
+        val current = checkpoint.reservations.single()
+        assertEquals(FeeRemainder.ZERO, maker.record.candidate.reservation.feeRemainder)
+        assertEquals(FeeRemainder(510_000), current.feeRemainder)
+        assertEquals(Quantity(1), current.remainingQuantity)
+        assertEquals(current, history.reservations().single { it.orderId == current.orderId })
+        return PartialMakerCheckpoint(original, history, checkpoint, current)
+    }
+
+    private fun completePartialSeller(owner: TradingState): TradingState.Completion {
+        val policy = zeroPolicy.copy(feeRates = MakerTakerFeeRates(FeeRate(10_000), FeeRate(10_000)))
+        val taker = admit(owner, order("second-taker", buyer, Side.BUY, 51, 1), policy = policy)
+        return owner.executePending(taker.record.sequence, time.plusSeconds(2))
+    }
+
+    private fun assertCheckpointRejected(
+        history: CheckpointHistory,
+        checkpoint: TradingCheckpoint,
+    ) {
+        val recoveredHistory = CheckpointHistory()
+        val recovered = state(recoveredHistory)
+        recoveredHistory.load(history)
+
+        assertFailsWith<RuntimeException> { recovered.restoreCheckpoint(checkpoint) }
+
+        assertTrue(recovered.isBlocked)
+        assertEquals(0, installedBalanceCount(recovered))
+        assertFailsWith<IllegalStateException> { recovered.snapshot() }
+    }
+
     private fun assertTerminalCheckpointRejected(mutate: (TradingCheckpoint) -> TradingCheckpoint) {
         val history = CheckpointHistory()
         val original = state(history)
@@ -379,6 +514,7 @@ class TradingCheckpointTest {
         checkpoint: TradingCheckpoint,
         balances: List<Balance> = checkpoint.balances,
         usedBalances: List<TradingBalanceKey> = checkpoint.usedBalances,
+        admissions: List<OrderAdmissionState.Record> = checkpoint.admissions,
         reservations: List<OrderReservation> = checkpoint.reservations,
         pending: List<Long> = checkpoint.pendingAdmissionSequences,
         completions: List<TradingState.Completion> = checkpoint.completions,
@@ -387,7 +523,7 @@ class TradingCheckpointTest {
     ) = TradingCheckpoint(
         balances,
         usedBalances,
-        checkpoint.admissions,
+        admissions,
         reservations,
         pending,
         completions,
@@ -406,6 +542,7 @@ private class CheckpointHistory : TradingHistoryStore {
     private val completions = linkedMapOf<Long, TradingState.Completion>()
     private val preparations = linkedMapOf<String, OrderAdmissionState.PreparationRecord>()
     private val reservations = linkedMapOf<Pair<MarketId, OrderId>, OrderReservation>()
+    private val activeReservations = linkedMapOf<Pair<MarketId, OrderId>, OrderReservation>()
     private val transactions = linkedMapOf<String, LedgerTransaction>()
     private val sources = hashSetOf<String>()
     var forbidScans = false
@@ -422,7 +559,11 @@ private class CheckpointHistory : TradingHistoryStore {
         }
         batch.completion?.let { completions[it.admission.sequence] = it }
         batch.preparation?.let { preparations[it.result.opening.preparationId] = it }
-        batch.reservations.forEach { reservations[it.marketId to it.orderId] = it }
+        batch.reservations.forEach {
+            val key = it.marketId to it.orderId
+            reservations[key] = it
+            if (it.status == OrderReservationStatus.ACTIVE) activeReservations[key] = it else activeReservations.remove(key)
+        }
         batch.ledgerTransactions.forEach {
             transactions[it.ledgerTransactionId] = it
             sources.add(it.sourceEventId)
@@ -477,6 +618,11 @@ private class CheckpointHistory : TradingHistoryStore {
     override fun preparations() = scan(preparations.values)
 
     override fun reservations() = scan(reservations.values)
+
+    override fun recoveryReservations(): Sequence<OrderReservation> {
+        if (!forbidScans) return super<TradingHistoryStore>.recoveryReservations()
+        return activeReservations.values.asSequence()
+    }
 
     override fun transactions() = scan(transactions.values)
 
