@@ -72,6 +72,8 @@ val productionOutputs =
             .output.classesDirs
     }
 extra["architecture.productionProjects"] = productionModules.map { ":$it" }
+// doFirst는 역순으로 실행되므로 입력 수집보다 먼저 등록해 마지막에 전달한다.
+apply(from = "gradle/test-jvm-inputs.gradle.kts")
 apply(from = "gradle/project-dependencies.gradle.kts")
 apply(from = "gradle/isolation-inputs.gradle.kts")
 apply(from = "gradle/main-sources.gradle.kts")
@@ -105,6 +107,7 @@ tasks.withType<Test> {
     systemProperty("architecture.isolationScript", file("gradle/isolation-inputs.gradle.kts").absolutePath)
     systemProperty("architecture.dependencyScript", file("gradle/project-dependencies.gradle.kts").absolutePath)
     systemProperty("architecture.gradleHome", requireNotNull(gradle.gradleHomeDir).absolutePath)
+    systemProperty("architecture.jvmInputsScript", file("gradle/test-jvm-inputs.gradle.kts").absolutePath)
     productionModules.forEach { dependsOn(":$it:classes") }
     productionOutputs.forEach { (module, output) ->
         inputs.files(output).withPropertyName("productionClasses.$module")
