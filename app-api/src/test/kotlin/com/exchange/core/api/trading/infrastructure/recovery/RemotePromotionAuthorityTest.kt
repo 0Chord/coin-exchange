@@ -4,11 +4,13 @@ import com.exchange.core.api.trading.infrastructure.aeron.DevelopmentFundingSett
 import com.exchange.core.api.trading.infrastructure.aeron.haBoundedProbeManifest
 import com.exchange.core.trading.ClusterLineage
 import com.exchange.core.trading.TradingClusterManifest
+import org.junit.jupiter.api.Assertions.assertArrayEquals
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertThrows
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.io.TempDir
+import java.nio.file.Files
 import java.nio.file.Path
 
 class RemotePromotionAuthorityTest {
@@ -59,5 +61,46 @@ class RemotePromotionAuthorityTest {
                 RemotePromotionAuthority.claim(root, certificate, target.copy(boundedManifest = different))
             }
         }
+    }
+
+    @Test
+    fun `한도형 제어를 신뢰하지 않는 승격 권한은 신뢰 설정을 켠 재시도를 거절하고 원래 권한을 보존한다`(
+        @TempDir root: Path,
+    ) {
+        assertTrustedControlChangeRejected(root, trusted = false)
+    }
+
+    @Test
+    fun `한도형 제어를 신뢰하는 승격 권한은 신뢰 설정을 끈 재시도를 거절하고 원래 권한을 보존한다`(
+        @TempDir root: Path,
+    ) {
+        assertTrustedControlChangeRejected(root, trusted = true)
+    }
+
+    private fun assertTrustedControlChangeRejected(
+        root: Path,
+        trusted: Boolean,
+    ) {
+        val certificate = RemoteRecoveryCertificate(ClusterLineage(1, 2), 7, 640, "a".repeat(64), "b".repeat(64))
+        val target =
+            DevelopmentFundingSettings(
+                root.resolve("target"),
+                boundedManifest = haBoundedProbeManifest(),
+                trustedBoundedControl = trusted,
+            )
+        val claim = RemotePromotionAuthority.claim(root, certificate, target)
+        val claimPath = root.resolve(RemotePromotionAuthority.CLAIM)
+        val originalClaimBytes = Files.readAllBytes(claimPath)
+
+        assertEquals(claim, RemotePromotionAuthority.claim(root, certificate, target.copy()))
+        assertArrayEquals(originalClaimBytes, Files.readAllBytes(claimPath))
+
+        assertThrows(IllegalArgumentException::class.java) {
+            RemotePromotionAuthority.claim(root, certificate, target.copy(trustedBoundedControl = !trusted))
+        }
+        assertArrayEquals(originalClaimBytes, Files.readAllBytes(claimPath))
+
+        assertEquals(claim, RemotePromotionAuthority.claim(root, certificate, target.copy()))
+        assertArrayEquals(originalClaimBytes, Files.readAllBytes(claimPath))
     }
 }

@@ -293,6 +293,11 @@ class RemoteTradingRecoveryTest {
                     // 완료된 같은 대상에 대한 요청은 대상 실행 중에도 멱등적이다. 다른 디렉터리는 이 권한을 분기할 수 없다.
                     assertEquals(restored, RemoteRecoveryPromotion.prepare(backupRoot, target, fence))
                     org.junit.jupiter.api.Assertions.assertThrows(IllegalArgumentException::class.java) {
+                        RemoteRecoveryPromotion.prepare(backupRoot, target.copy(trustedBoundedControl = false), fence)
+                    }
+                    assertEquals(restored, RemoteRecoveryPromotion.prepare(backupRoot, target, fence))
+                    checks["changedTrustedControlRejectedBeforeCompletedRetry"] = true
+                    org.junit.jupiter.api.Assertions.assertThrows(IllegalArgumentException::class.java) {
                         RemoteRecoveryPromotion.prepare(
                             backupRoot,
                             target.copy(runRoot = directory.resolve("forbidden-second-promotion")),
