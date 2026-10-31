@@ -30,7 +30,7 @@ class TradingFeeReserveCalculator {
      * 기준 대금의 최대 수수료에 이월된 소수 나머지를 합산해 올림한다.
      *
      * `기준 대금 × 최대 요율의 백만분율 정수 + 나머지 분자`를 [FeeRate.DENOMINATOR]로
-     * 나누고, 나머지가 있으면 몫에 1을 더한다. 중간 연산은 [BigInteger]로 수행한다.
+     * 나누고, 나머지가 있으면 몫에 1을 더한다. 중간 연산이 Long 범위를 넘으면 [BigInteger]로 계산한다.
      * 나머지에는 이전 요율이 이미 반영되어 있으므로 요율을 다시 곱하지 않는다.
      * 주문 상태는 알지 못하며, 전량 체결 시 예약액을 0으로 정리하는 것은 호출부의 책임이다.
      *
@@ -40,6 +40,27 @@ class TradingFeeReserveCalculator {
      * @return 최소 금액 단위로 올림한 수수료 예약액
      */
     fun calculateReserve(
+        feeReserveBaseAmount: Amount,
+        maximumFeeRate: FeeRate,
+        feeRemainder: FeeRemainder,
+    ): Amount {
+        val numerator =
+            try {
+                Math.addExact(
+                    Math.multiplyExact(feeReserveBaseAmount.value, maximumFeeRate.partsPerMillion),
+                    feeRemainder.numerator,
+                )
+            } catch (_: ArithmeticException) {
+                return calculateWithBigInteger(feeReserveBaseAmount, maximumFeeRate, feeRemainder)
+            }
+
+        val quotient = numerator / FeeRate.DENOMINATOR
+        return Amount(
+            if (numerator % FeeRate.DENOMINATOR == 0L) quotient else quotient + 1,
+        )
+    }
+
+    private fun calculateWithBigInteger(
         feeReserveBaseAmount: Amount,
         maximumFeeRate: FeeRate,
         feeRemainder: FeeRemainder,
