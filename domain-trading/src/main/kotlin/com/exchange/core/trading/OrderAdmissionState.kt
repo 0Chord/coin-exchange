@@ -376,11 +376,20 @@ class OrderAdmissionState(
             val indexed = checkNotNull(store.findAdmission(order.marketId, order.orderId)) { "checkpoint order index is absent" }
             requireSameAdmission(record, indexed)
         }
+        val historicalReservations = hashMapOf<OrderKey, OrderReservation>()
+        for (reservation in store.recoveryReservations()) {
+            require(reservation.status == OrderReservationStatus.ACTIVE) { "restored history reservation is not active" }
+            val key = OrderKey(reservation.marketId, reservation.orderId)
+            require(historicalReservations.put(key, reservation) == null) { "duplicate restored history reservation" }
+        }
         val reservationKeys = hashSetOf<OrderKey>()
         for (reservation in checkpoint.reservations) {
             require(reservation.status == OrderReservationStatus.ACTIVE) { "checkpoint reservation is not active" }
-            require(reservationKeys.add(OrderKey(reservation.marketId, reservation.orderId))) { "duplicate checkpoint reservation" }
+            val key = OrderKey(reservation.marketId, reservation.orderId)
+            require(reservationKeys.add(key)) { "duplicate checkpoint reservation" }
+            require(reservation == historicalReservations.remove(key)) { "checkpoint reservation differs from latest restored history" }
         }
+        require(historicalReservations.isEmpty()) { "checkpoint is missing active reservations from restored history" }
         require(orderKeys == reservationKeys) { "checkpoint admissions and reservations differ" }
         var lastPending = 0L
         for (sequence in checkpoint.pendingAdmissionSequences) {
