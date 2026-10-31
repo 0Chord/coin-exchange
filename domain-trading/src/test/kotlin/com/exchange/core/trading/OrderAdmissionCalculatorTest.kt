@@ -32,7 +32,9 @@ import java.time.Instant
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
+import kotlin.test.assertFalse
 import kotlin.test.assertIs
+import kotlin.test.assertTrue
 
 /** 실제 기존 도메인을 연결한다. 계산 후보이며 상태 반영·접수 중복·외부 저장은 검증 범위가 아니다. */
 class OrderAdmissionCalculatorTest {
@@ -687,6 +689,95 @@ class OrderAdmissionCalculatorTest {
         }
         assertEquals(expectedPostings, candidate.reserveTransaction.postings)
         assertCandidate(candidate, balance(), balance(700_000_000, 300_000_000))
+    }
+
+    @Test
+    fun `bounded transition keeps exact BUY SELL reserve values without a reserve ledger`() {
+        for (side in Side.entries) {
+            for (fee in listOf(0L, 20_000L)) {
+                val input = order.copy(side = side)
+                val applied = policy.copy(feeRates = MakerTakerFeeRates(FeeRate(10_000L.coerceAtMost(fee)), FeeRate(fee)))
+                val source = if (side == Side.BUY) balance(1_000_000_000, 20_000_000) else btcBalance(500_000_000, 20_000_000)
+                val reserved = if (side == Side.BUY) 300_000_000 + 300 * fee else 300_000_000
+                val transition =
+                    assertIs<AdmissionTransitionResult.Calculated>(calculator.calculateTransition(input, market, applied, source))
+                val reference =
+                    assertIs<OrderAdmissionResult.Calculated>(calculate(input, market, applied, source)).candidate
+
+                assertEquals(Amount(reserved), transition.reservation.reservedAmount)
+                assertEquals(Amount(if (side == Side.BUY) 300 * fee else 0), transition.reservation.initialFeeReserveAmount)
+                assertEquals(
+                    source.copy(available = Amount(source.available.value - reserved), hold = Amount(20_000_000 + reserved)),
+                    transition.nextBalance,
+                )
+                assertEquals(reference.nextBalance, transition.nextBalance)
+                assertEquals(reference.reservation, transition.reservation)
+                assertTrue(transition.hasPreviousBalance(source))
+                assertFalse(transition.hasPreviousBalance(source.copy(available = Amount(source.available.value - 1))))
+                assertFalse(transition.hasPreviousBalance(source.copy(userId = UserId("other"))))
+                assertEquals(Amount(20_000_000), source.hold)
+            }
+        }
+    }
+
+    @Test
+    fun `bounded transition preserves normal rejection and exact shortage before any source change`() {
+        val inputs =
+            listOf(
+                order.copy(orderId = OrderId("bad\u0000id")) to Reason.INVALID_ORDER_IDENTIFIER,
+                order.copy(orderType = OrderType.MARKET) to Reason.UNSUPPORTED_ORDER_CONDITION,
+                order.copy(quantity = Quantity.ZERO) to Reason.INVALID_QUANTITY,
+                order.copy(price = Price(1), quantity = Quantity(1)) to Reason.UNREPRESENTABLE_RESERVATION,
+                order.copy(price = Price(Long.MAX_VALUE), quantity = Quantity(200_000_000)) to Reason.UNREPRESENTABLE_RESERVATION,
+                order to Reason.INSUFFICIENT_BALANCE,
+            )
+        val source = balance(299_999_999, 20)
+        for ((input, expected) in inputs) {
+            val transition = assertIs<AdmissionTransitionResult.Rejected>(calculator.calculateTransition(input, market, policy, source))
+            val reference = assertIs<OrderAdmissionResult.Rejected>(calculate(order = input, balance = source))
+            assertEquals(expected, transition.reason)
+            assertEquals(reference.reason, transition.reason)
+            assertEquals(reference.insufficientBalance, transition.insufficientBalance)
+        }
+        val shortage = assertIs<AdmissionTransitionResult.Rejected>(calculator.calculateTransition(order, market, policy, source))
+        assertEquals(
+            OrderAdmissionResult.InsufficientBalance(usdt, Amount(299_999_999), Amount(300_000_000), Amount(1)),
+            shortage.insufficientBalance,
+        )
+        assertEquals(balance(299_999_999, 20), source)
+    }
+
+    @Test
+    fun `public calculation keeps static context ledger representation and shortage error precedence`() {
+        val badMarket = market.copy(marketId = MarketId("different"))
+        val invalid = order.copy(orderId = OrderId("bad\u0000id"))
+        assertEquals(
+            OrderAdmissionResult.Rejected(Reason.INVALID_ORDER_IDENTIFIER),
+            calculate(order = invalid, market = badMarket, ledgerTransactionId = ""),
+        )
+        assertEquals(
+            "주문과 마켓 정의가 다릅니다",
+            assertFailsWith<IllegalArgumentException> { calculate(market = badMarket, ledgerTransactionId = "") }.message,
+        )
+        for (input in listOf(order, order.copy(price = Price(Long.MAX_VALUE), quantity = Quantity(200_000_000)))) {
+            assertEquals(
+                "원장 거래 식별자가 잘못됐습니다",
+                assertFailsWith<IllegalArgumentException> {
+                    calculate(
+                        order = input,
+                        balance = balance(0),
+                        ledgerTransactionId = "",
+                    )
+                }.message,
+            )
+        }
+        assertEquals(
+            OrderAdmissionResult.Rejected(Reason.UNREPRESENTABLE_RESERVATION),
+            calculate(order = order.copy(price = Price(Long.MAX_VALUE), quantity = Quantity(200_000_000)), balance = balance(0)),
+        )
+        assertIs<OrderAdmissionResult.Rejected>(
+            calculate(balance = balance(0)),
+        ).also { assertEquals(Reason.INSUFFICIENT_BALANCE, it.reason) }
     }
 
     private fun invalidIdentifiers() = listOf("x".repeat(65), "bad\u0000id", "\uD800", "\uDC00")

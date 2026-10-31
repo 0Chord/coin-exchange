@@ -84,6 +84,27 @@ class OrderSettlementContractTest {
     }
 
     @Test
+    fun `initial reservation failure remains an argument error before any input mutation for single and multiple trades`() {
+        for (tradeCount in 1..2) {
+            val source = fixture()
+            val invalid =
+                source.copy(
+                    executions = source.executions.take(tradeCount),
+                    reservations =
+                        source.reservations.map {
+                            if (it.orderId == OrderId("buy")) it.copy(reservedAmount = Amount(301)) else it
+                        },
+                )
+            val failure = assertFailsWith<IllegalArgumentException> { calculate(invalid) }
+            assertTrue(failure is InitialReservationValidationFailure)
+            assertEquals("initial settlement reservation amount mismatch", failure.message)
+            assertEquals(source.balances, invalid.balances)
+            assertEquals(Amount(301), invalid.reservations.first().reservedAmount)
+            assertEquals(Amount(300), source.reservations.first().reservedAmount)
+        }
+    }
+
+    @Test
     fun `같은 주문 ID도 다음 계산의 정책과 최초 예약 요구액을 새로 계산한다`() {
         val freeFixture = fixture()
         calculate(freeFixture)
@@ -320,6 +341,34 @@ class OrderSettlementContractTest {
         assertTrue(candidate.balanceChanges.isEmpty())
         assertTrue(candidate.reservationChanges.isEmpty())
         assertInputsUnchanged(f)
+    }
+
+    @Test
+    fun `public empty calculation allows unique extra inputs and still rejects unused duplicate keys`() {
+        val source = fixture().copy(executions = emptyList())
+        val extraReservation = source.reservations.first().copy(orderId = OrderId("unused"))
+        val extraBalance = balance("unused", usdt, 123, 0)
+        val extended =
+            source.copy(
+                reservations = source.reservations + extraReservation,
+                balances = source.balances + extraBalance,
+            )
+        val actual = calculate(extended)
+        val ownedEmpty = calculator.calculateEmpty(source.order, market)
+        assertEquals(source.order, actual.order)
+        assertEquals(market, actual.market)
+        assertEquals(emptyList(), actual.settlements)
+        assertEquals(emptyList(), actual.balanceChanges)
+        assertEquals(emptyList(), actual.reservationChanges)
+        assertEquals(actual.settlements, ownedEmpty.settlements)
+        assertEquals(actual.balanceChanges, ownedEmpty.balanceChanges)
+        assertEquals(actual.reservationChanges, ownedEmpty.reservationChanges)
+        assertInputsUnchanged(extended)
+        assertInvalid(extended.copy(reservations = extended.reservations + extraReservation))
+        assertInvalid(extended.copy(balances = extended.balances + extraBalance))
+        assertFailsWith<IllegalArgumentException> { calculator.calculateEmpty(source.order.copy(quantity = Quantity.ZERO), market) }
+        assertFailsWith<IllegalArgumentException> { calculator.calculateEmpty(source.order.copy(timeInForce = TimeInForce.IOC), market) }
+        assertFailsWith<IllegalArgumentException> { calculator.calculateEmpty(source.order, market.copy(marketId = MarketId("other"))) }
     }
 
     @Test

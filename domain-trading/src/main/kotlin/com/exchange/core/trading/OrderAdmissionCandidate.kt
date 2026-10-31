@@ -2,7 +2,6 @@ package com.exchange.core.trading
 
 import com.exchange.core.common.Amount
 import com.exchange.core.common.AssetId
-import com.exchange.core.fee.FeeRemainder
 import com.exchange.core.fee.TradingFeePolicySnapshot
 import com.exchange.core.ledger.Balance
 import com.exchange.core.ledger.LedgerPostingSide
@@ -10,10 +9,6 @@ import com.exchange.core.ledger.LedgerTransaction
 import com.exchange.core.ledger.LedgerTransactionType
 import com.exchange.core.order.MarketDefinition
 import com.exchange.core.order.OrderReservation
-import com.exchange.core.order.OrderReservationStatus
-import com.exchange.core.order.OrderType
-import com.exchange.core.order.Side
-import com.exchange.core.order.TimeInForce
 
 /** 계산을 마쳤지만 아직 상태에 반영하지 않은 주문·자금·기록 묶음. */
 class OrderAdmissionCandidate internal constructor(
@@ -50,32 +45,20 @@ class OrderAdmissionCandidate internal constructor(
             balance.available.value == previousAvailable && balance.hold.value == previousHold
 
     internal fun validate() {
-        require(order.orderType == OrderType.LIMIT && order.timeInForce == TimeInForce.GTC)
-        market.requireOrderUnits(order.price, order.quantity)
         val expectedAssetId =
-            when (order.side) {
-                Side.BUY -> market.quoteAssetId
-                Side.SELL -> market.baseAssetId
-            }
-        require(order.marketId == market.marketId && reservation.marketId == order.marketId)
-        require(reservation.orderId == order.orderId && reservation.userId == order.userId && reservation.side == order.side)
-        require(balanceUserId == order.userId)
-        require(balanceAssetId == expectedAssetId)
-        require(reservation.assetId == expectedAssetId && reservation.limitPrice == order.price)
-        require(reservation.initialQuantity == order.quantity && reservation.remainingQuantity == order.quantity)
-        require(reservation.feePolicySnapshot == feePolicySnapshot)
-        require(reservation.status == OrderReservationStatus.ACTIVE && reservation.releasedAmount == null)
-        require(reservation.reservedAmount == reservation.remainingAmount)
-        require(reservation.initialFeeReserveAmount == reservation.remainingFeeReserveAmount)
-        require(reservation.feeRemainder == FeeRemainder.ZERO)
-        if (order.side == Side.SELL) {
-            // SELL 수수료는 판매대금에서 차감하므로 팔 수량에 더해 미리 묶지 않는다.
-            require(reservation.reservedAmount.value == order.quantity.value)
-            require(reservation.initialFeeReserveAmount == Amount.ZERO)
-        }
+            validateAdmissionTransition(
+                order,
+                market,
+                feePolicySnapshot,
+                reservation,
+                balanceUserId,
+                balanceAssetId,
+                previousAvailable,
+                previousHold,
+                nextAvailable,
+                nextHold,
+            )
         val amount = reservation.reservedAmount
-        require(nextAvailable == Math.subtractExact(previousAvailable, amount.value))
-        require(nextHold == Math.addExact(previousHold, amount.value))
 
         validateReserveTransaction(expectedAssetId, amount)
     }
