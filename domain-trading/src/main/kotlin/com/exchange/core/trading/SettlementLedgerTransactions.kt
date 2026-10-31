@@ -32,21 +32,26 @@ class SettlementLedgerTransactions {
         }
         require(makerReservation.side != takerReservation.side) { "settlement reservations must have opposite sides" }
 
+        // 한쪽의 최대 다섯 항목을 maker 다음 taker 순서로 같은 버퍼에 넣는다.
+        val postings = ArrayList<LedgerPosting>(10)
+        appendPostings(postings, makerReservation, makerPlan)
+        appendPostings(postings, takerReservation, takerPlan)
+
         return LedgerTransaction(
             ledgerTransactionId = ledgerTransactionId,
             sourceEventId = "MATCHING:${market.marketId.value}:$engineSequence",
             transactionType = LedgerTransactionType.SETTLEMENT,
             occurredAt = occurredAt,
-            postings = createPostings(makerReservation, makerPlan) + createPostings(takerReservation, takerPlan),
+            postings = postings,
         )
     }
 
-    /** 금액 0은 제외한다. 한쪽 분개 자체는 균형이 맞지 않아 양쪽을 합친 뒤 검증한다. */
-    private fun createPostings(
+    /** 금액 0은 제외한다. 한쪽 분개 자체는 균형이 맞지 않아 양쪽을 누적한 뒤 검증한다. */
+    private fun appendPostings(
+        postings: MutableList<LedgerPosting>,
         reservation: OrderReservation,
         plan: OrderFillSettlementPlan,
-    ): List<LedgerPosting> {
-        val postings = mutableListOf<LedgerPosting>()
+    ) {
         val userId = reservation.userId.value
         val reservedAssetId = reservation.assetId
         val holdAccountId = "USER:$userId:${reservedAssetId.value}:HOLD"
@@ -102,7 +107,5 @@ class SettlementLedgerTransactions {
                 ),
             )
         }
-
-        return postings
     }
 }

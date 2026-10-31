@@ -140,12 +140,20 @@ class ProductionBoundaryInputsTest {
         assertEquals(emptyList(), httpResult.violations)
         assertEquals(emptyList(), application.violations)
         assertEquals(emptyList(), names.violations)
-        val contracts = setOf("$tradingApp.TradingOrderSubmission", "$tradingApp.TradingAdmissionResult")
+        val contracts =
+            setOf(
+                "$tradingApp.TradingOrderSubmission",
+                "$tradingApp.TradingAdmissionResult",
+                "$tradingApp.BoundedTradingOrderSubmission",
+                "$tradingApp.BoundedTradingResult",
+            )
         assertTrue(contracts.all { it in registration.types.getValue(HttpRole.DATA) })
         assertTrue(contracts.all { it in application.applicationTypes })
         assertTrue("$tradingHttp.TradingOrderController" in httpResult.apiTypes)
+        assertTrue("$tradingHttp.BoundedTradingOrderController" in httpResult.apiTypes)
         assertTrue("$tradingHttp.InspectTradingController" in httpResult.apiTypes)
         assertTrue("$tradingApp.SubmitTradingOrderUseCase" in application.applicationTypes)
+        assertTrue("$tradingApp.BoundedTradingOrderUseCase" in application.applicationTypes)
         assertTrue("$tradingApp.InspectTradingUseCase" in application.applicationTypes)
     }
 

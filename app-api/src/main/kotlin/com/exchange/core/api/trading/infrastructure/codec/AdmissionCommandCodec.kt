@@ -26,6 +26,10 @@ import com.exchange.core.api.trading.infrastructure.codec.generated.TimeInForce 
 
 /** 기존 판단 입력을 변환한다. 접수 여부와 재전송 판단 순서는 접수 코어에 맡긴다. */
 class AdmissionCommandCodec {
+    // 완성된 불변 스냅샷을 게시한다. decoder가 경합하면 캐시 삽입은 누락될 수 있어도 값은 손상되지 않는다.
+    @Volatile
+    private var marketDefinitions: List<MarketDefinition> = emptyList()
+
     fun encode(command: AdmissionCommandPayload): ByteArray {
         val message =
             AdmissionCommand
@@ -111,18 +115,46 @@ class AdmissionCommandCodec {
         }
 
     private fun marketDefinition(message: AdmissionCommand): MarketDefinition {
-        // 이전 v2 명령은 생성자의 기본 단위로 복원한다. 새 단위도 같은 도메인 불변식으로 검사한다.
-        val market =
-            MarketDefinition(
-                MarketId(AdmissionMessageFormat.text(message.definitionMarketId)),
-                AssetId(AdmissionMessageFormat.text(message.baseAssetId)),
-                AssetId(AdmissionMessageFormat.text(message.quoteAssetId)),
-                message.baseAssetScale,
-            )
-        return if (message.hasPriceTick()) {
-            market.copy(priceTick = message.priceTick, quantityStep = message.quantityStep)
-        } else {
-            market
+        // 문자열은 메시지마다 검증한다. 검증을 모두 마쳤으며 정확히 같은 정의만 재사용한다.
+        val marketId = AdmissionMessageFormat.text(message.definitionMarketId)
+        val baseAssetId = AdmissionMessageFormat.text(message.baseAssetId)
+        val quoteAssetId = AdmissionMessageFormat.text(message.quoteAssetId)
+        val scale = message.baseAssetScale
+        val priceTick = if (message.hasPriceTick()) message.priceTick else 1L
+        val quantityStep = if (message.hasQuantityStep()) message.quantityStep else legacyQuantitySteps.getOrNull(scale)
+        val previous = marketDefinitions
+        for (definition in previous) {
+            if (definition.marketId.value == marketId && definition.baseAssetId.value == baseAssetId &&
+                definition.quoteAssetId.value == quoteAssetId && definition.baseAssetScale == scale &&
+                definition.priceTick == priceTick && definition.quantityStep == quantityStep
+            ) {
+                return definition
+            }
         }
+        // 잘못된 scale·unit도 원래 생성자에서 검사하며, 실패한 정의는 캐시하지 않는다.
+        val definition =
+            if (message.hasPriceTick()) {
+                MarketDefinition(
+                    MarketId(marketId),
+                    AssetId(baseAssetId),
+                    AssetId(quoteAssetId),
+                    scale,
+                    priceTick = message.priceTick,
+                    quantityStep = message.quantityStep,
+                )
+            } else {
+                MarketDefinition(MarketId(marketId), AssetId(baseAssetId), AssetId(quoteAssetId), scale)
+            }
+        if (previous.size < MARKET_DEFINITION_CACHE_CAPACITY) marketDefinitions = previous + definition
+        return definition
+    }
+
+    private companion object {
+        const val MARKET_DEFINITION_CACHE_CAPACITY = 16
+        val legacyQuantitySteps =
+            LongArray(19).apply {
+                this[0] = 1L
+                for (index in 1 until size) this[index] = this[index - 1] * 10L
+            }
     }
 }

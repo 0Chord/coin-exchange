@@ -35,7 +35,10 @@ internal object TradingStateFixtures {
     val time = Instant.parse("2026-10-25T00:00:00.123456789Z")
     val zeroPolicy = TradingFeePolicySnapshot(FeeProductType.SPOT, FeeTier.NORMAL, 1, MakerTakerFeeRates(FeeRate.ZERO, FeeRate.ZERO))
 
-    fun state(): TradingState {
+    fun state(
+        historyStore: TradingHistoryStore? = null,
+        historyBatchLimit: Int = 1_024,
+    ): TradingState {
         val feeReserve = TradingFeeReserveCalculator()
         val reservation = OrderReservationCalculator(BuyOrderFundingQuoteCalculator(feeReserve))
         return TradingState(
@@ -46,6 +49,8 @@ internal object TradingStateFixtures {
                 feeReserve,
                 SettlementLedgerTransactions(),
             ),
+            historyStore,
+            historyBatchLimit,
         )
     }
 

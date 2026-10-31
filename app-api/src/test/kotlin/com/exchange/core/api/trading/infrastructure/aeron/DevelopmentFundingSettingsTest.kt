@@ -30,6 +30,17 @@ class DevelopmentFundingSettingsTest {
         assertFalse(settings.clustered)
         assertEquals("127.0.0.1:19704", settings.endpoint(4))
         assertEquals("0=127.0.0.1:19700", settings.ingressEndpoints)
+        assertFalse(settings.recoverExisting)
+    }
+
+    @Test
+    fun `기존 기록 복구는 명시한 참 거짓 설정만 허용한다`() {
+        assertFalse(developmentClusterSettings(environment()).recoverExisting)
+        assertTrue(developmentClusterSettings(environment() + ("FUNDING_RECOVER_EXISTING" to "true")).recoverExisting)
+        assertFalse(developmentClusterSettings(environment() + ("FUNDING_RECOVER_EXISTING" to "false")).recoverExisting)
+        assertFailsWith<IllegalArgumentException> {
+            developmentClusterSettings(environment() + ("FUNDING_RECOVER_EXISTING" to "yes"))
+        }
     }
 
     @Test

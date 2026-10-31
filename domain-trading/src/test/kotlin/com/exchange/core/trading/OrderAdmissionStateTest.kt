@@ -457,6 +457,81 @@ class OrderAdmissionStateTest {
         }
     }
 
+    @Test
+    fun `오래된 정산 기준 잔고는 다른 소유 상태를 반영하기 전에 거절한다`() {
+        val state = OrderAdmissionState(listOf(balance(1_000_000_000)), calculator)
+        val candidate =
+            OrderSettlementCandidate(
+                order(),
+                market,
+                emptyList(),
+                listOf(OrderSettlementCandidate.BalanceChange(balance(900_000_000), balance(800_000_000))),
+                emptyList(),
+            )
+        val before = state.snapshot()
+        assertFailsWith<IllegalStateException> { state.prepareSettlement(candidate) }
+
+        assertEquals(before, state.snapshot())
+        assertFalse(state.isBlocked)
+    }
+
+    @Test
+    fun `자금 검증 뒤 다른 소유 상태를 반영하는 동안 접수 재진입과 조회를 막는다`() {
+        val state = OrderAdmissionState(listOf(balance(1_000_000_000)), calculator)
+        val before = state.snapshot()
+        val candidate = OrderSettlementCandidate(order(), market, emptyList(), emptyList(), emptyList())
+        val preparation = state.prepareSettlement(candidate)
+
+        assertTrue(state.isBlocked)
+        assertFailsWith<IllegalStateException> { admit(state) }
+        state.applySettlement(preparation) {
+            assertTrue(state.isBlocked)
+            assertFailsWith<IllegalStateException> { admit(state) }
+            assertFailsWith<IllegalStateException> { state.snapshot() }
+            assertFailsWith<IllegalStateException> { state.applySettlement(preparation) {} }
+        }
+
+        assertFalse(state.isBlocked)
+        assertEquals(before, state.snapshot())
+        assertFailsWith<IllegalStateException> { state.applySettlement(preparation) {} }
+        assertIs<OrderAdmissionState.Result.Accepted>(admit(state))
+    }
+
+    @Test
+    fun `자금 검증 뒤 다른 소유 상태의 반영이 실패하면 접수 상태도 차단한다`() {
+        listOf(IllegalStateException("다른 소유 상태 실패"), AssertionError("다른 소유 상태 Error")).forEach { failure ->
+            val state = OrderAdmissionState(listOf(balance(1_000_000_000)), calculator)
+            val candidate = OrderSettlementCandidate(order(), market, emptyList(), emptyList(), emptyList())
+            val preparation = state.prepareSettlement(candidate)
+
+            assertSame(failure, assertFailsWith<Throwable> { state.applySettlement(preparation) { throw failure } })
+
+            assertTrue(state.isBlocked)
+            assertFailsWith<IllegalStateException> { state.applySettlement(preparation) {} }
+            assertFailsWith<IllegalStateException> { admit(state) }
+            assertFailsWith<IllegalStateException> { state.snapshot() }
+        }
+    }
+
+    @Test
+    fun `다른 소유자의 정산 준비나 차단 후 폐기된 준비는 반영할 수 없다`() {
+        val first = OrderAdmissionState(listOf(balance(1_000_000_000)), calculator)
+        val second = OrderAdmissionState(listOf(balance(1_000_000_000)), calculator)
+        val candidate = OrderSettlementCandidate(order(), market, emptyList(), emptyList(), emptyList())
+        val firstPreparation = first.prepareSettlement(candidate)
+        val secondPreparation = second.prepareSettlement(candidate)
+        var otherStateApplied = false
+
+        assertFailsWith<IllegalStateException> { second.applySettlement(firstPreparation) { otherStateApplied = true } }
+        assertFalse(otherStateApplied)
+        second.applySettlement(secondPreparation) {}
+        assertFalse(second.isBlocked)
+        first.block()
+        assertFailsWith<IllegalStateException> { first.applySettlement(firstPreparation) { otherStateApplied = true } }
+        assertFalse(otherStateApplied)
+        assertTrue(first.isBlocked)
+    }
+
     // 공개 장애 주입 API 없이 실제 잔고 쓰기 직후의 실패만 통제한다. SQL 롤백을 기대하지 않는다.
     private fun failAfterBalanceWrite(
         state: OrderAdmissionState,

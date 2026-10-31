@@ -26,10 +26,12 @@ import com.exchange.core.trading.OrderAdmissionInput
 import com.exchange.core.trading.OrderAdmissionResult
 import com.exchange.core.trading.OrderAdmissionState
 import com.exchange.core.trading.TradingState
+import org.junit.jupiter.api.io.TempDir
 import tools.jackson.databind.JsonNode
 import tools.jackson.module.kotlin.jacksonObjectMapper
 import java.net.DatagramSocket
 import java.nio.file.Files
+import java.nio.file.Path
 import java.time.Instant
 import java.util.concurrent.TimeUnit
 import kotlin.test.Test
@@ -43,6 +45,9 @@ import kotlin.test.assertTrue
 
 /** 등록된 두 문맥의 기존 Protobuf 요청을 같은 실제 Aeron 노드와 자금 상태에 보낸다. */
 class DevelopmentMultiMarketOrderNodeTest {
+    @TempDir
+    lateinit var temporaryDirectory: Path
+
     @Test
     fun `BTC 600 예약 뒤 SUI 500은 부족하고 SUI 400 승인 뒤에도 최초 부족값은 유지된다`() {
         val config = config()
@@ -154,7 +159,7 @@ class DevelopmentMultiMarketOrderNodeTest {
                         order = mismatch.order.copy(orderId = correct.order.orderId),
                         ledgerTransactionId = correct.ledgerTransactionId,
                     )
-                val before = snapshotValues(assertNotNull(node.observation?.snapshot))
+                val before = snapshotValues(assertNotNull(node.captureObservation()?.snapshot))
 
                 val rejected = request(node, incorrect)
                 assertEquals(
@@ -195,7 +200,7 @@ class DevelopmentMultiMarketOrderNodeTest {
             val deniedCommand = order(SUI, "R-DENIED", "O-DENIED", price = 20_000_000, quantity = 40_000_000_000)
             val denied = assertIs<AdmissionResultPayload.Rejected>(request(node, deniedCommand).admissionResult)
             assertShortage(denied, asset = "USDT", available = 600_000_000, required = 800_000_000, shortfall = 200_000_000)
-            val original = assertNotNull(node.observation?.snapshot)
+            val original = assertNotNull(node.captureObservation()?.snapshot)
             val before = snapshotValues(original)
 
             listOf(acceptedCommand to accepted, deniedCommand to denied).forEach { (command, firstResult) ->
@@ -225,7 +230,7 @@ class DevelopmentMultiMarketOrderNodeTest {
             prepare(node)
             val btc = order(BTC, "R-BTC", "SAME-ORDER", price = 100_000_000, quantity = 100_000_000)
             request(node, btc)
-            val before = assertNotNull(node.observation?.snapshot)
+            val before = assertNotNull(node.captureObservation()?.snapshot)
             val changedMarket =
                 btc.copy(
                     order = btc.order.copy(marketId = SUI.market.marketId),
@@ -260,7 +265,7 @@ class DevelopmentMultiMarketOrderNodeTest {
             assertRequest(current, btc)
             assertRequest(current, duplicate)
             assertEquals(denied.admissionResult, request(node, badContext).admissionResult)
-            assertEquals(snapshotValues(current), snapshotValues(assertNotNull(node.observation?.snapshot)))
+            assertEquals(snapshotValues(current), snapshotValues(assertNotNull(node.captureObservation()?.snapshot)))
             assertNull(node.error)
         }
     }
@@ -519,7 +524,7 @@ class DevelopmentMultiMarketOrderNodeTest {
         val observation = applied(node, previousPosition)
         assertEquals(response, observation.admissionResult)
         awaitAutomaticCompletion(node, response)
-        return observation.copy(snapshot = checkNotNull(node.observation?.snapshot))
+        return observation.copy(snapshot = checkNotNull(node.captureObservation()?.snapshot))
     }
 
     private fun applied(
@@ -639,7 +644,7 @@ class DevelopmentMultiMarketOrderNodeTest {
         fundingValues(snapshot) +
             listOf(
                 snapshot.pendingOrders.map(::recordValues),
-                snapshot.completions.map { listOf(it.executionId, it.occurredAt, it.matchingResult, it.settlement) },
+                snapshot.completions.map { tradingCompletionValues(it) },
                 snapshot.requests.map {
                     listOf(
                         it.requestId,
@@ -689,7 +694,7 @@ class DevelopmentMultiMarketOrderNodeTest {
             try {
                 (0..7).forEach { sockets.add(DatagramSocket(base + it)) }
                 return DevelopmentFundingSettings(
-                    Files.createTempDirectory("multi-market114-").resolve("run"),
+                    Files.createTempDirectory(temporaryDirectory, "multi-market114-").resolve("run"),
                     base,
                     markets = DevelopmentMarketRegistry(listOf(BTC, SUI)),
                 )

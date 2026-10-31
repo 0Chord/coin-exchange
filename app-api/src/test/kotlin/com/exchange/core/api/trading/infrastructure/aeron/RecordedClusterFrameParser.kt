@@ -97,7 +97,14 @@ internal object RecordedClusterFrameParser {
 internal class RecordedReplayCollector(
     private val startPosition: Long,
     private val limitPosition: Long,
+    private val retainFrames: Boolean = true,
+    private val maximumMessageBytes: Int = Int.MAX_VALUE,
+    private val onValidatedMessage: (RecordedClusterFrame, DirectBuffer, Int, Int, Int) -> Unit = { _, _, _, _, _ -> },
 ) {
+    init {
+        require(maximumMessageBytes > 0)
+    }
+
     val inputs = mutableListOf<RecordedApplicationFrame>()
     val controls = mutableListOf<RecordedControlFrame>()
     var failure: String? = null
@@ -114,6 +121,9 @@ internal class RecordedReplayCollector(
     private var lastFragmentPosition = startPosition
     private var leadershipTermId: Long? = null
     private var messageFragmentCount = 0
+    private var messageBytes = 0L
+    private var applicationCount = 0L
+    private var lastApplicationPosition = startPosition
     private val assembler =
         FragmentAssembler { buffer, offset, length, header ->
             val frame = RecordedClusterFrameParser.parse(buffer, offset, length, header.position())
@@ -121,9 +131,17 @@ internal class RecordedReplayCollector(
             require(leadershipTermId == null || leadershipTermId == frame.leadershipTermId) { "여러 leadership term의 기록은 지원하지 않습니다" }
             leadershipTermId = frame.leadershipTermId
             when (frame) {
-                is RecordedApplicationFrame -> inputs.add(frame.copy(fragmentCount = messageFragmentCount))
-                is RecordedControlFrame -> controls.add(frame)
+                is RecordedApplicationFrame -> {
+                    applicationCount++
+                    lastApplicationPosition = frame.position
+                    if (retainFrames) inputs.add(frame.copy(fragmentCount = messageFragmentCount))
+                }
+
+                is RecordedControlFrame -> {
+                    if (retainFrames) controls.add(frame)
+                }
             }
+            onValidatedMessage(frame, buffer, offset, length, messageFragmentCount)
             lastCompletedPosition = frame.position
         }
 
@@ -145,6 +163,7 @@ internal class RecordedReplayCollector(
             if (begin) {
                 require(!pending) { "이전 메시지가 재조립되기 전에 BEGIN을 받았습니다" }
                 messageFragmentCount = 0
+                messageBytes = 0
                 pending = !end
                 if (pending) fragmentedMessageCount++
             } else {
@@ -152,6 +171,8 @@ internal class RecordedReplayCollector(
                 require(header.termId() == fragmentTermId && header.termOffset() == nextTermOffset) { "fragment 중간이 누락됐습니다" }
                 pending = !end
             }
+            messageBytes = Math.addExact(messageBytes, length.toLong())
+            require(messageBytes <= maximumMessageBytes) { "assembled message byte limit exceeded" }
             nextTermOffset = header.nextTermOffset()
             fragmentTermId = header.termId()
             lastFragmentPosition = position
@@ -168,7 +189,7 @@ internal class RecordedReplayCollector(
             consumedPosition != limitPosition -> "Image consumed=$consumedPosition, 고정한 L=$limitPosition 이전 종료 또는 초과"
             pending -> "L에서 fragment 재조립 미완료"
             lastCompletedPosition != limitPosition -> "마지막 완성 메시지 끝=$lastCompletedPosition, L=$limitPosition"
-            inputs.isEmpty() || inputs.last().position != limitPosition -> "마지막 대상 application frame이 L에 없습니다"
+            applicationCount == 0L || lastApplicationPosition != limitPosition -> "마지막 대상 application frame이 L에 없습니다"
             else -> null
         }
 }

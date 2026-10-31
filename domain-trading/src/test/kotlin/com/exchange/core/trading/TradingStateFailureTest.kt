@@ -8,12 +8,14 @@ import com.exchange.core.common.Price
 import com.exchange.core.common.Quantity
 import com.exchange.core.common.UserId
 import com.exchange.core.ledger.Balance
+import com.exchange.core.ledger.LedgerTransaction
 import com.exchange.core.ledger.OpeningBalance
 import com.exchange.core.order.MarketDefinition
 import com.exchange.core.order.OrderReservation
 import com.exchange.core.order.OrderType
 import com.exchange.core.order.Side
 import com.exchange.core.trading.TradingStateFailureTestSupport.actualValues
+import com.exchange.core.trading.TradingStateFailureTestSupport.failAfterListAdd
 import com.exchange.core.trading.TradingStateFailureTestSupport.failAfterNestedSetAdd
 import com.exchange.core.trading.TradingStateFailureTestSupport.failAfterPut
 import com.exchange.core.trading.TradingStateFailureTestSupport.map
@@ -147,6 +149,16 @@ class TradingStateFailureTest {
     }
 
     @Test
+    fun `체결0건도 단위를 만족하는 잘못된 scale의 최초 예약액을 쓰기 전에 거절한다`() {
+        val state = state()
+        fund(state, buyer, usdt, 10_000)
+        val accepted = admit(state, order("unmatched-scale", buyer, Side.BUY, 100, 10))
+        write(accepted.record.candidate, "market", market.copy(baseAssetScale = 1, quantityStep = 10))
+
+        assertPreWriteFailure(state, accepted.record.sequence, "단위는 맞지만 예약액이 다른 scale")
+    }
+
+    @Test
     fun `체결0건이어도 taker 예약의 연결과 hold를 검사한다`() {
         val corruptions: List<Pair<String, (TradingState) -> Unit>> =
             listOf(
@@ -207,6 +219,36 @@ class TradingStateFailureTest {
         val f = twoMakers(buyerOpeningId = settlementIdAtThree)
 
         assertPreWriteFailure(f.state, f.taker.record.sequence)
+    }
+
+    @Test
+    fun `원장 ID 충돌은 APPLY에 진입하지 않고 결과 검증 단계의 실패로 관측한다`() {
+        val f = twoMakers(buyerOpeningId = settlementIdAtThree)
+        val completed = mutableListOf<TradingExecutionPhase>()
+        var observedFailure: Throwable? = null
+        val observer =
+            object : TradingExecutionObserver {
+                override fun onPhaseCompleted(
+                    admissionSequence: Long,
+                    phase: TradingExecutionPhase,
+                    failure: Throwable?,
+                ) {
+                    completed.add(phase)
+                    if (failure != null) observedFailure = failure
+                }
+            }
+        val before = actualValues(f.state)
+
+        val failure =
+            assertFailsWith<IllegalStateException> {
+                f.state.executePending(f.taker.record.sequence, time.plusSeconds(1), observer)
+            }
+
+        assertSame(failure, observedFailure)
+        assertEquals(TradingExecutionPhase.RESULT_VALIDATION, completed.last())
+        assertFalse(TradingExecutionPhase.APPLY in completed)
+        assertEquals(before, actualValues(f.state))
+        assertTrue(f.state.isBlocked)
     }
 
     @Test
@@ -271,6 +313,14 @@ class TradingStateFailureTest {
         assertAfterWriteFailure(WriteTarget.MIDDLE_BALANCE, AssertionError("middle actual put"))
 
     @Test
+    fun `첫 정산 원장 실제 append 직후 Exception이면 원본은 남고 모든 입구가 차단된다`() =
+        assertAfterWriteFailure(WriteTarget.LEDGER_APPEND, IllegalStateException("actual ledger append"))
+
+    @Test
+    fun `첫 정산 원장 실제 append 직후 Error이면 원본은 남고 모든 입구가 차단된다`() =
+        assertAfterWriteFailure(WriteTarget.LEDGER_APPEND, AssertionError("actual ledger append"))
+
+    @Test
     fun `마지막 전체 완료 실제 put 직후 Exception이어도 완료 재전송을 먼저 꺼내지 않는다`() =
         assertAfterWriteFailure(WriteTarget.LAST_COMPLETION, IllegalStateException("last actual put"))
 
@@ -289,11 +339,13 @@ class TradingStateFailureTest {
         val admission = read(state, "admission")
         val engine = read(state, "engine")
         val balancesBefore = map(admission, "balances").toMap()
+        val ledgerCountBefore = (read(admission, "ledgerTransactions") as List<*>).size
         val before = actualValues(state)
         val probe =
             when (target) {
                 WriteTarget.FIRST_SEEN_ID -> failAfterNestedSetAdd(engine, "seenOrderIds", market.marketId, failure)
                 WriteTarget.MIDDLE_BALANCE -> failAfterPut(admission, "balances", failure)
+                WriteTarget.LEDGER_APPEND -> failAfterListAdd(admission, "ledgerTransactions", failure)
                 WriteTarget.LAST_COMPLETION -> failAfterPut(state, "completions", failure)
             }
 
@@ -320,6 +372,17 @@ class TradingStateFailureTest {
                 val balances = map(admission, "balances").values.filterIsInstance<Balance>()
                 assertTrue(balance(buyer, usdt, 715, 100) in balances)
                 assertTrue(balance(buyer, btc, 2) in balances)
+            }
+
+            WriteTarget.LEDGER_APPEND -> {
+                val transaction = assertIs<LedgerTransaction>(probe.writtenKey)
+                val transactions = read(admission, "ledgerTransactions") as List<*>
+                assertEquals(ledgerCountBefore + 1, transactions.size)
+                assertSame(transaction, transactions.last())
+                assertEquals(settlementIdAtThree, transaction.ledgerTransactionId)
+                assertTrue(transaction.ledgerTransactionId in TradingStateFailureTestSupport.set(admission, "transactionIds"))
+                assertTrue(transaction.sourceEventId in TradingStateFailureTestSupport.set(admission, "sourceEventIds"))
+                assertEquals(5L, map(engine, "lastEngineSequences")[market.marketId])
             }
         }
         assertNotEquals(before, actualValues(state), "실제 적용 실패를 계산 실패처럼 원상복구했다고 검증하면 안 됩니다")
@@ -448,6 +511,7 @@ class TradingStateFailureTest {
     private enum class WriteTarget {
         FIRST_SEEN_ID,
         MIDDLE_BALANCE,
+        LEDGER_APPEND,
         LAST_COMPLETION,
     }
 }

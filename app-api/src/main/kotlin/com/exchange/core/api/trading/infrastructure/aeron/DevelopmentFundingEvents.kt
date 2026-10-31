@@ -20,9 +20,27 @@ private val fundingJson = JsonMapper.builder().build()
 
 internal fun developmentClusterSettings(environment: Map<String, String> = System.getenv()): DevelopmentFundingSettings {
     fun required(name: String): String = requireNotNull(environment[name]) { "$name 설정이 필요합니다" }
+    val boundedManifest =
+        environment["FUNDING_BOUNDED_MANIFEST"]?.let { file ->
+            val path = Path.of(file)
+            require(
+                path.isAbsolute &&
+                    java.nio.file.Files
+                        .size(path) in
+                    1..com.exchange.core.api.trading.infrastructure.history.BoundedTradingStateCodec.MAX_MANIFEST_BYTES,
+            )
+            com.exchange.core.api.trading.infrastructure.history.BoundedTradingStateCodec().decodeManifest(
+                java.nio.file.Files
+                    .readAllBytes(path),
+            )
+        }
     return DevelopmentFundingSettings(
         runRoot = Path.of(required("FUNDING_RUN_ROOT")),
-        markets = readDevelopmentMarkets(environment),
+        markets =
+            boundedManifest?.let { manifest ->
+                DevelopmentMarketRegistry(manifest.markets.map { DevelopmentMarketContext(it.market, it.feePolicySnapshot) })
+            }
+                ?: readDevelopmentMarkets(environment),
         basePort = environment["FUNDING_BASE_PORT"]?.toInt() ?: 19700,
         startupTimeoutMs = 60_000,
         memberId = environment["FUNDING_MEMBER_ID"]?.toInt() ?: 0,
@@ -30,6 +48,10 @@ internal fun developmentClusterSettings(environment: Map<String, String> = Syste
         bindHost = environment["FUNDING_BIND_HOST"] ?: "0.0.0.0",
         clusterMembers = required("FUNDING_MEMBERS"),
         runId = required("FUNDING_RUN_ID"),
+        recoverExisting = environment["FUNDING_RECOVER_EXISTING"]?.toBooleanStrict() ?: false,
+        boundedManifest = boundedManifest,
+        trustedBoundedControl = environment["FUNDING_TRUSTED_BOUNDED_CONTROL"]?.toBooleanStrict() ?: false,
+        driverRoot = environment["FUNDING_DRIVER_ROOT"]?.let(Path::of),
     )
 }
 
@@ -52,6 +74,8 @@ internal fun fundingReadyFields(
         "memberId" to config.memberId,
         "pid" to ProcessHandle.current().pid(),
         "role" to node.role.name,
+        "tradingReady" to node.tradingReady,
+        "protocol" to if (config.boundedManifest == null) "legacy-wire2" else "bounded-wire3",
         "settings" to
             mapOf(
                 "clusterId" to config.clusterId,
@@ -61,6 +85,7 @@ internal fun fundingReadyFields(
                 "driverDirectory" to config.driverDirectory,
                 "archiveDirectory" to config.archiveDirectory.toString(),
                 "clusterDirectory" to config.clusterDirectory.toString(),
+                "recoverExisting" to config.recoverExisting,
                 "storageLevels" to node.storageLevels,
                 "markets" to fundingMarketFields(config.markets),
                 "marketConfigVersion" to config.markets.configurationVersion,

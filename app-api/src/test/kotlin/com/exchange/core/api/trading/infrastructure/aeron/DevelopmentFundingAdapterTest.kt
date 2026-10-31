@@ -8,6 +8,8 @@ import com.exchange.core.api.trading.infrastructure.codec.DevelopmentBalanceComm
 import com.exchange.core.api.trading.infrastructure.codec.DevelopmentBalanceRejectionReason
 import com.exchange.core.api.trading.infrastructure.codec.DevelopmentBalanceResultCodec
 import com.exchange.core.api.trading.infrastructure.codec.DevelopmentBalanceResultPayload
+import com.exchange.core.api.trading.infrastructure.codec.ExecuteAdmissionCodec
+import com.exchange.core.api.trading.infrastructure.codec.ExecuteAdmissionPayload
 import com.exchange.core.api.trading.infrastructure.codec.admissionCommand
 import com.exchange.core.common.Amount
 import com.exchange.core.common.AssetId
@@ -22,22 +24,30 @@ import io.aeron.Publication
 import io.aeron.cluster.client.AeronCluster
 import io.aeron.cluster.service.ClientSession
 import io.aeron.cluster.service.Cluster
+import io.aeron.logbuffer.BufferClaim
 import io.aeron.logbuffer.Header
 import org.agrona.DirectBuffer
+import org.agrona.MutableDirectBuffer
 import org.agrona.concurrent.AgentTerminationException
 import org.agrona.concurrent.IdleStrategy
 import org.agrona.concurrent.UnsafeBuffer
 import org.junit.jupiter.api.Test
 import org.mockito.ArgumentMatchers.any
 import org.mockito.ArgumentMatchers.anyInt
+import org.mockito.ArgumentMatchers.anyLong
+import org.mockito.ArgumentMatchers.eq
+import org.mockito.Mockito.CALLS_REAL_METHODS
 import org.mockito.Mockito.doAnswer
 import org.mockito.Mockito.doReturn
 import org.mockito.Mockito.mock
+import org.mockito.Mockito.mockConstruction
+import org.mockito.Mockito.never
 import org.mockito.Mockito.spy
 import org.mockito.Mockito.times
 import org.mockito.Mockito.verify
 import org.mockito.Mockito.verifyNoInteractions
 import org.mockito.Mockito.`when`
+import org.mockito.Mockito.withSettings
 import java.time.Instant
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.locks.LockSupport
@@ -59,6 +69,210 @@ class DevelopmentFundingAdapterTest {
     private val header = Header(0, 0)
 
     @Test
+    fun `세션 헤더 뒤의 실행 명령을 commit한 다음에만 접수 응답을 보낸다`() {
+        val fixture = fixture()
+        send(fixture, command())
+        val order = admissionCommand().let { it.copy(order = it.order.copy(userId = UserId("U1"))) }
+        var acknowledgements = 0
+        doAnswer {
+            acknowledgements++
+            assertContentEquals(
+                ExecuteAdmissionCodec().encode(ExecuteAdmissionPayload(1)),
+                fixture.executionClaims.committedMessages.single(),
+            )
+            assertTrue(fixture.executionClaims.sessionHeaderIntact())
+            assertTrue(fixture.executionClaims.boundariesIntact())
+            val snapshot = fixture.state.snapshot()
+            assertEquals(1, snapshot.pendingOrders.size)
+            assertTrue(snapshot.completions.isEmpty(), "별도 확정 실행 callback 전에는 매칭·정산하지 않는다")
+            1L
+        }.`when`(fixture.session).offer(any(DirectBuffer::class.java), anyInt(), anyInt())
+
+        repeat(2) { sendBytes(fixture, AdmissionCommandCodec().encode(order)) }
+
+        assertEquals(2, acknowledgements)
+        assertEquals(1, fixture.executionClaims.attempts.size, "접수 재전송은 새 실행 claim을 만들지 않는다")
+        assertEquals(0, fixture.executionClaims.abortedClaims)
+        assertEquals("OFFERED", fixture.service.observation!!.replyStatus)
+        assertTrue(fixture.failures.isEmpty())
+    }
+
+    @Test
+    fun `실행 claim을 쓴 뒤 인코딩이 실패하면 abort하고 예약을 보존한 채 노드를 중단한다`() {
+        listOf(IllegalStateException("claim 쓰기 실패"), AssertionError("claim 쓰기 Error")).forEach { failure ->
+            mockConstruction(
+                ExecuteAdmissionCodec::class.java,
+                withSettings().defaultAnswer(CALLS_REAL_METHODS),
+            ) { codec, _ ->
+                doAnswer { invocation ->
+                    // 일부 본문을 쓴 다음 실패해도 frame이 정상 메시지로 공개되면 안 된다.
+                    invocation.getArgument<MutableDirectBuffer>(1).putByte(invocation.getArgument<Int>(2), 0x66.toByte())
+                    throw failure
+                }.`when`(codec).encodeInto(anyLong(), anyMutableDirectBuffer(), anyInt())
+            }.use {
+                val fixture = fixture()
+                send(fixture, command())
+                val repliesBefore = fixture.replies.size
+                val order = admissionCommand().let { it.copy(order = it.order.copy(userId = UserId("U1"))) }
+
+                val fatal =
+                    assertFailsWith<AgentTerminationException> {
+                        sendBytes(fixture, AdmissionCommandCodec().encode(order))
+                    }
+
+                assertSame(failure, fatal.cause)
+                assertSame(failure, fixture.failures.single())
+                assertEquals(1, fixture.executionClaims.attempts.size)
+                assertEquals(1, fixture.executionClaims.abortedClaims)
+                assertTrue(fixture.executionClaims.committedMessages.isEmpty())
+                assertTrue(fixture.executionClaims.sessionHeaderIntact())
+                assertTrue(fixture.executionClaims.boundariesIntact())
+                assertEquals(repliesBefore, fixture.replies.size, "실행 의도를 commit하지 못하면 접수 ACK를 보내지 않는다")
+                assertFalse(fixture.service.started)
+                assertFalse(fixture.state.isBlocked)
+                val snapshot = fixture.state.snapshot()
+                assertEquals(1, snapshot.pendingOrders.size)
+                assertEquals(
+                    300_000_000L,
+                    snapshot.balances
+                        .single()
+                        .hold.value,
+                )
+                assertTrue(snapshot.completions.isEmpty())
+                assertFailsWith<AgentTerminationException> { sendBytes(fixture, AdmissionCommandCodec().encode(order)) }
+                assertEquals(1, fixture.executionClaims.attempts.size)
+            }
+        }
+    }
+
+    @Test
+    fun `실행 claim의 역압력과 ADMIN_ACTION은 같은 길이와 claim으로 유한 재시도한다`() {
+        val fixture =
+            fixture(
+                executionOffers = listOf(Publication.BACK_PRESSURED, Publication.ADMIN_ACTION, 99L),
+                maxExecutionOfferAttempts = 3,
+            )
+        send(fixture, command())
+        val order = admissionCommand().let { it.copy(order = it.order.copy(userId = UserId("U1"))) }
+
+        sendBytes(fixture, AdmissionCommandCodec().encode(order))
+
+        val expected = ExecuteAdmissionCodec().encode(ExecuteAdmissionPayload(1))
+        assertEquals(List(3) { expected.size }, fixture.executionClaims.attempts)
+        fixture.executionClaims.attemptClaims.forEach { assertSame(fixture.executionClaims.attemptClaims.first(), it) }
+        assertContentEquals(expected, fixture.executionClaims.committedMessages.single())
+        assertEquals(0, fixture.executionClaims.abortedClaims)
+        verify(fixture.idle, times(2)).idle()
+        assertEquals("OFFERED", fixture.service.observation!!.replyStatus)
+        assertTrue(
+            fixture.state
+                .snapshot()
+                .completions
+                .isEmpty(),
+        )
+    }
+
+    @Test
+    fun `claim 획득과 commit 직후 계측 Error는 소유한 미확정 frame만 abort한다`() {
+        listOf(false, true).forEach { failAfterCommit ->
+            val failure = AssertionError("claim 경계의 계측 Error: committed=$failAfterCommit")
+            val fixture = fixture(start = false)
+            var armed = false
+            fixture.service.attachTelemetry(TradingNodeTelemetry { }, nanoTime = {
+                val reached =
+                    if (failAfterCommit) {
+                        fixture.executionClaims.committedMessages.isNotEmpty()
+                    } else {
+                        fixture.executionClaims.claims.isNotEmpty()
+                    }
+                if (armed && reached) {
+                    armed = false
+                    throw failure
+                }
+                System.nanoTime()
+            })
+            fixture.service.onStart(fixture.cluster, null)
+            send(fixture, command())
+            val repliesBefore = fixture.replies.size
+            val order = admissionCommand().let { it.copy(order = it.order.copy(userId = UserId("U1"))) }
+            armed = true
+
+            val fatal =
+                assertFailsWith<AgentTerminationException> {
+                    sendBytes(fixture, AdmissionCommandCodec().encode(order))
+                }
+
+            assertSame(failure, fatal.cause)
+            assertSame(failure, fixture.failures.single())
+            assertEquals(1, fixture.executionClaims.attempts.size)
+            assertEquals(if (failAfterCommit) 0 else 1, fixture.executionClaims.abortedClaims)
+            assertEquals(if (failAfterCommit) 1 else 0, fixture.executionClaims.committedMessages.size)
+            if (failAfterCommit) {
+                assertContentEquals(
+                    ExecuteAdmissionCodec().encode(ExecuteAdmissionPayload(1)),
+                    fixture.executionClaims.committedMessages.single(),
+                )
+            }
+            assertTrue(fixture.executionClaims.sessionHeaderIntact())
+            assertTrue(fixture.executionClaims.boundariesIntact())
+            assertEquals(repliesBefore, fixture.replies.size)
+            assertFalse(fixture.service.started)
+            assertEquals(
+                1,
+                fixture.state
+                    .snapshot()
+                    .pendingOrders.size,
+            )
+            assertTrue(
+                fixture.state
+                    .snapshot()
+                    .completions
+                    .isEmpty(),
+            )
+        }
+    }
+
+    @Test
+    fun `실행 claim 횟수 소진과 종단 반환은 commit과 접수 ACK 없이 노드를 중단한다`() {
+        val cases =
+            listOf(
+                Publication.BACK_PRESSURED to 3,
+                Publication.ADMIN_ACTION to 3,
+                Publication.NOT_CONNECTED to 1,
+                Publication.CLOSED to 1,
+                Publication.MAX_POSITION_EXCEEDED to 1,
+                0L to 1,
+            )
+        cases.forEach { (result, attempts) ->
+            val fixture = fixture(executionOffers = listOf(result), maxExecutionOfferAttempts = 3)
+            send(fixture, command())
+            val repliesBefore = fixture.replies.size
+            val order = admissionCommand().let { it.copy(order = it.order.copy(userId = UserId("U1"))) }
+
+            assertFailsWith<AgentTerminationException> { sendBytes(fixture, AdmissionCommandCodec().encode(order)) }
+
+            assertEquals(attempts, fixture.executionClaims.attempts.size)
+            assertTrue(fixture.executionClaims.claims.isEmpty(), "음수 또는 0 반환에는 claim 영역이 없다")
+            assertEquals(0, fixture.executionClaims.abortedClaims)
+            assertEquals(repliesBefore, fixture.replies.size)
+            assertFalse(fixture.service.started)
+            assertEquals(1, fixture.failures.size)
+            assertEquals(
+                1,
+                fixture.state
+                    .snapshot()
+                    .pendingOrders.size,
+            )
+            assertTrue(
+                fixture.state
+                    .snapshot()
+                    .completions
+                    .isEmpty(),
+            )
+        }
+    }
+
+    @Test
     fun `비영점 구간만 복원하고 업무 시각과 불변 관찰을 보존한다`() {
         val fixture = fixture()
         val bytes = commands.encode(command())
@@ -76,7 +290,7 @@ class DevelopmentFundingAdapterTest {
         )
         shared.fill(0)
 
-        val observation = assertNotNull(fixture.service.observation)
+        val observation = assertNotNull(fixture.service.captureObservation().join())
         val prepared = assertIs<DevelopmentBalanceResultPayload.Prepared>(results.decode(fixture.replies.single()))
         assertEquals(OpeningBalanceResult(command().opening, "L1", time, false), prepared.result)
         assertEquals(256L, observation.position)
@@ -99,7 +313,9 @@ class DevelopmentFundingAdapterTest {
         assertEquals(1, snapshot.preparations.size)
         assertEquals(
             2,
-            fixture.service.observation!!
+            fixture.service
+                .captureObservation()
+                .join()!!
                 .snapshot!!
                 .preparations.size,
         )
@@ -114,7 +330,13 @@ class DevelopmentFundingAdapterTest {
 
         val replay = assertIs<DevelopmentBalanceResultPayload.Prepared>(results.decode(fixture.replies.last()))
         assertEquals(OpeningBalanceResult(command().opening, "L1", time, true), replay.result)
-        val snapshot = assertNotNull(fixture.service.observation!!.snapshot)
+        val snapshot =
+            assertNotNull(
+                fixture.service
+                    .captureObservation()
+                    .join()!!
+                    .snapshot,
+            )
         assertEquals(Amount(1_000_000_000), snapshot.balances.single().available)
         assertEquals(1, snapshot.preparations.size)
         assertTrue(fixture.failures.isEmpty())
@@ -136,7 +358,9 @@ class DevelopmentFundingAdapterTest {
         )
         assertEquals(
             1,
-            fixture.service.observation!!
+            fixture.service
+                .captureObservation()
+                .join()!!
                 .snapshot!!
                 .preparations.size,
         )
@@ -145,7 +369,9 @@ class DevelopmentFundingAdapterTest {
 
         assertEquals(
             2,
-            fixture.service.observation!!
+            fixture.service
+                .captureObservation()
+                .join()!!
                 .snapshot!!
                 .preparations.size,
         )
@@ -154,31 +380,107 @@ class DevelopmentFundingAdapterTest {
     }
 
     @Test
-    fun `유효한 Cluster 헤더의 외부 본문이 잘리거나 미지원이면 코어 진입 없이 다음 요청을 허용한다`() {
-        val fixture = fixture()
-        val bytes = commands.encode(command())
-        val missing =
-            com.exchange.core.api.trading.infrastructure.codec
-                .protobufFrame(4, byteArrayOf())
-        val unsupported =
-            com.exchange.core.api.trading.infrastructure.codec
-                .protobufFrame(2, byteArrayOf())
-        listOf(bytes.copyOf(7), bytes.copyOf(bytes.size - 1), missing, unsupported, ByteArray(4097)).forEach {
-            sendBytes(fixture, it)
+    fun `리더만 자금과 접수 응답을 인코딩하고 모든 사본은 예약과 실행 제출을 보존한다`() {
+        listOf(Cluster.Role.LEADER, Cluster.Role.FOLLOWER).forEach { role ->
+            mockConstruction(
+                DevelopmentBalanceResultCodec::class.java,
+                withSettings().defaultAnswer(CALLS_REAL_METHODS),
+            ).use { fundingCodecs ->
+                mockConstruction(
+                    AdmissionResultCodec::class.java,
+                    withSettings().defaultAnswer(CALLS_REAL_METHODS),
+                ).use { admissionCodecs ->
+                    val fixture = fixture(role = role)
+
+                    send(fixture, command())
+                    val funding = assertIs<DevelopmentBalanceResultPayload.Prepared>(fixture.service.observation!!.result)
+                    val order = admissionCommand().let { it.copy(order = it.order.copy(userId = UserId("U1"))) }
+                    sendBytes(fixture, AdmissionCommandCodec().encode(order))
+
+                    val observation = assertNotNull(fixture.service.captureObservation().join())
+                    val accepted = assertIs<AdmissionResultPayload.Accepted>(observation.admissionResult)
+                    val snapshot = assertNotNull(observation.snapshot)
+                    assertEquals(
+                        700_000_000L,
+                        snapshot.balances
+                            .single()
+                            .available.value,
+                    )
+                    assertEquals(
+                        300_000_000L,
+                        snapshot.balances
+                            .single()
+                            .hold.value,
+                    )
+                    assertEquals(accepted.sequence, snapshot.pendingOrders.single().sequence)
+                    assertEquals(
+                        order.order,
+                        snapshot.pendingOrders
+                            .single()
+                            .candidate.order,
+                    )
+                    assertEquals(1, snapshot.preparations.size)
+                    assertEquals(
+                        accepted.sequence,
+                        ExecuteAdmissionCodec().decode(fixture.executionClaims.committedMessages.single()).admissionSequence,
+                    )
+                    assertTrue(fixture.executionClaims.sessionHeaderIntact())
+                    assertTrue(fixture.executionClaims.boundariesIntact())
+                    verify(fixture.cluster, times(1)).tryClaim(anyInt(), any(BufferClaim::class.java))
+
+                    val fundingCodec = fundingCodecs.constructed().single()
+                    val admissionCodec = admissionCodecs.constructed().single()
+                    if (role == Cluster.Role.LEADER) {
+                        verify(fundingCodec, times(1)).encode(funding)
+                        verify(admissionCodec, times(1)).encode(accepted)
+                        assertEquals(2, fixture.replies.size)
+                        assertEquals(funding, results.decode(fixture.replies.first()))
+                        assertEquals(accepted, admissionCodec.decode(fixture.replies.last()))
+                        assertEquals("OFFERED", observation.replyStatus)
+                        assertEquals(1, observation.replyAttempts)
+                    } else {
+                        verifyNoInteractions(fundingCodec, admissionCodec, fixture.session)
+                        assertTrue(fixture.replies.isEmpty())
+                        assertEquals("NOT_LEADER", observation.replyStatus)
+                        assertEquals(0, observation.replyAttempts)
+                    }
+                    assertTrue(fixture.service.started)
+                    assertTrue(fixture.failures.isEmpty())
+                }
+            }
         }
-        assertEquals(5L, fixture.service.observation!!.malformedMessages)
-        verifyNoInteractions(fixture.state, fixture.session)
+    }
 
-        send(fixture, command())
+    @Test
+    fun `유효한 Cluster 헤더의 외부 본문이 잘리거나 미지원이면 코어 진입 없이 다음 요청을 허용한다`() {
+        listOf(Cluster.Role.LEADER, Cluster.Role.FOLLOWER).forEach { role ->
+            val fixture = fixture(role = role)
+            val bytes = commands.encode(command())
+            val missing =
+                com.exchange.core.api.trading.infrastructure.codec
+                    .protobufFrame(4, byteArrayOf())
+            val unsupported =
+                com.exchange.core.api.trading.infrastructure.codec
+                    .protobufFrame(2, byteArrayOf())
+            listOf(bytes.copyOf(7), bytes.copyOf(bytes.size - 1), missing, unsupported, ByteArray(4097)).forEach {
+                sendBytes(fixture, it)
+            }
+            assertEquals(5L, fixture.service.observation!!.malformedMessages)
+            verifyNoInteractions(fixture.state, fixture.session)
 
-        assertEquals(5L, fixture.service.observation!!.malformedMessages)
-        assertEquals(
-            1,
-            fixture.service.observation!!
-                .snapshot!!
-                .preparations.size,
-        )
-        assertTrue(fixture.failures.isEmpty())
+            send(fixture, command())
+
+            assertEquals(5L, fixture.service.observation!!.malformedMessages)
+            assertEquals(
+                1,
+                fixture.service
+                    .captureObservation()
+                    .join()!!
+                    .snapshot!!
+                    .preparations.size,
+            )
+            assertTrue(fixture.failures.isEmpty())
+        }
     }
 
     @Test
@@ -230,7 +532,7 @@ class DevelopmentFundingAdapterTest {
         fixture.replies.forEach { assertContentEquals(fixture.replies.first(), it) }
         val accepted = assertIs<AdmissionResultPayload.Accepted>(AdmissionResultCodec().decode(fixture.replies.first()))
         assertEquals(1L, accepted.sequence)
-        val observation = assertNotNull(fixture.service.observation)
+        val observation = assertNotNull(fixture.service.captureObservation().join())
         assertEquals(accepted, observation.admissionResult)
         assertNull(observation.result)
         assertEquals("OFFERED", observation.replyStatus)
@@ -258,14 +560,16 @@ class DevelopmentFundingAdapterTest {
         verify(
             fixture.state,
             times(1),
-        ).admit(
-            command.requestId,
-            command.order,
-            command.market,
-            command.feePolicySnapshot,
-            command.ledgerTransactionId,
-            command.occurredAt,
+        ).admitWithContextCheck(
+            matchedEq(command.requestId),
+            matchedEq(command.order),
+            matchedEq(command.market),
+            matchedEq(command.feePolicySnapshot),
+            matchedEq(command.ledgerTransactionId),
+            matchedEq(command.occurredAt),
+            any<(Boolean) -> Boolean>() ?: { false },
         )
+        verify(fixture.state, never()).hasRequest(command.order.userId, command.requestId)
     }
 
     @Test
@@ -285,7 +589,7 @@ class DevelopmentFundingAdapterTest {
                 AdmissionCommandCodec().encode(admissionCommand().let { it.copy(order = it.order.copy(userId = UserId("U1"))) }),
             )
 
-            val observation = assertNotNull(fixture.service.observation)
+            val observation = assertNotNull(fixture.service.captureObservation().join())
             assertEquals(expected, observation.replyStatus)
             assertEquals(if (offer == Publication.BACK_PRESSURED) 2 else 1, observation.replyAttempts)
             assertEquals(
@@ -313,7 +617,7 @@ class DevelopmentFundingAdapterTest {
                 if (hasSession) fixture.session else null,
             )
 
-            val observation = assertNotNull(fixture.service.observation)
+            val observation = assertNotNull(fixture.service.captureObservation().join())
             assertIs<AdmissionResultPayload.Accepted>(observation.admissionResult)
             assertEquals(
                 300_000_000L,
@@ -358,7 +662,9 @@ class DevelopmentFundingAdapterTest {
 
             assertEquals(
                 Amount(1_000_000_000),
-                fixture.service.observation!!
+                fixture.service
+                    .captureObservation()
+                    .join()!!
                     .snapshot!!
                     .balances
                     .single()
@@ -460,7 +766,9 @@ class DevelopmentFundingAdapterTest {
             assertEquals(expected.second, fixture.service.observation!!.replyStatus)
             assertEquals(
                 1,
-                fixture.service.observation!!
+                fixture.service
+                    .captureObservation()
+                    .join()!!
                     .snapshot!!
                     .preparations.size,
             )
@@ -482,7 +790,9 @@ class DevelopmentFundingAdapterTest {
         assertEquals("SESSION_CLOSING", fixture.service.observation!!.replyStatus)
         assertEquals(
             1,
-            fixture.service.observation!!
+            fixture.service
+                .captureObservation()
+                .join()!!
                 .snapshot!!
                 .preparations.size,
         )
@@ -614,12 +924,17 @@ class DevelopmentFundingAdapterTest {
         header,
     )
 
+    /** Mockito의 null matcher 반환값을 Kotlin의 비-null 인자 검사 전에 대체한다. */
+    private fun anyMutableDirectBuffer(): MutableDirectBuffer = any(MutableDirectBuffer::class.java) ?: UnsafeBuffer(ByteArray(0))
+
     private fun fixture(
         role: Cluster.Role = Cluster.Role.LEADER,
         offers: List<Long> = listOf(1L),
         maxReplyAttempts: Int = 5,
         replyTimeoutNs: Long = 1_000_000_000,
         start: Boolean = true,
+        executionOffers: List<Long> = listOf(1L),
+        maxExecutionOfferAttempts: Int = 1_000,
     ): Fixture {
         val state = spy(tradingState())
         val cluster = mock(Cluster::class.java)
@@ -629,7 +944,7 @@ class DevelopmentFundingAdapterTest {
         val replyBuffers = mutableListOf<DirectBuffer>()
         val failures = mutableListOf<Throwable>()
         `when`(cluster.timeUnit()).thenReturn(TimeUnit.MILLISECONDS)
-        `when`(cluster.offer(any(DirectBuffer::class.java), anyInt(), anyInt())).thenReturn(1L)
+        val executionClaims = ClusterExecutionClaimStub(cluster, executionOffers)
         `when`(cluster.role()).thenReturn(role)
         `when`(cluster.logPosition()).thenReturn(256L)
         `when`(cluster.idleStrategy()).thenReturn(idle)
@@ -641,13 +956,20 @@ class DevelopmentFundingAdapterTest {
             replyBuffers += buffer
             offers[(replies.size - 1).coerceAtMost(offers.lastIndex)]
         }.`when`(session).offer(any(DirectBuffer::class.java), anyInt(), anyInt())
-        val service = DevelopmentFundingAdapter(state, maxReplyAttempts, replyTimeoutNs) { failures += it }
+        val service =
+            DevelopmentFundingAdapter(
+                state,
+                maxReplyAttempts,
+                replyTimeoutNs,
+                maxExecutionOfferAttempts = maxExecutionOfferAttempts,
+                onFatal = { failures += it },
+            )
         if (start) service.onStart(cluster, null)
-        return Fixture(state, cluster, session, idle, service, replies, replyBuffers, failures)
+        return Fixture(state, cluster, session, idle, service, replies, replyBuffers, failures, executionClaims)
     }
 
     private fun assertFundingPreserved(fixture: Fixture) {
-        val observation = assertNotNull(fixture.service.observation)
+        val observation = assertNotNull(fixture.service.captureObservation().join())
         val snapshot = assertNotNull(observation.snapshot)
         assertEquals(Amount(1_000_000_000), snapshot.balances.single().available)
         assertEquals(Amount.ZERO, snapshot.balances.single().hold)
@@ -671,7 +993,10 @@ class DevelopmentFundingAdapterTest {
         val replies: MutableList<ByteArray>,
         val replyBuffers: MutableList<DirectBuffer>,
         val failures: MutableList<Throwable>,
+        val executionClaims: ClusterExecutionClaimStub,
     )
+
+    private fun <T : Any> matchedEq(value: T): T = eq(value) ?: value
 
     /** 기존 코어 오류 검증처럼 실제 쓰기 한 지점만 실패시킨다. */
     private fun failOnPreparationWrite(

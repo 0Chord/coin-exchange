@@ -16,6 +16,7 @@ object ExternalTechnologyTypes {
             "io.aeron.",
             "org.postgresql.",
             "org.hibernate.",
+            "org.rocksdb.",
         )
     private val networkIoTypes =
         setOf(

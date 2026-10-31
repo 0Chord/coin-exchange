@@ -18,13 +18,36 @@ import com.exchange.core.order.TimeInForce
 import com.exchange.core.trading.OrderAdmissionInput
 import org.junit.jupiter.api.Test
 import java.time.Instant
+import java.util.concurrent.Callable
+import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
 import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
+import kotlin.test.assertNotSame
+import kotlin.test.assertSame
 import kotlin.test.assertTrue
 import com.exchange.core.api.trading.infrastructure.codec.generated.AdmissionCommand as WireAdmissionCommand
 
 class AdmissionCommandCodecTest {
     private val codec = AdmissionCommandCodec()
+
+    @Test
+    fun `식별자 검증은 ASCII와 다중 바이트 UTF8의 256 바이트 경계를 유지한다`() {
+        listOf("R1", "x".repeat(256), "한".repeat(85) + "x", "😀".repeat(64)).forEach { value ->
+            assertEquals(value, AdmissionMessageFormat.text(value))
+        }
+        listOf("x".repeat(257), "한".repeat(86), "😀".repeat(65)).forEach { value ->
+            assertFailsWith<AdmissionMessageException> { AdmissionMessageFormat.text(value) }
+        }
+    }
+
+    @Test
+    fun `ASCII 접두사 뒤의 잘못된 surrogate도 엄격하게 거절한다`() {
+        listOf("\uD800", "R1\uDC00", "x".repeat(255) + "\uD800").forEach { value ->
+            assertFailsWith<AdmissionMessageException> { AdmissionMessageFormat.text(value) }
+        }
+    }
 
     @Test
     fun `접수 명령은 Protobuf 전송 계약 버전 2로 인코딩한다`() {
@@ -122,6 +145,115 @@ class AdmissionCommandCodecTest {
             val command = original.copy(market = market)
 
             assertEquals(command, codec.decode(codec.encode(command)))
+        }
+    }
+
+    @Test
+    fun `동일한 여섯 마켓 값만 재사용하고 정책과 요청은 별도로 읽는다`() {
+        val original = exampleCommand().let { it.copy(market = it.market.copy(priceTick = 10, quantityStep = 10)) }
+        val first = codec.decode(codec.encode(original))
+        val changed =
+            original.copy(
+                requestId = "R2",
+                feePolicySnapshot = original.feePolicySnapshot.copy(scheduleVersion = 8),
+            )
+        val repeated = codec.decode(codec.encode(changed))
+        assertSame(first.market, repeated.market)
+        assertEquals(changed, repeated)
+        val variations =
+            listOf(
+                original.market.copy(marketId = MarketId("other-market")),
+                original.market.copy(baseAssetId = AssetId("other-base")),
+                original.market.copy(quoteAssetId = AssetId("other-quote")),
+                original.market.copy(baseAssetScale = 1),
+                original.market.copy(priceTick = 20),
+                original.market.copy(quantityStep = 20),
+            )
+        variations.forEach { market ->
+            val command = original.copy(market = market)
+            val decoded = codec.decode(codec.encode(command))
+            assertNotSame(first.market, decoded.market)
+            assertEquals(command, decoded)
+        }
+    }
+
+    @Test
+    fun `캐시가 준비되어도 잘못된 마켓 단위를 정상 정의로 치환하지 않는다`() {
+        codec.decode(protobufFrame(1, wireCommandBuilder().build().toByteArray()))
+        val invalidDefinitions =
+            listOf(
+                wireCommandBuilder().setPriceTick(0).setQuantityStep(1),
+                wireCommandBuilder().setPriceTick(1).setQuantityStep(0),
+                wireCommandBuilder().setBaseAssetScale(8).setPriceTick(1).setQuantityStep(1),
+                wireCommandBuilder().setBaseAssetScale(19).clearPriceTick().clearQuantityStep(),
+                wireCommandBuilder().setQuoteAssetId("BTC"),
+            )
+        invalidDefinitions.forEach { wire ->
+            assertFailsWith<AdmissionMessageException> {
+                codec.decode(protobufFrame(1, wire.build().toByteArray()))
+            }
+        }
+        assertEquals(exampleCommand(), codec.decode(codec.encode(exampleCommand())))
+    }
+
+    @Test
+    fun `이전 v2 기본 단위와 명시된 동일 단위는 같은 검증된 값을 재사용한다`() {
+        val wire =
+            wireCommandBuilder()
+                .setBaseAssetScale(8)
+                .clearPriceTick()
+                .clearQuantityStep()
+                .build()
+        val legacy = codec.decode(protobufFrame(1, wire.toByteArray()))
+        val explicit = codec.decode(codec.encode(legacy))
+        assertEquals(100_000_000L, legacy.market.quantityStep)
+        assertSame(legacy.market, explicit.market)
+        val altered = legacy.copy(market = legacy.market.copy(priceTick = 100, quantityStep = 1_000_000))
+        val decoded = codec.decode(codec.encode(altered))
+        assertNotSame(legacy.market, decoded.market)
+        assertEquals(altered, decoded)
+    }
+
+    @Test
+    fun `처음 열여섯 정의만 보관하고 나머지도 원본 값으로 읽는다`() {
+        val first = codec.decode(codec.encode(exampleCommand()))
+        (1 until 16).forEach { index ->
+            val command = exampleCommand().let { it.copy(market = it.market.copy(marketId = MarketId("market-$index"))) }
+            assertEquals(command, codec.decode(codec.encode(command)))
+        }
+        val overflow = exampleCommand().let { it.copy(market = it.market.copy(marketId = MarketId("uncached-market"))) }
+        val a = codec.decode(codec.encode(overflow))
+        val b = codec.decode(codec.encode(overflow))
+        assertEquals(overflow, a)
+        assertEquals(overflow, b)
+        assertNotSame(a.market, b.market)
+        assertSame(first.market, codec.decode(codec.encode(exampleCommand())).market)
+    }
+
+    @Test
+    fun `동시 복원은 서로 다른 마켓의 값을 섞거나 가변 목록을 공유하지 않는다`() {
+        val commands =
+            (0 until 20).map { index ->
+                exampleCommand().let { it.copy(market = it.market.copy(marketId = MarketId("market-$index"))) }
+            }
+        val frames = commands.map(codec::encode)
+        val workers = Executors.newFixedThreadPool(4)
+        try {
+            val jobs =
+                (0 until 4).map { worker ->
+                    workers.submit(
+                        Callable {
+                            repeat(40) { iteration ->
+                                val index = (iteration + worker) % commands.size
+                                assertEquals(commands[index], codec.decode(frames[index]))
+                            }
+                        },
+                    )
+                }
+            jobs.forEach { it.get(10, TimeUnit.SECONDS) }
+        } finally {
+            workers.shutdownNow()
+            assertTrue(workers.awaitTermination(10, TimeUnit.SECONDS))
         }
     }
 

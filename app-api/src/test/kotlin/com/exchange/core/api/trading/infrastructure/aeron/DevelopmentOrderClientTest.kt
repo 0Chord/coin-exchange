@@ -256,7 +256,7 @@ class DevelopmentOrderClientTest {
             val events =
                 captureEvents(onEvent = { event ->
                     if (event.path("kind").asString() == "READY") {
-                        assertTrue(assertNotNull(node.observation?.snapshot).pendingOrders.isEmpty())
+                        assertTrue(assertNotNull(node.captureObservation()?.snapshot).pendingOrders.isEmpty())
                         Files.writeString(gatePath, "order-client-test")
                     }
                 }) {
@@ -621,7 +621,7 @@ class DevelopmentOrderClientTest {
         val started = System.nanoTime()
         while (true) {
             assertNull(node.error, "자동 실행 중 노드가 실패했습니다")
-            val current = node.observation?.snapshot
+            val current = node.captureObservation()?.snapshot
             if (current != null && current.pendingOrders.isEmpty() && current.completions.size.toLong() == current.lastAdmissionSequence) {
                 return current
             }

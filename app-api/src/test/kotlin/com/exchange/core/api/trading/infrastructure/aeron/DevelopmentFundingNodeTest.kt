@@ -3,19 +3,29 @@ package com.exchange.core.api.trading.infrastructure.aeron
 import com.exchange.core.api.trading.infrastructure.codec.DevelopmentBalanceCommandPayload
 import com.exchange.core.api.trading.infrastructure.codec.DevelopmentBalanceRejectionReason
 import com.exchange.core.api.trading.infrastructure.codec.DevelopmentBalanceResultPayload
+import com.exchange.core.api.trading.infrastructure.history.RocksDbTradingHistoryStore
 import com.exchange.core.common.Amount
 import com.exchange.core.common.AssetId
 import com.exchange.core.common.UserId
 import com.exchange.core.ledger.OpeningBalance
 import io.aeron.Aeron
+import io.aeron.archive.Archive
+import io.aeron.archive.ArchiveThreadingMode
+import io.aeron.archive.client.AeronArchive
 import io.aeron.cluster.ClusterControl
 import io.aeron.cluster.ConsensusModule
 import io.aeron.cluster.client.ClusterEvent
+import io.aeron.cluster.service.ClusteredServiceContainer
+import io.aeron.driver.Configuration
 import io.aeron.driver.MediaDriver
+import io.aeron.driver.ThreadingMode
 import io.aeron.exceptions.AeronEvent
 import io.aeron.exceptions.AeronException
+import org.agrona.concurrent.BackoffIdleStrategy
 import org.agrona.concurrent.UnsafeBuffer
 import org.agrona.concurrent.errors.ErrorLogReader
+import org.junit.jupiter.api.io.TempDir
+import org.rocksdb.WriteOptions
 import java.net.DatagramSocket
 import java.nio.file.Files
 import java.nio.file.Path
@@ -28,12 +38,82 @@ import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertIs
 import kotlin.test.assertNotNull
+import kotlin.test.assertNotSame
 import kotlin.test.assertNull
 import kotlin.test.assertSame
 import kotlin.test.assertTrue
 
 /** 실제 MediaDriver·Archive·Consensus·서비스와 UDP 클라이언트. DB·MockMvc는 사용하지 않는다. */
 class DevelopmentFundingNodeTest {
+    @TempDir
+    lateinit var temporaryDirectory: Path
+
+    @Test
+    fun `Archive sync2 노드만 파생 이력의 WAL을 생략하고 나머지는 자체 내구성을 유지한다`() {
+        (0..2).forEach { archiveSync ->
+            DevelopmentFundingNode.start(config().copy(archiveFileSyncLevel = archiveSync)).use { node ->
+                val historyField = DevelopmentFundingNode::class.java.getDeclaredField("history").apply { isAccessible = true }
+                val history = historyField.get(node) as RocksDbTradingHistoryStore
+                val writesField = RocksDbTradingHistoryStore::class.java.getDeclaredField("writeOptions").apply { isAccessible = true }
+                val writes = writesField.get(history) as WriteOptions
+                assertEquals(archiveSync == 2, writes.disableWAL())
+                assertEquals(archiveSync != 2, writes.sync())
+                assertEquals(listOf(archiveSync, 2, 2), node.storageLevels)
+            }
+        }
+    }
+
+    @Test
+    fun `공유 CPU용 agent는 접수 배치를 제한하고 전송 창과 저장 내구성을 유지한다`() {
+        DevelopmentFundingNode.start(config()).use { node ->
+            val archiveField = DevelopmentFundingNode::class.java.getDeclaredField("archive").apply { isAccessible = true }
+            val archive = (archiveField.get(node) as Archive).context()
+            val containerField = DevelopmentFundingNode::class.java.getDeclaredField("container").apply { isAccessible = true }
+            val container = (containerField.get(node) as ClusteredServiceContainer).context()
+            val driver = driver(node).context()
+            val consensus = consensus(node).context()
+            val strategies =
+                listOf(
+                    driver.sharedIdleStrategy(),
+                    archive.idleStrategy(),
+                    consensus.idleStrategy(),
+                    container.idleStrategy(),
+                )
+
+            assertEquals(ThreadingMode.SHARED, driver.threadingMode())
+            assertEquals(ArchiveThreadingMode.SHARED, archive.threadingMode())
+            strategies.forEach { strategy ->
+                assertIs<BackoffIdleStrategy>(strategy)
+                assertTrue(strategy.toString().contains("maxSpins=10, maxYields=5, minParkPeriodNs=1000, maxParkPeriodNs=100000"))
+            }
+            strategies.forEachIndexed { index, strategy -> strategies.drop(index + 1).forEach { assertNotSame(strategy, it) } }
+            assertNotSame(archive.idleStrategy(), archive.idleStrategy())
+            assertNotSame(consensus.idleStrategy(), consensus.idleStrategy())
+            assertNotSame(container.idleStrategy(), container.idleStrategy())
+            assertEquals(listOf(2, 2, 2), node.storageLevels)
+            assertEquals(16 * 1024 * 1024, archive.segmentFileLength())
+            assertEquals(192 * 1024, driver.socketRcvbufLength())
+            assertEquals(192 * 1024, driver.socketSndbufLength())
+            assertEquals(192 * 1024, driver.initialWindowLength())
+            assertEquals(10, consensus.ingressFragmentLimit())
+            assertEquals("aeron:udp?term-length=1m", consensus.ingressChannel())
+            assertTrue(consensus.logChannel().contains("term-length=16m"))
+            assertTrue(consensus.logChannel().contains("pub-wnd=1m"))
+            DevelopmentFundingClient(node.config).use { client ->
+                assertIs<FundingRequestOutcome.Confirmed>(client.request(command()))
+            }
+            val recordingLengths = mutableListOf<Pair<Int, Int>>()
+            AeronArchive.connect(node.config.archiveClient()).use { client ->
+                client.listRecordings(0, 100) { _, _, _, _, _, _, _, _, segmentLength, termLength, _, _, streamId, _, _, _ ->
+                    if (streamId == node.logStreamId) recordingLengths.add(termLength to segmentLength)
+                }
+            }
+            assertTrue(recordingLengths.isNotEmpty())
+            assertTrue(recordingLengths.all { it == (16 * 1024 * 1024 to 16 * 1024 * 1024) })
+            assertEquals(192 * 1024, Configuration.receiverWindowLength(recordingLengths.first().first, driver.initialWindowLength()))
+        }
+    }
+
     @Test
     fun `Driver 경고는 실제 오류 기록에 남기고 다음 자금 준비를 처리한다`() {
         val config = config()
@@ -57,7 +137,8 @@ class DevelopmentFundingNodeTest {
                 )
                 assertEquals(
                     1,
-                    node.observation!!
+                    node
+                        .captureObservation()!!
                         .snapshot!!
                         .preparations.size,
                 )
@@ -90,7 +171,7 @@ class DevelopmentFundingNodeTest {
             DevelopmentFundingClient(config).use { client ->
                 val first = assertIs<FundingRequestOutcome.Confirmed>(client.request(command()))
                 assertFalse(assertIs<DevelopmentBalanceResultPayload.Prepared>(first.result).result.alreadyPrepared)
-                assertEquals(1, assertNotNull(node.observation?.snapshot).preparations.size)
+                assertEquals(1, assertNotNull(node.captureObservation()?.snapshot).preparations.size)
                 val context = consensus(node).context()
                 val warning = ClusterEvent("leader heartbeat timeout")
 
@@ -108,7 +189,7 @@ class DevelopmentFundingNodeTest {
                 assertEquals(nextCommand.opening, prepared.opening)
                 assertEquals("L2", prepared.ledgerTransactionId)
                 assertEquals(nextCommand.occurredAt, prepared.occurredAt)
-                val snapshot = assertNotNull(node.observation?.snapshot)
+                val snapshot = assertNotNull(node.captureObservation()?.snapshot)
                 assertEquals(2, snapshot.preparations.size)
                 assertEquals(listOf("U1", "U2"), snapshot.balances.map { it.userId.value })
                 assertEquals(listOf(1_000_000_000L, 1_000_000_000L), snapshot.balances.map { it.available.value })
@@ -151,7 +232,7 @@ class DevelopmentFundingNodeTest {
                 assertTrue(result.alreadyPrepared)
                 assertEquals("L1", result.ledgerTransactionId)
                 assertEquals(command.occurredAt, result.occurredAt)
-                val snapshot = assertNotNull(node.observation?.snapshot)
+                val snapshot = assertNotNull(node.captureObservation()?.snapshot)
                 assertEquals(
                     1_000_000_000L,
                     snapshot.balances
@@ -228,7 +309,8 @@ class DevelopmentFundingNodeTest {
 
                 assertEquals(
                     3,
-                    node.observation!!
+                    node
+                        .captureObservation()!!
                         .snapshot!!
                         .preparations.size,
                 )
@@ -246,14 +328,16 @@ class DevelopmentFundingNodeTest {
             DevelopmentFundingClient(config).use { client ->
                 assertTrue(client.send(command()))
                 eventually {
-                    node.observation
+                    node
+                        .captureObservation()
                         ?.snapshot
                         ?.preparations
                         ?.size == 1
                 }
                 assertEquals(
                     1_000_000_000L,
-                    node.observation!!
+                    node
+                        .captureObservation()!!
                         .snapshot!!
                         .balances
                         .single()
@@ -278,7 +362,8 @@ class DevelopmentFundingNodeTest {
                 assertTrue(unknown.reason.contains("결과 미확인"))
                 assertEquals(
                     1,
-                    node.observation!!
+                    node
+                        .captureObservation()!!
                         .snapshot!!
                         .preparations.size,
                 )
@@ -289,7 +374,8 @@ class DevelopmentFundingNodeTest {
                 assertEquals("L1", replay.ledgerTransactionId)
                 assertEquals(
                     1_000_000_000L,
-                    node.observation!!
+                    node
+                        .captureObservation()!!
                         .snapshot!!
                         .balances
                         .single()
@@ -297,7 +383,8 @@ class DevelopmentFundingNodeTest {
                 )
                 assertEquals(
                     1,
-                    node.observation!!
+                    node
+                        .captureObservation()!!
                         .snapshot!!
                         .preparations.size,
                 )
@@ -331,7 +418,7 @@ class DevelopmentFundingNodeTest {
                 }
                 val next = assertIs<FundingRequestOutcome.Confirmed>(client.request(command("P3", "U2", "L3")))
                 assertIs<DevelopmentBalanceResultPayload.Prepared>(next.result)
-                val observation = assertNotNull(node.observation)
+                val observation = assertNotNull(node.captureObservation())
                 assertEquals(3L, observation.malformedMessages)
                 assertEquals(2, observation.snapshot!!.preparations.size)
                 assertTrue(observation.snapshot.pendingOrders.isEmpty())
@@ -408,8 +495,8 @@ class DevelopmentFundingNodeTest {
         val config = config().copy(resultTimeoutMs = 100)
         DevelopmentFundingNode.start(config).use { node ->
             // 실물 노드의 한 메모리 쓰기만 실패시킨다. 제품에 장애 주입 입구를 만들지 않는다.
-            val adapterField = DevelopmentFundingNode::class.java.getDeclaredField("service").apply { isAccessible = true }
-            val adapter = adapterField.get(node)
+            val adapterGetter = DevelopmentFundingNode::class.java.getDeclaredMethod("getService").apply { isAccessible = true }
+            val adapter = adapterGetter.invoke(node)
             val stateField = DevelopmentFundingAdapter::class.java.getDeclaredField("state").apply { isAccessible = true }
             val trading = stateField.get(adapter) as com.exchange.core.trading.TradingState
             val admission = trading.javaClass.getDeclaredField("admission").apply { isAccessible = true }
@@ -451,21 +538,28 @@ class DevelopmentFundingNodeTest {
     }
 
     @Test
-    fun `실제 Snapshot 요청은 빈 성공 대신 노드 종료로 끝난다`() {
+    fun `실제 Snapshot 요청은 기록 완료 뒤에도 다음 요청을 처리한다`() {
         val config = config()
         DevelopmentFundingNode.start(config).use { node ->
+            DevelopmentFundingClient(config).use { client -> assertIs<FundingRequestOutcome.Confirmed>(client.request(command())) }
             Aeron.connect(Aeron.Context().aeronDirectoryName(config.driverDirectory)).use { aeron ->
                 val toggle = assertNotNull(ClusterControl.findControlToggle(aeron.countersReader(), config.clusterId))
+                val before = consensus(node).context().snapshotCounter().get()
                 eventually { ClusterControl.ToggleState.SNAPSHOT.toggle(toggle) }
-                assertTrue(node.awaitClosed(5_000), "Snapshot 거절이 실제 실행 중단까지 이어져야 한다")
-                assertNotNull(node.error)
-                assertTrue(node.observation!!.failure!!.contains("Snapshot"))
+                eventually { consensus(node).context().snapshotCounter().get() > before }
+                assertNull(node.error)
+                assertFalse(node.isClosed)
+                DevelopmentFundingClient(config).use { client ->
+                    val repeated = assertIs<FundingRequestOutcome.Confirmed>(client.request(command()))
+                    assertTrue(assertIs<DevelopmentBalanceResultPayload.Prepared>(repeated.result).result.alreadyPrepared)
+                }
+                assertEquals(1, assertNotNull(node.captureObservation()?.snapshot).preparations.size)
             }
         }
     }
 
     @Test
-    fun `종료 뒤에도 기록을 보존하고 기존 디렉터리의 재실행을 거절한다`() {
+    fun `종료 뒤에도 기록을 보존하고 복구를 명시하지 않은 재실행을 거절한다`() {
         val config = config()
         DevelopmentFundingNode.start(config).use { node ->
             DevelopmentFundingClient(config).use { client -> assertIs<FundingRequestOutcome.Confirmed>(client.request(command())) }
@@ -524,7 +618,7 @@ class DevelopmentFundingNodeTest {
             val sockets = mutableListOf<DatagramSocket>()
             try {
                 (0..7).forEach { sockets.add(DatagramSocket(base + it)) }
-                return DevelopmentFundingSettings(Files.createTempDirectory("funding97-").resolve("run"), base)
+                return DevelopmentFundingSettings(Files.createTempDirectory(temporaryDirectory, "funding97-").resolve("run"), base)
             } catch (_: java.net.BindException) {
                 // 다른 테스트나 프로세스의 포트를 피한다.
             } finally {

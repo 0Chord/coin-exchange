@@ -4,63 +4,78 @@ import com.exchange.core.common.MarketId
 import com.exchange.core.ledger.Balance
 import com.exchange.core.matching.MatchingEvent
 import com.exchange.core.matching.OrderEnteredBook
+import com.exchange.core.matching.RestingOrderSnapshot
 import com.exchange.core.matching.TradeExecuted
 import com.exchange.core.order.OrderFillSettlementPlan
 import com.exchange.core.order.OrderReservation
 import com.exchange.core.trading.TradingState
 
-/** 전체 상태의 학습·대조용 값이다. 같은 서비스 callback 직후 읽고 제품 getter를 추가하지 않는다. */
-internal fun tradingVerificationEvidence(service: DevelopmentFundingAdapter): Map<String, Any?> {
-    val field = DevelopmentFundingAdapter::class.java.getDeclaredField("state").apply { isAccessible = true }
-    val state = field.get(service) as TradingState
+private val verificationTradingStateField = DevelopmentFundingAdapter::class.java.getDeclaredField("state").apply { isAccessible = true }
+
+private fun verificationTradingState(service: DevelopmentFundingAdapter): TradingState =
+    verificationTradingStateField.get(service) as TradingState
+
+internal fun isVerificationTradingBlocked(service: DevelopmentFundingAdapter): Boolean = verificationTradingState(service).isBlocked
+
+/** 서비스 스레드에서 크기만 읽으며 누적 결과 객체를 복사하지 않는다. */
+internal fun captureVerificationRetention(service: DevelopmentFundingAdapter) = verificationTradingState(service).historyRetention()
+
+/** 전체 상태의 학습·대조용 값이다. 명시적으로 캡처한 callback 상태를 재사용한다. */
+internal fun tradingVerificationEvidence(
+    service: DevelopmentFundingAdapter,
+    captured: TradingState.Snapshot? = null,
+): Map<String, Any?> {
+    val state = verificationTradingState(service)
     if (state.isBlocked) return mapOf("blocked" to true)
-    val snapshot = state.snapshot()
+    val snapshot = captured ?: service.captureSnapshotOnServiceThread()
     val markets =
         (snapshot.requests.map { it.order.marketId } + snapshot.reservations.map { it.marketId }).distinct().sortedBy { it.value }
     return mapOf(
         "currentReservations" to snapshot.reservations.map(::verificationReservation),
         "books" to markets.map { market -> verificationBook(state, market) },
         "completions" to
-            snapshot.completions.map { completion ->
-                val matching = completion.matchingResult
+            snapshot.completions.map(::verificationCompletionFields),
+    )
+}
+
+internal fun verificationCompletionFields(completion: TradingState.Completion): Map<String, Any?> {
+    val matching = completion.matchingResult
+    return mapOf(
+        "admissionSequence" to completion.admission.sequence,
+        "executionId" to completion.executionId,
+        "occurredAt" to completion.occurredAt.toString(),
+        "marketId" to completion.admission.candidate.market.marketId.value,
+        "orderId" to completion.admission.candidate.order.orderId.value,
+        "expectedEventCount" to matching.expectedEventCount,
+        "firstEngineSequence" to matching.firstEngineSequence,
+        "lastEngineSequence" to matching.lastEngineSequence,
+        "events" to matching.events.map(::verificationMatchingEvent),
+        "settlements" to
+            completion.settlement.settlements.map { settlement ->
+                val execution = settlement.execution
                 mapOf(
-                    "admissionSequence" to completion.admission.sequence,
-                    "executionId" to completion.executionId,
-                    "occurredAt" to completion.occurredAt.toString(),
-                    "marketId" to completion.admission.candidate.market.marketId.value,
-                    "orderId" to completion.admission.candidate.order.orderId.value,
-                    "expectedEventCount" to matching.expectedEventCount,
-                    "firstEngineSequence" to matching.firstEngineSequence,
-                    "lastEngineSequence" to matching.lastEngineSequence,
-                    "events" to matching.events.map(::verificationMatchingEvent),
-                    "settlements" to
-                        completion.settlement.settlements.map { settlement ->
-                            val execution = settlement.execution
-                            mapOf(
-                                "marketId" to execution.marketId.value,
-                                "engineSequence" to execution.engineSequence,
-                                "makerOrderId" to execution.makerOrderId.value,
-                                "takerOrderId" to execution.takerOrderId.value,
-                                "makerUserId" to execution.makerUserId.value,
-                                "takerUserId" to execution.takerUserId.value,
-                                "side" to execution.side.name,
-                                "price" to execution.price.value,
-                                "quantity" to execution.quantity.value,
-                                "ledgerTransactionId" to execution.ledgerTransactionId,
-                                "occurredAt" to execution.occurredAt.toString(),
-                                "makerPlan" to verificationFillPlan(settlement.makerPlan),
-                                "takerPlan" to verificationFillPlan(settlement.takerPlan),
-                            )
-                        },
-                    "balanceChanges" to
-                        completion.settlement.balanceChanges.map {
-                            mapOf("previous" to verificationBalance(it.previous), "next" to verificationBalance(it.next))
-                        },
-                    "reservationChanges" to
-                        completion.settlement.reservationChanges.map {
-                            mapOf("previous" to verificationReservation(it.previous), "next" to verificationReservation(it.next))
-                        },
+                    "marketId" to execution.marketId.value,
+                    "engineSequence" to execution.engineSequence,
+                    "makerOrderId" to execution.makerOrderId.value,
+                    "takerOrderId" to execution.takerOrderId.value,
+                    "makerUserId" to execution.makerUserId.value,
+                    "takerUserId" to execution.takerUserId.value,
+                    "side" to execution.side.name,
+                    "price" to execution.price.value,
+                    "quantity" to execution.quantity.value,
+                    "ledgerTransactionId" to execution.ledgerTransactionId,
+                    "occurredAt" to execution.occurredAt.toString(),
+                    "makerPlan" to verificationFillPlan(settlement.makerPlan),
+                    "takerPlan" to verificationFillPlan(settlement.takerPlan),
                 )
+            },
+        "balanceChanges" to
+            completion.settlement.balanceChanges.map {
+                mapOf("previous" to verificationBalance(it.previous), "next" to verificationBalance(it.next))
+            },
+        "reservationChanges" to
+            completion.settlement.reservationChanges.map {
+                mapOf("previous" to verificationReservation(it.previous), "next" to verificationReservation(it.next))
             },
     )
 }
@@ -73,16 +88,17 @@ private fun verificationBook(
         "marketId" to market.value,
         "lastEngineSequence" to state.lastEngineSequence(market),
         "orders" to
-            state.book(market).map {
-                mapOf(
-                    "orderId" to it.orderId.value,
-                    "userId" to it.userId.value,
-                    "side" to it.side.name,
-                    "price" to it.price.value,
-                    "originalQuantity" to it.originalQuantity.value,
-                    "remainingQuantity" to it.remainingQuantity.value,
-                )
-            },
+            state.book(market).map(::verificationRestingOrderFields),
+    )
+
+internal fun verificationRestingOrderFields(order: RestingOrderSnapshot): Map<String, Any?> =
+    mapOf(
+        "orderId" to order.orderId.value,
+        "userId" to order.userId.value,
+        "side" to order.side.name,
+        "price" to order.price.value,
+        "originalQuantity" to order.originalQuantity.value,
+        "remainingQuantity" to order.remainingQuantity.value,
     )
 
 private fun verificationMatchingEvent(event: MatchingEvent): Map<String, Any?> =

@@ -45,6 +45,8 @@ dependencies {
     testRuntimeOnly("com.google.protobuf:protobuf-java:4.33.2")
     // 실제 Aeron 어댑터의 상위 타입도 읽는다. 운영 검사 대상을 제외하지 않는다.
     testRuntimeOnly("io.aeron:aeron-cluster:1.53.3")
+    // Gateway HTTP protocol의 실제 상위 정의를 읽는다. 검사 대상과 규칙은 유지한다.
+    testRuntimeOnly("org.apache.tomcat.embed:tomcat-embed-core")
     testRuntimeOnly("org.junit.platform:junit-platform-launcher")
 }
 
@@ -70,6 +72,8 @@ val productionOutputs =
             .output.classesDirs
     }
 extra["architecture.productionProjects"] = productionModules.map { ":$it" }
+// doFirst는 역순으로 실행되므로 입력 수집보다 먼저 등록해 마지막에 전달한다.
+apply(from = "gradle/test-jvm-inputs.gradle.kts")
 apply(from = "gradle/project-dependencies.gradle.kts")
 apply(from = "gradle/isolation-inputs.gradle.kts")
 apply(from = "gradle/main-sources.gradle.kts")
@@ -103,6 +107,7 @@ tasks.withType<Test> {
     systemProperty("architecture.isolationScript", file("gradle/isolation-inputs.gradle.kts").absolutePath)
     systemProperty("architecture.dependencyScript", file("gradle/project-dependencies.gradle.kts").absolutePath)
     systemProperty("architecture.gradleHome", requireNotNull(gradle.gradleHomeDir).absolutePath)
+    systemProperty("architecture.jvmInputsScript", file("gradle/test-jvm-inputs.gradle.kts").absolutePath)
     productionModules.forEach { dependsOn(":$it:classes") }
     productionOutputs.forEach { (module, output) ->
         inputs.files(output).withPropertyName("productionClasses.$module")

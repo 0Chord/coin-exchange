@@ -7,33 +7,50 @@ import com.exchange.core.api.trading.infrastructure.codec.AdmissionMessageFormat
 import com.exchange.core.api.trading.infrastructure.codec.AdmissionMessageReader
 import com.exchange.core.api.trading.infrastructure.codec.AdmissionResultCodec
 import com.exchange.core.api.trading.infrastructure.codec.AdmissionResultPayload
+import com.exchange.core.api.trading.infrastructure.codec.BoundedMarketProgress
+import com.exchange.core.api.trading.infrastructure.codec.BoundedTradingCodec
+import com.exchange.core.api.trading.infrastructure.codec.BoundedTradingCommand
+import com.exchange.core.api.trading.infrastructure.codec.BoundedTradingReply
 import com.exchange.core.api.trading.infrastructure.codec.DevelopmentBalanceCommandCodec
 import com.exchange.core.api.trading.infrastructure.codec.DevelopmentBalanceCommandPayload
 import com.exchange.core.api.trading.infrastructure.codec.DevelopmentBalanceResultCodec
 import com.exchange.core.api.trading.infrastructure.codec.DevelopmentBalanceResultPayload
 import com.exchange.core.api.trading.infrastructure.codec.ExecuteAdmissionCodec
 import com.exchange.core.api.trading.infrastructure.codec.ExecuteAdmissionPayload
+import com.exchange.core.api.trading.infrastructure.history.BoundedTradingStateCodec
 import com.exchange.core.ledger.OpeningBalanceConflictException
 import com.exchange.core.ledger.OpeningBalanceRequestConflictException
+import com.exchange.core.trading.AdmissionCode
+import com.exchange.core.trading.AdmissionReply
+import com.exchange.core.trading.ExecuteAdmission
+import com.exchange.core.trading.ExecutionReply
 import com.exchange.core.trading.OrderAdmissionState
+import com.exchange.core.trading.TradingLifecycle
+import com.exchange.core.trading.TradingRecoveryState
 import com.exchange.core.trading.TradingState
 import io.aeron.ExclusivePublication
 import io.aeron.Image
 import io.aeron.Publication
+import io.aeron.cluster.client.AeronCluster
 import io.aeron.cluster.codecs.CloseReason
 import io.aeron.cluster.service.ClientSession
 import io.aeron.cluster.service.Cluster
 import io.aeron.cluster.service.ClusteredService
+import io.aeron.logbuffer.BufferClaim
 import io.aeron.logbuffer.Header
 import org.agrona.DirectBuffer
 import org.agrona.concurrent.AgentTerminationException
+import org.agrona.concurrent.NanoClock
+import org.agrona.concurrent.SystemNanoClock
 import org.agrona.concurrent.UnsafeBuffer
 import java.time.Instant
+import java.util.concurrent.CompletableFuture
 import java.util.concurrent.TimeUnit
 
 /** 서비스 스레드가 완성한 값만 외부에 공개한다. 영구 Aeron Snapshot과는 다르다. */
 internal data class FundingObservation(
     val position: Long,
+    /** 명시적 상태 관찰에서만 채운다. 일반 명령의 관찰은 누적 상태를 복사하지 않는다. */
     val snapshot: TradingState.Snapshot?,
     val result: DevelopmentBalanceResultPayload?,
     val failure: String? = null,
@@ -44,6 +61,8 @@ internal data class FundingObservation(
     val admissionResult: AdmissionResultPayload? = null,
     val appliedRole: String? = null,
     val executionSequence: Long? = null,
+    val executionCompletion: TradingState.Completion? = null,
+    val compactExecution: com.exchange.core.trading.ExecutionReceipt? = null,
 )
 
 /** 확정 callback에서 같은 코어에 동기 적용하고, 이미 만든 결과의 전달만 재시도한다. */
@@ -55,6 +74,11 @@ internal class DevelopmentFundingAdapter(
     private val serviceId: Int = 0,
     private val maxExecutionOfferAttempts: Int = 1_000,
     private val executionOfferTimeoutNs: Long = 1_000_000_000,
+    private var telemetry: TradingNodeTelemetry = TradingNodeTelemetry.NONE,
+    private var telemetryNanoTime: NanoClock = SystemNanoClock.INSTANCE,
+    private val snapshots: TradingSnapshotPersistence? = null,
+    private val boundedManifest: com.exchange.core.trading.TradingClusterManifest? = null,
+    private val trustedBoundedControl: Boolean = false,
     private val onFatal: (Throwable) -> Unit,
 ) : ClusteredService {
     private val commands = DevelopmentBalanceCommandCodec()
@@ -62,9 +86,31 @@ internal class DevelopmentFundingAdapter(
     private val admissionCommands = AdmissionCommandCodec()
     private val admissionResults = AdmissionResultCodec()
     private val executionCommands = ExecuteAdmissionCodec()
+    private val executionClaim = BufferClaim()
+    private val boundedCodec = BoundedTradingCodec()
+    private val boundedStateCodec = BoundedTradingStateCodec()
     private lateinit var cluster: Cluster
     private var malformedMessages = 0L
+    private var snapshotInProgress = false
     private var fatalCause: Throwable? = null
+    private lateinit var serviceThread: Thread
+    private val observationCaptures = ArrayDeque<CompletableFuture<FundingObservation?>>()
+    private val recoveryCaptures = ArrayDeque<CompletableFuture<TradingRecoveryState>>()
+    private var callbackCapture: TradingNodeCallbackCapture? = null
+    private var reusableCallbackCapture: TradingNodeCallbackCapture? = null
+    private var telemetryRecordingFailures = 0L
+    val telemetryOperational: Boolean get() = telemetryRecordingFailures == 0L && telemetry.isOperational
+    val telemetryFailureCount: Long get() = telemetryRecordingFailures + telemetry.failureCount
+
+    /** 노드 시작 전 composition만 허용한다. 서비스 스레드의 callback 관측자를 실행 중 교체하지 않는다. */
+    fun attachTelemetry(
+        observer: TradingNodeTelemetry,
+        nanoTime: NanoClock = telemetryNanoTime,
+    ) {
+        check(!this::cluster.isInitialized) { "노드 계측은 onStart 전에만 연결할 수 있습니다" }
+        telemetry = if (telemetry === TradingNodeTelemetry.NONE) observer else TradingNodeTelemetry.compose(telemetry, observer)
+        telemetryNanoTime = nanoTime
+    }
 
     @Volatile
     var observation: FundingObservation? = null
@@ -72,6 +118,10 @@ internal class DevelopmentFundingAdapter(
 
     @Volatile
     var started: Boolean = false
+        private set
+
+    @Volatile
+    var tradingReady: Boolean = false
         private set
 
     init {
@@ -87,10 +137,30 @@ internal class DevelopmentFundingAdapter(
     ) {
         if (this::cluster.isInitialized) fail(IllegalStateException("종료한 개발 서비스를 다시 시작할 수 없습니다"))
         this.cluster = cluster
-        if (snapshotImage != null) fail(UnsupportedOperationException("개발 자금 상태의 Snapshot 복구는 지원하지 않습니다"))
+        serviceThread = Thread.currentThread()
+        if (snapshotImage != null) {
+            snapshotInProgress = true
+            try {
+                val persistence = snapshots ?: throw UnsupportedOperationException("Snapshot 저장소가 연결되지 않았습니다")
+                malformedMessages = persistence.restore(state, snapshotImage, cluster)
+                observation =
+                    FundingObservation(
+                        cluster.logPosition(),
+                        null,
+                        null,
+                        malformedMessages = malformedMessages,
+                        replyStatus = "RESTORED_SNAPSHOT",
+                    )
+            } catch (failure: Throwable) {
+                fail(failure)
+            } finally {
+                snapshotInProgress = false
+            }
+        }
         // 새 클러스터의 onStart에는 아직 leadership term이 없어 timeUnit이 null이다.
         cluster.timeUnit()?.let { requireMillisecondClock(it) }
         started = true
+        tradingReady = boundedManifest == null || state.lifecycle == TradingLifecycle.RUNNING
     }
 
     override fun onSessionMessage(
@@ -103,13 +173,29 @@ internal class DevelopmentFundingAdapter(
     ) {
         ensureRunning()
         requireMillisecondClock(cluster.timeUnit())
+        val outerCapture = callbackCapture
+        val capture =
+            if (telemetry === TradingNodeTelemetry.NONE) {
+                null
+            } else {
+                val reusable = reusableCallbackCapture
+                reusableCallbackCapture = null
+                if (reusable == null) TradingNodeCallbackCapture(telemetryNanoTime) else reusable.also { it.reset() }
+            }
+        callbackCapture = capture
+        var callbackFailure: Throwable? = null
         try {
+            if (boundedManifest != null) {
+                onBoundedMessage(session, timestamp, buffer, offset, length)
+                return
+            }
             val internal = ClusterMessageOrigin.isServiceMessage(buffer, offset, length, serviceId)
             val command =
                 try {
-                    decode(buffer, offset, length, internal)
+                    measure(TradingNodePhase.DECODE) { decode(buffer, offset, length, internal) }
                 } catch (error: AdmissionMessageException) {
                     if (internal) throw error
+                    capture?.kind = TradingNodeCallbackKind.MALFORMED
                     malformedMessages++
                     observation =
                         FundingObservation(
@@ -122,43 +208,491 @@ internal class DevelopmentFundingAdapter(
                     return
                 }
 
+            when (command) {
+                is Command.Funding -> {
+                    capture?.apply {
+                        kind = TradingNodeCallbackKind.FUNDING
+                        userId = command.value.opening.userId.value
+                        requestId = command.value.opening.preparationId
+                    }
+                }
+
+                is Command.Admission -> {
+                    capture?.apply {
+                        kind = TradingNodeCallbackKind.ADMISSION
+                        userId = command.value.order.userId.value
+                        requestId = command.value.requestId
+                    }
+                }
+
+                is Command.Execution -> {
+                    capture?.apply {
+                        kind = TradingNodeCallbackKind.EXECUTION
+                        sequence = command.value.admissionSequence
+                    }
+                }
+            }
+
             // 역할·세션·전송 성공 여부가 확정된 업무 적용을 바꾸지 않는다.
             var fundingResult: DevelopmentBalanceResultPayload? = null
             var admissionResult: AdmissionResultPayload? = null
             var executionSequence: Long? = null
+            var executionCompletion: TradingState.Completion? = null
             val reply =
                 when (command) {
                     is Command.Funding -> {
-                        fundingResult = prepare(command.value)
-                        results.encode(fundingResult)
+                        val prepared = measure(TradingNodePhase.FUNDING_APPLY) { prepare(command.value) }
+                        fundingResult = prepared
+                        if (cluster.role() == Cluster.Role.LEADER) {
+                            measure(TradingNodePhase.REPLY_ENCODE) { results.encode(prepared) }
+                        } else {
+                            null
+                        }
                     }
 
                     is Command.Admission -> {
-                        admissionResult = admit(command.value)
-                        admissionResults.encode(admissionResult)
+                        val admitted = admit(command.value)
+                        admissionResult = admitted
+                        if (cluster.role() == Cluster.Role.LEADER) {
+                            measure(TradingNodePhase.REPLY_ENCODE) { admissionResults.encode(admitted) }
+                        } else {
+                            null
+                        }
                     }
 
                     is Command.Execution -> {
-                        executionSequence = command.value.admissionSequence
-                        state.executePending(executionSequence, Instant.ofEpochMilli(timestamp))
+                        val sequence = command.value.admissionSequence
+                        executionSequence = sequence
+                        executionCompletion =
+                            measure(TradingNodePhase.EXECUTION_TOTAL) {
+                                if (capture == null) {
+                                    state.executePending(sequence, Instant.ofEpochMilli(timestamp))
+                                } else {
+                                    state.executePending(sequence, Instant.ofEpochMilli(timestamp), capture)
+                                }
+                            }
                         null
                     }
                 }
             val applied =
                 FundingObservation(
                     cluster.logPosition(),
-                    state.snapshot(),
-                    fundingResult,
+                    snapshot = null,
+                    result = fundingResult,
                     malformedMessages = malformedMessages,
-                    replyStatus = if (reply == null) "EXECUTED" else "PENDING",
+                    replyStatus =
+                        when {
+                            command is Command.Execution -> "EXECUTED"
+                            reply != null -> "PENDING"
+                            session == null -> "NO_SESSION"
+                            else -> "NOT_LEADER"
+                        },
                     admissionResult = admissionResult,
                     appliedRole = cluster.role().name,
                     executionSequence = executionSequence,
+                    executionCompletion = executionCompletion,
                 )
             observation = applied
-            if (reply != null) observation = sendReply(session, reply, applied)
+            if (reply != null) observation = measure(TradingNodePhase.REPLY_OFFER) { sendReply(session, reply, applied) }
         } catch (error: Throwable) {
+            callbackFailure = error
+            capture?.failed = true
             fail(error)
+        } finally {
+            callbackCapture = outerCapture
+            if (capture != null) {
+                try {
+                    capture.complete()
+                    val applied = observation
+                    telemetry.recordCompleted(capture, applied?.position ?: 0, applied?.appliedRole ?: "UNKNOWN", applied?.replyStatus)
+                } catch (_: Exception) {
+                    telemetryRecordingFailures++
+                    // 시간·운영 metric·테스트 observer의 실패는 원래 callback의 결과나 예외를 덮지 않는다.
+                } catch (observerFailure: Error) {
+                    val original = callbackFailure
+                    if (original == null) throw observerFailure
+                    if (observerFailure !== original) original.addSuppressed(observerFailure)
+                } finally {
+                    // 관측자가 돌아온 뒤에만 재사용한다. 중첩 callback은 별도의 capture를 사용한다.
+                    reusableCallbackCapture = capture
+                }
+            }
+        }
+    }
+
+    private fun onBoundedMessage(
+        session: ClientSession?,
+        timestamp: Long,
+        buffer: DirectBuffer,
+        offset: Int,
+        length: Int,
+    ) {
+        val internal = ClusterMessageOrigin.isServiceMessage(buffer, offset, length, serviceId)
+        val decoded =
+            try {
+                measure(TradingNodePhase.DECODE) {
+                    if (length !in 9..BoundedTradingCodec.MAX_MESSAGE_BYTES) throw AdmissionMessageException("invalid bounded frame length")
+                    boundedCodec.decode(ByteArray(length).also { buffer.getBytes(offset, it) })
+                }
+            } catch (error: AdmissionMessageException) {
+                if (internal) throw error
+                callbackCapture?.kind = TradingNodeCallbackKind.MALFORMED
+                malformedMessages++
+                observation =
+                    FundingObservation(
+                        cluster.logPosition(),
+                        null,
+                        null,
+                        malformedMessages = malformedMessages,
+                        replyStatus = "MALFORMED_OR_UNSUPPORTED",
+                    )
+                return
+            }
+        val command = decoded.command
+        if (internal != (command is BoundedTradingCommand.Execution)) {
+            if (internal) error("unexpected internal bounded command")
+            callbackCapture?.kind = TradingNodeCallbackKind.MALFORMED
+            malformedMessages++
+            observation =
+                FundingObservation(
+                    cluster.logPosition(),
+                    null,
+                    null,
+                    malformedMessages = malformedMessages,
+                    replyStatus = "UNAUTHORIZED_INTERNAL_COMMAND",
+                )
+            return
+        }
+        val position = cluster.logPosition()
+
+        fun reply(
+            code: String,
+            admission: com.exchange.core.trading.AdmissionReceipt? = null,
+            epoch: Long? = null,
+            retired: Long? = null,
+        ) = BoundedTradingReply(decoded.correlationId, code, position, admission, epoch, retired)
+        var execution: com.exchange.core.trading.ExecutionReceipt? = null
+        var executionSequence: Long? = null
+        val response =
+            when {
+                command !is BoundedTradingCommand.Initialize && command !is BoundedTradingCommand.Progress &&
+                    state.lifecycle != TradingLifecycle.RUNNING -> {
+                    reply(if (state.lifecycle == TradingLifecycle.QUARANTINED) "QUARANTINED" else "NOT_READY")
+                }
+
+                else -> {
+                    when (command) {
+                        is BoundedTradingCommand.Initialize -> {
+                            if (!trustedBoundedControl) {
+                                reply("CONTROL_DISABLED")
+                            } else {
+                                val manifest =
+                                    try {
+                                        boundedStateCodec.decodeManifest(command.manifest)
+                                    } catch (
+                                        _: IllegalArgumentException,
+                                    ) {
+                                        return sendBoundedReply(session, reply("INVALID_MANIFEST"), null, null)
+                                    } catch (
+                                        _: java.io.IOException,
+                                    ) {
+                                        return sendBoundedReply(session, reply("INVALID_MANIFEST"), null, null)
+                                    }
+                                if (manifest != boundedManifest) {
+                                    reply("MANIFEST_CONFLICT")
+                                } else {
+                                    val initialized = state.initialize(manifest)
+                                    tradingReady = state.lifecycle == TradingLifecycle.RUNNING
+                                    reply(initialized.name)
+                                }
+                            }
+                        }
+
+                        is BoundedTradingCommand.Admit -> {
+                            callbackCapture?.apply {
+                                kind = TradingNodeCallbackKind.ADMISSION
+                                userId = command.token.userId.value
+                                requestId =
+                                    "${command.token.channel}/${command.token.epoch}/${command.token.sequence}"
+                            }
+                            when (
+                                val admitted =
+                                    measure(
+                                        TradingNodePhase.ADMISSION_APPLY,
+                                    ) { state.admit(command.token, command.intent, Instant.ofEpochMilli(timestamp)) }
+                            ) {
+                                is AdmissionReply.Refused -> {
+                                    reply(admitted.reason)
+                                }
+
+                                is AdmissionReply.Recorded -> {
+                                    val receipt = admitted.receipt
+                                    callbackCapture?.sequence = receipt.admissionSequence
+                                    if (admitted.newlyRecorded && receipt.code == AdmissionCode.ACCEPTED) {
+                                        submitBoundedExecution(
+                                            ExecuteAdmission(
+                                                checkNotNull(boundedManifest).lineage,
+                                                command.intent.marketId,
+                                                checkNotNull(receipt.marketAdmissionSequence),
+                                                checkNotNull(receipt.admissionSequence),
+                                            ),
+                                        )
+                                    }
+                                    reply(receipt.code.name, receipt)
+                                }
+                            }
+                        }
+
+                        is BoundedTradingCommand.Acknowledge -> {
+                            state
+                                .acknowledgeReceipts(command.userId, command.channel, command.epoch, command.through)
+                                .let { reply(it.status.name, epoch = it.epoch, retired = it.retiredThrough) }
+                        }
+
+                        is BoundedTradingCommand.Rotate -> {
+                            state
+                                .rotateEpoch(command.userId, command.channel, command.expectedEpoch)
+                                .let { reply(it.status.name, epoch = it.epoch) }
+                        }
+
+                        is BoundedTradingCommand.Funding -> {
+                            callbackCapture?.kind = TradingNodeCallbackKind.FUNDING
+                            val c = command.command
+                            if (!trustedBoundedControl) {
+                                reply("CONTROL_DISABLED")
+                            } else {
+                                try {
+                                    reply(
+                                        "PREPARED",
+                                    ).copy(
+                                        funding =
+                                            measure(TradingNodePhase.FUNDING_APPLY) {
+                                                state.prepareDevelopmentBalance(c.opening, c.ledgerTransactionId, c.occurredAt)
+                                            },
+                                    )
+                                } catch (
+                                    _: OpeningBalanceRequestConflictException,
+                                ) {
+                                    reply("PREPARATION_CONTENT_CONFLICT")
+                                } catch (
+                                    _: OpeningBalanceConflictException,
+                                ) {
+                                    reply("ACCOUNT_ALREADY_USED")
+                                } catch (
+                                    input: com.exchange.core.trading.TradingFundingInputException,
+                                ) {
+                                    reply(input.reason.name)
+                                } catch (
+                                    _: com.exchange.core.trading.TradingCapacityException,
+                                ) {
+                                    reply("RETRYABLE_CAPACITY")
+                                }
+                            }
+                        }
+
+                        is BoundedTradingCommand.Execution -> {
+                            executionSequence = command.command.admissionSequence
+                            callbackCapture?.apply {
+                                kind = TradingNodeCallbackKind.EXECUTION
+                                sequence = command.command.admissionSequence
+                            }
+                            val result =
+                                try {
+                                    measure(
+                                        TradingNodePhase.EXECUTION_TOTAL,
+                                    ) {
+                                        state.executePending(
+                                            command.command,
+                                            Instant.ofEpochMilli(timestamp),
+                                            callbackCapture ?: com.exchange.core.trading.TradingExecutionObserver.NONE,
+                                        )
+                                    }
+                                } catch (violation: com.exchange.core.trading.TradingInvariantViolation) {
+                                    if (state.isBlocked) throw violation
+                                    state.quarantine(position, violation.reason.name)
+                                    tradingReady = false
+                                    callbackCapture?.failed = true
+                                    observation =
+                                        FundingObservation(
+                                            position,
+                                            null,
+                                            null,
+                                            malformedMessages = malformedMessages,
+                                            replyStatus = "QUARANTINED",
+                                            blocked = true,
+                                            appliedRole = cluster.role().name,
+                                            executionSequence = executionSequence,
+                                        )
+                                    return
+                                }
+                            when (result) {
+                                is ExecutionReply.Applied -> execution = result.receipt
+                                ExecutionReply.AlreadyPassed -> Unit
+                            }
+                            null
+                        }
+
+                        is BoundedTradingCommand.Quarantine -> {
+                            if (!trustedBoundedControl) {
+                                reply("CONTROL_DISABLED")
+                            } else if (command.incidentPosition < 0 || command.incidentPosition > position || command.reason.isBlank() ||
+                                command.reason.length > 128
+                            ) {
+                                reply("INVALID_INCIDENT")
+                            } else {
+                                state.quarantine(command.incidentPosition, command.reason)
+                                tradingReady = false
+                                reply("QUARANTINED")
+                            }
+                        }
+
+                        BoundedTradingCommand.Progress -> {
+                            val progress = state.progress()
+                            BoundedTradingReply(
+                                decoded.correlationId,
+                                "PROGRESS",
+                                position,
+                                markets =
+                                    progress.markets.map {
+                                        BoundedMarketProgress(it.marketId.value, it.lastAssigned, it.executedThrough)
+                                    },
+                                lifecycle = progress.lifecycle.name,
+                                lastAdmissionSequence = progress.lastAdmissionSequence,
+                            )
+                        }
+                    }
+                }
+            }
+        sendBoundedReply(session, response, executionSequence, execution)
+    }
+
+    private fun sendBoundedReply(
+        session: ClientSession?,
+        response: BoundedTradingReply?,
+        sequence: Long?,
+        execution: com.exchange.core.trading.ExecutionReceipt?,
+    ) {
+        val applied =
+            FundingObservation(
+                cluster.logPosition(),
+                null,
+                null,
+                malformedMessages = malformedMessages,
+                replyStatus = if (sequence != null) "EXECUTED" else "BOUNDED_APPLIED",
+                appliedRole = cluster.role().name,
+                executionSequence = sequence,
+                compactExecution = execution,
+            )
+        observation = applied
+        if (response != null && cluster.role() == Cluster.Role.LEADER) {
+            val encoded =
+                measure(TradingNodePhase.REPLY_ENCODE) {
+                    boundedCodec.encode(response.copy(lineage = checkNotNull(boundedManifest).lineage))
+                }
+            observation =
+                measure(TradingNodePhase.REPLY_OFFER) { sendReply(session, encoded, applied) }
+        }
+    }
+
+    private fun submitBoundedExecution(command: ExecuteAdmission) {
+        val bytes = measure(TradingNodePhase.EXECUTION_ENCODE) { boundedCodec.encode(0, BoundedTradingCommand.Execution(command)) }
+        val buffer = UnsafeBuffer(bytes)
+        val deadline = System.nanoTime() + executionOfferTimeoutNs
+        for (attempt in 1..maxExecutionOfferAttempts) {
+            callbackCapture?.let { it.executionOfferAttempts++ }
+            val result = measure(TradingNodePhase.EXECUTION_OFFER) { cluster.offer(buffer, 0, bytes.size) }
+            callbackCapture?.executionOffer(result)
+            if (result > 0) return
+            check(
+                result == Publication.BACK_PRESSURED || result == Publication.ADMIN_ACTION,
+            ) { "bounded Execute submission failed: $result" }
+            check(attempt < maxExecutionOfferAttempts && System.nanoTime() - deadline < 0) { "bounded Execute submission deadline" }
+            measure(TradingNodePhase.EXECUTION_OFFER) { idleForRetry(attempt == 1) }
+        }
+    }
+
+    fun captureRecoveryState(): CompletableFuture<TradingRecoveryState> {
+        check(boundedManifest != null) { "recovery capture requires bounded owner" }
+        val result = CompletableFuture<TradingRecoveryState>()
+        if (Thread.currentThread() === serviceThread && !snapshotInProgress) {
+            try {
+                result.complete(state.recoveryState())
+            } catch (error: Throwable) {
+                result.completeExceptionally(error)
+            }
+        } else {
+            synchronized(recoveryCaptures) {
+                check(recoveryCaptures.size < 16) { "recovery capture queue is full" }
+                recoveryCaptures.addLast(result)
+            }
+        }
+        return result
+    }
+
+    private inline fun <T> measure(
+        phase: TradingNodePhase,
+        action: () -> T,
+    ): T {
+        val capture = callbackCapture
+        capture?.begin(phase)
+        return try {
+            action()
+        } finally {
+            capture?.end(phase)
+        }
+    }
+
+    /** 외부 조회는 서비스 스레드의 다음 유휴 작업에서 불변 복사본을 받는다. 일반 명령은 이 요청을 만들지 않는다. */
+    fun captureObservation(): CompletableFuture<FundingObservation?> {
+        val capture = CompletableFuture<FundingObservation?>()
+        synchronized(observationCaptures) {
+            if (!started) {
+                capture.completeExceptionally(IllegalStateException("개발 자금 서비스가 준비되지 않았습니다"))
+            } else if (Thread.currentThread() === serviceThread && !snapshotInProgress) {
+                completeCapture(capture)
+            } else if (observationCaptures.size >= 16) {
+                capture.completeExceptionally(IllegalStateException("상태 관찰 요청 버퍼가 가득 찼습니다"))
+            } else {
+                observationCaptures.addLast(capture)
+            }
+        }
+        return capture
+    }
+
+    /** callback과 doBackgroundWork 안에서만 읽는다. 반환값은 이후 업무 쓰기로 바뀌지 않는다. */
+    fun captureSnapshotOnServiceThread(): TradingState.Snapshot {
+        check(this::serviceThread.isInitialized && Thread.currentThread() === serviceThread) { "상태 복사는 서비스 스레드에서만 가능합니다" }
+        check(started) { "개발 자금 서비스가 준비되지 않았습니다" }
+        check(!snapshotInProgress) { "영구 Snapshot 처리 중에는 상태 관찰을 미룹니다" }
+        return state.snapshot()
+    }
+
+    private fun completeCapture(capture: CompletableFuture<FundingObservation?>) {
+        if (capture.isCancelled) return
+        try {
+            val current = observation
+            // 잘못된 외부 메시지와 종료 관찰은 기존처럼 정상 상태를 담지 않는다.
+            val captured =
+                if (boundedManifest != null || current == null || current.failure != null ||
+                    (
+                        current.result == null && current.admissionResult == null && current.executionCompletion == null &&
+                            current.replyStatus != "RESTORED_SNAPSHOT"
+                    )
+                ) {
+                    current
+                } else {
+                    current.copy(snapshot = captureSnapshotOnServiceThread())
+                }
+            capture.complete(captured)
+        } catch (error: Throwable) {
+            capture.completeExceptionally(error)
+        }
+    }
+
+    private fun rejectCaptures(error: Throwable) {
+        synchronized(recoveryCaptures) { while (recoveryCaptures.isNotEmpty()) recoveryCaptures.removeFirst().completeExceptionally(error) }
+        synchronized(observationCaptures) {
+            while (observationCaptures.isNotEmpty()) observationCaptures.removeFirst().completeExceptionally(error)
         }
     }
 
@@ -203,40 +737,94 @@ internal class DevelopmentFundingAdapter(
 
     private fun admit(command: AdmissionCommandPayload): AdmissionResultPayload {
         // 기존 결과가 있으면 새 실행 문맥보다 코어의 최초 판단이 우선한다.
-        val knownRequest = state.hasRequest(command.order.userId, command.requestId)
-        if (!knownRequest) {
-            val context = markets[command.order.marketId]
-            if (context == null || command.market != context.market || command.feePolicySnapshot != context.feePolicySnapshot) {
-                return AdmissionResultPayload.Rejected(
-                    command.order.userId.value,
-                    command.requestId,
-                    command.order.marketId.value,
-                    command.order.orderId.value,
-                    AdmissionResultPayload.Reason.EXECUTION_CONTEXT_MISMATCH,
-                )
-            }
-        }
+        var knownRequest = false
+        val capture = callbackCapture
+        var phase = TradingNodePhase.ADMISSION_CONTEXT
+        capture?.begin(phase)
         val result =
-            state.admit(
+            try {
+                val selected = markets[command.order.marketId]
+                state.admitWithContextCheck(
+                    command.requestId,
+                    command.order,
+                    selected?.market ?: command.market,
+                    selected?.feePolicySnapshot ?: command.feePolicySnapshot,
+                    command.ledgerTransactionId,
+                    command.occurredAt,
+                ) { known ->
+                    knownRequest = known
+                    val acceptedContext =
+                        known ||
+                            (
+                                selected != null && command.market == selected.market &&
+                                    command.feePolicySnapshot == selected.feePolicySnapshot
+                            )
+                    if (acceptedContext) {
+                        // 한 번 조회한 최초 원본은 코어 안에 둔다. 같은 호출에서 적용 단계로 넘어간다.
+                        capture?.end(phase)
+                        phase = TradingNodePhase.ADMISSION_APPLY
+                        capture?.begin(phase)
+                    }
+                    acceptedContext
+                }
+            } finally {
+                capture?.end(phase)
+            }
+        if (result == null) {
+            return AdmissionResultPayload.Rejected(
+                command.order.userId.value,
                 command.requestId,
-                command.order,
-                command.market,
-                command.feePolicySnapshot,
-                command.ledgerTransactionId,
-                command.occurredAt,
+                command.order.marketId.value,
+                command.order.orderId.value,
+                AdmissionResultPayload.Reason.EXECUTION_CONTEXT_MISMATCH,
             )
+        }
+        callbackCapture?.sequence = (result as? OrderAdmissionState.Result.Accepted)?.record?.sequence
         if (!knownRequest && result is OrderAdmissionState.Result.Accepted) submitExecution(result.record.sequence)
         return AdmissionResultPayload.from(command, result)
     }
 
     /** 모든 사본이 같은 확정 승인에서 같은 순서로 생성한다. 업무 실행은 이 입력의 확정 뒤다. */
     private fun submitExecution(sequence: Long) {
-        val bytes = executionCommands.encode(ExecuteAdmissionPayload(sequence))
-        val buffer = UnsafeBuffer(bytes)
+        val length = measure(TradingNodePhase.EXECUTION_ENCODE) { executionCommands.encodedLength(sequence) }
         val startNs = System.nanoTime()
         for (attempt in 1..maxExecutionOfferAttempts) {
             check(attempt == 1 || System.nanoTime() - startNs < executionOfferTimeoutNs) { "내부 실행 제출 기한을 초과했습니다: $sequence" }
-            val position = cluster.offer(buffer, 0, bytes.size)
+            callbackCapture?.let { it.executionOfferAttempts++ }
+            var acquired = false
+            var committed = false
+            val position =
+                try {
+                    val offered =
+                        measure(TradingNodePhase.EXECUTION_OFFER) {
+                            cluster.tryClaim(length, executionClaim).also { acquired = it > 0 }
+                        }
+                    callbackCapture?.executionOffer(offered)
+                    if (offered > 0) {
+                        measure(TradingNodePhase.EXECUTION_ENCODE) {
+                            executionCommands.encodeInto(
+                                sequence,
+                                executionClaim.buffer(),
+                                executionClaim.offset() + AeronCluster.SESSION_HEADER_LENGTH,
+                            )
+                        }
+                        measure(TradingNodePhase.EXECUTION_OFFER) {
+                            executionClaim.commit()
+                            committed = true
+                        }
+                    }
+                    offered
+                } catch (failure: Throwable) {
+                    // 계측의 finally가 실패해도 이미 공개한 frame을 PAD로 바꾸지 않는다.
+                    if (acquired && !committed) {
+                        try {
+                            executionClaim.abort()
+                        } catch (abortFailure: Throwable) {
+                            if (abortFailure !== failure) failure.addSuppressed(abortFailure)
+                        }
+                    }
+                    throw failure
+                }
             if (position > 0) return
             check(position == Publication.BACK_PRESSURED || position == Publication.ADMIN_ACTION) {
                 "내부 실행을 제출할 수 없습니다: sequence=$sequence, result=$position"
@@ -244,7 +832,7 @@ internal class DevelopmentFundingAdapter(
             check(attempt < maxExecutionOfferAttempts && System.nanoTime() - startNs < executionOfferTimeoutNs) {
                 "내부 실행 제출 재시도 한도를 초과했습니다: $sequence"
             }
-            cluster.idleStrategy().idle()
+            measure(TradingNodePhase.EXECUTION_OFFER) { idleForRetry(attempt == 1) }
         }
     }
 
@@ -276,7 +864,9 @@ internal class DevelopmentFundingAdapter(
                 return applied.copy(replyAttempts = attempt - 1, replyStatus = "NOT_LEADER")
             }
             if (session.isClosing) return applied.copy(replyAttempts = attempt - 1, replyStatus = "SESSION_CLOSING")
+            callbackCapture?.let { it.replyAttempts++ }
             val position = session.offer(buffer, 0, bytes.size)
+            callbackCapture?.replyOffer(position)
             if (position > 0) return applied.copy(replyAttempts = attempt, replyStatus = "OFFERED")
             val terminal =
                 when (position) {
@@ -293,9 +883,17 @@ internal class DevelopmentFundingAdapter(
             if (System.nanoTime() - startNs >= replyTimeoutNs) {
                 return applied.copy(replyAttempts = attempt, replyStatus = "DEADLINE_EXCEEDED")
             }
-            cluster.idleStrategy().idle()
+            idleForRetry(attempt == 1)
         }
         error("응답 재시도 경계에 도달할 수 없습니다")
+    }
+
+    private fun idleForRetry(firstRetry: Boolean) {
+        val idle = cluster.idleStrategy()
+        // 새 offer는 이전 대기의 PARKING 상태를 이어받지 않아야 한다. 이후 재시도에서는 계속
+        // 대기 간격을 늘리며, cluster idle은 백그라운드 작업도 수행한다.
+        if (firstRetry) idle.reset()
+        idle.idle()
     }
 
     private fun ensureRunning() {
@@ -306,6 +904,7 @@ internal class DevelopmentFundingAdapter(
     private fun fail(error: Throwable): Nothing {
         fatalCause = error
         started = false
+        rejectCaptures(error)
         observation =
             FundingObservation(
                 position = if (this::cluster.isInitialized) cluster.logPosition() else 0,
@@ -324,7 +923,16 @@ internal class DevelopmentFundingAdapter(
     }
 
     override fun onTakeSnapshot(snapshotPublication: ExclusivePublication) {
-        fail(UnsupportedOperationException("개발 자금 상태의 Snapshot 저장은 지원하지 않습니다"))
+        ensureRunning()
+        snapshotInProgress = true
+        try {
+            val persistence = snapshots ?: throw UnsupportedOperationException("Snapshot 저장소가 연결되지 않았습니다")
+            persistence.save(state, snapshotPublication, cluster, malformedMessages)
+        } catch (failure: Throwable) {
+            fail(failure)
+        } finally {
+            snapshotInProgress = false
+        }
     }
 
     override fun onSessionOpen(
@@ -362,9 +970,42 @@ internal class DevelopmentFundingAdapter(
 
     override fun onRoleChange(newRole: Cluster.Role) = Unit
 
-    override fun doBackgroundWork(nowNs: Long): Int = 0
+    override fun doBackgroundWork(nowNs: Long): Int {
+        // Snapshot을 스트리밍하는 동안 Aeron idle()이 이 callback에 다시 진입한다. 이력을 배타적으로
+        // 내보내거나 가져오는 작업이 끝날 때까지 읽기 요청은 큐에 남겨 둔다.
+        if (snapshotInProgress || !started) return 0
+        val recovery = synchronized(recoveryCaptures) { recoveryCaptures.toList().also { recoveryCaptures.clear() } }
+        if (recovery.isNotEmpty()) {
+            try {
+                val captured = state.recoveryState()
+                recovery.forEach { it.complete(captured) }
+            } catch (
+                error: Throwable,
+            ) {
+                recovery.forEach { it.completeExceptionally(error) }
+            }
+        }
+        val captures =
+            synchronized(observationCaptures) {
+                if (observationCaptures.isEmpty()) return recovery.size
+                observationCaptures.toList().also { observationCaptures.clear() }
+            }
+        val waiting = captures.filterNot { it.isCancelled }
+        if (waiting.isNotEmpty()) {
+            // 같은 관찰 시점의 외부 요청은 전체 상태를 한 번만 복사해 나눠 받는다.
+            val shared = CompletableFuture<FundingObservation?>()
+            completeCapture(shared)
+            shared.whenComplete { captured, error ->
+                waiting.forEach { capture ->
+                    if (error == null) capture.complete(captured) else capture.completeExceptionally(error)
+                }
+            }
+        }
+        return captures.size + recovery.size
+    }
 
     override fun onTerminate(cluster: Cluster) {
         started = false
+        rejectCaptures(IllegalStateException("개발 자금 서비스가 종료됐습니다"))
     }
 }

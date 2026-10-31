@@ -16,8 +16,6 @@ import com.exchange.core.order.OrderType
 import com.exchange.core.order.Side
 import com.exchange.core.order.TimeInForce
 import com.exchange.core.trading.OrderAdmissionResult.Reason
-import java.nio.ByteBuffer
-import java.security.MessageDigest
 import java.time.Instant
 import java.util.HexFormat
 
@@ -37,16 +35,54 @@ class OrderAdmissionCalculator(
         ledgerTransactionId: String,
         occurredAt: Instant,
     ): OrderAdmissionResult {
-        if (!validOrderIdentifiers(order)) {
-            return OrderAdmissionResult.Rejected(Reason.INVALID_ORDER_IDENTIFIER)
-        }
-        if (order.orderType != OrderType.LIMIT || order.timeInForce != TimeInForce.GTC) {
-            return OrderAdmissionResult.Rejected(Reason.UNSUPPORTED_ORDER_CONDITION)
-        }
-        if (order.quantity.value == 0L) {
-            return OrderAdmissionResult.Rejected(Reason.INVALID_QUANTITY)
-        }
+        staticRejectionReason(order)?.let { return OrderAdmissionResult.Rejected(it) }
 
+        validateContext(order, market, feePolicySnapshot, balance)
+        require(validIdentifier(ledgerTransactionId)) { "원장 거래 식별자가 잘못됐습니다" }
+        val transition = calculatePreparedTransition(order, market, feePolicySnapshot, balance)
+        if (transition is AdmissionTransitionResult.Rejected) {
+            return OrderAdmissionResult.Rejected(transition.reason, transition.insufficientBalance)
+        }
+        transition as AdmissionTransitionResult.Calculated
+        val reservation = transition.reservation
+        val nextBalance = transition.nextBalance
+        val requirementAsset = reservation.assetId
+        val requirementAmount = reservation.reservedAmount
+        val account = "USER:${order.userId.value}:${requirementAsset.value}"
+        val transaction =
+            LedgerTransaction(
+                ledgerTransactionId = ledgerTransactionId,
+                sourceEventId = reserveSourceId(order),
+                transactionType = LedgerTransactionType.RESERVE,
+                occurredAt = occurredAt,
+                postings =
+                    listOf(
+                        LedgerPosting("$account:AVAILABLE", requirementAsset, LedgerPostingSide.DEBIT, requirementAmount),
+                        LedgerPosting("$account:HOLD", requirementAsset, LedgerPostingSide.CREDIT, requirementAmount),
+                    ),
+            )
+        return OrderAdmissionResult.Calculated(
+            OrderAdmissionCandidate(order, market, feePolicySnapshot, balance, nextBalance, reservation, transaction),
+        )
+    }
+
+    internal fun calculateTransition(
+        order: OrderAdmissionInput,
+        market: MarketDefinition,
+        feePolicySnapshot: TradingFeePolicySnapshot,
+        balance: Balance,
+    ): AdmissionTransitionResult {
+        staticRejectionReason(order)?.let { return AdmissionTransitionResult.Rejected(it) }
+        validateContext(order, market, feePolicySnapshot, balance)
+        return calculatePreparedTransition(order, market, feePolicySnapshot, balance)
+    }
+
+    private fun validateContext(
+        order: OrderAdmissionInput,
+        market: MarketDefinition,
+        feePolicySnapshot: TradingFeePolicySnapshot,
+        balance: Balance,
+    ) {
         require(order.marketId == market.marketId) { "주문과 마켓 정의가 다릅니다" }
         require(order.userId == balance.userId) { "주문과 잔고 소유자가 다릅니다" }
         val expectedAssetId =
@@ -58,22 +94,28 @@ class OrderAdmissionCalculator(
         require(validIdentifier(market.baseAssetId.value, accountPart = true)) { "base 자산 식별자가 잘못됐습니다" }
         require(validIdentifier(market.quoteAssetId.value, accountPart = true)) { "quote 자산 식별자가 잘못됐습니다" }
         require(feePolicySnapshot.productType == FeeProductType.SPOT) { "현물 수수료 정책이 필요합니다" }
-        require(validIdentifier(ledgerTransactionId)) { "원장 거래 식별자가 잘못됐습니다" }
+    }
 
+    private fun calculatePreparedTransition(
+        order: OrderAdmissionInput,
+        market: MarketDefinition,
+        feePolicySnapshot: TradingFeePolicySnapshot,
+        balance: Balance,
+    ): AdmissionTransitionResult {
         // 수량·정책 문맥을 먼저 확인했으므로 이 단계의 알려진 실패는 금액 표현 거절이다.
         // 뒤의 잔고·예약·원장 오류까지 같은 거절로 바꾸지 않는다.
         val requirement =
             try {
                 reservationCalculator.calculate(market, order.side, order.price, order.quantity, feePolicySnapshot)
             } catch (_: IllegalArgumentException) {
-                return OrderAdmissionResult.Rejected(Reason.UNREPRESENTABLE_RESERVATION)
+                return AdmissionTransitionResult.Rejected(Reason.UNREPRESENTABLE_RESERVATION)
             }
 
         val nextBalance =
             try {
                 balance.reserve(requirement.totalReserveAmount)
             } catch (error: InsufficientBalanceException) {
-                return OrderAdmissionResult.Rejected(
+                return AdmissionTransitionResult.Rejected(
                     Reason.INSUFFICIENT_BALANCE,
                     OrderAdmissionResult.InsufficientBalance(
                         assetId = error.assetId,
@@ -94,23 +136,38 @@ class OrderAdmissionCalculator(
                 requirement = requirement,
                 feePolicySnapshot = feePolicySnapshot,
             )
-        val account = "USER:${order.userId.value}:${requirement.assetId.value}"
-        val transaction =
-            LedgerTransaction(
-                ledgerTransactionId = ledgerTransactionId,
-                sourceEventId = reserveSourceId(order),
-                transactionType = LedgerTransactionType.RESERVE,
-                occurredAt = occurredAt,
-                postings =
-                    listOf(
-                        LedgerPosting("$account:AVAILABLE", requirement.assetId, LedgerPostingSide.DEBIT, requirement.totalReserveAmount),
-                        LedgerPosting("$account:HOLD", requirement.assetId, LedgerPostingSide.CREDIT, requirement.totalReserveAmount),
-                    ),
-            )
-        return OrderAdmissionResult.Calculated(
-            OrderAdmissionCandidate(order, market, feePolicySnapshot, balance, nextBalance, reservation, transaction),
-        )
+        return AdmissionTransitionResult.Calculated(order, market, feePolicySnapshot, balance, nextBalance, reservation)
     }
+
+    internal fun supports(
+        orderType: OrderType,
+        timeInForce: TimeInForce,
+    ): Boolean = orderType == OrderType.LIMIT && timeInForce == TimeInForce.GTC
+
+    /**
+     * 과거 승인 원문의 정적 조건만 대조한다. 현재 잔고로 재승인하거나 예약/원장을 만들지 않는다.
+     * 신규 접수와 같은 식별자/주문 조건 및 기존 예약 계산기의 단위·표현 범위 규칙을 사용한다.
+     */
+    internal fun validateAcceptedOrder(
+        order: OrderAdmissionInput,
+        market: MarketDefinition,
+        feePolicySnapshot: TradingFeePolicySnapshot,
+    ) {
+        require(staticRejectionReason(order) == null) { "accepted receipt contains a statically rejected order" }
+        require(order.marketId == market.marketId) { "accepted receipt market differs" }
+        require(validIdentifier(market.baseAssetId.value, accountPart = true))
+        require(validIdentifier(market.quoteAssetId.value, accountPart = true))
+        require(feePolicySnapshot.productType == FeeProductType.SPOT)
+        reservationCalculator.calculate(market, order.side, order.price, order.quantity, feePolicySnapshot)
+    }
+
+    private fun staticRejectionReason(order: OrderAdmissionInput): Reason? =
+        when {
+            !validOrderIdentifiers(order) -> Reason.INVALID_ORDER_IDENTIFIER
+            !supports(order.orderType, order.timeInForce) -> Reason.UNSUPPORTED_ORDER_CONDITION
+            order.quantity.value == 0L -> Reason.INVALID_QUANTITY
+            else -> null
+        }
 
     internal fun validOrderIdentifiers(order: OrderAdmissionInput): Boolean =
         validIdentifier(order.marketId.value) &&
@@ -150,15 +207,13 @@ class OrderAdmissionCalculator(
     private fun reserveSourceId(order: OrderAdmissionInput): String {
         val marketBytes = order.marketId.value.toByteArray(Charsets.UTF_8)
         val orderBytes = order.orderId.value.toByteArray(Charsets.UTF_8)
-        val source =
-            ByteBuffer
-                .allocate(Int.SIZE_BYTES * 2 + marketBytes.size + orderBytes.size)
-                .putInt(marketBytes.size)
-                .put(marketBytes)
-                .putInt(orderBytes.size)
-                .put(orderBytes)
-                .array()
-        val digest = MessageDigest.getInstance("SHA-256").digest(source)
+        val source = ByteArray(Int.SIZE_BYTES * 2 + marketBytes.size + orderBytes.size)
+        writeTradingIdentifierInt(source, 0, marketBytes.size)
+        marketBytes.copyInto(source, Int.SIZE_BYTES)
+        val orderOffset = Int.SIZE_BYTES + marketBytes.size
+        writeTradingIdentifierInt(source, orderOffset, orderBytes.size)
+        orderBytes.copyInto(source, orderOffset + Int.SIZE_BYTES)
+        val digest = tradingIdentifierSha256(source)
         return "RESERVE:v1:${HexFormat.of().formatHex(digest)}"
     }
 }

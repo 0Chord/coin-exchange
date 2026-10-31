@@ -49,6 +49,7 @@ dependencies {
     implementation(project(":domain-trading"))
     implementation("com.google.protobuf:protobuf-java:$protobufVersion")
     implementation("io.aeron:aeron-cluster:$aeronVersion")
+    implementation("org.rocksdb:rocksdbjni:10.1.3")
 
     implementation("org.springframework.boot:spring-boot-starter-actuator")
     implementation("org.springframework.boot:spring-boot-starter-data-jpa")
@@ -156,5 +157,5 @@ tasks.register<JavaExec>("runTradingGateway") {
     classpath = sourceSets["main"].runtimeClasspath
     mainClass.set("com.exchange.core.TradingGatewayApplicationKt")
     javaLauncher.set(javaToolchains.launcherFor(java.toolchain))
-    jvmArgs("--add-opens=java.base/jdk.internal.misc=ALL-UNNAMED", "--add-opens=java.base/java.util.zip=ALL-UNNAMED")
+    jvmArgs("-XX:+UseG1GC", "--add-opens=java.base/jdk.internal.misc=ALL-UNNAMED", "--add-opens=java.base/java.util.zip=ALL-UNNAMED")
 }

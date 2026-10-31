@@ -42,3 +42,9 @@ out/
 ### Local documentation ###
 # Keep local documents out of version control.
 /docs/
+
+### 로컬 성능 결과와 Python 캐시 ###
+# 요약·재현 코드는 명시적으로 추적하고 원본 실행 자료는 로컬에 보관한다.
+engineering/results/
+__pycache__/
+*.py[cod]
