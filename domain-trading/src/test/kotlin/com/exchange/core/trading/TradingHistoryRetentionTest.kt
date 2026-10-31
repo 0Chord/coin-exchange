@@ -1,6 +1,7 @@
 package com.exchange.core.trading
 
 import com.exchange.core.common.Amount
+import com.exchange.core.common.AssetId
 import com.exchange.core.common.MarketId
 import com.exchange.core.common.OrderId
 import com.exchange.core.common.Quantity
@@ -31,6 +32,34 @@ import kotlin.test.assertSame
 import kotlin.test.assertTrue
 
 class TradingHistoryRetentionTest {
+    @Test
+    fun `복구 최대 순번은 이력 열거 순서와 무관하고 실행하지 않은 접수와 각 마켓을 구분한다`() {
+        val history = ControlledHistoryStore()
+        assertEquals(TradingHistoryWatermarks(0L, emptyMap()), history.recoveryWatermarks())
+        val original = state()
+        fund(original, buyer, usdt, 1_000)
+        val first = admit(original, order("B1", buyer, Side.BUY, 100, 1))
+        val firstCompletion = original.executePending(first.record.sequence, time)
+        val second = admit(original, order("B2", buyer, Side.BUY, 100, 1))
+        val secondCompletion = original.executePending(second.record.sequence, time)
+        val sui = market.copy(marketId = MarketId("SUI-USDT"), baseAssetId = AssetId("SUI"))
+        val third = admit(original, order("SUI-B1", buyer, Side.BUY, 100, 1, sui), definition = sui)
+        val suiCompletion = original.executePending(third.record.sequence, time)
+        val pending = admit(original, order("pending", buyer, Side.BUY, 100, 1))
+        history.append(TradingHistoryBatch(1L, admission = pending.record))
+        history.append(TradingHistoryBatch(2L, admission = second.record, completion = secondCompletion))
+        history.append(TradingHistoryBatch(3L, admission = third.record, completion = suiCompletion))
+        history.append(TradingHistoryBatch(4L, admission = first.record, completion = firstCompletion))
+        history.flush()
+
+        assertEquals(
+            TradingHistoryWatermarks(4L, mapOf(market.marketId to 2L, sui.marketId to 1L)),
+            history.recoveryWatermarks(),
+        )
+        history.readFailure = true
+        assertFailsWith<HistoryFailure> { history.recoveryWatermarks() }
+    }
+
     @Test
     fun `live owner prepares each reservation with its original admission sequence in execution order`() {
         val store = ControlledHistoryStore(autoAcknowledge = true)
