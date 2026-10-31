@@ -9,6 +9,7 @@ import com.exchange.core.fee.FeeRate
 import com.exchange.core.fee.FeeRemainder
 import com.exchange.core.fee.MakerTakerFeeRates
 import com.exchange.core.ledger.Balance
+import com.exchange.core.ledger.LedgerReconciliation
 import com.exchange.core.ledger.LedgerTransaction
 import com.exchange.core.ledger.OpeningBalanceConflictException
 import com.exchange.core.matching.MatchingCheckpoint
@@ -299,6 +300,39 @@ class TradingCheckpointTest {
     }
 
     @Test
+    fun `입금만 한 체크포인트의 사용 가능 잔고를 늘리면 설치 전에 복구를 거절한다`() {
+        assertFundingCheckpointRejected { checkpoint ->
+            copy(checkpoint, balances = listOf(balance(buyer, usdt, 101)))
+        }
+    }
+
+    @Test
+    fun `입금만 한 체크포인트의 사용 가능 잔고를 줄이면 설치 전에 복구를 거절한다`() {
+        assertFundingCheckpointRejected { checkpoint ->
+            copy(checkpoint, balances = listOf(balance(buyer, usdt, 99)))
+        }
+    }
+
+    @Test
+    fun `입금만 한 체크포인트의 잔고와 사용 계정을 함께 지워도 복구를 거절한다`() {
+        assertFundingCheckpointRejected { checkpoint ->
+            copy(checkpoint, balances = emptyList(), usedBalances = emptyList())
+        }
+    }
+
+    @Test
+    fun `영속 원장에 없는 영 잔고와 사용 계정을 함께 더해도 복구를 거절한다`() {
+        assertFundingCheckpointRejected { checkpoint ->
+            val unknownUser = UserId("unfunded")
+            copy(
+                checkpoint,
+                balances = checkpoint.balances + balance(unknownUser, usdt, 0),
+                usedBalances = checkpoint.usedBalances + TradingBalanceKey(unknownUser, usdt),
+            )
+        }
+    }
+
+    @Test
     fun `pending admission checkpoint recovers before its market has any completion`() {
         val history = CheckpointHistory()
         val original = state(history)
@@ -464,6 +498,16 @@ class TradingCheckpointTest {
         assertFailsWith<IllegalStateException> { recovered.snapshot() }
     }
 
+    private fun assertFundingCheckpointRejected(mutate: (TradingCheckpoint) -> TradingCheckpoint) {
+        val history = CheckpointHistory()
+        val original = state(history)
+        fund(original, buyer, usdt, 100)
+        val checkpoint = original.checkpoint()
+        assertEquals(listOf(balance(buyer, usdt, 100)), checkpoint.balances)
+
+        assertCheckpointRejected(history, mutate(checkpoint))
+    }
+
     private fun assertTerminalCheckpointRejected(mutate: (TradingCheckpoint) -> TradingCheckpoint) {
         val history = CheckpointHistory()
         val original = state(history)
@@ -545,6 +589,7 @@ private class CheckpointHistory : TradingHistoryStore {
     private val activeReservations = linkedMapOf<Pair<MarketId, OrderId>, OrderReservation>()
     private val transactions = linkedMapOf<String, LedgerTransaction>()
     private val sources = hashSetOf<String>()
+    private var recoveryBalanceIndex = emptyList<Balance>()
     var forbidScans = false
     override var durableOrdinal = 0L
         private set
@@ -568,6 +613,7 @@ private class CheckpointHistory : TradingHistoryStore {
             transactions[it.ledgerTransactionId] = it
             sources.add(it.sourceEventId)
         }
+        recoveryBalanceIndex = LedgerReconciliation().reconstructBalances(transactions.values.asSequence())
     }
 
     fun load(source: CheckpointHistory) {
@@ -622,6 +668,11 @@ private class CheckpointHistory : TradingHistoryStore {
     override fun recoveryReservations(): Sequence<OrderReservation> {
         if (!forbidScans) return super<TradingHistoryStore>.recoveryReservations()
         return activeReservations.values.asSequence()
+    }
+
+    override fun recoveryBalances(): Sequence<Balance> {
+        if (!forbidScans) return super<TradingHistoryStore>.recoveryBalances()
+        return recoveryBalanceIndex.asSequence()
     }
 
     override fun transactions() = scan(transactions.values)

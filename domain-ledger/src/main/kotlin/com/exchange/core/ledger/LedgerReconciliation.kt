@@ -1,11 +1,25 @@
 package com.exchange.core.ledger
 
+import com.exchange.core.common.Amount
 import com.exchange.core.common.AssetId
 import com.exchange.core.common.UserId
 import java.math.BigInteger
 
 /** 전달받은 기록만으로 사용자·자산별 세 금액을 대조한다. 저장소나 외부 호출은 없다. */
 class LedgerReconciliation {
+    /** 전체 영속 원장으로 잔고를 재구성한다. 순서에 의존하지 않고 최종 0인 계정도 보존한다. */
+    fun reconstructBalances(transactions: Sequence<LedgerTransaction>): List<Balance> =
+        ledgerBalances(transactions) { transaction, posting ->
+            throw IllegalArgumentException("원장 계정을 해석할 수 없습니다: ${transaction.ledgerTransactionId}/${posting.accountId}")
+        }.map { (key, amounts) ->
+            Balance(
+                key.userId,
+                key.assetId,
+                Amount(amounts.getOrDefault(ReconciliationItem.AVAILABLE, BigInteger.ZERO).longValueExact()),
+                Amount(amounts.getOrDefault(ReconciliationItem.HOLD, BigInteger.ZERO).longValueExact()),
+            )
+        }
+
     fun compare(
         scope: LedgerReconciliationScope,
         snapshot: LedgerReconciliationSnapshot,
@@ -20,38 +34,16 @@ class LedgerReconciliation {
             )
         }
         val problems = snapshot.problems.toMutableList()
-        val totals = mutableMapOf<AccountKey, MutableMap<ReconciliationItem, BigInteger>>()
-        for (transaction in snapshot.transactions) {
-            for (posting in transaction.postings) {
-                val key =
-                    parseUserAccount(posting.accountId, posting.assetId)?.let { (user, item) ->
-                        AccountKey(user, posting.assetId) to
-                            item
-                    }
-                if (key == null) {
-                    if (posting.accountId !in
-                        setOf(
-                            "SYSTEM:${posting.assetId.value}:DEVELOPMENT_FUNDING",
-                            "SYSTEM:${posting.assetId.value}:FEE_REVENUE",
-                        )
-                    ) {
-                        problems +=
-                            ReconciliationDifference(
-                                ReconciliationItem.INVALID_RECORD,
-                                assetId = posting.assetId,
-                                source = transaction.ledgerTransactionId,
-                                reason = "계정과 분개 자산을 해석할 수 없습니다: ${posting.accountId}",
-                            )
-                    }
-                    continue
-                }
-                if (key.first.assetId !in scope.assets) continue
-                val amount = BigInteger.valueOf(posting.amount.value)
-                val signed = if (posting.side == LedgerPostingSide.CREDIT) amount else -amount
-                val account = totals.getOrPut(key.first) { mutableMapOf() }
-                account[key.second] = account.getOrDefault(key.second, BigInteger.ZERO) + signed
+        val totals =
+            ledgerBalances(snapshot.transactions.asSequence(), scope.assets) { transaction, posting ->
+                problems +=
+                    ReconciliationDifference(
+                        ReconciliationItem.INVALID_RECORD,
+                        assetId = posting.assetId,
+                        source = transaction.ledgerTransactionId,
+                        reason = "계정과 분개 자산을 해석할 수 없습니다: ${posting.accountId}",
+                    )
             }
-        }
         val balances = snapshot.balances.filter { it.assetId in scope.assets }
         if (balances.distinctBy { AccountKey(it.userId, it.assetId) }.size != balances.size) {
             problems += ReconciliationDifference(ReconciliationItem.INVALID_RECORD, reason = "같은 사용자·자산 잔고가 중복되었습니다")
@@ -133,6 +125,34 @@ class LedgerReconciliation {
                 compareBy({ it.userId?.value ?: "" }, { it.assetId?.value ?: "" }, { it.item.name }, { it.source ?: "" }),
             ),
         )
+    }
+
+    private fun ledgerBalances(
+        transactions: Sequence<LedgerTransaction>,
+        assets: Set<AssetId>? = null,
+        onInvalid: (LedgerTransaction, LedgerPosting) -> Unit,
+    ): Map<AccountKey, MutableMap<ReconciliationItem, BigInteger>> {
+        val totals = linkedMapOf<AccountKey, MutableMap<ReconciliationItem, BigInteger>>()
+        for (transaction in transactions) {
+            for (posting in transaction.postings) {
+                val parsed = parseUserAccount(posting.accountId, posting.assetId)
+                if (parsed == null) {
+                    if (posting.accountId != "SYSTEM:${posting.assetId.value}:DEVELOPMENT_FUNDING" &&
+                        posting.accountId != "SYSTEM:${posting.assetId.value}:FEE_REVENUE"
+                    ) {
+                        onInvalid(transaction, posting)
+                    }
+                    continue
+                }
+                if (assets != null && posting.assetId !in assets) continue
+                val key = AccountKey(parsed.first, posting.assetId)
+                val amount = BigInteger.valueOf(posting.amount.value)
+                val signed = if (posting.side == LedgerPostingSide.CREDIT) amount else -amount
+                val account = totals.getOrPut(key) { mutableMapOf() }
+                account[parsed.second] = account.getOrDefault(parsed.second, BigInteger.ZERO) + signed
+            }
+        }
+        return totals
     }
 
     private fun difference(
