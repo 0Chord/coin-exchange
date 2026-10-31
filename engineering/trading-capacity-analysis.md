@@ -24,9 +24,9 @@
 
 **소스와 측정 대상도 구분해야 한다.** 현재 작업 폴더에는 account 검증 후보와 claim/codec 후보가 함께 있고, staging build에는 baseline 금융 jar와 claim adapter가 들어 있다. 22k의 선택 runtime은 별도로 동결돼 있다. 이 세 대상을 모두 ‘현재 바이너리’라고 부르지 않는다. 금융 계산기는 선택 소스와 현재 소스가 같다.
 
-실제 분석 폴더: `/Users/0chord/.codex/worktrees/issue148-http-aeron/exchange-core`  
-브랜치: `test/http-trading-performance/142`  
-원자료 루트: `/Users/0chord/.codex/visualizations/2026/09/23/01a0ce63-9327-7f32-a7e0-3429380284d8/issue142-performance/capacity-goal/direct-core-20261028/multi/execution-tail-20261028/request-correlation-20261028`  
+실제 분석 폴더: `/Users/0chord/.codex/worktrees/issue148-http-aeron/exchange-core`<br>
+브랜치: `test/http-trading-performance/142`<br>
+원자료 루트: `/Users/0chord/.codex/visualizations/2026/09/23/01a0ce63-9327-7f32-a7e0-3429380284d8/issue142-performance/capacity-goal/direct-core-20261028/multi/execution-tail-20261028/request-correlation-20261028`<br>
 주요 근거: `runtime-tps-window1m-manifest.json`, `runs/cert-t1m{a,b}/control/client-summary.json`, 각 노드의 `node*-metrics-{before,after}.json`.
 
 ## 2. 우리 코드에서 실제로 드는 비용

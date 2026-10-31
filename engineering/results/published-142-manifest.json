@@ -189,7 +189,7 @@
     "engineering/results/sustained-final-a-20261031/runtime-manifest.json": "10c92026e2bd4846ebcfb26e8c540fe333b0494b7a1c442d8c7d9745c51239ff",
     "engineering/results/sustained-final-a-20261031/summary.json": "345aa5c80439e0ff626db42d102e08717a101793dffe5ca4f140dd76d69d3b8f",
     "engineering/trading-candidate-validation-20261031.md": "7f84cee7d46a1a3296c029a704cd04d4881e3dc839848c5f9a0910472fc5d59b",
-    "engineering/trading-capacity-analysis.md": "6d4fcc8900691935ec1f6331353fb7f01cd3f9ff65d6f8e2293f3fb7dbd0f8c5",
+    "engineering/trading-capacity-analysis.md": "3d6fbb54329f675156bfa3da5b008b386c26c4c59c5aceb690baebdd41b00691",
     "engineering/trading-history-retention-20261029.md": "509ef606e38fb4e7bbde8cbf1289bbe151ab96ef33147ccae9325d9fc76775e3",
     "engineering/trading-latency-cause-20261031.md": "4363fbc04ba4f98a1c2f4d1f062dab1372cd928cf1c9f5007e43bad9e66b5b49",
     "engineering/trading-optimization-results-20261030.md": "b996d510053303243ea358d964df2e07a7e24732f774c69860d498bcdd18ab30",
