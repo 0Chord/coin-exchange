@@ -126,84 +126,86 @@ internal object RemoteRecoveryPromotion {
                 )
 
                 // 유실된 호스트 대신 교체 토폴로지에 맞는 새 로컬 루트 정체성을 만든다.
-                DevelopmentFundingRun.open(target).close()
-                copyClosedArchive(backupRoot.resolve("archive"), target.archiveDirectory)
-                val driverDirectory = target.runRoot.resolve("promotion-driver").toString()
-                MediaDriver
-                    .launch(
-                        MediaDriver
-                            .Context()
-                            .aeronDirectoryName(driverDirectory)
-                            .dirDeleteOnStart(true)
-                            .dirDeleteOnShutdown(true)
-                            .threadingMode(ThreadingMode.SHARED),
-                    ).use {
-                        Archive.launch(verificationArchiveContext(target.runRoot, driverDirectory)).use {
-                            AeronArchive
-                                .connect(
-                                    AeronArchive
-                                        .Context()
-                                        .aeronDirectoryName(driverDirectory)
-                                        .controlRequestChannel("aeron:ipc")
-                                        .controlResponseChannel("aeron:ipc")
-                                        .messageTimeoutNs(TimeUnit.SECONDS.toNanos(20)),
-                                ).use { archive ->
-                                    val verifier = ArchiveRecoveryProof(archive, manifest)
-                                    require(
-                                        proof.snapshots.map { verifier.verifySnapshot(it.entry) } == proof.snapshots,
-                                    ) { "copied snapshot bytes differ" }
-                                    val snapshotPosition =
-                                        proof.snapshots
-                                            .first()
-                                            .entry.logPosition
-                                    val tail =
-                                        verifier.verifyTail(
-                                            proof.logRecordingId,
-                                            snapshotPosition,
-                                            proof.recoverableThrough,
-                                            proof.terms.first(),
-                                            sourceEntries,
-                                            RemotePrefixProof.EMPTY_TAIL_SHA256,
-                                        )
-                                    require(
-                                        tail.through == proof.recoverableThrough && tail.terms == proof.terms &&
-                                            tail.chainSha256 == proof.tailChainSha256,
-                                    ) { "copied log cannot reproduce the certified prefix" }
-                                    require(archive.getStopPosition(proof.logRecordingId) >= proof.recoverableThrough)
-                                    if (archive.getStopPosition(proof.logRecordingId) >
-                                        proof.recoverableThrough
-                                    ) {
-                                        archive.truncateRecording(proof.logRecordingId, proof.recoverableThrough)
+                DevelopmentFundingRun.open(target).use {
+                    RemotePromotionAuthority.beginTarget(target, authority)
+                    copyClosedArchive(backupRoot.resolve("archive"), target.archiveDirectory)
+                    val driverDirectory = target.runRoot.resolve("promotion-driver").toString()
+                    MediaDriver
+                        .launch(
+                            MediaDriver
+                                .Context()
+                                .aeronDirectoryName(driverDirectory)
+                                .dirDeleteOnStart(true)
+                                .dirDeleteOnShutdown(true)
+                                .threadingMode(ThreadingMode.SHARED),
+                        ).use {
+                            Archive.launch(verificationArchiveContext(target.runRoot, driverDirectory)).use {
+                                AeronArchive
+                                    .connect(
+                                        AeronArchive
+                                            .Context()
+                                            .aeronDirectoryName(driverDirectory)
+                                            .controlRequestChannel("aeron:ipc")
+                                            .controlResponseChannel("aeron:ipc")
+                                            .messageTimeoutNs(TimeUnit.SECONDS.toNanos(20)),
+                                    ).use { archive ->
+                                        val verifier = ArchiveRecoveryProof(archive, manifest)
+                                        require(
+                                            proof.snapshots.map { verifier.verifySnapshot(it.entry) } == proof.snapshots,
+                                        ) { "copied snapshot bytes differ" }
+                                        val snapshotPosition =
+                                            proof.snapshots
+                                                .first()
+                                                .entry.logPosition
+                                        val tail =
+                                            verifier.verifyTail(
+                                                proof.logRecordingId,
+                                                snapshotPosition,
+                                                proof.recoverableThrough,
+                                                proof.terms.first(),
+                                                sourceEntries,
+                                                RemotePrefixProof.EMPTY_TAIL_SHA256,
+                                            )
+                                        require(
+                                            tail.through == proof.recoverableThrough && tail.terms == proof.terms &&
+                                                tail.chainSha256 == proof.tailChainSha256,
+                                        ) { "copied log cannot reproduce the certified prefix" }
+                                        require(archive.getStopPosition(proof.logRecordingId) >= proof.recoverableThrough)
+                                        if (archive.getStopPosition(proof.logRecordingId) >
+                                            proof.recoverableThrough
+                                        ) {
+                                            archive.truncateRecording(proof.logRecordingId, proof.recoverableThrough)
+                                        }
+                                        require(archive.getStopPosition(proof.logRecordingId) == proof.recoverableThrough)
                                     }
-                                    require(archive.getStopPosition(proof.logRecordingId) == proof.recoverableThrough)
-                                }
+                            }
                         }
+                    Files.createDirectories(target.clusterDirectory)
+                    RecordingLog(target.clusterDirectory.toFile(), true).use { log ->
+                        proof.terms.forEachIndexed { index, term ->
+                            log.appendTerm(term.recordingId, term.leadershipTermId, term.basePosition, term.timestamp)
+                            val end = proof.terms.getOrNull(index + 1)?.basePosition ?: proof.recoverableThrough
+                            log.commitLogPosition(term.leadershipTermId, end)
+                        }
+                        // Aeron은 RecordingLog에서 서비스 Snapshot이 consensus Snapshot보다 앞에 있어야 한다.
+                        for (snapshot in proof.snapshots.sortedByDescending { it.entry.serviceId }) {
+                            val entry = snapshot.entry
+                            log.appendSnapshot(
+                                entry.recordingId,
+                                entry.leadershipTermId,
+                                entry.termBaseLogPosition,
+                                entry.logPosition,
+                                entry.timestamp,
+                                entry.serviceId,
+                            )
+                        }
+                        log.force(2)
                     }
-                Files.createDirectories(target.clusterDirectory)
-                RecordingLog(target.clusterDirectory.toFile(), true).use { log ->
-                    proof.terms.forEachIndexed { index, term ->
-                        log.appendTerm(term.recordingId, term.leadershipTermId, term.basePosition, term.timestamp)
-                        val end = proof.terms.getOrNull(index + 1)?.basePosition ?: proof.recoverableThrough
-                        log.commitLogPosition(term.leadershipTermId, end)
-                    }
-                    // Aeron은 RecordingLog에서 서비스 Snapshot이 consensus Snapshot보다 앞에 있어야 한다.
-                    for (snapshot in proof.snapshots.sortedByDescending { it.entry.serviceId }) {
-                        val entry = snapshot.entry
-                        log.appendSnapshot(
-                            entry.recordingId,
-                            entry.leadershipTermId,
-                            entry.termBaseLogPosition,
-                            entry.logPosition,
-                            entry.timestamp,
-                            entry.serviceId,
-                        )
-                    }
-                    log.force(2)
+                    FileChannel.open(target.clusterDirectory, READ).use { it.force(true) }
+                    RemoteRecoveryFiles.writeForced(target.runRoot.resolve("promoted-recovery-proof.bin"), encodedProof)
+                    fence.verifyStoppedAndStorageAbsent()
+                    RemotePromotionAuthority.complete(backupRoot, target.runRoot, authority)
                 }
-                FileChannel.open(target.clusterDirectory, READ).use { it.force(true) }
-                RemoteRecoveryFiles.writeForced(target.runRoot.resolve("promoted-recovery-proof.bin"), encodedProof)
-                fence.verifyStoppedAndStorageAbsent()
-                RemotePromotionAuthority.complete(backupRoot, target.runRoot, authority)
                 return target.copy(recoverExisting = true)
             }
         }

@@ -1,6 +1,7 @@
 package com.exchange.core.api.trading.infrastructure.aeron
 
 import com.exchange.core.api.trading.infrastructure.codec.generated.AdmissionCommand
+import com.exchange.core.api.trading.infrastructure.recovery.RemotePromotionAuthority
 import java.io.ByteArrayOutputStream
 import java.io.DataOutputStream
 import java.nio.ByteBuffer
@@ -74,6 +75,7 @@ internal class DevelopmentFundingRun private constructor(
                     require(Files.readAllBytes(identityFile).contentEquals(bytes)) {
                         "복구 설정이 원래 클러스터·마켓·수수료 정책·한도형 제어 설정과 다릅니다"
                     }
+                    RemotePromotionAuthority.requireStartupAllowed(config)
                     require(Files.isDirectory(config.archiveDirectory, NOFOLLOW_LINKS)) { "복구할 Archive가 없습니다" }
                     require(Files.isDirectory(config.clusterDirectory, NOFOLLOW_LINKS)) { "복구할 클러스터 기록이 없습니다" }
                     // 빈 디렉터리를 새 클러스터로 기동하고 복구 성공으로 오인하지 않는다.
@@ -103,6 +105,9 @@ internal class DevelopmentFundingRun private constructor(
         private fun requireRecordedFile(path: Path) {
             require(Files.isRegularFile(path, NOFOLLOW_LINKS) && Files.size(path) > 0) { "복구 기록이 없거나 비어 있습니다: $path" }
         }
+
+        /** 승격 권한도 실제 기동과 같은 설정·스키마 계약을 사용한다. */
+        fun configurationIdentitySha256(config: DevelopmentFundingSettings): String = sha256(identity(config))
 
         /** Driver 파일은 다시 만들 수 있으며, 그 경로나 내용을 복구 원본으로 삼지 않는다. */
         private fun validateDriverDirectory(config: DevelopmentFundingSettings) {
