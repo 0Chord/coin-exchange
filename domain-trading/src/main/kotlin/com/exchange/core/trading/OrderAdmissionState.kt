@@ -345,6 +345,14 @@ class OrderAdmissionState(
         }
         check(store.durableOrdinal == checkpoint.historyOrdinal) { "checkpoint and restored history ordinals differ" }
         check(store.flush() == checkpoint.historyOrdinal) { "restored history has unacknowledged transitions beyond checkpoint" }
+        val watermarks = store.recoveryWatermarks()
+        require(checkpoint.lastAdmissionSequence == watermarks.lastAdmissionSequence) {
+            "checkpoint admission sequence differs from restored history"
+        }
+        val marketSequences = checkpoint.matching.markets.associate { it.marketId to it.lastEngineSequence }
+        require(marketSequences == watermarks.lastEngineSequences) {
+            "checkpoint market sequences differ from restored history"
+        }
         val balanceKeys = hashSetOf<TradingBalanceKey>()
         for (balance in checkpoint.balances) {
             require(balanceKeys.add(TradingBalanceKey(balance.userId, balance.assetId))) { "duplicate checkpoint balance" }
