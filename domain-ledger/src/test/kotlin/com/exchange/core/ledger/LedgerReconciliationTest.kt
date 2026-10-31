@@ -18,6 +18,60 @@ class LedgerReconciliationTest {
     private val scope = LedgerReconciliationScope(MarketId("BTC-KRW"), AssetId("BTC"), krw)
 
     @Test
+    fun `복구 잔고는 원장 순서와 무관하며 사용 후 영이 된 계정도 남긴다`() {
+        val calculator = LedgerReconciliation()
+        assertEquals(emptyList(), calculator.reconstructBalances(emptySequence()))
+        val reserved = reservedSnapshot(700)
+        assertEquals(reserved.balances, calculator.reconstructBalances(reserved.transactions.reversed().asSequence()))
+        val opening = OpeningBalance("zero", buyer, krw, Amount(100)).transaction("opening-zero", Instant.EPOCH)
+        assertEquals(
+            listOf(Balance(buyer, krw, Amount.ZERO, Amount.ZERO)),
+            calculator.reconstructBalances(sequenceOf(reverse(opening), opening)),
+        )
+    }
+
+    @Test
+    fun `복구 합산의 중간값이 Long을 넘어도 최종 잔고를 정확히 재구성한다`() {
+        val first = OpeningBalance("one", buyer, krw, Amount(Long.MAX_VALUE)).transaction("one", Instant.EPOCH)
+        val second = OpeningBalance("two", buyer, krw, Amount(Long.MAX_VALUE)).transaction("two", Instant.EPOCH)
+        val reversed = reverse(first)
+        val calculator = LedgerReconciliation()
+        for (history in listOf(listOf(first, second, reversed), listOf(reversed, second, first), listOf(second, reversed, first))) {
+            assertEquals(
+                listOf(Balance(buyer, krw, Amount(Long.MAX_VALUE), Amount.ZERO)),
+                calculator.reconstructBalances(history.asSequence()),
+            )
+        }
+    }
+
+    @Test
+    fun `손상된 원장 계정과 표현 불가능한 최종 잔고와 읽기 실패는 복구 값으로 바꾸지 않는다`() {
+        val calculator = LedgerReconciliation()
+        val opening = OpeningBalance("invalid", buyer, krw, Amount(Long.MAX_VALUE)).transaction("invalid", Instant.EPOCH)
+        val invalidAccount =
+            LedgerTransaction(
+                "bad-account",
+                "bad-account",
+                LedgerTransactionType.OPENING,
+                Instant.EPOCH,
+                opening.postings.map {
+                    if (it.side == LedgerPostingSide.CREDIT) it.copy(accountId = "USER:buyer:BTC:AVAILABLE") else it
+                },
+            )
+        assertFailsWith<IllegalArgumentException> { calculator.reconstructBalances(sequenceOf(invalidAccount)) }
+        assertFailsWith<IllegalArgumentException> { calculator.reconstructBalances(sequenceOf(reverse(opening))) }
+        assertFailsWith<ArithmeticException> { calculator.reconstructBalances(sequenceOf(opening, opening)) }
+        assertFailsWith<IllegalStateException> {
+            calculator.reconstructBalances(
+                sequence {
+                    yield(opening)
+                    throw IllegalStateException("원장 읽기 실패")
+                },
+            )
+        }
+    }
+
+    @Test
     fun `원장과 잔고와 활성 예약 700 300 300은 일치한다`() {
         val report = LedgerReconciliation().compare(scope, reservedSnapshot(700))
 
@@ -291,6 +345,17 @@ class LedgerReconciliationTest {
             }
         }
     }
+
+    private fun reverse(transaction: LedgerTransaction) =
+        LedgerTransaction(
+            "reverse-${transaction.ledgerTransactionId}",
+            "reverse-${transaction.sourceEventId}",
+            LedgerTransactionType.REVERSAL,
+            transaction.occurredAt,
+            transaction.postings.map {
+                it.copy(side = if (it.side == LedgerPostingSide.CREDIT) LedgerPostingSide.DEBIT else LedgerPostingSide.CREDIT)
+            },
+        )
 
     private fun reservedSnapshot(available: Long) =
         LedgerReconciliationSnapshot(
