@@ -3,6 +3,8 @@ package com.exchange.core.trading
 import com.exchange.core.common.MarketId
 import com.exchange.core.common.OrderId
 import com.exchange.core.common.UserId
+import com.exchange.core.ledger.Balance
+import com.exchange.core.ledger.LedgerReconciliation
 import com.exchange.core.ledger.LedgerTransaction
 import com.exchange.core.order.OrderReservation
 import com.exchange.core.order.OrderReservationStatus
@@ -85,6 +87,9 @@ interface TradingHistoryStore {
      * 복구 검증 전용이며, 구현체는 같은 값을 활성 예약 인덱스로 제공해도 된다.
      */
     fun recoveryReservations(): Sequence<OrderReservation> = reservations().filter { it.status == OrderReservationStatus.ACTIVE }
+
+    /** 영속 원장에서 전체 사용자 잔고를 복구 검증용으로 합산한다. 최종 0인 사용 이력도 보존한다. */
+    fun recoveryBalances(): Sequence<Balance> = LedgerReconciliation().reconstructBalances(transactions()).asSequence()
 
     fun preparations(): Sequence<OrderAdmissionState.PreparationRecord>
 
