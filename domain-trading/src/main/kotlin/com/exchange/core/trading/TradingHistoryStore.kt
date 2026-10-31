@@ -5,6 +5,7 @@ import com.exchange.core.common.OrderId
 import com.exchange.core.common.UserId
 import com.exchange.core.ledger.LedgerTransaction
 import com.exchange.core.order.OrderReservation
+import com.exchange.core.order.OrderReservationStatus
 import java.util.Collections
 
 /**
@@ -78,6 +79,12 @@ interface TradingHistoryStore {
         }
         return TradingHistoryWatermarks(lastAdmissionSequence, Collections.unmodifiableMap(lastEngineSequences))
     }
+
+    /**
+     * 복구할 영속 이력에서 주문별 최신 활성 예약만 읽는다. 호출자는 먼저 flush를 완료한다.
+     * 복구 검증 전용이며, 구현체는 같은 값을 활성 예약 인덱스로 제공해도 된다.
+     */
+    fun recoveryReservations(): Sequence<OrderReservation> = reservations().filter { it.status == OrderReservationStatus.ACTIVE }
 
     fun preparations(): Sequence<OrderAdmissionState.PreparationRecord>
 
