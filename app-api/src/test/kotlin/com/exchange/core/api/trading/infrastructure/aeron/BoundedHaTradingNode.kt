@@ -54,7 +54,11 @@ fun main(args: Array<String>) {
         } else {
             original
         }
-    val settings = haTradingProbeSettings().copy(boundedManifest = manifest, trustedBoundedControl = true)
+    val settings =
+        haTradingProbeSettings().copy(
+            boundedManifest = manifest,
+            trustedBoundedControl = System.getenv("FUNDING_TRUSTED_BOUNDED_CONTROL")?.toBooleanStrict() ?: true,
+        )
     runHaTradingProbeNode(settings, snapshot = { it.requestSnapshot() }, faultDecorator = { decorated, service ->
         if (System.getenv("HA_PROBE_FAULTS") == "true") boundedFaultDecorator(settings.memberId, decorated, service) else decorated
     }, appliedResult = { it.compactExecution != null }) { node ->

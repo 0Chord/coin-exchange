@@ -90,6 +90,56 @@ class DevelopmentFundingRunTest {
     }
 
     @Test
+    fun `한도형 제어 설정은 복구 정체성에 포함하고 변경된 설정은 기록을 열기 전에 거절한다`() {
+        val manifest = haBoundedProbeManifest()
+        val identities =
+            listOf(false, true).map { trusted ->
+                val config =
+                    DevelopmentFundingSettings(
+                        directory.resolve("bounded-$trusted"),
+                        boundedManifest = manifest,
+                        trustedBoundedControl = trusted,
+                    )
+                val original =
+                    DevelopmentFundingRun.open(config).use { run ->
+                        createRecordedDirectories(config)
+                        run.identitySha256 to run.snapshotIdentitySha256
+                    }
+                val identityFile = config.runRoot.resolve("recovery-identity.bin")
+                val identityBytes = Files.readAllBytes(identityFile)
+                val before = files(config.runRoot)
+                val failure =
+                    assertFailsWith<IllegalArgumentException> {
+                        DevelopmentFundingRun.open(config.copy(recoverExisting = true, trustedBoundedControl = !trusted))
+                    }
+                assertTrue(failure.message.orEmpty().contains("복구 설정"))
+                assertEquals(before, files(config.runRoot))
+                assertContentEquals(identityBytes, Files.readAllBytes(identityFile))
+                DevelopmentFundingRun.open(config.copy(recoverExisting = true)).use { recovered ->
+                    assertEquals(original.first, recovered.identitySha256)
+                    assertEquals(original.second, recovered.snapshotIdentitySha256)
+                }
+                original
+            }
+        assertNotEquals(identities[0].first, identities[1].first)
+        assertNotEquals(identities[0].second, identities[1].second)
+    }
+
+    @Test
+    fun `한도형이 아닌 실행의 복구 정체성은 사용하지 않는 제어 설정에 영향받지 않는다`() {
+        val config = DevelopmentFundingSettings(directory.resolve("legacy"))
+        val original =
+            DevelopmentFundingRun.open(config).use { run ->
+                createRecordedDirectories(config)
+                run.identitySha256 to run.snapshotIdentitySha256
+            }
+        DevelopmentFundingRun.open(config.copy(recoverExisting = true, trustedBoundedControl = true)).use { recovered ->
+            assertEquals(original.first, recovered.identitySha256)
+            assertEquals(original.second, recovered.snapshotIdentitySha256)
+        }
+    }
+
+    @Test
     fun `세 멤버의 Snapshot 정체성은 같고 로컬 기록의 주소 변경은 거절한다`() {
         val members =
             (0..2).joinToString("|") { member ->
