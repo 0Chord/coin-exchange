@@ -457,7 +457,7 @@ class AeronRecordedInputTest {
             snapshot.lastAdmissionSequence,
             snapshot.reservations,
             snapshot.ledgerTransactions.map(::transactionValues),
-            snapshot.completions.map { listOf(it.executionId, it.occurredAt, it.matchingResult, it.settlement) },
+            snapshot.completions.map { tradingCompletionValues(it) },
             snapshot.pendingOrders.map { recordValues(it) },
             snapshot.preparations.map { listOf(it.result, transactionValues(it.transaction)) },
             snapshot.requests.map {
