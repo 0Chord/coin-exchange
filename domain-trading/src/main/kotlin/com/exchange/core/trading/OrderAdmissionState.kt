@@ -353,10 +353,18 @@ class OrderAdmissionState(
         require(marketSequences == watermarks.lastEngineSequences) {
             "checkpoint market sequences differ from restored history"
         }
+        val historicalBalances = hashMapOf<TradingBalanceKey, Balance>()
+        for (balance in store.recoveryBalances()) {
+            val key = TradingBalanceKey(balance.userId, balance.assetId)
+            require(historicalBalances.put(key, balance) == null) { "duplicate restored history balance" }
+        }
         val balanceKeys = hashSetOf<TradingBalanceKey>()
         for (balance in checkpoint.balances) {
-            require(balanceKeys.add(TradingBalanceKey(balance.userId, balance.assetId))) { "duplicate checkpoint balance" }
+            val key = TradingBalanceKey(balance.userId, balance.assetId)
+            require(balanceKeys.add(key)) { "duplicate checkpoint balance" }
+            require(balance == historicalBalances.remove(key)) { "checkpoint balance differs from restored ledger" }
         }
+        require(historicalBalances.isEmpty()) { "checkpoint is missing balances from restored ledger" }
         require(checkpoint.usedBalances.size == checkpoint.usedBalances.toSet().size) { "duplicate checkpoint used balance" }
         require(checkpoint.usedBalances.toSet() == balanceKeys) { "checkpoint used balances must match all touched balances" }
         val sequenceKeys = hashSetOf<Long>()
