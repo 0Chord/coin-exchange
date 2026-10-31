@@ -151,13 +151,17 @@ class OrderFillSettlementCalculator(
                 baseAssetScale = market.baseAssetScale,
             )
 
-        // 실제 거래에 사용되는 quote 금액은 지정가가 아니라 체결가를 기준으로 계산한다.
+        // 같은 가격이면 같은 수량·scale로 계산한 대금을 재사용하고, 가격 개선 때만 다시 계산한다.
         val executionTradeAmount =
-            calculateQuoteAmount(
-                price = executionPrice,
-                quantity = filledQuantity,
-                baseAssetScale = market.baseAssetScale,
-            )
+            if (executionPrice == reservation.limitPrice) {
+                tradeReserveAmountToReduce
+            } else {
+                calculateQuoteAmount(
+                    price = executionPrice,
+                    quantity = filledQuantity,
+                    baseAssetScale = market.baseAssetScale,
+                )
+            }
 
         // 이번 청구액을 계산하고, 최소 금액 단위 미만의 나머지는 다음 체결로 넘긴다.
         val feeCalculation =

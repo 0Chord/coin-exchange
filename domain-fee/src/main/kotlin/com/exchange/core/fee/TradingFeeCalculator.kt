@@ -6,7 +6,7 @@ import java.math.BigInteger
 /**
  * 체결 기준 금액과 수수료율로 이번에 청구할 거래 수수료를 계산한다.
  *
- * 중간 곱셈 overflow를 방지하기 위해 [BigInteger]를 사용한다.
+ * Long 범위 안에서는 정수 연산을 사용하고, 중간 연산이 넘칠 때만 [BigInteger]로 계산한다.
  * 이전 소수 나머지를 전달하면 이번 수수료에 합산하고, 다음 체결로 넘길 나머지도 반환한다.
  * 계산기 자체는 주문별 상태를 저장하거나 잔고에서 수수료를 차감하지 않는다.
  */
@@ -45,6 +45,27 @@ class TradingFeeCalculator {
      * @return 이번에 청구할 정수 금액과 다음 체결로 넘길 소수 나머지
      */
     fun calculateFee(
+        feeBaseAmount: Amount,
+        feeRate: FeeRate,
+        previousRemainder: FeeRemainder,
+    ): TradingFeeCalculation {
+        val numerator =
+            try {
+                Math.addExact(
+                    Math.multiplyExact(feeBaseAmount.value, feeRate.partsPerMillion),
+                    previousRemainder.numerator,
+                )
+            } catch (_: ArithmeticException) {
+                return calculateWithBigInteger(feeBaseAmount, feeRate, previousRemainder)
+            }
+
+        return TradingFeeCalculation(
+            actualFeeAmount = Amount(numerator / FeeRate.DENOMINATOR),
+            remainder = FeeRemainder(numerator % FeeRate.DENOMINATOR),
+        )
+    }
+
+    private fun calculateWithBigInteger(
         feeBaseAmount: Amount,
         feeRate: FeeRate,
         previousRemainder: FeeRemainder,
