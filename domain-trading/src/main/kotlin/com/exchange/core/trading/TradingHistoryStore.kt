@@ -64,6 +64,21 @@ interface TradingHistoryStore {
 
     fun completions(): Sequence<TradingState.Completion>
 
+    /**
+     * 복구할 영속 이력 전체의 최대 순번이다. 호출자는 먼저 flush로 복구 순번을 확정한다.
+     * 주문 처리나 체크포인트 생성에서는 호출하지 않는다. 구현체는 같은 값을 정확한 인덱스로 제공해도 된다.
+     */
+    fun recoveryWatermarks(): TradingHistoryWatermarks {
+        val lastAdmissionSequence = admissions().maxOfOrNull { it.sequence } ?: 0L
+        val lastEngineSequences = linkedMapOf<MarketId, Long>()
+        for (completion in completions()) {
+            val result = completion.matchingResult
+            val marketId = result.command.marketId
+            lastEngineSequences[marketId] = maxOf(lastEngineSequences[marketId] ?: 0L, result.lastEngineSequence)
+        }
+        return TradingHistoryWatermarks(lastAdmissionSequence, Collections.unmodifiableMap(lastEngineSequences))
+    }
+
     fun preparations(): Sequence<OrderAdmissionState.PreparationRecord>
 
     /** 종료 주문까지 포함한 주문별 최신 예약이며, 최초 삽입 순서를 따른다. */
@@ -71,6 +86,12 @@ interface TradingHistoryStore {
 
     fun transactions(): Sequence<LedgerTransaction>
 }
+
+/** 종료된 주문과 빈 주문장까지 포함한 이력 전체의 최대 순번이다. */
+data class TradingHistoryWatermarks(
+    val lastAdmissionSequence: Long,
+    val lastEngineSequences: Map<MarketId, Long>,
+)
 
 /**
  * 전이가 현재 소유자의 검사를 통과한 뒤 도메인 내부에서만 발행한다.
