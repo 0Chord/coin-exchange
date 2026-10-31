@@ -13,6 +13,98 @@ spec = importlib.util.spec_from_file_location("ha_trading_probe", Path(__file__)
 probe = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(probe)
 
+project_root = Path(__file__).resolve().parents[4]
+sustained_spec = importlib.util.spec_from_file_location(
+    "ha_trading_probe_600", project_root / "engineering/results/sustained-final-a-20261031/ha-trading-probe-600.py")
+sustained_probe = importlib.util.module_from_spec(sustained_spec)
+sustained_spec.loader.exec_module(sustained_probe)
+
+
+class MarketBalancesTest(unittest.TestCase):
+    controllers = (("short", probe), ("sustained-600", sustained_probe))
+    assets = ("BTC", "SOL", "SUI")
+    # TradingEngineProbeWorkload의 순서·수량과 HaProbeRunPlan의 원금·잔량 계약을 손계산했다.
+    # None은 실제 체결이나 자금 준비가 없어 만들어지지 않은 잔고 행이다.
+    cases = (
+        (1, 1, (100_000_000, None, None), (0, None, None),
+         ((100_000_000, 0), (0, 0), (0, 0))),
+        (2, 2, (100_000_000, 1_000_000_000, None), (0, 0, None),
+         ((100_000_000, 0), (1_000_000_000, 0), (0, 0))),
+        (3, 3, (100_000_000, 1_000_000_000, 1_000_000_000), (0, 0, 0),
+         ((100_000_000, 0), (1_000_000_000, 0), (1_000_000_000, 0))),
+        (6000, 6000, (200_000_000_000, 2_000_000_000_000, 2_000_000_000_000), (0, 0, 0),
+         ((200_000_000_000, 0), (2_000_000_000_000, 0), (2_000_000_000_000, 0))),
+        (10, 1, (100_000_000, None, None), (300_000_000, 3_000_000_000, 3_000_000_000),
+         ((400_000_000, 300_000_000), (3_000_000_000, 3_000_000_000), (3_000_000_000, 3_000_000_000))),
+        (10, 2, (100_000_000, 1_000_000_000, None), (300_000_000, 2_000_000_000, 3_000_000_000),
+         ((400_000_000, 300_000_000), (3_000_000_000, 2_000_000_000), (3_000_000_000, 3_000_000_000))),
+        (10, 4, (200_000_000, 1_000_000_000, 1_000_000_000), (200_000_000, 2_000_000_000, 2_000_000_000),
+         ((400_000_000, 200_000_000), (3_000_000_000, 2_000_000_000), (3_000_000_000, 2_000_000_000))),
+    )
+
+    @classmethod
+    def fixture(cls, case):
+        capacity, total, buyer_available, seller_hold, market_amounts = case
+        balances = {("BUYER", asset): (available, 0)
+                    for asset, available in zip(cls.assets, buyer_available) if available is not None}
+        balances.update({("SELLER", asset): (0, hold)
+                         for asset, hold in zip(cls.assets, seller_hold) if hold is not None})
+        expected = {asset + "-USDT": amounts for asset, amounts in zip(cls.assets, market_amounts)}
+        return capacity, total, balances, expected
+
+    @classmethod
+    def with_unused_zeros(cls, balances):
+        return {(user, asset): balances.get((user, asset), (0, 0))
+                for user in ("BUYER", "SELLER") for asset in cls.assets}
+
+    def test_unused_rows_may_be_absent_or_present_zero_and_market_amounts_are_exact(self):
+        for name, controller in self.controllers:
+            for case in self.cases:
+                capacity, total, balances, expected = self.fixture(case)
+                with self.subTest(controller=name, capacity=capacity, total=total, unused="absent"):
+                    self.assertEqual(expected, controller.verify_market_balances(balances, capacity, total))
+                with self.subTest(controller=name, capacity=capacity, total=total, unused="present-zero"):
+                    self.assertEqual(expected, controller.verify_market_balances(
+                        self.with_unused_zeros(balances), capacity, total))
+
+    def test_missing_traded_buyer_or_funded_seller_rows_are_rejected(self):
+        for name, controller in self.controllers:
+            # 완전 체결 판매자의 (0, 0) 행과 미체결 시장의 판매자 예약 행도 필수다.
+            for case in (self.cases[2], self.cases[4]):
+                capacity, total, balances, _ = self.fixture(case)
+                for key in balances:
+                    missing = self.with_unused_zeros(balances)
+                    del missing[key]
+                    with self.subTest(controller=name, capacity=capacity, total=total, missing=key):
+                        with self.assertRaises(KeyError):
+                            controller.verify_market_balances(missing, capacity, total)
+
+    def test_present_unused_rows_must_have_zero_available_and_hold(self):
+        capacity, total, balances, _ = self.fixture(self.cases[0])
+        for name, controller in self.controllers:
+            for user in ("BUYER", "SELLER"):
+                for asset in ("SOL", "SUI"):
+                    for wrong in ((1, 0), (0, 1), (-1, 0), (0, -1)):
+                        invalid = self.with_unused_zeros(balances)
+                        invalid[user, asset] = wrong
+                        with self.subTest(controller=name, user=user, asset=asset, wrong=wrong):
+                            with self.assertRaises(AssertionError):
+                                controller.verify_market_balances(invalid, capacity, total)
+
+    def test_present_used_rows_must_match_available_and_hold(self):
+        for name, controller in self.controllers:
+            for case in (self.cases[2], self.cases[4]):
+                capacity, total, balances, _ = self.fixture(case)
+                for key, expected in balances.items():
+                    for field in (0, 1):
+                        wrong = list(expected)
+                        wrong[field] = 0 if expected[field] else 1
+                        invalid = self.with_unused_zeros(balances)
+                        invalid[key] = tuple(wrong)
+                        with self.subTest(controller=name, capacity=capacity, total=total, key=key, field=field):
+                            with self.assertRaises(AssertionError):
+                                controller.verify_market_balances(invalid, capacity, total)
+
 
 class MemoryBudgetTest(unittest.TestCase):
     def test_flags_must_identify_exactly_one_actual_maximum_heap(self):

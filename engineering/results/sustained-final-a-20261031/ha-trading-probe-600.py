@@ -243,6 +243,22 @@ def checkpoint_deltas(before, after):
                 maxSemantics="no interval maximum derived from cumulative checkpoints", nodes=result)
 
 
+def verify_market_balances(balances, capacity, total):
+    """자금 준비·체결 수에서 독립 기대 잔액과 미체결 수량을 계산해 대조한다."""
+    remaining_by_market = {}
+    for ordinal, (asset, quantity) in enumerate((("BTC", 100000000), ("SOL", 1000000000), ("SUI", 1000000000))):
+        count = total // 3 + (1 if ordinal < total % 3 else 0)
+        funded_count = capacity // 3 + (1 if ordinal < capacity % 3 else 0)
+        remaining = (funded_count - count) * quantity
+        remaining_by_market[asset + "-USDT"] = (funded_count * quantity, remaining)
+        # 사용하지 않은 자산만 행 누락을 허용한다. 사용한 행은 최종 잔액이 0이어도 필수다.
+        buyer = balances["BUYER", asset] if count > 0 else balances.get(("BUYER", asset), (0, 0))
+        seller = balances["SELLER", asset] if funded_count > 0 else balances.get(("SELLER", asset), (0, 0))
+        assert buyer == (count * quantity, 0)
+        assert seller == (0, remaining)
+    return remaining_by_market
+
+
 def cleanup_owned_run(command, compose, client_name, image=None):
     cleanup = [(["docker", "rm", "--force", client_name], 15, False),
                (compose + ["logs", "--no-color", "--no-log-prefix"], 15, False),
@@ -497,13 +513,7 @@ def main():
             balances = {(u, a): (available, hold) for u, a, available, hold in state["balances"]}
             assert balances["BUYER", "USDT"] == (buyer_quote, 0)
             assert balances["SELLER", "USDT"] == (total * 9990, 0)
-            for ordinal, (asset, quantity) in enumerate((("BTC", 100000000), ("SOL", 1000000000), ("SUI", 1000000000))):
-                count = total // 3 + (1 if ordinal < total % 3 else 0)
-                funded_count = capacity // 3 + (1 if ordinal < capacity % 3 else 0)
-                remaining = (funded_count - count) * quantity
-                remaining_by_market[asset + "-USDT"] = (funded_count * quantity, remaining)
-                assert balances["BUYER", asset] == (count * quantity, 0)
-                assert balances["SELLER", asset] == (0, remaining)
+            remaining_by_market = verify_market_balances(balances, capacity, total)
             if args.mode == "bounded":
                 expected_live = {market: amounts for market, amounts in remaining_by_market.items() if amounts[1] > 0}
                 assert state["liveOrders"] == len(expected_live) and state["retainedReceipts"] == 0
