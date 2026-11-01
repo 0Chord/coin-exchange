@@ -1,5 +1,66 @@
 # HTTP로 보낸 주문이 Aeron 엔진에 도착하는 흐름
 
+## #142 · 현재 bounded HTTP 통합 검증
+
+2026-11-01, `test/http-bounded-cluster/142`. 실제 제품 `TradingGatewayApplicationKt`와 `aeron-bounded-gateway` 프로필을 기동해 wire3 거래 노드 세 개를 호출한다. 아래 #148 설명은 legacy wire2의 기존 기록으로 보존한다.
+
+이번 변경은 **테스트 전용 관찰·준비·판정·Docker 설정**이다. 제품 Controller·UseCase·Gateway·금융 계산 코드는 그대로 사용한다. 인증·인가, 원장 이력의 영속화·조회, 성능 측정은 포함하지 않는다. HTTP 202는 접수·예약 응답이며 실제 정산 완료는 따로 확인한다.
+
+### 어디서 무엇이 실행되나
+
+```text
+호스트 JUnit: 실제 HTTP 요청과 결과 판정
+  → Gateway 컨테이너: 제품 Spring main → UseCase → 실제 BoundedAeronClient
+  → 거래 컨테이너 3개: 제품 설정 로더 → 제품 노드 → 예약·매칭·정산
+  → 테스트 래퍼: 서비스 스레드에서 현재 상태와 적용 위치를 함께 회수
+  → JUnit: 독립 손계산 + 세 사본 + 재전송 불변 비교
+```
+
+준비 도구는 동일 이미지/JDK에서 manifest를 만들고 Initialize·자금 준비 두 건만 직접 Aeron으로 보낸다. 사용자 epoch 발급과 주문은 HTTP를 거친다. 노드마다 JVM·Driver·기록 볼륨이 다르며, 같은 호스트의 컨테이너 내부 PID가 모두 1이어도 독립 프로세스다.
+
+### 테스트 지도와 준비·실행·확인
+
+| 테스트 | 준비와 실행 | 실제 검증 |
+| --- | --- | --- |
+| `BoundedHttpTradingClusterTest` | 실제 Docker 세 노드, sync `[2,2,2]`, LOCAL_QUORUM. 구매자 USDT 11,020·판매자 BTC 원시 수량 100,000,000 준비 후 실제 HTTP epoch·SELL·BUY·재전송·충돌 | 아래 단계별 HTTP 응답과 현재 금융 상태를 직접 확인한다. 대역 transport·가짜 Spring Config를 사용하지 않는다. |
+| `BoundedHttpTradingAssertionsTest`의 정상 사례 | 세 member의 고정 정상 자료와 epoch 응답 | 독립 기대값과 모든 필수 phase의 판정이 통과한다. 실제 서버 실행을 대신하지 않는 판정 도구 검사다. |
+| 같은 클래스의 단일 변형 검사 | 매번 통과한 정상 자료에서 한 필드만 바꾸는 35가지 입력 | 누락 member·잘못된 sync·수수료 31·필수 0 잔고 누락·오래된 capture·새 최초 identity·중복 Applied·overflow 등을 **해당 실패 코드**로 검출한다. 다른 이유의 예외로 통과하지 않는다. |
+| 같은 클래스의 epoch 위치 검사 | 정상 epoch 응답에서 적용 위치만 제거 | 양수 엔진 적용 위치가 없으면 `HTTP_POSITION`으로 실패한다. |
+
+1. **SELL:** 사용자가 매도 주문을 보낸다. HTTP 202·승인 순번 1을 확인하고, 세 노드의 매도 예약 100,000,000·대기 주문 한 건·체결 0·pending 0을 확인한다. 이 확인 뒤에 BUY를 보낸다.
+2. **BUY:** HTTP 202·승인 순번 2를 받고 각 노드에서 체결 1건을 확인한다. 구매자 USDT 1,000/BTC 100,000,000, 판매자 USDT 9,990/BTC 0, 수수료 30, 모든 hold·활성 주문·예약·호가·pending 0을 확인한다. 수수료는 maker 0.1%·taker 0.2%의 손계산이다.
+3. **재전송:** 같은 사용자·channel·epoch·sequence·본문으로 다시 보낸다. 최초 orderId와 두 승인 순번은 같고 새 적용 위치는 더 크다. 세 노드가 **그 새 위치 이후**에 도달한 뒤 현재 상태·Inbox·실행 횟수가 그대로인지 확인한다.
+4. **내용 충돌:** 같은 요청의 가격만 20,000으로 바꾼다. HTTP 409/REQUEST_CONTENT_CONFLICT와 새 적용 위치 이후의 상태 불변을 확인한다. 새 요청으로 바꿔 자동 재시도하지 않는다.
+
+이번에는 ACK를 보내지 않아 최초 receipt 두 건이 남는다. 실행 receipt는 SELL·BUY 각각 한 번, fillCount 합계 1이다. 현재 상태의 hash 일치와 명시적인 숫자를 모두 검사한다. 최종 사용된 잔고 행을 누락된 0으로 보정하지 않는다.
+
+### 코드를 따라 읽는 순서
+
+| 파일·함수 | 역할 |
+| --- | --- |
+| `BoundedHttpTradingClusterTest.kt` · `run()` | 실제 이미지·컨테이너·HTTP 입력·checkpoint 순서를 조정한다. |
+| 같은 파일 · `post()` | 전송 전 요청을 기록하고 실제 HTTP 상태와 본문을 검사한다. 응답을 못 받으면 요청을 지우지 않고 미확인·전송 예외를 남긴다. |
+| 같은 파일 · `awaitCapture()` | 매번 새로운 제어 label로 세 노드에 요청하고 해당 HTTP 적용 위치 이후까지 기다린다. |
+| `BoundedHttpTradingNode.kt` · `BoundedHttpServiceObserver` | 실제 callback이 새로 만든 Applied만 최대 8건 기록한다. 상태와 `cluster.logPosition()`은 같은 서비스 스레드 경계에서 묶고 파일·JSON 출력은 제어 스레드에서 한다. |
+| `BoundedHttpTradingAssertions.kt` | SELL/BUY/REPLAY/CONFLICT의 자금·시장 진행·Inbox·호가·실행·적용 위치를 명세 원시 정수로 대조한다. |
+| `BoundedHttpTradingSetup.kt` | 동일 실행물/JDK의 manifest 생성과 초기화·자금 두 건 준비만 담당한다. |
+| `bounded-http.compose.yml` | 기존 Compose 위에 bounded-only 프로필·manifest·관찰 래퍼와 독립 Driver를 배치한다. |
+
+### 범위와 실행 근거
+
+첫 정상 실행 `http-bounded-469e3610`에서 실제 HTTP 200/202/409, 세 노드의 최종 적용 위치 2432와 금융 상태 일치를 확인했다. Archive/Consensus 기록 합계 66,158,784바이트, 보존 진단물 약 284KB였다. 컨테이너·기록 볼륨·네트워크·이번 이미지 제거를 확인했다. 이 단일 거래 검사는 TPS나 지연 분포 측정이 아니다.
+
+HTTP 응답을 받지 못한 요청도 원본을 남기며, 진단 수집이 자원 제거 기한을 소비하지 않도록 30초 중 제거용 20초를 확보한다. 로컬 HTTP 응답 지연·연결 실패 회귀 검사는 제품의 장애 복구 시험과 구분한다. 최종 회귀·독립 리뷰 결과는 상세 명세의 실행 기록과 함께 갱신한다.
+
+예상과 실제 원장 경계를 구분한다. bounded 접수는 RESERVE 분개 객체 없이 잔고·예약을 변경하고, SETTLEMENT는 분개를 계산·검증한 뒤 전체 목록을 보관하지 않는다. 이 검사는 잔고·예약·수수료·체결·중복 방지를 확인하며, 전체 원장 항목의 영속 보관이나 분개별 대사를 주장하지 않는다.
+
+```sh
+cd /Users/0chord/.codex/worktrees/issue148-http-aeron/exchange-core
+./gradlew :app-api:test --tests '*BoundedHttpTrading*Test' --no-daemon --max-workers=1 --console=plain
+```
+
+## #148 · 기존 legacy HTTP 연결 기록
+
 이번 작업은 **#148 HTTP 접수 연결**이다. #129에서 만든 예약·매칭·정산 코드를 새로 만들지 않고, 실제 HTTP 요청을 그 코드로 연결한다. #142의 성능 측정 도구와 TPS 측정은 다음 작업이다.
 
 작업 폴더: `/Users/0chord/.codex/worktrees/issue148-http-aeron/exchange-core`
