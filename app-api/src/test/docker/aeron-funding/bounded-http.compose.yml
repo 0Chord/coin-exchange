@@ -1,0 +1,46 @@
+x-bounded: &bounded
+  FUNDING_BOUNDED_MANIFEST: /manifest/manifest.bin
+  FUNDING_TRUSTED_BOUNDED_CONTROL: "true"
+  FUNDING_DRIVER_ROOT: /dev/shm
+  HTTP_BOUNDED_CONTROL: /control
+  JAVA_TOOL_OPTIONS: "-Xms128m -Xmx384m -XX:+UseG1GC"
+
+services:
+  node0:
+    mem_limit: 1g
+    cpus: 2
+    shm_size: 256m
+    command: [com.exchange.core.api.trading.infrastructure.aeron.BoundedHttpTradingNodeKt]
+    environment:
+      <<: *bounded
+    volumes:
+      - ${FUNDING_CONTROL_DIRECTORY:?}:/control
+      - ${FUNDING_CONTROL_DIRECTORY:?}/manifest.bin:/manifest/manifest.bin:ro
+  node1:
+    mem_limit: 1g
+    cpus: 2
+    shm_size: 256m
+    command: [com.exchange.core.api.trading.infrastructure.aeron.BoundedHttpTradingNodeKt]
+    environment:
+      <<: *bounded
+    volumes:
+      - ${FUNDING_CONTROL_DIRECTORY:?}:/control
+      - ${FUNDING_CONTROL_DIRECTORY:?}/manifest.bin:/manifest/manifest.bin:ro
+  node2:
+    mem_limit: 1g
+    cpus: 2
+    shm_size: 256m
+    command: [com.exchange.core.api.trading.infrastructure.aeron.BoundedHttpTradingNodeKt]
+    environment:
+      <<: *bounded
+    volumes:
+      - ${FUNDING_CONTROL_DIRECTORY:?}:/control
+      - ${FUNDING_CONTROL_DIRECTORY:?}/manifest.bin:/manifest/manifest.bin:ro
+  gateway:
+    mem_limit: 768m
+    cpus: 2
+    environment:
+      TRADING_GATEWAY_PROTOCOL: bounded
+      SPRING_PROFILES_ACTIVE: aeron-bounded-gateway
+      TRADING_GATEWAY_PROTECTION: local
+      JAVA_TOOL_OPTIONS: "-Xms128m -Xmx384m -XX:+UseG1GC"
