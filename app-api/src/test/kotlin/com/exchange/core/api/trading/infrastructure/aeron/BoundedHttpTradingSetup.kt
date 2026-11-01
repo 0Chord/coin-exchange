@@ -11,7 +11,6 @@ import com.exchange.core.common.UserId
 import com.exchange.core.ledger.OpeningBalance
 import java.nio.file.Files
 import java.nio.file.Path
-import java.nio.file.StandardCopyOption.ATOMIC_MOVE
 import java.time.Instant
 
 /** 같은 이미지와 JDK 안에서 manifest를 만들고, 준비 단계에만 직접 wire3 제어를 사용한다. */
@@ -25,13 +24,7 @@ fun main(args: Array<String>) {
             val bytes = BoundedTradingStateCodec().encodeManifest(manifest)
             val target = control.resolve("manifest.bin")
             check(!Files.exists(target)) { "manifest must be generated once for a fresh run" }
-            val temporary = Files.createTempFile(control, ".manifest-", ".tmp")
-            try {
-                Files.write(temporary, bytes)
-                Files.move(temporary, target, ATOMIC_MOVE)
-            } finally {
-                Files.deleteIfExists(temporary)
-            }
+            writeBoundedHttpArtifact(target, bytes, replaceExisting = false)
             val fields = boundedHttpManifestFields(bytes, manifest)
             writeBoundedHttpJson(control.resolve("manifest.json"), fields)
             boundedHttpEvent(fields + ("kind" to "MANIFEST"))

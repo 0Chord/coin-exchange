@@ -142,6 +142,7 @@ jobs:
             **/build/test-results/test/*.xml
             **/build/reports/ktlint/**
             app-api/build/reports/aeron-funding/**
+            app-api/build/reports/aeron-http/**
           if-no-files-found: warn
           retention-days: 7
 

@@ -18,6 +18,7 @@ import java.nio.file.Files
 import java.nio.file.Path
 import java.nio.file.StandardCopyOption.ATOMIC_MOVE
 import java.nio.file.StandardCopyOption.REPLACE_EXISTING
+import java.nio.file.attribute.PosixFilePermissions
 import java.security.MessageDigest
 import java.util.concurrent.ArrayBlockingQueue
 import java.util.concurrent.CompletableFuture
@@ -358,10 +359,25 @@ internal fun writeBoundedHttpJson(
 ) {
     val bytes = boundedHttpJson.writeValueAsBytes(fields)
     check(bytes.size <= 262_144) { "bounded HTTP evidence exceeds the per-file limit" }
+    writeBoundedHttpArtifact(path, bytes, replaceExisting = true)
+}
+
+/** 비밀이 없는 테스트 자료는 Docker의 root와 호스트의 CI 사용자 모두 읽을 수 있게 게시한다. */
+internal fun writeBoundedHttpArtifact(
+    path: Path,
+    bytes: ByteArray,
+    replaceExisting: Boolean,
+) {
     val temporary = Files.createTempFile(path.parent, ".${path.fileName}-", ".tmp")
     try {
         Files.write(temporary, bytes)
-        Files.move(temporary, path, ATOMIC_MOVE, REPLACE_EXISTING)
+        // createTempFile의 기본 0600을 그대로 rename하면 Linux 호스트와 artifact 업로더가 읽지 못한다.
+        Files.setPosixFilePermissions(temporary, PosixFilePermissions.fromString("rw-r--r--"))
+        if (replaceExisting) {
+            Files.move(temporary, path, ATOMIC_MOVE, REPLACE_EXISTING)
+        } else {
+            Files.move(temporary, path, ATOMIC_MOVE)
+        }
     } finally {
         Files.deleteIfExists(temporary)
     }
