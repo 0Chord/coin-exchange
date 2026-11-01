@@ -17,6 +17,7 @@ import com.exchange.core.ledger.Balance
 import com.exchange.core.ledger.OpeningBalance
 import com.exchange.core.ledger.OpeningBalanceConflictException
 import com.exchange.core.ledger.OpeningBalanceRequestConflictException
+import com.exchange.core.matching.MatchingCheckpoint
 import com.exchange.core.order.BuyOrderFundingQuoteCalculator
 import com.exchange.core.order.MarketDefinition
 import com.exchange.core.order.OrderFillSettlementCalculator
@@ -252,7 +253,7 @@ class BoundedTradingStateTest {
         owner.rotateEpoch(buyer, 0, 0)
         fund(owner, buyer, usdt, 1000)
         val receipt = accepted(owner, buyer, 1, intent(Side.BUY, 100, 3))
-        val data = TradingStateFailureTestSupport.read(owner, "bounded") as BoundedTradingData
+        val data = TradingStateFailureTestSupport.boundedData(owner)
         val live = data.liveBySequence.getValue(requireNotNull(receipt.admissionSequence))
         live.reservation = live.reservation.copy(reservedAmount = Amount(307), remainingAmount = Amount(307))
         val balances = data.balances.toMap()
@@ -292,7 +293,7 @@ class BoundedTradingStateTest {
                 execute(owner, accepted(owner, seller, index.toLong() + 1, intent(Side.SELL, 90 + index.toLong(), 1)))
             }
             val receipt = accepted(owner, buyer, 1, intent(Side.BUY, 100, 3))
-            val data = TradingStateFailureTestSupport.read(owner, "bounded") as BoundedTradingData
+            val data = TradingStateFailureTestSupport.boundedData(owner)
             val live = data.liveBySequence.getValue(requireNotNull(receipt.admissionSequence))
             live.reservation = live.reservation.copy(reservedAmount = Amount(307), remainingAmount = Amount(307))
             val before = owner.recoveryState()
@@ -366,7 +367,7 @@ class BoundedTradingStateTest {
                 owner.rotateEpoch(buyer, 0, 0)
                 if (side == Side.BUY) fund(owner, buyer, usdt, 1000) else fund(owner, buyer, btc, 3)
                 val receipt = accepted(owner, buyer, 1, intent(side, 100, 3))
-                val data = TradingStateFailureTestSupport.read(owner, "bounded") as BoundedTradingData
+                val data = TradingStateFailureTestSupport.boundedData(owner)
                 val baseKey = TradingBalanceKey(buyer, btc)
                 val quoteKey = TradingBalanceKey(buyer, usdt)
                 val reservedKey = if (side == Side.BUY) quoteKey else baseKey
@@ -414,23 +415,69 @@ class BoundedTradingStateTest {
         liveOrders: List<TradingLiveOrderSnapshot> = saved.liveOrders,
         inbox: TradingInboxSnapshot = saved.inbox,
         manifest: TradingClusterManifest = saved.manifest,
+        balances: List<Balance> = saved.balances,
+        matching: MatchingCheckpoint = saved.matching,
     ) = TradingRecoveryState(
         manifest,
         saved.lifecycle,
-        saved.balances,
+        balances,
         saved.feeRevenueByAsset,
         saved.usedBalances,
         saved.preparations,
         saved.accounts,
         liveOrders,
         saved.markets,
-        saved.matching,
+        matching,
         inbox,
         saved.lastAdmissionSequence,
         saved.lastPreparationSequence,
         saved.preparationCanonicalBytes,
         saved.incident,
     )
+
+    @Test
+    fun `통합 복원은 금융과 주문장의 관계가 손상되면 두 후보를 게시하지 않고 차단한다`() {
+        val original = state().also { it.initialize(manifest()) }
+        fund(original, buyer, usdt, 1_000)
+        original.rotateEpoch(buyer, 0, 0)
+        execute(original, accepted(original, buyer, 1, intent(Side.BUY, 100, 3)))
+        execute(original, accepted(original, buyer, 2, intent(Side.BUY, 100, 1)))
+        val saved = original.recoveryState()
+        val valid = state().also { it.restoreRecoveryState(saved) }
+        assertEquals(Balance(buyer, usdt, Amount(600), Amount(400)), valid.currentBalance(buyer, usdt))
+        assertEquals(saved.liveOrders, valid.recoveryState().liveOrders)
+
+        val market = saved.matching.markets.single()
+        val balances =
+            saved.balances.map {
+                if (it.userId == buyer && it.assetId == usdt) it.copy(available = Amount(601), hold = Amount(399)) else it
+            }
+        val wrongQuantity =
+            MatchingCheckpoint(
+                listOf(
+                    MatchingCheckpoint.Market(
+                        market.marketId,
+                        market.lastEngineSequence,
+                        market.orders.mapIndexed { index, order -> if (index == 0) order.copy(remainingQuantity = Quantity(2)) else order },
+                    ),
+                ),
+            )
+        val wrongSequence = MatchingCheckpoint(listOf(MatchingCheckpoint.Market(market.marketId, 1, market.orders)))
+        val damaged =
+            listOf(
+                "활성 예약 합계" to alterRecovery(saved, balances = balances),
+                "주문장 잔량" to alterRecovery(saved, matching = wrongQuantity),
+                "실행 순번" to alterRecovery(saved, matching = wrongSequence),
+            )
+        for ((boundary, input) in damaged) {
+            val recovered = state()
+            assertFailsWith<IllegalArgumentException>(boundary) { recovered.restoreRecoveryState(input) }
+            assertTrue(recovered.isBlocked, boundary)
+            assertEquals(TradingLifecycle.UNINITIALIZED, recovered.lifecycle, boundary)
+            assertFailsWith<IllegalStateException>(boundary) { recovered.currentBalance(buyer, usdt) }
+            assertFailsWith<IllegalStateException>(boundary) { recovered.recoveryState() }
+        }
+    }
 
     @Test
     fun `recovery rejects pending order conditions that admission never accepts`() {

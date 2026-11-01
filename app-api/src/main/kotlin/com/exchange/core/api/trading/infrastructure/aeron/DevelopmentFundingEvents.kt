@@ -10,6 +10,7 @@ import com.exchange.core.order.OrderReservation
 import com.exchange.core.trading.OrderAdmissionInput
 import com.exchange.core.trading.OrderAdmissionResult
 import com.exchange.core.trading.OrderAdmissionState
+import com.exchange.core.trading.TradingServiceRole
 import com.exchange.core.trading.TradingState
 import tools.jackson.databind.json.JsonMapper
 import java.nio.file.Path
@@ -19,6 +20,9 @@ import java.time.Instant
 private val fundingJson = JsonMapper.builder().build()
 
 internal fun developmentClusterSettings(environment: Map<String, String> = System.getenv()): DevelopmentFundingSettings {
+    val serviceRole = TradingServiceRole.parse(environment["TRADING_SERVICE_ROLE"])
+    serviceRole.requireRuntimeEnabled()
+
     fun required(name: String): String = requireNotNull(environment[name]) { "$name 설정이 필요합니다" }
     val boundedManifest =
         environment["FUNDING_BOUNDED_MANIFEST"]?.let { file ->
@@ -52,6 +56,7 @@ internal fun developmentClusterSettings(environment: Map<String, String> = Syste
         boundedManifest = boundedManifest,
         trustedBoundedControl = environment["FUNDING_TRUSTED_BOUNDED_CONTROL"]?.toBooleanStrict() ?: false,
         driverRoot = environment["FUNDING_DRIVER_ROOT"]?.let(Path::of),
+        serviceRole = serviceRole,
     )
 }
 

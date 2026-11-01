@@ -13,7 +13,8 @@ import com.exchange.core.trading.OrderSettlementCalculator
 import com.exchange.core.trading.SettlementLedgerTransactions
 import com.exchange.core.trading.TradingClusterManifest
 import com.exchange.core.trading.TradingRecoveryState
-import com.exchange.core.trading.TradingState
+import com.exchange.core.trading.TradingRoleAssembly
+import com.exchange.core.trading.TradingServiceRole
 import io.aeron.ChannelUri
 import io.aeron.archive.Archive
 import io.aeron.archive.ArchiveThreadingMode
@@ -58,6 +59,7 @@ internal data class DevelopmentFundingSettings(
     val trustedBoundedControl: Boolean = false,
     /** 선택적으로 사용하는 휘발성 전송 루트다. Archive와 consensus 메타데이터는 runRoot 아래에 둔다. */
     val driverRoot: Path? = null,
+    val serviceRole: TradingServiceRole = TradingServiceRole.INTEGRATED,
 ) {
     init {
         require(runRoot.isAbsolute) { "실행 루트는 절대 경로여야 합니다" }
@@ -175,7 +177,7 @@ internal class DevelopmentFundingNode private constructor(
                     }
                 val fees = TradingFeeReserveCalculator()
                 val reservation = OrderReservationCalculator(BuyOrderFundingQuoteCalculator(fees))
-                TradingState(
+                TradingRoleAssembly.integrated(
                     OrderAdmissionCalculator(reservation),
                     OrderSettlementCalculator(
                         OrderFillSettlementCalculator(TradingFeeCalculator(), fees),
@@ -422,8 +424,10 @@ internal class DevelopmentFundingNode private constructor(
         fun start(
             config: DevelopmentFundingSettings,
             serviceDecorator: (DevelopmentFundingAdapter) -> ClusteredService = { it },
-        ): DevelopmentFundingNode =
-            DevelopmentFundingNode(config, serviceDecorator).also { node ->
+        ): DevelopmentFundingNode {
+            // 생성자에서 시작하는 지표 worker를 포함해 어떤 실행 자원도 만들기 전에 거절한다.
+            config.serviceRole.requireRuntimeEnabled()
+            return DevelopmentFundingNode(config, serviceDecorator).also { node ->
                 try {
                     node.launch()
                 } catch (error: Throwable) {
@@ -432,12 +436,15 @@ internal class DevelopmentFundingNode private constructor(
                     throw error
                 }
             }
+        }
     }
 }
 
 /** 기본 HTTP 실행과 독립된 개발 진입점. 자금은 클라이언트의 명시 요청으로만 준비한다. */
 fun main(args: Array<String>) {
     val environment = System.getenv()
+    val serviceRole = TradingServiceRole.parse(environment["TRADING_SERVICE_ROLE"])
+    serviceRole.requireRuntimeEnabled()
     val structured = args.contentEquals(arrayOf("--cluster-env"))
     require(structured || args.size in 1..2) { "사용법: 절대경로의새실행루트 [기준포트=19700] 또는 --cluster-env" }
     val config =
@@ -449,6 +456,7 @@ fun main(args: Array<String>) {
                 args.getOrNull(1)?.toInt() ?: 19700,
                 markets = readDevelopmentMarkets(environment),
                 driverRoot = environment["FUNDING_DRIVER_ROOT"]?.let(Path::of),
+                serviceRole = serviceRole,
             )
         }
     try {

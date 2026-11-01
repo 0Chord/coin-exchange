@@ -141,6 +141,51 @@ class TradingRecoveryState(
         )
 }
 
+/** 통합 복구 값에서 주문장만 제외한 불변 금융 투영이다. 새 저장 형식은 아니다. */
+internal class BoundedFundingRecoveryState(
+    val manifest: TradingClusterManifest,
+    val lifecycle: TradingLifecycle,
+    balances: List<Balance>,
+    feeRevenueByAsset: Map<AssetId, BigInteger>,
+    usedBalances: List<TradingBalanceKey>,
+    preparations: List<OpeningBalanceResult>,
+    accounts: List<com.exchange.core.common.UserId>,
+    liveOrders: List<TradingLiveOrderSnapshot>,
+    markets: List<TradingMarketProgressSnapshot>,
+    inbox: TradingInboxSnapshot,
+    val lastAdmissionSequence: Long,
+    val lastPreparationSequence: Long,
+    val preparationCanonicalBytes: Long,
+    val incident: TradingIncident? = null,
+) {
+    val balances = Collections.unmodifiableList(balances.toList())
+    val feeRevenueByAsset = Collections.unmodifiableMap(LinkedHashMap(feeRevenueByAsset))
+    val usedBalances = Collections.unmodifiableList(usedBalances.toList())
+    val preparations = Collections.unmodifiableList(preparations.toList())
+    val accounts = Collections.unmodifiableList(accounts.toList())
+    val liveOrders = Collections.unmodifiableList(liveOrders.toList())
+    val inbox =
+        TradingInboxSnapshot(
+            Collections.unmodifiableList(
+                inbox.channels.map {
+                    it.copy(entries = Collections.unmodifiableList(it.entries.toList()))
+                },
+            ),
+        )
+    val markets =
+        Collections.unmodifiableList(
+            markets.map {
+                it.copy(pendingAdmissionSequences = Collections.unmodifiableList(it.pendingAdmissionSequences.toList()))
+            },
+        )
+}
+
+internal data class BoundedFundingExecution(
+    val manifest: TradingClusterManifest,
+    val context: TradingMarketContext,
+    val live: TradingLiveOrderSnapshot,
+)
+
 data class TradingBoundedRetention(
     val balances: Int,
     val accounts: Int,
@@ -163,7 +208,7 @@ data class BoundedTradingProgress(
     val markets: List<BoundedMarketExecutionProgress>,
 )
 
-/** 기존 TradingState 작성자가 배타적으로 소유하는 가변 현재 상태다. */
+/** 금융 소유자만 접근하는 가변 현재 상태다. */
 internal class BoundedTradingData(
     val manifest: TradingClusterManifest,
 ) {

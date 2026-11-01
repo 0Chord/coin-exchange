@@ -15,6 +15,9 @@ internal object TradingStateFailureTestSupport {
         name: String,
     ): Any = checkNotNull(field(owner, name).get(owner))
 
+    /** 손상 주입 대상은 새 자금 소유자의 실제 현재 상태다. 제품에 관찰 입구를 만들지 않는다. */
+    fun boundedData(owner: TradingState): BoundedTradingData = read(read(owner, "funding"), "bounded") as BoundedTradingData
+
     fun write(
         owner: Any,
         name: String,
