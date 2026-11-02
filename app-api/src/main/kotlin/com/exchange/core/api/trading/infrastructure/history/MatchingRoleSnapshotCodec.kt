@@ -6,19 +6,9 @@ import com.exchange.core.common.Price
 import com.exchange.core.common.Quantity
 import com.exchange.core.common.UserId
 import com.exchange.core.matching.MatchingCheckpoint
-import com.exchange.core.matching.MatchingEvent
-import com.exchange.core.matching.OrderEnteredBook
-import com.exchange.core.matching.TradeExecuted
-import com.exchange.core.order.Side
-import com.exchange.core.trading.FundsOrderDispatch
 import com.exchange.core.trading.MatchingIntakeConfiguration
-import com.exchange.core.trading.MatchingNotExecutedReason
-import com.exchange.core.trading.MatchingOrderEffect
-import com.exchange.core.trading.MatchingOutcome
-import com.exchange.core.trading.MatchingResultEnvelope
 import com.exchange.core.trading.MatchingRoleRecoveryState
 import com.exchange.core.trading.MatchingStreamRecovery
-import com.exchange.core.trading.OrderAdmissionInput
 import com.exchange.core.trading.ReservedMatchingState
 import com.exchange.core.trading.TradingLifecycle
 import java.io.ByteArrayOutputStream
@@ -35,7 +25,7 @@ import java.security.MessageDigest
 /** 매칭 역할만의 복구 형식이다. 금융 상태나 실행 중인 매칭 후보는 직렬화하지 않는다. */
 internal class MatchingRoleSnapshotCodec {
     private val manifests = BoundedTradingStateCodec()
-    private val reservations = TradingHistoryCodec(MAX_RESERVATION_BYTES)
+    private val results = MatchingResultSnapshotCodec()
 
     fun write(
         state: MatchingRoleRecoveryState,
@@ -72,7 +62,7 @@ internal class MatchingRoleSnapshotCodec {
             }
         }
         output.writeInt(state.active.size)
-        for (entry in state.active) output.dispatch(entry)
+        for (entry in state.active) results.writeDispatch(output, entry)
         output.writeInt(state.streams.size)
         for (stream in state.streams) {
             output.text(stream.stream.marketId.value)
@@ -85,7 +75,7 @@ internal class MatchingRoleSnapshotCodec {
             output.writeInt(stream.activeOrders)
             output.writeLong(stream.activeBytes)
             output.writeInt(stream.outstanding.size)
-            for (result in stream.outstanding) output.result(result)
+            for (result in stream.outstanding) results.writeResult(output, result)
         }
         output.flush()
         checked.on(false)
@@ -147,7 +137,7 @@ internal class MatchingRoleSnapshotCodec {
                     )
                 },
             )
-        val active = List(input.count(expected.limits.maxActiveOrders)) { input.dispatch(expected) }
+        val active = List(input.count(expected.limits.maxActiveOrders)) { results.readDispatch(input, expected::stream, expected::context) }
         var resultsRead = 0
         val streams =
             List(input.count(owned.size)) {
@@ -178,7 +168,9 @@ internal class MatchingRoleSnapshotCodec {
                     issued,
                     settled,
                     engine,
-                    List(count) { input.result(expected, market) },
+                    List(
+                        count,
+                    ) { results.readResult(input, expected.stream(market), expected.context(market), expected.limits.maxResultEvents) },
                     bytes,
                     localActive,
                     localActiveBytes,
@@ -203,159 +195,6 @@ internal class MatchingRoleSnapshotCodec {
         // checksum만 맞는 손상 자료도 정상 상태로 공개하지 않는다.
         ReservedMatchingState(expected).restore(state)
         return state
-    }
-
-    private fun DataOutputStream.result(value: MatchingResultEnvelope) {
-        writeLong(value.resultSequence)
-        dispatch(value.input)
-        writeInt(value.outcome.ordinal)
-        writeInt(value.reason?.ordinal ?: -1)
-        writeLong(value.engineSequenceBefore)
-        writeLong(value.engineSequenceAfter)
-        writeInt(value.events.size)
-        for (event in value.events) {
-            when (event) {
-                is TradeExecuted -> {
-                    writeInt(1)
-                    writeLong(event.engineSequence)
-                    text(event.makerOrderId.value)
-                    text(event.takerOrderId.value)
-                    text(event.makerUserId.value)
-                    text(event.takerUserId.value)
-                    writeInt(event.side.ordinal)
-                    writeLong(event.price.value)
-                    writeLong(event.quantity.value)
-                }
-
-                is OrderEnteredBook -> {
-                    writeInt(2)
-                    writeLong(event.engineSequence)
-                    text(event.orderId.value)
-                    text(event.userId.value)
-                    writeInt(event.side.ordinal)
-                    writeLong(event.price.value)
-                    writeLong(event.remainingQuantity.value)
-                }
-
-                else -> {
-                    throw IllegalArgumentException("matching intake cannot snapshot cancellation events")
-                }
-            }
-        }
-        writeInt(value.effects.size)
-        for (effect in value.effects) {
-            dispatch(effect.origin)
-            writeLong(effect.beforeQuantity.value)
-            writeLong(effect.afterQuantity.value)
-            writeInt(effect.disposition.ordinal)
-        }
-    }
-
-    private fun DataInputStream.result(
-        configuration: MatchingIntakeConfiguration,
-        market: MarketId,
-    ): MatchingResultEnvelope {
-        val sequence = readLong()
-        val original = dispatch(configuration)
-        val outcome = enum<MatchingOutcome>()
-        val reasonCode = readInt()
-        val reason =
-            if (reasonCode ==
-                -1
-            ) {
-                null
-            } else {
-                requireNotNull(MatchingNotExecutedReason.entries.getOrNull(reasonCode)) { "invalid matching rejection reason" }
-            }
-        val before = readLong()
-        val after = readLong()
-        val events =
-            List(count(configuration.limits.maxResultEvents)) {
-                when (readInt()) {
-                    1 -> {
-                        TradeExecuted(
-                            market,
-                            readLong(),
-                            OrderId(text()),
-                            OrderId(text()),
-                            UserId(text()),
-                            UserId(text()),
-                            enum(),
-                            Price(readLong()),
-                            Quantity(readLong()),
-                        )
-                    }
-
-                    2 -> {
-                        OrderEnteredBook(
-                            market,
-                            readLong(),
-                            OrderId(text()),
-                            UserId(text()),
-                            enum(),
-                            Price(readLong()),
-                            Quantity(readLong()),
-                        )
-                    }
-
-                    else -> {
-                        throw IllegalArgumentException("invalid matching event type")
-                    }
-                }
-            }
-        val effects =
-            List(count(Math.addExact(configuration.limits.maxResultEvents, 1))) {
-                MatchingOrderEffect(dispatch(configuration), Quantity(readLong()), Quantity(readLong()), enum())
-            }
-        return MatchingResultEnvelope(
-            configuration.resultStream(market),
-            sequence,
-            original,
-            outcome,
-            reason,
-            before,
-            after,
-            events,
-            effects,
-        )
-    }
-
-    private fun DataOutputStream.dispatch(value: FundsOrderDispatch) {
-        text(value.stream.marketId.value)
-        writeLong(value.dispatchSequence)
-        writeLong(value.admissionSequence)
-        writeLong(value.marketAdmissionSequence)
-        val order = value.order
-        text(order.marketId.value)
-        text(order.orderId.value)
-        text(order.userId.value)
-        writeInt(order.side.ordinal)
-        writeInt(order.orderType.ordinal)
-        writeInt(order.timeInForce.ordinal)
-        writeLong(order.price.value)
-        writeLong(order.quantity.value)
-        blob(reservations.encodeReservation(value.reservation), MAX_RESERVATION_BYTES)
-    }
-
-    private fun DataInputStream.dispatch(configuration: MatchingIntakeConfiguration): FundsOrderDispatch {
-        val market = MarketId(text())
-        val stream = configuration.stream(market)
-        val dispatch = readLong()
-        val admission = readLong()
-        val marketAdmission = readLong()
-        val order =
-            OrderAdmissionInput(
-                MarketId(text()),
-                OrderId(text()),
-                UserId(text()),
-                enum(),
-                enum(),
-                enum(),
-                Price(readLong()),
-                Quantity(readLong()),
-            )
-        val reservation = reservations.decodeReservation(blob(MAX_RESERVATION_BYTES))
-        return FundsOrderDispatch(stream, dispatch, admission, marketAdmission, order, reservation, configuration.context(market))
     }
 
     private fun configurationBytes(configuration: MatchingIntakeConfiguration): ByteArray =
@@ -494,7 +333,6 @@ internal class MatchingRoleSnapshotCodec {
         private const val END = 0x4D524531
         private const val MAX_TEXT_BYTES = 1_024
         private const val MAX_CONFIGURATION_BYTES = 256 * 1_024
-        private const val MAX_RESERVATION_BYTES = 64 * 1_024
         private const val MAX_SNAPSHOT_BYTES = 128L * 1_024 * 1_024
         private const val MAX_ROWS = 1_000_000
     }

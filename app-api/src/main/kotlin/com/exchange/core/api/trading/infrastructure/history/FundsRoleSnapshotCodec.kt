@@ -6,18 +6,32 @@ import com.exchange.core.common.OrderId
 import com.exchange.core.common.Price
 import com.exchange.core.common.Quantity
 import com.exchange.core.common.UserId
+import com.exchange.core.fee.TradingFeeCalculator
+import com.exchange.core.fee.TradingFeeReserveCalculator
 import com.exchange.core.matching.MatchingCheckpoint
+import com.exchange.core.order.BuyOrderFundingQuoteCalculator
+import com.exchange.core.order.OrderFillSettlementCalculator
+import com.exchange.core.order.OrderReservationCalculator
 import com.exchange.core.order.OrderType
 import com.exchange.core.order.Side
 import com.exchange.core.order.TimeInForce
 import com.exchange.core.trading.BoundedFundingRecoveryState
+import com.exchange.core.trading.BoundedFundingState
 import com.exchange.core.trading.FundsDispatchConfiguration
 import com.exchange.core.trading.FundsDispatchSnapshot
 import com.exchange.core.trading.FundsDispatchStreamSnapshot
 import com.exchange.core.trading.FundsOrderDispatch
+import com.exchange.core.trading.FundsResultLimits
+import com.exchange.core.trading.FundsResultReceipt
+import com.exchange.core.trading.FundsResultRecoveryState
+import com.exchange.core.trading.FundsResultStreamRecovery
 import com.exchange.core.trading.FundsRoleRecoveryState
 import com.exchange.core.trading.MarketFundsDispatchLimits
+import com.exchange.core.trading.MatchingResultStream
+import com.exchange.core.trading.OrderAdmissionCalculator
 import com.exchange.core.trading.OrderAdmissionInput
+import com.exchange.core.trading.OrderSettlementCalculator
+import com.exchange.core.trading.SettlementLedgerTransactions
 import com.exchange.core.trading.TradingRecoveryState
 import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
@@ -30,11 +44,13 @@ import java.io.OutputStream
 import java.security.DigestInputStream
 import java.security.DigestOutputStream
 import java.security.MessageDigest
+import java.time.Instant
 
 /** 자금 역할의 금융 투영과 전달 의무를 함께 담는다. 노드나 Archive를 시작하지 않는다. */
 internal class FundsRoleSnapshotCodec {
     private val financial = BoundedTradingStateCodec()
     private val reservations = TradingHistoryCodec(MAX_RESERVATION_BYTES)
+    private val results = MatchingResultSnapshotCodec()
 
     fun write(
         state: FundsRoleRecoveryState,
@@ -42,18 +58,20 @@ internal class FundsRoleSnapshotCodec {
         target: OutputStream,
     ) {
         require(position >= 0)
-        require(state.financial.manifest == state.configuration.manifest) { "funds financial manifest differs" }
+        val saved = validatedState(state)
+        require(saved.financial.manifest == saved.configuration.manifest) { "funds financial manifest differs" }
         require(
-            state.financial.lifecycle != com.exchange.core.trading.TradingLifecycle.UNINITIALIZED,
+            saved.financial.lifecycle != com.exchange.core.trading.TradingLifecycle.UNINITIALIZED,
         ) { "funds snapshot is not initialized" }
-        val configuration = configurationBytes(state.configuration)
+        val configuration = configurationBytes(saved.configuration)
         val base =
             ByteArrayOutputStream().use { bytes ->
-                financial.write(financialProjection(state.financial), position, LimitedOutput(bytes, MAX_SNAPSHOT_BYTES))
+                financial.write(financialProjection(saved.financial), position, LimitedOutput(bytes, MAX_SNAPSHOT_BYTES))
                 bytes.toByteArray()
             }
         val digest = MessageDigest.getInstance("SHA-256")
-        val checked = DigestOutputStream(LimitedOutput(target, snapshotLimit(state.configuration)), digest)
+        val checked =
+            DigestOutputStream(LimitedOutput(target, snapshotLimit(saved.configuration, checkNotNull(saved.results).limits)), digest)
         val output = DataOutputStream(checked)
         output.writeInt(MAGIC)
         output.writeInt(VERSION)
@@ -61,16 +79,17 @@ internal class FundsRoleSnapshotCodec {
         output.blob(configuration, MAX_CONFIGURATION_BYTES)
         output.blob(base, MAX_SNAPSHOT_BYTES.toInt())
         val assets =
-            state.configuration.manifest.markets
+            saved.configuration.manifest.markets
                 .flatMap { listOf(it.market.baseAssetId, it.market.quoteAssetId) }
                 .toSet()
-        require(state.assetTotals.keys.all { it in assets } && state.assetTotals.values.all { it >= 0 })
-        output.writeInt(state.assetTotals.size)
-        for ((asset, total) in state.assetTotals.entries.sortedBy { it.key.value }) {
+        require(saved.assetTotals.keys.all { it in assets } && saved.assetTotals.values.all { it >= 0 })
+        output.writeInt(saved.assetTotals.size)
+        for ((asset, total) in saved.assetTotals.entries.sortedBy { it.key.value }) {
             output.text(asset.value)
             output.writeLong(total)
         }
-        writeDispatch(output, state.configuration, state.dispatch)
+        writeDispatch(output, saved.configuration, saved.dispatch)
+        writeResults(output, saved.configuration, checkNotNull(saved.results))
         output.flush()
         checked.on(false)
         output.write(digest.digest())
@@ -82,12 +101,16 @@ internal class FundsRoleSnapshotCodec {
         source: InputStream,
         expected: FundsDispatchConfiguration,
         expectedPosition: Long,
+        expectedResultLimits: FundsResultLimits = FundsResultLimits(),
     ): FundsRoleRecoveryState {
         require(expectedPosition >= 0)
         val digest = MessageDigest.getInstance("SHA-256")
-        val checked = DigestInputStream(LimitedInput(source, snapshotLimit(expected)), digest)
+        val limited = LimitedInput(source, snapshotLimit(expected, expectedResultLimits))
+        val checked = DigestInputStream(limited, digest)
         val input = DataInputStream(checked)
-        require(input.readInt() == MAGIC && input.readInt() == VERSION) { "unsupported funds snapshot" }
+        require(input.readInt() == MAGIC) { "unsupported funds snapshot" }
+        val version = input.readInt()
+        require(version == LEGACY_VERSION || version == VERSION) { "unsupported funds snapshot" }
         require(input.readLong() == expectedPosition) { "funds snapshot framework position differs" }
         require(input.blob(MAX_CONFIGURATION_BYTES).contentEquals(configurationBytes(expected))) {
             "funds snapshot configuration differs"
@@ -106,11 +129,196 @@ internal class FundsRoleSnapshotCodec {
             require(asset in assets && total >= 0 && totals.put(asset, total) == null) { "invalid funds snapshot asset total" }
         }
         val dispatch = readDispatch(input, expected)
+        val resultState = if (version == VERSION) readResults(input, expected, expectedResultLimits) { limited.remaining } else null
         checked.on(false)
         val expectedDigest = ByteArray(32).also(input::readFully)
         require(MessageDigest.isEqual(digest.digest(), expectedDigest)) { "funds snapshot checksum differs" }
         require(input.readInt() == END && input.read() == -1) { "funds snapshot footer differs" }
-        return FundsRoleRecoveryState(expected, fundingProjection(saved), dispatch, totals)
+        val state = FundsRoleRecoveryState(expected, fundingProjection(saved), dispatch, totals, resultState)
+        // 체크섬 뒤에도 금융·전달·정산 경계의 관계를 빈 소유자에서 검사한다.
+        validatedState(state, expectedResultLimits)
+        return state
+    }
+
+    private fun writeResults(
+        output: DataOutputStream,
+        configuration: FundsDispatchConfiguration,
+        state: FundsResultRecoveryState,
+    ) {
+        val limits = state.limits
+        output.writeInt(limits.maxResultEvents)
+        output.writeLong(limits.maxSingleResultBytes)
+        output.writeInt(limits.maxReceiptEntries)
+        output.writeLong(limits.maxReceiptBytes)
+        output.writeInt(limits.maxMarketReceiptEntries)
+        output.writeLong(limits.maxMarketReceiptBytes)
+        output.writeInt(state.streams.size)
+        for (saved in state.streams) {
+            output.text(saved.stream.marketId.value)
+            output.writeLong(saved.resultThrough)
+            output.writeLong(saved.settledEngineSequence)
+            output.writeLong(saved.retiredThrough)
+            output.writeLong(saved.retiredEngineSequence)
+            output.writeInt(saved.receiptEntries)
+            output.writeLong(saved.receiptBytes)
+        }
+        output.writeLong(state.receiptBytes)
+        output.writeInt(state.receipts.size)
+        for (receipt in state.receipts) {
+            require(receipt.result.stream.marketId in configuration.assignments.map { it.marketId })
+            output.text(receipt.result.stream.marketId.value)
+            output.writeLong(receipt.appliedAt.epochSecond)
+            output.writeInt(receipt.appliedAt.nano)
+            val frameLimit = resultFrameLimit(limits)
+            val frame =
+                ByteArrayOutputStream().use { bytes ->
+                    DataOutputStream(LimitedOutput(bytes, frameLimit.toLong())).use { framed ->
+                        results.writeResult(framed, receipt.result)
+                    }
+                    bytes.toByteArray()
+                }
+            output.blob(frame, frameLimit)
+        }
+    }
+
+    private fun readResults(
+        input: DataInputStream,
+        configuration: FundsDispatchConfiguration,
+        expectedLimits: FundsResultLimits,
+        remainingBytes: () -> Long,
+    ): FundsResultRecoveryState {
+        val limits =
+            FundsResultLimits(
+                input.readInt(),
+                input.readLong(),
+                input.readInt(),
+                input.readLong(),
+                input.readInt(),
+                input.readLong(),
+            )
+        require(limits == expectedLimits) { "funds result snapshot limits differ" }
+        val markets = configuration.assignments.map { it.marketId }
+        require(input.count(markets.size) == markets.size) { "funds result snapshot stream coverage differs" }
+        val streams =
+            markets.map { market ->
+                require(MarketId(input.text()) == market) { "funds result snapshot stream order differs" }
+                val dispatch = configuration.stream(market)
+                FundsResultStreamRecovery(
+                    MatchingResultStream(
+                        dispatch.matchingLineage,
+                        dispatch.fundsLineage,
+                        market,
+                        dispatch.ownershipEpoch,
+                        dispatch.configurationVersion,
+                    ),
+                    input.readLong(),
+                    input.readLong(),
+                    input.readLong(),
+                    input.readLong(),
+                    input.readInt(),
+                    input.readLong(),
+                )
+            }
+        val bytes = input.readLong()
+        require(bytes in 0..limits.maxReceiptBytes) { "funds receipt bytes exceed their bound" }
+        val declaredByMarket = streams.associateBy { it.stream.marketId }
+        var declaredBytes = 0L
+        var declaredEntries = 0
+        for (stream in streams) {
+            require(stream.receiptBytes in 0..limits.maxMarketReceiptBytes) { "funds market receipt bytes exceed their bound" }
+            require(stream.receiptEntries in 0..limits.maxMarketReceiptEntries) { "funds market receipt count exceeds its bound" }
+            declaredBytes = Math.addExact(declaredBytes, stream.receiptBytes)
+            declaredEntries = Math.addExact(declaredEntries, stream.receiptEntries)
+        }
+        require(declaredBytes == bytes) { "funds declared receipt byte totals differ" }
+        val receiptCount = input.count(limits.maxReceiptEntries)
+        require(declaredEntries == receiptCount) { "funds declared receipt entry totals differ" }
+        val marketCounts = mutableMapOf<MarketId, Int>()
+        val actualMarketBytes = mutableMapOf<MarketId, Long>()
+        var actualBytes = 0L
+        val receipts =
+            List(receiptCount) {
+                val market = MarketId(input.text())
+                require(market in markets) { "funds receipt market differs" }
+                val count = Math.addExact(marketCounts[market] ?: 0, 1)
+                val declared = declaredByMarket.getValue(market)
+                require(count <= declared.receiptEntries) { "funds market receipt count exceeds its declared bound" }
+                marketCounts[market] = count
+                val seconds = input.readLong()
+                val nanos = input.readInt()
+                require(nanos in 0..999_999_999) { "funds receipt time nanos differ" }
+                val at = Instant.ofEpochSecond(seconds, nanos.toLong())
+                val frameLength = input.readInt()
+                val marketBytes = actualMarketBytes[market] ?: 0L
+                val remainingLogicalBytes =
+                    minOf(
+                        limits.maxSingleResultBytes,
+                        limits.maxReceiptBytes - actualBytes,
+                        limits.maxMarketReceiptBytes - marketBytes,
+                        bytes - actualBytes,
+                        declared.receiptBytes - marketBytes,
+                    )
+                // 다음 원문의 길이만 믿고 할당하지 않는다. 이미 읽은 실제 charge를 모든 잔여 예산에서 뺀다.
+                require(remainingLogicalBytes > 0) { "funds receipt logical byte budget exhausted" }
+                val maximumFrame =
+                    minOf(
+                        Math.multiplyExact(remainingLogicalBytes, 4L),
+                        remainingBytes() - FOOTER_BYTES,
+                    )
+                require(frameLength.toLong() in 1..maximumFrame) { "funds result frame exceeds its bound" }
+                val frame = ByteArrayInputStream(ByteArray(frameLength).also(input::readFully))
+                val result =
+                    results.readResult(
+                        DataInputStream(frame),
+                        configuration.stream(market),
+                        configuration.manifest.markets.single { it.market.marketId == market },
+                        limits.maxResultEvents,
+                    )
+                require(frame.available() == 0) { "funds result frame has trailing bytes" }
+                val charge = result.canonicalBytes
+                require(charge in 1..remainingLogicalBytes) { "funds receipt result exceeds its remaining logical bound" }
+                actualBytes = Math.addExact(actualBytes, charge)
+                actualMarketBytes[market] = Math.addExact(marketBytes, charge)
+                FundsResultReceipt(result, at)
+            }
+        require(actualBytes == bytes) { "funds receipt byte total differs" }
+        for (stream in streams) {
+            require((actualMarketBytes[stream.stream.marketId] ?: 0L) == stream.receiptBytes) { "funds market receipt byte total differs" }
+            require((marketCounts[stream.stream.marketId] ?: 0) == stream.receiptEntries) { "funds market receipt entry total differs" }
+        }
+        return FundsResultRecoveryState(limits, streams, receipts, bytes)
+    }
+
+    private fun resultFrameLimit(limits: FundsResultLimits): Int =
+        Math
+            .multiplyExact(limits.maxSingleResultBytes, 4L)
+            .also {
+                require(it in 1..MAX_SNAPSHOT_BYTES) { "funds result frame bound is unsupported" }
+            }.toInt()
+
+    /** 순수 금융 소유자로 검증하며 통합 owner·주문장·파일 기록은 만들지 않는다. */
+    private fun validatedState(
+        state: FundsRoleRecoveryState,
+        resultLimits: FundsResultLimits = state.results?.limits ?: FundsResultLimits(),
+    ): FundsRoleRecoveryState {
+        val reserve = TradingFeeReserveCalculator()
+        val reservation = OrderReservationCalculator(BuyOrderFundingQuoteCalculator(reserve))
+        val owner =
+            BoundedFundingState(
+                OrderAdmissionCalculator(reservation),
+                expectedManifest = state.configuration.manifest,
+                dispatchConfiguration = state.configuration,
+                resultLimits = resultLimits,
+            )
+        val settlement =
+            OrderSettlementCalculator(
+                OrderFillSettlementCalculator(TradingFeeCalculator(), reserve),
+                reservation,
+                reserve,
+                SettlementLedgerTransactions(),
+            )
+        owner.restoreFundsRecoveryState(state, settlement)
+        return owner.fundsRecoveryState()
     }
 
     private fun writeDispatch(
@@ -329,14 +537,17 @@ internal class FundsRoleSnapshotCodec {
 
     private fun DataInputStream.count(maximum: Int): Int = readInt().also { require(it in 0..minOf(maximum, 1_000_000)) }
 
-    private fun snapshotLimit(configuration: FundsDispatchConfiguration): Long =
-        configuration.snapshotByteUpperBound.also { require(it in 1..MAX_SNAPSHOT_BYTES) }
+    private fun snapshotLimit(
+        configuration: FundsDispatchConfiguration,
+        limits: FundsResultLimits,
+    ): Long = limits.snapshotByteUpperBound(configuration).also { require(it in 1..MAX_SNAPSHOT_BYTES) }
 
     private class LimitedInput(
         source: InputStream,
         private val maximum: Long,
     ) : FilterInputStream(source) {
         private var consumed = 0L
+        val remaining: Long get() = maximum - consumed
 
         override fun read(): Int =
             `in`.read().also {
@@ -386,7 +597,9 @@ internal class FundsRoleSnapshotCodec {
 
     companion object {
         private const val MAGIC = 0x46525350
-        private const val VERSION = 1
+        private const val VERSION = 2
+        private const val LEGACY_VERSION = 1
+        private const val FOOTER_BYTES = 36L
         private const val END = 0x46524531
         private const val MAX_TEXT_BYTES = 1_024
         private const val MAX_CONFIGURATION_BYTES = 256 * 1_024

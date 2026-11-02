@@ -9,6 +9,7 @@ class FundsRoleRecoveryState(
     val financial: BoundedFundingRecoveryState,
     val dispatch: FundsDispatchSnapshot,
     assetTotals: Map<AssetId, Long>,
+    val results: FundsResultRecoveryState? = null,
 ) {
     val assetTotals: Map<AssetId, Long> = Collections.unmodifiableMap(LinkedHashMap(assetTotals))
 }

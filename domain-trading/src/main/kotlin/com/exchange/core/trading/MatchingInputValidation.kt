@@ -21,19 +21,28 @@ internal object MatchingInputValidation {
         configuration: MatchingIntakeConfiguration,
         input: FundsOrderDispatch,
     ) {
-        require(input.formatVersion == 1 && configuration.matches(input.stream)) { "matching input stream differs" }
+        require(configuration.matches(input.stream)) { "matching input stream differs" }
+        requireValid(configuration.manifest, configuration.context(input.stream.marketId), input.stream, input)
+    }
+
+    private fun requireValid(
+        manifest: TradingClusterManifest,
+        context: TradingMarketContext,
+        expectedStream: FundsDispatchStream,
+        input: FundsOrderDispatch,
+    ) {
+        require(input.formatVersion == 1 && input.stream == expectedStream) { "matching input stream differs" }
         require(
             input.dispatchSequence > 0 && input.admissionSequence >= input.dispatchSequence &&
                 input.marketAdmissionSequence == input.dispatchSequence,
         )
         val order = input.order
-        val context = configuration.context(input.stream.marketId)
         require(input.context == context && order.marketId == input.stream.marketId)
-        require(order.orderId == TradingIdentifiers.order(configuration.manifest.lineage, input.admissionSequence)) {
+        require(order.orderId == TradingIdentifiers.order(manifest.lineage, input.admissionSequence)) {
             "matching approval identity differs"
         }
         for (text in listOf(order.marketId.value, order.orderId.value, order.userId.value)) {
-            require(tradingTextBytes(text) <= configuration.manifest.limits.maxIdentifierBytes) { "matching identifier exceeds limit" }
+            require(tradingTextBytes(text) <= manifest.limits.maxIdentifierBytes) { "matching identifier exceeds limit" }
         }
         require(':' !in order.userId.value) { "matching user identifier differs from admission contract" }
         require(order.orderType == OrderType.LIMIT && order.timeInForce == TimeInForce.GTC)
@@ -68,12 +77,41 @@ internal object MatchingInputValidation {
         configuration: MatchingIntakeConfiguration,
         result: MatchingResultEnvelope,
     ) {
-        requireValid(configuration, result.input)
-        require(configuration.matches(result.stream) && result.stream == configuration.resultStream(result.input.stream.marketId))
+        require(configuration.matches(result.stream))
+        requireResult(
+            configuration.manifest,
+            configuration.resultStream(result.input.stream.marketId),
+            configuration.context(result.input.stream.marketId),
+            configuration.limits.maxResultEvents,
+            configuration.limits.maxSingleResultBytes,
+            result,
+        )
+    }
+
+    /** 주문장과 별개인 전체 결과의 수학적 검사는 두 금융/매칭 역할이 공유한다. */
+    fun requireResult(
+        manifest: TradingClusterManifest,
+        expectedStream: MatchingResultStream,
+        context: TradingMarketContext,
+        maxResultEvents: Int,
+        maxSingleResultBytes: Long,
+        result: MatchingResultEnvelope,
+    ) {
+        require(result.stream == expectedStream)
+        val inputStream =
+            FundsDispatchStream(
+                expectedStream.fundsLineage,
+                expectedStream.matchingLineage,
+                expectedStream.marketId,
+                expectedStream.ownershipEpoch,
+                expectedStream.configurationVersion,
+            )
+        require(result.eventCount <= maxResultEvents && result.effects.size <= maxResultEvents.toLong() + 1L)
+        requireValid(manifest, context, inputStream, result.input)
         require(result.resultSequence > 0 && result.resultSequence == result.input.dispatchSequence)
         require(result.engineSequenceBefore in 0 until Long.MAX_VALUE && result.engineSequenceAfter >= result.engineSequenceBefore)
         require(
-            result.eventCount <= configuration.limits.maxResultEvents && result.canonicalBytes <= configuration.limits.maxSingleResultBytes,
+            result.eventCount <= maxResultEvents && result.canonicalBytes <= maxSingleResultBytes,
         )
         require(result.effects.isNotEmpty() && result.effects.first().origin == result.input) { "result taker effect differs" }
         require(
@@ -83,7 +121,7 @@ internal object MatchingInputValidation {
                 .size == result.effects.size,
         ) { "duplicate result effect" }
         for (effect in result.effects) {
-            requireValid(configuration, effect.origin)
+            if (effect.origin != result.input) requireValid(manifest, context, inputStream, effect.origin)
             require(effect.origin.stream == result.input.stream)
             require(effect.beforeQuantity.value > 0 && effect.beforeQuantity <= effect.origin.order.quantity)
             require(effect.afterQuantity.value >= 0 && effect.afterQuantity <= effect.beforeQuantity)
@@ -123,7 +161,11 @@ internal object MatchingInputValidation {
                         maker.orderId == trade.makerOrderId && maker.userId == trade.makerUserId && maker.side != result.input.order.side,
                     )
                     require(trade.price == maker.origin.order.price && trade.quantity.value <= maker.beforeQuantity.value)
-                    configuration.context(trade.marketId).market.requireOrderUnits(trade.price, trade.quantity)
+                    // 보이는 maker의 잔량을 두고 다음 maker로 건너뛰는 결과는 정상 매칭이 만들 수 없다.
+                    require(trade.quantity.value == minOf(takerRemaining, maker.beforeQuantity.value)) {
+                        "result skips visible maker quantity"
+                    }
+                    context.market.requireOrderUnits(trade.price, trade.quantity)
                     require(maker.afterQuantity.value == Math.subtractExact(maker.beforeQuantity.value, trade.quantity.value))
                     require(
                         maker.disposition ==

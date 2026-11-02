@@ -54,6 +54,8 @@ import kotlin.test.assertEquals
 import kotlin.test.assertFails
 import kotlin.test.assertFalse
 import kotlin.test.assertIs
+import kotlin.test.assertNotNull
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 class FundsRoleSnapshotCodecTest {
@@ -78,6 +80,35 @@ class FundsRoleSnapshotCodecTest {
     private val configuration = FundsDispatchConfiguration(topology)
     private val intent = OrderIntent(market.marketId, 7, Side.BUY, OrderType.LIMIT, TimeInForce.GTC, Price(100), Quantity(3))
     private val token = RequestToken(user, 0, 1, 1)
+
+    @Test
+    fun `기존 writer의 v1 예약 자료를 읽고 빈 정산 경계로 복원한 뒤 v2로 기록한다`() {
+        val legacy = javaClass.getResourceAsStream("/trading/funds167/funds-role-v1-initial.bin")!!.use { it.readBytes() }
+        val expectedHash =
+            javaClass
+                .getResourceAsStream("/trading/funds167/funds-role-v1-initial.sha256")!!
+                .bufferedReader()
+                .use { it.readText().trim() }
+        val hash = MessageDigest.getInstance("SHA-256").digest(legacy).joinToString("") { "%02x".format(it) }
+        assertEquals(expectedHash, hash)
+        assertEquals(1, ByteBuffer.wrap(legacy).getInt(4))
+        val decoded = read(legacy)
+        assertNull(decoded.results)
+        val restored = owner().also { it.restoreFundsRecoveryState(decoded, settlementCalculator()) }
+        assertEquals(Balance(user, usdt, Amount(700), Amount(300)), restored.currentBalance(user, usdt))
+        assertEquals(
+            1,
+            restored
+                .fundsRecoveryState()
+                .financial.liveOrders.size,
+        )
+        val upgraded = bytes(restored.fundsRecoveryState())
+        assertEquals(2, ByteBuffer.wrap(upgraded).getInt(4))
+        val results = assertNotNull(read(upgraded).results)
+        assertTrue(results.receipts.isEmpty())
+        assertTrue(results.streams.all { it.resultThrough == 0L && it.settledEngineSequence == 0L })
+        assertContentEquals(upgraded, bytes(read(upgraded)))
+    }
 
     @Test
     fun `예약과 미확인 원본을 실제 바이트에서 빈 자금 소유자로 복원한다`() {

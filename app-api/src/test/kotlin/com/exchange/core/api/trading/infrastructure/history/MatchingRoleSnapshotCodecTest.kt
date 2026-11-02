@@ -66,6 +66,42 @@ class MatchingRoleSnapshotCodecTest {
     private val reservations = OrderReservationCalculator(BuyOrderFundingQuoteCalculator(TradingFeeReserveCalculator()))
 
     @Test
+    fun `공통 결과 codec으로 바꿔도 기존 매칭 v1의 여러 체결 바이트는 그대로다`() {
+        val legacy = javaClass.getResourceAsStream("/trading/funds167/matching-role-v1-multiple-fills.bin")!!.use { it.readBytes() }
+        val expectedHash =
+            javaClass
+                .getResourceAsStream("/trading/funds167/matching-role-v1-multiple-fills.sha256")!!
+                .bufferedReader()
+                .use { it.readText().trim() }
+        assertEquals(expectedHash, MessageDigest.getInstance("SHA-256").digest(legacy).joinToString("") { "%02x".format(it) })
+        assertEquals(1, ByteBuffer.wrap(legacy).getInt(4))
+        val state = read(legacy)
+        assertContentEquals(legacy, bytes(state))
+        assertEquals(
+            3,
+            state.streams
+                .single { it.stream.marketId == a.marketId }
+                .outstanding.size,
+        )
+        assertEquals(
+            3,
+            state.streams
+                .single { it.stream.marketId == a.marketId }
+                .outstanding
+                .last()
+                .events.size,
+        )
+        assertEquals(
+            1L,
+            state.matching.markets
+                .single { it.marketId == a.marketId }
+                .orders
+                .single()
+                .remainingQuantity.value,
+        )
+    }
+
+    @Test
     fun `여러 체결과 부분 잔량을 실제 바이트에서 복원하고 최초 결과를 재사용한다`() {
         val original = owner()
         val sell1 = input(1, Side.SELL, 90, 1, user = "seller")
