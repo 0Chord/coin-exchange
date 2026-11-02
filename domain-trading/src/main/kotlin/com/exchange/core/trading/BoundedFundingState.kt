@@ -18,8 +18,18 @@ import java.time.Instant
 class BoundedFundingState(
     private val admissionCalculator: OrderAdmissionCalculator,
     private val expectedManifest: TradingClusterManifest? = null,
+    private val dispatchConfiguration: FundsDispatchConfiguration? = null,
 ) {
     private var bounded: BoundedTradingData? = null
+    private var dispatch: FundsDispatchData? = dispatchConfiguration?.let(::FundsDispatchData)
+    private val assetTotals = linkedMapOf<AssetId, Long>()
+
+    init {
+        require(dispatchConfiguration == null || expectedManifest == dispatchConfiguration.manifest) {
+            "funds dispatch requires the assembled financial manifest"
+        }
+    }
+
     val lifecycle: TradingLifecycle get() = bounded?.lifecycle ?: TradingLifecycle.UNINITIALIZED
     var isBlocked: Boolean = false
         private set
@@ -129,6 +139,7 @@ class BoundedFundingState(
                 intent.price,
                 intent.quantity,
             )
+        if (dispatch?.canAdmit(input) == false) return AdmissionReply.Refused("RETRYABLE_CAPACITY")
         val reservedKey = if (intent.side == Side.BUY) quoteKey else baseKey
         val balance = current.balances[reservedKey] ?: Balance(token.userId, reservedKey.assetId, Amount.ZERO, Amount.ZERO)
         val calculation =
@@ -148,6 +159,7 @@ class BoundedFundingState(
         check(candidate.hasPreviousBalance(balance))
         val live = BoundedLiveOrder(sequence, marketSequence, input, candidate.reservation, LiveOrderPhase.PENDING)
         val receipt = AdmissionReceipt(AdmissionCode.ACCEPTED, input.orderId, sequence, marketSequence)
+        val delivery = dispatch?.prepare(live.snapshot())
         boundedMutation {
             current.accounts.add(token.userId)
             if (!baseExists) current.balances[baseKey] = Balance(baseKey.userId, baseKey.assetId, Amount.ZERO, Amount.ZERO)
@@ -163,6 +175,7 @@ class BoundedFundingState(
             progress.lastAssigned = marketSequence
             current.lastAdmissionSequence = sequence
             current.inbox.remember(token, intent, receipt)
+            delivery?.let { checkNotNull(dispatch).record(it) }
         }
         return AdmissionReply.Recorded(receipt, newlyRecorded = true)
     }
@@ -201,6 +214,16 @@ class BoundedFundingState(
         }
         val sequence = Math.addExact(current.lastPreparationSequence, 1L)
         val ledgerId = TradingIdentifiers.opening(current.manifest.lineage, sequence)
+        val nextTotal =
+            if (dispatch != null) {
+                val previous = assetTotals[opening.assetId] ?: 0L
+                if (opening.amount.value > Long.MAX_VALUE - previous) {
+                    throw TradingFundingInputException(TradingFundingRejection.ASSET_TOTAL_LIMIT)
+                }
+                previous + opening.amount.value
+            } else {
+                null
+            }
         val next = old.credit(opening.amount)
         opening.transaction(ledgerId, at) // 원장 항목 그래프를 보관하지 않고 같은 OPENING의 균형을 검증한다.
         val result = OpeningBalanceResult(opening, ledgerId, at, alreadyPrepared = false)
@@ -211,12 +234,85 @@ class BoundedFundingState(
             current.preparations[opening.preparationId] = result
             current.preparationBytes = Math.addExact(current.preparationBytes, bytes)
             current.lastPreparationSequence = sequence
+            nextTotal?.let { assetTotals[opening.assetId] = it }
         }
         return result
     }
 
+    /** 조회는 전달 자료를 소비하거나 예약을 해제하지 않는다. */
+    fun pendingDispatch(
+        stream: FundsDispatchStream,
+        fromSequence: Long,
+        maxEntries: Int,
+        maxBytes: Long,
+    ): FundsDispatchRead {
+        runningBounded()
+        return checkNotNull(dispatch) { "dispatch is only available to the funds role" }
+            .read(stream, fromSequence, maxEntries, maxBytes)
+    }
+
+    /** 상대의 연속 업무 적용 확인은 전달 보존만 회수한다. 금융 실행 완료와 별개다. */
+    fun acknowledgeMatchingApplied(ack: FundsMatchingAppliedAck): FundsDispatchAck {
+        runningBounded()
+        val currentDispatch = checkNotNull(dispatch) { "dispatch is only available to the funds role" }
+        return boundedMutation { currentDispatch.acknowledge(ack) }
+    }
+
+    fun fundsRecoveryState(): FundsRoleRecoveryState {
+        val configuration = checkNotNull(dispatchConfiguration) { "funds recovery requires a funds role" }
+        val financial = recoveryState()
+        return FundsRoleRecoveryState(configuration, financial, checkNotNull(dispatch).snapshot(), assetTotals)
+    }
+
+    /** 모든 후보를 검사한 뒤 금융과 전달 상태를 함께 게시한다. 실패한 소유자는 재사용하지 않는다. */
+    fun restoreFundsRecoveryState(
+        saved: FundsRoleRecoveryState,
+        settlementCalculator: OrderSettlementCalculator,
+    ) {
+        check(!isBlocked && bounded == null) { "funds restore requires an empty owner" }
+        isBlocked = true
+        try {
+            val configuration = checkNotNull(dispatchConfiguration) { "funds recovery requires a funds role" }
+            require(saved.configuration == configuration) { "funds recovery configuration differs" }
+            val financial = saved.financial
+            val candidate = BoundedFundingState(admissionCalculator, expectedManifest)
+            candidate.restoreRecoveryState(financial, settlementCalculator)
+            // SUBMIT 전용 첫 형식에서는 아직 결과 정산을 적용하지 않는다.
+            require(financial.markets.all { it.executedThrough == 0L }) { "funds snapshot has unsupported settled progress" }
+            require(financial.liveOrders.all { it.phase == LiveOrderPhase.PENDING }) { "funds snapshot has unsupported live phase" }
+            val totals = linkedMapOf<AssetId, java.math.BigInteger>()
+            for (balance in financial.balances) {
+                val amount =
+                    java.math.BigInteger
+                        .valueOf(balance.available.value)
+                        .add(java.math.BigInteger.valueOf(balance.hold.value))
+                totals[balance.assetId] = (totals[balance.assetId] ?: java.math.BigInteger.ZERO).add(amount)
+            }
+            for ((asset, fee) in financial.feeRevenueByAsset) {
+                totals[asset] = (totals[asset] ?: java.math.BigInteger.ZERO).add(fee)
+            }
+            val reconstructed = linkedMapOf<AssetId, Long>()
+            for ((asset, total) in totals) {
+                require(total.signum() >= 0 && total <= java.math.BigInteger.valueOf(Long.MAX_VALUE)) { "asset total limit exceeded" }
+                // 준비가 없던 0 잔고 행은 총량 기록을 새로 만들지 않는다.
+                if (financial.preparations.any { it.opening.assetId == asset }) reconstructed[asset] = total.longValueExact()
+            }
+            require(saved.assetTotals == reconstructed) { "funds asset total counters differ" }
+            val restoredDispatch = FundsDispatchData(configuration)
+            restoredDispatch.restore(saved.dispatch, financial.liveOrders, financial.markets)
+            bounded = candidate.bounded
+            dispatch = restoredDispatch
+            assetTotals.putAll(reconstructed)
+            isBlocked = false
+        } catch (failure: Throwable) {
+            isBlocked = true
+            throw failure
+        }
+    }
+
     /** 통합 조율자가 읽는 값은 현재 가변 객체의 참조를 포함하지 않는다. */
     internal fun executionInput(command: ExecuteAdmission): BoundedFundingExecution? {
+        check(dispatch == null) { "split funds execution requires the matching result protocol" }
         val current = runningBounded()
         require(command.lineage == current.manifest.lineage) { "execution lineage differs" }
         val context = requireNotNull(current.contexts[command.marketId]) { "execution market is not registered" }
@@ -266,6 +362,7 @@ class BoundedFundingState(
         resting: Boolean,
         nextFeeRevenue: java.math.BigInteger?,
     ): List<OrderAdmissionInput> {
+        check(dispatch == null) { "split funds execution requires the matching result protocol" }
         val current = runningBounded()
         check(input.manifest == current.manifest)
         val progress = current.markets.getValue(input.live.order.marketId)

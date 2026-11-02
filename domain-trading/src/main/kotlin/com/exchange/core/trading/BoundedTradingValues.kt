@@ -142,7 +142,7 @@ class TradingRecoveryState(
 }
 
 /** 통합 복구 값에서 주문장만 제외한 불변 금융 투영이다. 새 저장 형식은 아니다. */
-internal class BoundedFundingRecoveryState(
+class BoundedFundingRecoveryState(
     val manifest: TradingClusterManifest,
     val lifecycle: TradingLifecycle,
     balances: List<Balance>,
@@ -252,7 +252,7 @@ class TradingCapacityException(
     message: String,
 ) : IllegalStateException(message)
 
-enum class TradingFundingRejection { UNKNOWN_ASSET, INVALID_IDENTIFIER }
+enum class TradingFundingRejection { UNKNOWN_ASSET, INVALID_IDENTIFIER, ASSET_TOTAL_LIMIT }
 
 class TradingFundingInputException(
     val reason: TradingFundingRejection,
