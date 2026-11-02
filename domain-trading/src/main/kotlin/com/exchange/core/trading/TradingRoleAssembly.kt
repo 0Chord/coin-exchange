@@ -99,9 +99,14 @@ object TradingRoleAssembly {
         topology: TradingRoleTopology,
         declaration: TradingRoleDeclaration,
         admissionCalculator: OrderAdmissionCalculator,
+        dispatchLimits: FundsDispatchLimits = FundsDispatchLimits.defaults(topology.fundsManifest),
     ): BoundedFundingState {
         topology.validate(declaration, TradingServiceRole.FUNDS)
-        return BoundedFundingState(admissionCalculator, expectedManifest = topology.fundsManifest)
+        return BoundedFundingState(
+            admissionCalculator,
+            expectedManifest = topology.fundsManifest,
+            dispatchConfiguration = FundsDispatchConfiguration(topology, dispatchLimits),
+        )
     }
 
     fun matching(
