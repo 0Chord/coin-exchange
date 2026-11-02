@@ -127,19 +127,48 @@ class MatchingEngine {
     /** 조회만으로 없는 마켓의 주문장이나 순번을 만들지 않는다. */
     fun lastEngineSequence(marketId: MarketId): Long = lastSequence(marketId)
 
+    /** 완결 결과가 한도보다 크면 일부 후보도 발급하지 않는다. */
+    fun prepareSubmitBounded(
+        command: SubmitOrderCommand,
+        maxEvents: Int,
+    ): BoundedSubmitPreparation {
+        require(maxEvents > 0) { "maxEvents must be positive" }
+        return prepare(command, maxEvents)
+    }
+
     /** 가격·FIFO 순으로 읽기만 한다. 후보를 버려도 별도 해제 작업이 필요 없다. */
-    fun prepareSubmit(command: SubmitOrderCommand): SubmitOrderPlan {
+    fun prepareSubmit(command: SubmitOrderCommand): SubmitOrderPlan =
+        when (val prepared = prepare(command, Int.MAX_VALUE)) {
+            is BoundedSubmitPreparation.Prepared -> prepared.plan
+            BoundedSubmitPreparation.SequenceExhausted -> throw ArithmeticException("long overflow")
+            BoundedSubmitPreparation.TooLarge -> throw IllegalArgumentException("matching result exceeds maximum event count")
+        }
+
+    private fun prepare(
+        command: SubmitOrderCommand,
+        maxEvents: Int,
+    ): BoundedSubmitPreparation {
         validateSupportedSubmit(command)
         validateNewOrderId(command)
         val baseSequence = lastSequence(command.marketId)
+        if (baseSequence == Long.MAX_VALUE) return BoundedSubmitPreparation.SequenceExhausted
         val fills = mutableListOf<MakerFill>()
         val events = mutableListOf<MatchingEvent>()
         var remaining = command.quantity
+
+        // 다음 사건의 값 객체를 만들기 전에 검사해 임시 목록도 고정 한도를 넘지 않는다.
+        fun cannotAppend(): BoundedSubmitPreparation? =
+            when {
+                baseSequence > Long.MAX_VALUE - (events.size.toLong() + 1) -> BoundedSubmitPreparation.SequenceExhausted
+                events.size == maxEvents -> BoundedSubmitPreparation.TooLarge
+                else -> null
+            }
 
         // 없는 마켓을 읽을 때 getOrPut으로 빈 주문장을 만들지 않는다.
         val makers = orderBooks[command.marketId]?.oppositeOrders(command.side) ?: emptySequence()
         for (maker in makers) {
             if (remaining.isZero() || !priceCrosses(command.side, command.price, maker.price)) break
+            cannotAppend()?.let { return it }
             val quantity = minOf(remaining, maker.remainingQuantity)
             fills +=
                 MakerFill(
@@ -166,6 +195,7 @@ class MatchingEngine {
             remaining -= quantity
         }
         if (!remaining.isZero()) {
+            cannotAppend()?.let { return it }
             events +=
                 OrderEnteredBook(
                     command.marketId,
@@ -177,7 +207,7 @@ class MatchingEngine {
                     remaining,
                 )
         }
-        return SubmitOrderPlan(planToken, baseSequence, command, fills, remaining, events)
+        return BoundedSubmitPreparation.Prepared(SubmitOrderPlan(planToken, baseSequence, command, fills, remaining, events))
     }
 
     /** 후보 생성이 아닌 같은 마켓의 실제 처리가 기준 상태를 전진시킨다. */

@@ -117,6 +117,13 @@ object TradingRoleAssembly {
         return MatchingRole(declaration.markets.map { it.market.marketId }.toSet())
     }
 
+    /** 입력과 결과 전달 의무를 우회하지 않는 새 매칭 역할의 단일 상태 소유자다. */
+    fun reservedMatching(
+        topology: TradingRoleTopology,
+        declaration: TradingRoleDeclaration,
+        limits: MatchingIntakeLimits = MatchingIntakeLimits.defaults(topology, declaration),
+    ): ReservedMatchingState = ReservedMatchingState(MatchingIntakeConfiguration(topology, declaration, limits))
+
     fun integrated(
         admissionCalculator: OrderAdmissionCalculator,
         settlementCalculator: OrderSettlementCalculator,
