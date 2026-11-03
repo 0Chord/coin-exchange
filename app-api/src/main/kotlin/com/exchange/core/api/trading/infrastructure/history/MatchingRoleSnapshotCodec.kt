@@ -197,7 +197,7 @@ internal class MatchingRoleSnapshotCodec {
         return state
     }
 
-    private fun configurationBytes(configuration: MatchingIntakeConfiguration): ByteArray =
+    internal fun configurationBytes(configuration: MatchingIntakeConfiguration): ByteArray =
         ByteArrayOutputStream().use { bytes ->
             DataOutputStream(LimitedOutput(bytes, MAX_CONFIGURATION_BYTES.toLong())).use { output ->
                 output.blob(manifests.encodeManifest(configuration.manifest), BoundedTradingStateCodec.MAX_MANIFEST_BYTES)

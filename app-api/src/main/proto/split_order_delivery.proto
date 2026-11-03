@@ -1,0 +1,131 @@
+syntax = "proto3";
+
+package exchange.delivery;
+
+import "order_admission.proto";
+
+option java_package = "com.exchange.core.api.trading.infrastructure.codec.generated";
+option java_multiple_files = true;
+
+// A separate schema88/version1 frame carries these typed bodies. No snapshot blobs.
+message SplitDeliveryCommand {
+  optional int64 correlation_id = 1;
+  oneof body {
+    bool describe_peer = 10;
+    string initialize_topology_sha256 = 11;
+    exchange.admission.BoundedTradingCommand control = 12;
+    SplitDispatch apply = 13;
+    SplitAppliedAck record_ack = 14;
+  }
+}
+
+message SplitDeliveryReply {
+  optional int64 correlation_id = 1;
+  optional string code = 2;
+  optional SplitRole role = 3;
+  optional SplitLineage lineage = 4;
+  optional string topology_sha256 = 5;
+  optional int64 applied_log_position = 6;
+  optional SplitAppliedAck ack = 7;
+  optional int64 expected_sequence = 8;
+  optional exchange.admission.BoundedTradingReply control = 9;
+  optional string lifecycle = 10;
+}
+
+enum SplitRole {
+  SPLIT_ROLE_UNSPECIFIED = 0;
+  SPLIT_FUNDS = 1;
+  SPLIT_MATCHING = 2;
+}
+
+message SplitLineage {
+  optional fixed64 high = 1;
+  optional fixed64 low = 2;
+}
+
+enum SplitDirection {
+  SPLIT_DIRECTION_UNSPECIFIED = 0;
+  SPLIT_FUNDS_TO_MATCHING = 1;
+}
+
+message SplitDispatchStream {
+  optional SplitLineage funds_lineage = 1;
+  optional SplitLineage matching_lineage = 2;
+  optional string market_id = 3;
+  optional SplitDirection direction = 4;
+  optional int64 ownership_epoch = 5;
+  optional int64 configuration_version = 6;
+}
+
+message SplitDispatch {
+  optional int32 format_version = 1;
+  optional SplitDispatchStream stream = 2;
+  optional int64 dispatch_sequence = 3;
+  optional int64 admission_sequence = 4;
+  optional int64 market_admission_sequence = 5;
+  optional SplitOrderInput order = 6;
+  optional SplitReservation reservation = 7;
+  optional SplitMarketContext context = 8;
+}
+
+message SplitOrderInput {
+  optional string market_id = 1;
+  optional string order_id = 2;
+  optional string user_id = 3;
+  optional exchange.admission.Side side = 4;
+  optional exchange.admission.OrderType order_type = 5;
+  optional exchange.admission.TimeInForce time_in_force = 6;
+  optional int64 price = 7;
+  optional int64 quantity = 8;
+}
+
+message SplitFeePolicy {
+  optional exchange.admission.ProductType product_type = 1;
+  optional exchange.admission.FeeTier fee_tier = 2;
+  optional int64 schedule_version = 3;
+  optional int64 maker_ppm = 4;
+  optional int64 taker_ppm = 5;
+}
+
+message SplitMarketContext {
+  optional string market_id = 1;
+  optional string base_asset_id = 2;
+  optional string quote_asset_id = 3;
+  optional int32 base_asset_scale = 4;
+  optional int64 price_tick = 5;
+  optional int64 quantity_step = 6;
+  optional SplitFeePolicy fee_policy = 7;
+  optional int32 ordinal = 8;
+}
+
+enum SplitReservationStatus {
+  SPLIT_RESERVATION_UNSPECIFIED = 0;
+  SPLIT_ACTIVE = 1;
+  SPLIT_SETTLED = 2;
+  SPLIT_RELEASED = 3;
+}
+
+message SplitReservation {
+  optional string market_id = 1;
+  optional string order_id = 2;
+  optional string user_id = 3;
+  optional exchange.admission.Side side = 4;
+  optional string asset_id = 5;
+  optional int64 limit_price = 6;
+  optional int64 initial_quantity = 7;
+  optional int64 remaining_quantity = 8;
+  optional int64 reserved_amount = 9;
+  optional int64 remaining_amount = 10;
+  optional SplitFeePolicy fee_policy = 11;
+  optional int64 initial_fee_reserve_amount = 12;
+  optional int64 remaining_fee_reserve_amount = 13;
+  optional SplitReservationStatus status = 14;
+  optional int64 fee_remainder = 15;
+  optional int64 released_amount = 16;
+}
+
+message SplitAppliedAck {
+  optional SplitDispatchStream stream = 1;
+  optional int64 through = 2;
+  optional SplitMarketContext context = 3;
+}
