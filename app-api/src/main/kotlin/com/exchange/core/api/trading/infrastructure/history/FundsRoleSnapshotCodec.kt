@@ -458,7 +458,7 @@ internal class FundsRoleSnapshotCodec {
             saved.incident,
         )
 
-    private fun configurationBytes(configuration: FundsDispatchConfiguration): ByteArray =
+    internal fun configurationBytes(configuration: FundsDispatchConfiguration): ByteArray =
         ByteArrayOutputStream().use { bytes ->
             DataOutputStream(LimitedOutput(bytes, MAX_CONFIGURATION_BYTES.toLong())).use { output ->
                 output.blob(financial.encodeManifest(configuration.manifest), BoundedTradingStateCodec.MAX_MANIFEST_BYTES)
