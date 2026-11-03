@@ -8,6 +8,7 @@ import com.exchange.core.common.UserId
 import com.exchange.core.ledger.Balance
 import com.exchange.core.ledger.OpeningBalance
 import com.exchange.core.ledger.OpeningBalanceResult
+import com.exchange.core.matching.TradeExecuted
 import com.exchange.core.order.MarketDefinition
 import com.exchange.core.order.OrderReservation
 import com.exchange.core.order.OrderReservationStatus
@@ -19,9 +20,11 @@ class BoundedFundingState(
     private val admissionCalculator: OrderAdmissionCalculator,
     private val expectedManifest: TradingClusterManifest? = null,
     private val dispatchConfiguration: FundsDispatchConfiguration? = null,
+    private val resultLimits: FundsResultLimits = FundsResultLimits(),
 ) {
     private var bounded: BoundedTradingData? = null
     private var dispatch: FundsDispatchData? = dispatchConfiguration?.let(::FundsDispatchData)
+    private var results: FundsResultData? = dispatchConfiguration?.let { FundsResultData(it, resultLimits) }
     private val assetTotals = linkedMapOf<AssetId, Long>()
 
     init {
@@ -258,10 +261,211 @@ class BoundedFundingState(
         return boundedMutation { currentDispatch.acknowledge(ack) }
     }
 
+    /** 자금에 확정한 결과까지의 누적 확인이다. 조회만으로 자료를 회수하지 않는다. */
+    fun matchingSettlementAck(stream: MatchingResultStream): MatchingFundsSettledAck? {
+        runningBounded()
+        val currentResults = checkNotNull(results) { "result settlement requires a funds role" }
+        return if (currentResults.matches(stream)) currentResults.ack(stream.marketId) else null
+    }
+
+    /** 전체 후보를 검사한 뒤 금융·결과 prefix·전달 확인을 한 소유자의 변경으로 반영한다. */
+    fun applyMatchingResult(
+        result: MatchingResultEnvelope,
+        appliedAt: Instant,
+        settlementCalculator: OrderSettlementCalculator,
+    ): FundsResultReply {
+        val current = runningBounded()
+        val configuration = checkNotNull(dispatchConfiguration) { "result settlement requires a funds role" }
+        val currentResults = checkNotNull(results)
+        if (!currentResults.matches(result.stream)) return FundsResultReply(FundsResultStatus.INVALID_STREAM)
+        val context = configuration.context(result.stream.marketId)
+        val inputStream = configuration.stream(result.stream.marketId)
+        if (result.resultSequence <= 0 || result.input.dispatchSequence != result.resultSequence ||
+            result.input.marketAdmissionSequence != result.resultSequence || result.input.admissionSequence <= 0 ||
+            result.effects.size.toLong() > resultLimits.maxResultEvents.toLong() + 1 || result.eventCount > resultLimits.maxResultEvents
+        ) {
+            return FundsResultReply(FundsResultStatus.INVALID_RESULT)
+        }
+        if (result.input.stream != inputStream || result.input.context != context ||
+            result.effects.any { it.origin.stream != inputStream || it.origin.context != context }
+        ) {
+            return FundsResultReply(FundsResultStatus.INVALID_STREAM)
+        }
+
+        fun validApprovalIdentity(input: FundsOrderDispatch): Boolean =
+            input.admissionSequence > 0 && input.dispatchSequence > 0 && input.marketAdmissionSequence == input.dispatchSequence &&
+                input.order.marketId == result.stream.marketId &&
+                input.order.orderId == TradingIdentifiers.order(configuration.manifest.lineage, input.admissionSequence)
+        if (!validApprovalIdentity(result.input) || result.effects.any { !validApprovalIdentity(it.origin) }) {
+            return FundsResultReply(FundsResultStatus.INVALID_RESULT)
+        }
+        try {
+            if (result.canonicalBytes > resultLimits.maxSingleResultBytes) return FundsResultReply(FundsResultStatus.INVALID_RESULT)
+        } catch (_: IllegalArgumentException) {
+            return FundsResultReply(FundsResultStatus.INVALID_RESULT)
+        } catch (_: ArithmeticException) {
+            return FundsResultReply(FundsResultStatus.INVALID_RESULT)
+        }
+        currentResults.repeated(result)?.let { return it }
+        val next = Math.addExact(currentResults.through(result.stream.marketId), 1L)
+        if (result.resultSequence != next) return FundsResultReply(FundsResultStatus.GAP, expectedSequence = next)
+        val progress = current.markets.getValue(result.stream.marketId)
+        val candidate =
+            try {
+                currentResults.requireResult(result)
+                require(result.engineSequenceBefore == currentResults.engine(result.stream.marketId)) { "result engine boundary differs" }
+                val taker = requireNotNull(progress.pending.firstOrNull()) { "result has no pending financial order" }
+                require(taker.admissionSequence == result.input.admissionSequence && taker.marketAdmissionSequence == result.resultSequence)
+                val participants =
+                    result.effects.mapIndexed { index, effect ->
+                        val live =
+                            requireNotNull(
+                                current.liveByOrder[effect.origin.order.marketId to effect.orderId],
+                            ) { "unknown financial order" }
+                        require(
+                            (index == 0 && live === taker && live.phase == LiveOrderPhase.PENDING) ||
+                                (index > 0 && live.phase == LiveOrderPhase.RESTING),
+                        ) { "financial order phase differs" }
+                        requireFundsOriginal(effect.origin, live.snapshot())
+                        require(effect.beforeQuantity == live.reservation.remainingQuantity) { "financial quantity differs" }
+                        live
+                    }
+                val trades = result.events.filterIsInstance<TradeExecuted>()
+                val executions =
+                    trades.map { trade ->
+                        SettlementExecution(
+                            trade.marketId,
+                            trade.engineSequence,
+                            trade.makerOrderId,
+                            trade.takerOrderId,
+                            trade.makerUserId,
+                            trade.takerUserId,
+                            trade.side,
+                            trade.price,
+                            trade.quantity,
+                            TradingIdentifiers.settlement(current.manifest.lineage, context.ordinal, trade.engineSequence),
+                            appliedAt,
+                        )
+                    }
+                val settlement =
+                    if (result.outcome == MatchingOutcome.NOT_EXECUTED) {
+                        val previous = taker.reservation
+                        require(
+                            previous.remainingQuantity == previous.initialQuantity && previous.remainingAmount == previous.reservedAmount,
+                        )
+                        val key = TradingBalanceKey(previous.userId, previous.assetId)
+                        val balance = requireNotNull(current.balances[key])
+                        val released = previous.release()
+                        val nextBalance = balance.release(previous.remainingAmount)
+                        fundsResultReleaseTransaction(result, previous, appliedAt)
+                        OrderSettlementCandidate(
+                            taker.order,
+                            context.market,
+                            emptyList(),
+                            listOf(OrderSettlementCandidate.BalanceChange(balance, nextBalance)),
+                            listOf(OrderSettlementCandidate.ReservationChange(previous, released)),
+                        )
+                    } else {
+                        validateNoFillBalances(taker.snapshot(), context)
+                        settlementCalculator.calculate(
+                            taker.order,
+                            context.market,
+                            executions,
+                            participants.map { it.reservation },
+                            participantBalances(participants.map { it.reservation }, context.market),
+                        )
+                    }
+                val changes = settlement.reservationChanges.associateBy { it.next.orderId }
+                for ((index, effect) in result.effects.withIndex()) {
+                    val after = changes[effect.orderId]?.next ?: participants[index].reservation
+                    require(after.remainingQuantity == effect.afterQuantity)
+                    when (effect.disposition) {
+                        MatchingOrderDisposition.RESTING -> require(after.status == OrderReservationStatus.ACTIVE)
+                        MatchingOrderDisposition.TERMINAL -> require(after.status == OrderReservationStatus.SETTLED)
+                        MatchingOrderDisposition.NOT_EXECUTED -> require(after.status == OrderReservationStatus.RELEASED)
+                    }
+                }
+                validateSettlementCurrent(settlement)
+                val fee = prepareFeeRevenue(settlement, context.market.quoteAssetId)
+                validateResultConservation(settlement, context.market.quoteAssetId, fee)
+                FundsFinancialResultCandidate(taker, participants, settlement, fee, FundsResultReceipt(result, appliedAt))
+            } catch (_: IllegalArgumentException) {
+                return FundsResultReply(FundsResultStatus.INVALID_RESULT)
+            } catch (_: IllegalStateException) {
+                return FundsResultReply(FundsResultStatus.INVALID_RESULT)
+            } catch (_: ArithmeticException) {
+                return FundsResultReply(FundsResultStatus.INVALID_RESULT)
+            }
+        boundedMutation {
+            for (change in candidate.settlement.balanceChanges) {
+                current.balances[TradingBalanceKey(change.next.userId, change.next.assetId)] = change.next
+            }
+            for (change in candidate.settlement.reservationChanges) {
+                current.liveByOrder.getValue(change.next.marketId to change.next.orderId).reservation = change.next
+            }
+            candidate.nextFeeRevenue?.let { current.feeRevenue[context.market.quoteAssetId] = it }
+            if (result.effects.first().disposition == MatchingOrderDisposition.RESTING) candidate.taker.phase = LiveOrderPhase.RESTING
+            for (live in candidate.participants) {
+                if (live.reservation.status != OrderReservationStatus.ACTIVE) {
+                    check(current.liveByOrder.remove(live.order.marketId to live.order.orderId) === live)
+                    check(current.liveBySequence.remove(live.admissionSequence) === live)
+                    progress.activeCount--
+                    checkNotNull(dispatch).finish(live.order)
+                }
+            }
+            check(progress.pending.removeFirst() === candidate.taker)
+            current.pendingCount--
+            progress.executedThrough = result.resultSequence
+            currentResults.record(candidate.receipt)
+            val confirmed = checkNotNull(dispatch).acknowledge(FundsMatchingAppliedAck(inputStream, result.input.dispatchSequence, context))
+            check(confirmed.status == FundsDispatchAckStatus.ACKNOWLEDGED)
+        }
+        return FundsResultReply(FundsResultStatus.APPLIED, currentResults.ack(result.stream.marketId))
+    }
+
+    private data class FundsFinancialResultCandidate(
+        val taker: BoundedLiveOrder,
+        val participants: List<BoundedLiveOrder>,
+        val settlement: OrderSettlementCandidate,
+        val nextFeeRevenue: java.math.BigInteger?,
+        val receipt: FundsResultReceipt,
+    )
+
+    private fun validateResultConservation(
+        settlement: OrderSettlementCandidate,
+        feeAsset: AssetId,
+        nextFee: java.math.BigInteger?,
+    ) {
+        val deltas = linkedMapOf<AssetId, java.math.BigInteger>()
+        for (change in settlement.balanceChanges) {
+            val before =
+                java.math.BigInteger
+                    .valueOf(
+                        change.previous.available.value,
+                    ).add(java.math.BigInteger.valueOf(change.previous.hold.value))
+            val after =
+                java.math.BigInteger
+                    .valueOf(change.next.available.value)
+                    .add(java.math.BigInteger.valueOf(change.next.hold.value))
+            deltas[change.next.assetId] = (deltas[change.next.assetId] ?: java.math.BigInteger.ZERO).add(after.subtract(before))
+        }
+        if (nextFee != null) {
+            val previous = runningBounded().feeRevenue[feeAsset] ?: java.math.BigInteger.ZERO
+            deltas[feeAsset] = (deltas[feeAsset] ?: java.math.BigInteger.ZERO).add(nextFee.subtract(previous))
+        }
+        require(deltas.values.all { it.signum() == 0 }) { "result financial conservation differs" }
+    }
+
     fun fundsRecoveryState(): FundsRoleRecoveryState {
         val configuration = checkNotNull(dispatchConfiguration) { "funds recovery requires a funds role" }
         val financial = recoveryState()
-        return FundsRoleRecoveryState(configuration, financial, checkNotNull(dispatch).snapshot(), assetTotals)
+        return FundsRoleRecoveryState(
+            configuration,
+            financial,
+            checkNotNull(dispatch).snapshot(),
+            assetTotals,
+            checkNotNull(results).snapshot(),
+        )
     }
 
     /** 모든 후보를 검사한 뒤 금융과 전달 상태를 함께 게시한다. 실패한 소유자는 재사용하지 않는다. */
@@ -277,9 +481,11 @@ class BoundedFundingState(
             val financial = saved.financial
             val candidate = BoundedFundingState(admissionCalculator, expectedManifest)
             candidate.restoreRecoveryState(financial, settlementCalculator)
-            // SUBMIT 전용 첫 형식에서는 아직 결과 정산을 적용하지 않는다.
-            require(financial.markets.all { it.executedThrough == 0L }) { "funds snapshot has unsupported settled progress" }
-            require(financial.liveOrders.all { it.phase == LiveOrderPhase.PENDING }) { "funds snapshot has unsupported live phase" }
+            if (saved.results == null) {
+                // 결과 상태가 없는 과거 v1은 최초 PENDING 형식만 허용한다.
+                require(financial.markets.all { it.executedThrough == 0L }) { "legacy funds snapshot has settled progress" }
+                require(financial.liveOrders.all { it.phase == LiveOrderPhase.PENDING }) { "legacy funds snapshot has settled orders" }
+            }
             val totals = linkedMapOf<AssetId, java.math.BigInteger>()
             for (balance in financial.balances) {
                 val amount =
@@ -300,8 +506,11 @@ class BoundedFundingState(
             require(saved.assetTotals == reconstructed) { "funds asset total counters differ" }
             val restoredDispatch = FundsDispatchData(configuration)
             restoredDispatch.restore(saved.dispatch, financial.liveOrders, financial.markets)
+            val restoredResults = FundsResultData(configuration, resultLimits)
+            saved.results?.let { restoredResults.restore(it, financial, saved.dispatch) }
             bounded = candidate.bounded
             dispatch = restoredDispatch
+            results = restoredResults
             assetTotals.putAll(reconstructed)
             isBlocked = false
         } catch (failure: Throwable) {

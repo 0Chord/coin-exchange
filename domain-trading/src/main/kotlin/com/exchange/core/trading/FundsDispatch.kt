@@ -473,6 +473,17 @@ internal class FundsDispatchData(
         return reply(FundsDispatchAckStatus.ACKNOWLEDGED)
     }
 
+    /** 실제 금융 종료만 활성 예산을 회수한다. 전달 ACK와 별도 수명이다. */
+    fun finish(order: OrderAdmissionInput) {
+        val progress = markets.getValue(order.marketId)
+        val charge = FundsDispatchCharge.active(order, configuration.context(order.marketId))
+        check(progress.activeOrders > 0 && activeOrders > 0 && progress.activeBytes >= charge && activeBytes >= charge)
+        progress.activeOrders--
+        progress.activeBytes -= charge
+        activeOrders--
+        activeBytes -= charge
+    }
+
     fun snapshot(): FundsDispatchSnapshot =
         FundsDispatchSnapshot(
             configuration.manifest.markets.map { context ->
@@ -503,7 +514,8 @@ internal class FundsDispatchData(
         val liveByAdmission = liveOrders.associateBy { it.admissionSequence }
         require(liveByAdmission.size == liveOrders.size) { "duplicate financial admission" }
         for (live in liveOrders) {
-            candidate.requireInitial(live)
+            if (live.phase == LiveOrderPhase.PENDING) candidate.requireInitial(live)
+            require(live.reservation.status == OrderReservationStatus.ACTIVE)
             val progress = candidate.markets.getValue(live.order.marketId)
             val charge = FundsDispatchCharge.active(live.order, configuration.context(live.order.marketId))
             progress.activeOrders = Math.addExact(progress.activeOrders, 1)
@@ -519,13 +531,21 @@ internal class FundsDispatchData(
             require(configuration.matches(stream.stream)) { "restored stream differs from fixed assignment" }
             val financial = finances.getValue(stream.stream.marketId)
             require(stream.issued >= 0 && stream.matchingAppliedThrough in 0..stream.issued)
-            require(financial.lastAssigned == stream.issued && financial.executedThrough == 0L)
-            require(financial.pendingAdmissionSequences.size.toLong() == stream.issued)
-            val financialOrders = liveOrders.filter { it.order.marketId == stream.stream.marketId }.sortedBy { it.marketAdmissionSequence }
+            require(financial.lastAssigned == stream.issued && financial.executedThrough in 0..stream.matchingAppliedThrough)
+            require(financial.pendingAdmissionSequences.size.toLong() == stream.issued - financial.executedThrough)
+            val financialOrders =
+                liveOrders
+                    .filter {
+                        it.order.marketId == stream.stream.marketId && it.phase == LiveOrderPhase.PENDING
+                    }.sortedBy { it.marketAdmissionSequence }
             require(financialOrders.map { it.admissionSequence } == financial.pendingAdmissionSequences)
-            require(financialOrders.withIndex().all { (index, live) -> live.marketAdmissionSequence == index.toLong() + 1 })
+            require(
+                financialOrders.withIndex().all { (index, live) ->
+                    live.marketAdmissionSequence ==
+                        Math.addExact(financial.executedThrough, index.toLong() + 1)
+                },
+            )
             val progress = candidate.markets.getValue(stream.stream.marketId)
-            require(progress.activeOrders.toLong() == stream.issued)
             require(stream.outstanding.size.toLong() == stream.issued - stream.matchingAppliedThrough)
             var previous = stream.matchingAppliedThrough
             for (entry in stream.outstanding) {
