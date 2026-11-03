@@ -452,3 +452,34 @@ D01-8 뒤 [verifyFundsProgressWhileMatchingStopped](../app-api/src/test/kotlin/c
 - 사용자 전체 코드 이해나 게시 전 학습 확인, 원격 CI 성공·병합·이슈/보드 완료 처리.
 
 다음 제품 연결은 #169다. 매칭이 보관한 전체 결과를 자금 쪽에 전달해 정산하고, 그 정산 ACK를 다시 매칭 로그에 반영해야 결과 자료를 회수할 수 있다. 이번 적용 ACK만으로 그 후속 단계를 대신하지 않는다.
+
+
+## 10. PR #174의 Linux CI 관찰 파일 권한 수정
+
+최초 게시 커밋 `28dcb4f`의 [CI 실행 #236](https://github.com/0Chord/coin-exchange/actions/runs/41644484242)에서 구조 검사·형식·Docker 준비는 성공했지만 app-api990건 중 새6노드 시험1건이 실패했다. 보고서 업로드도 `control/runtime-funds1.json`을 읽을 권한이 없어 EACCES로 실패했다. 업로드가 실패해 원격 시험의 세부 XML은 확보하지 못했다.
+
+새 시험의 관찰 JSON writer는 `Files.createTempFile()`의 기본0600 권한을 그대로 원자적 이동했다. Docker의 root가 쓴 파일을 Linux CI의 다른 UID가 읽지 못하는 경로다. 상태·runtime·matching ACK 모두 같은 writer를 사용한다. Mac의 Docker Desktop에서 통과한 기존 기능 시험만으로 이 호스트/컨테이너 권한 경계를 검증하지 못했다.
+
+제품 자금·매칭·전송 코드나 CI의 검사 조건을 바꾸지 않고 test 소스에서 다음을 수정했다.
+
+- `writeSplitTestJson()`이 기존 `writeBoundedHttpArtifact()`를 재사용한다. 이 공용 시험 writer는 완성된 임시 파일을0644로 설정한 뒤 원자적으로 교체하고 임시 파일을 정리한다. 다른 UID에게 읽기만 허용한다.
+- 아래 새2개 검사는 수정 전 실제 권한이 OWNER_READ/OWNER_WRITE뿐이어서 모두 실패했다. 수정 뒤에는 내용·정확한0644·임시 파일 없음이 모두 통과했다.
+- 실제6노드 시험에는 Linux UID65534가 root 소유의 runtime/state/matching ACK JSON을 직접 읽는 검사를 추가했다. 실행한 reader UID와 파일 소유자가 다름도 대조한다.
+- 재실행 중 용량 계산의 `Files.walk()`가 이름이 바뀐 임시 파일에 접근해 NoSuchFileException으로 실패하는 별도 시험 도구 경합도 재현했다. file visitor가 받은 metadata 크기를 사용하고 순회 중 사라진 파일만 허용한다. 권한 오류를 포함한 다른 I/O 오류와16MiB 상한은 계속 실패시킨다.
+
+| 추가 검사 | Given — 준비 | When — 실행 | Then — 실제 검증 |
+| --- | --- | --- | --- |
+| [첫 관찰 파일 공유 읽기](../app-api/src/test/kotlin/com/exchange/core/api/trading/infrastructure/aeron/SplitTradingArtifactTest.kt#L19) | 비어 있는 임시 디렉터리와 runtime-funds1.json 경로 | 실제 split writer로 role FUNDS/memberId1 기록 | JSON 값 일치, 권한 정확히0644, 디렉터리에는 최종 파일1개뿐 |
+| [기존0600 파일 교체](../app-api/src/test/kotlin/com/exchange/core/api/trading/infrastructure/aeron/SplitTradingArtifactTest.kt#L31) | position1 파일을 기록하고0600으로 제한 | 같은 writer로 position2를 덮어씀 | 새 값2, 권한0644 복원, 임시 파일 없음 |
+| Docker의 다른 UID 읽기 | 실제6노드에서 입력1 적용·matching ACK 보류 | funds0 컨테이너의 UID65534로 runtime/state/ACK 파일을 cat | 세 파일 모두0644·owner0/group0, reader65534의 실제 읽기 성공·완성된 JSON. 이후 기존 유실·복원·매칭 중단 시나리오를 그대로 진행 |
+
+이번 수정의 관련 검사5건(신규 권한2·기존 HTTP 자료2·실제6노드1)과 app-api ktlintCheck가 모두 통과했다. 기능의 기존 신규55건에 권한2건이 추가됐으며 이번에55건을 다시 전부 실행했다고 세지 않는다. 제품/시험의 이전 유효한 검증 근거와 이번 영향 범위의 새 실행을 구분한다.
+
+실제 run은 `delivery17937151227905b974641`이며 success=true/issues=[]/runResourcesRemoved=true다. 다른 UID 읽기 checkpoint는 세 파일 모두 `644:0:0`, readerUid65534를 기록했다. 기존 모든 업무 기대값과 sync2/2/2·고정 실행물/볼륨·복원·자원 정리 조건을 유지했다. 기능 시나리오104,349ms, 기록25,710,592bytes·진단182,463bytes로 각 기존 상한 안이다. 이는 성능 벤치마크가 아니다.
+
+```bash
+cd "$(git rev-parse --show-toplevel)"
+./gradlew :app-api:test --tests '*SplitTradingArtifactTest' --tests '*BoundedHttpTradingArtifactTest' --tests '*DockerFundsOrderDeliveryTest' :app-api:ktlintCheck --no-daemon --max-workers=1 --console=plain
+```
+
+로컬 실패/성공 자료는 `build/ci174/`에 분리 보존하고 Git에는 넣지 않는다. 새 원격 CI의 최종 상태는 [PR #174](https://github.com/0Chord/coin-exchange/pull/174)와 해당 실행의 업로드 보고서에서 확인한다.

@@ -44,8 +44,6 @@ import org.agrona.DirectBuffer
 import tools.jackson.databind.json.JsonMapper
 import java.nio.file.Files
 import java.nio.file.Path
-import java.nio.file.StandardCopyOption.ATOMIC_MOVE
-import java.nio.file.StandardCopyOption.REPLACE_EXISTING
 import java.time.Instant
 import java.util.UUID
 import java.util.concurrent.atomic.AtomicReference
@@ -164,17 +162,12 @@ private class SplitVerificationService(
     }
 }
 
-private fun writeSplitTestJson(
+internal fun writeSplitTestJson(
     path: Path,
     value: Any,
 ) {
-    val temporary = Files.createTempFile(path.parent, ".${path.fileName}", ".tmp")
-    try {
-        Files.writeString(temporary, splitTestJson.writeValueAsString(value))
-        Files.move(temporary, path, ATOMIC_MOVE, REPLACE_EXISTING)
-    } finally {
-        Files.deleteIfExists(temporary)
-    }
+    // 기존 시험 자료 writer가 원자적 교체 전에 0644를 설정해 Linux의 다른 UID도 읽게 한다.
+    writeBoundedHttpArtifact(path, splitTestJson.writeValueAsBytes(value), replaceExisting = true)
 }
 
 /** 유실은 시험 소스에서만 만든다. 실제 Aeron 연결과 승인 원본은 그대로 전달한다. */

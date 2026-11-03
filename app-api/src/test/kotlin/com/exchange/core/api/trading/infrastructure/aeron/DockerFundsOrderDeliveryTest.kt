@@ -4,8 +4,13 @@ import com.exchange.core.api.trading.infrastructure.codec.SplitOrderDeliveryCode
 import com.exchange.core.api.trading.infrastructure.codec.SplitOrderDeliveryCommand
 import tools.jackson.databind.JsonNode
 import tools.jackson.module.kotlin.jacksonObjectMapper
+import java.io.IOException
+import java.nio.file.FileVisitResult
 import java.nio.file.Files
+import java.nio.file.NoSuchFileException
 import java.nio.file.Path
+import java.nio.file.SimpleFileVisitor
+import java.nio.file.attribute.BasicFileAttributes
 import java.security.MessageDigest
 import java.time.Instant
 import java.util.UUID
@@ -103,6 +108,7 @@ private class DockerFundsOrderDeliveryVerification {
             tool("admit", "1", "6")
             awaitExpected("G3 first matching application with missing ACK", 1, 6, 1, 0)
             recordFragmentedDispatchEvidence()
+            verifyObservationReadableByDifferentUser()
             tool("admit", "2", "2")
             awaitExpected("G4 second matching log application before ACK1", 2, 8, 2, 0)
             Files.delete(control.resolve("hold-matching-acks"))
@@ -477,6 +483,34 @@ private class DockerFundsOrderDeliveryVerification {
         checkReportBudget()
     }
 
+    private fun verifyObservationReadableByDifferentUser() {
+        val id = containers.getValue("funds0")
+        val reader = "65534:65534"
+        val prefix = listOf("docker", "exec", "--user", reader, id)
+        val uid = must(command(prefix + listOf("id", "-u"), 10_000), "관찰 파일을 읽을 다른 Linux UID 확인").stdout.trim()
+        check(uid == "65534")
+        awaitFile(control.resolve("received-matching-ack.json"), 30_000)
+        val names = listOf("runtime-funds1.json", "state-funds1.json", "received-matching-ack.json")
+        val metadata = linkedMapOf<String, String>()
+        for (name in names) {
+            val path = "/control/$name"
+            val attributes =
+                must(command(listOf("docker", "exec", id, "stat", "-c", "%a:%u:%g", path), 10_000), "$name 실제 Linux 권한").stdout.trim()
+            val fields = attributes.split(':')
+            check(fields.size == 3 && fields[0] == "644" && fields[1] != uid) { "$name 공유 읽기 권한이 없습니다: $attributes" }
+            val json = must(command(prefix + listOf("cat", path), 10_000), "$name 다른 UID의 실제 JSON 읽기").stdout
+            check(mapper.readTree(json).isObject) { "$name 완성된 JSON이 아닙니다" }
+            metadata[name] = attributes
+        }
+        checkpoints +=
+            mapOf(
+                "case" to "CI174 different Linux UID reads runtime state and matching ACK observations",
+                "readerUid" to uid,
+                "fileModeOwnerGroup" to metadata,
+                "readableFiles" to names,
+            )
+    }
+
     private fun recordFragmentedDispatchEvidence() {
         val bytes = Files.readAllBytes(control.resolve("dispatch-1.bin"))
         val command = SplitOrderDeliveryCodec().decode(bytes).command as SplitOrderDeliveryCommand.Apply
@@ -515,7 +549,28 @@ private class DockerFundsOrderDeliveryVerification {
     }
 
     private fun checkReportBudget() {
-        val size = Files.walk(reports).use { files -> files.filter { Files.isRegularFile(it) }.mapToLong { Files.size(it) }.sum() }
+        var size = 0L
+        Files.walkFileTree(
+            reports,
+            object : SimpleFileVisitor<Path>() {
+                override fun visitFile(
+                    file: Path,
+                    attributes: BasicFileAttributes,
+                ): FileVisitResult {
+                    if (attributes.isRegularFile) size = Math.addExact(size, attributes.size())
+                    return FileVisitResult.CONTINUE
+                }
+
+                override fun visitFileFailed(
+                    file: Path,
+                    error: IOException,
+                ): FileVisitResult {
+                    // 관찰 writer가 이름을 바꾸며 없앤 임시 파일만 허용한다. 권한 오류 등은 그대로 실패시킨다.
+                    if (error !is NoSuchFileException) throw error
+                    return FileVisitResult.CONTINUE
+                }
+            },
+        )
         reportBytes = maxOf(reportBytes, size)
         check(size <= 16L * MIB) { "진단물 16MiB 상한 초과: $size" }
     }
