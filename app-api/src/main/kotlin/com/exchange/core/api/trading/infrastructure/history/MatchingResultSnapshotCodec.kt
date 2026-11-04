@@ -5,8 +5,11 @@ import com.exchange.core.common.OrderId
 import com.exchange.core.common.Price
 import com.exchange.core.common.Quantity
 import com.exchange.core.common.UserId
+import com.exchange.core.matching.OrderCancelRejected
+import com.exchange.core.matching.OrderCancelled
 import com.exchange.core.matching.OrderEnteredBook
 import com.exchange.core.matching.TradeExecuted
+import com.exchange.core.trading.FundsCancelDispatch
 import com.exchange.core.trading.FundsDispatchStream
 import com.exchange.core.trading.FundsOrderDispatch
 import com.exchange.core.trading.MatchingNotExecutedReason
@@ -15,11 +18,12 @@ import com.exchange.core.trading.MatchingOutcome
 import com.exchange.core.trading.MatchingResultEnvelope
 import com.exchange.core.trading.MatchingResultStream
 import com.exchange.core.trading.OrderAdmissionInput
+import com.exchange.core.trading.RequestToken
 import com.exchange.core.trading.TradingMarketContext
 import java.io.DataInputStream
 import java.io.DataOutputStream
 
-/** 매칭 v1의 승인·전체 결과 바이트를 두 역할의 snapshot에서 같은 순서로 사용한다. */
+/** 매칭 v2의 승인·전체 결과 바이트를 두 역할의 snapshot에서 같은 순서로 사용한다. */
 internal class MatchingResultSnapshotCodec {
     private val reservations = TradingHistoryCodec(MAX_RESERVATION_BYTES)
 
@@ -78,8 +82,20 @@ internal class MatchingResultSnapshotCodec {
                     writeLong(event.remainingQuantity.value)
                 }
 
-                else -> {
-                    throw IllegalArgumentException("matching intake cannot snapshot cancellation events")
+                is OrderCancelled -> {
+                    writeInt(3)
+                    writeLong(event.engineSequence)
+                    text(event.orderId.value)
+                    text(event.userId.value)
+                    writeLong(event.remainingQuantity.value)
+                }
+
+                is OrderCancelRejected -> {
+                    writeInt(4)
+                    writeLong(event.engineSequence)
+                    text(event.orderId.value)
+                    text(event.userId.value)
+                    text(event.reason)
                 }
             }
         }
@@ -146,6 +162,14 @@ internal class MatchingResultSnapshotCodec {
                         )
                     }
 
+                    3 -> {
+                        OrderCancelled(market, readLong(), OrderId(text()), UserId(text()), Quantity(readLong()))
+                    }
+
+                    4 -> {
+                        OrderCancelRejected(market, readLong(), OrderId(text()), UserId(text()), text())
+                    }
+
                     else -> {
                         throw IllegalArgumentException("invalid matching event type")
                     }
@@ -183,6 +207,14 @@ internal class MatchingResultSnapshotCodec {
         writeLong(order.price.value)
         writeLong(order.quantity.value)
         blob(reservations.encodeReservation(value.reservation), MAX_RESERVATION_BYTES)
+        writeBoolean(value.isCancellation)
+        value.cancel?.let {
+            text(it.cancelId)
+            text(it.requestToken.userId.value)
+            writeInt(it.requestToken.channel)
+            writeLong(it.requestToken.epoch)
+            writeLong(it.requestToken.sequence)
+        }
     }
 
     private fun DataInputStream.dispatch(
@@ -206,7 +238,13 @@ internal class MatchingResultSnapshotCodec {
                 Quantity(readLong()),
             )
         val reservation = reservations.decodeReservation(blob(MAX_RESERVATION_BYTES))
-        return FundsOrderDispatch(stream, dispatch, admission, marketAdmission, order, reservation, contextFor(market))
+        val cancel =
+            if (readBoolean()) {
+                FundsCancelDispatch(text(), RequestToken(UserId(text()), readInt(), readLong(), readLong()))
+            } else {
+                null
+            }
+        return FundsOrderDispatch(stream, dispatch, admission, marketAdmission, order, reservation, contextFor(market), cancel)
     }
 
     private inline fun <reified E : Enum<E>> DataInputStream.enum(): E =

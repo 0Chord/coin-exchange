@@ -10,6 +10,10 @@ class FundsRoleRecoveryState(
     val dispatch: FundsDispatchSnapshot,
     assetTotals: Map<AssetId, Long>,
     val results: FundsResultRecoveryState? = null,
+    approvalInputs: List<FundsOrderDispatch> = emptyList(),
+    cancellations: List<FundsCancellationSnapshot> = emptyList(),
 ) {
     val assetTotals: Map<AssetId, Long> = Collections.unmodifiableMap(LinkedHashMap(assetTotals))
+    val approvalInputs: List<FundsOrderDispatch> = Collections.unmodifiableList(approvalInputs.toList())
+    val cancellations: List<FundsCancellationSnapshot> = Collections.unmodifiableList(cancellations.toList())
 }

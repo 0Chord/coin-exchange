@@ -15,6 +15,8 @@ import com.exchange.core.fee.FeeTier
 import com.exchange.core.fee.MakerTakerFeeRates
 import com.exchange.core.fee.TradingFeePolicySnapshot
 import com.exchange.core.fee.TradingFeeReserveCalculator
+import com.exchange.core.matching.OrderCancelRejected
+import com.exchange.core.matching.OrderCancelled
 import com.exchange.core.matching.OrderEnteredBook
 import com.exchange.core.matching.TradeExecuted
 import com.exchange.core.order.BuyOrderFundingQuoteCalculator
@@ -25,6 +27,7 @@ import com.exchange.core.order.OrderType
 import com.exchange.core.order.Side
 import com.exchange.core.order.TimeInForce
 import com.exchange.core.trading.ClusterLineage
+import com.exchange.core.trading.FundsCancelDispatch
 import com.exchange.core.trading.FundsDispatchStream
 import com.exchange.core.trading.FundsOrderDispatch
 import com.exchange.core.trading.MatchingFundsSettledAck
@@ -37,6 +40,7 @@ import com.exchange.core.trading.MatchingOutcome
 import com.exchange.core.trading.MatchingResultEnvelope
 import com.exchange.core.trading.MatchingResultStream
 import com.exchange.core.trading.OrderAdmissionInput
+import com.exchange.core.trading.RequestToken
 import com.exchange.core.trading.ReservedMatchingState
 import com.exchange.core.trading.TradingClusterManifest
 import com.exchange.core.trading.TradingIdentifiers
@@ -258,7 +262,7 @@ class SplitResultDeliveryCodecTest {
         val value = wire.apply
         val invalid =
             listOf(
-                value.toBuilder().setFormatVersion(2),
+                value.toBuilder().setFormatVersion(1),
                 value.toBuilder().setResultSequence(0),
                 value.toBuilder().setResultSequence(100),
                 value.toBuilder().setEventCount(value.eventCount + 1),
@@ -486,6 +490,169 @@ class SplitResultDeliveryCodecTest {
         )
     }
 
+    @Test
+    fun `v2 full cancellation success and rejection preserve target origin and reject contradictory shapes`() {
+        val original = input(1)
+        val request =
+            original.copy(
+                dispatchSequence = 2,
+                cancel =
+                    FundsCancelDispatch(
+                        TradingIdentifiers.cancel(funds, context.ordinal, 2),
+                        RequestToken(original.order.userId, 1, 2, 9),
+                    ),
+            )
+        val success =
+            MatchingResultEnvelope(
+                stream,
+                2,
+                request,
+                MatchingOutcome.CANCELLED,
+                null,
+                1,
+                2,
+                listOf(OrderCancelled(stream.marketId, 2, original.order.orderId, original.order.userId, original.order.quantity)),
+                listOf(MatchingOrderEffect(original, original.order.quantity, Quantity.ZERO, MatchingOrderDisposition.CANCELLED)),
+            )
+        val rejected =
+            MatchingResultEnvelope(
+                stream,
+                2,
+                request,
+                MatchingOutcome.CANCEL_REJECTED,
+                null,
+                1,
+                2,
+                listOf(OrderCancelRejected(stream.marketId, 2, original.order.orderId, original.order.userId, "order not found")),
+                emptyList(),
+            )
+        for (result in listOf(success, rejected)) {
+            val bytes = codec.encode(91, SplitResultDeliveryCommand.Apply(result))
+            assertEquals(
+                2,
+                ByteBuffer
+                    .wrap(bytes)
+                    .order(ByteOrder.LITTLE_ENDIAN)
+                    .getShort(2)
+                    .toInt(),
+            )
+            assertEquals(result, (codec.decode(bytes).command as SplitResultDeliveryCommand.Apply).result)
+            assertTrue(bytes.size <= SplitResultDeliveryCodec.maximumResultFrameBytes(result.canonicalBytes, 1))
+            val wire = command(bytes)
+            for ((path, damaged) in mutations(wire, unknown = true)) {
+                assertFailsWith<AdmissionMessageException>(path) { codec.decode(frame(1, damaged)) }
+            }
+            val legacy = bytes.copyOf()
+            ByteBuffer.wrap(legacy).order(ByteOrder.LITTLE_ENDIAN).putShort(2, 1)
+            assertFailsWith<AdmissionMessageException> { codec.decode(legacy) }
+        }
+        val wire = command(codec.encode(91, SplitResultDeliveryCommand.Apply(success)))
+        val malformed =
+            listOf(
+                wire.apply.toBuilder().clearEffects(),
+                wire.apply.toBuilder().setOutcomeValue(99),
+                wire.apply.toBuilder().setEvents(
+                    0,
+                    wire.apply
+                        .getEvents(0)
+                        .toBuilder()
+                        .setCancelled(
+                            wire.apply
+                                .getEvents(0)
+                                .cancelled
+                                .toBuilder()
+                                .setRemainingQuantity(0),
+                        ),
+                ),
+                wire.apply.toBuilder().setEffects(
+                    0,
+                    wire.apply
+                        .getEffects(0)
+                        .toBuilder()
+                        .setDispositionValue(99),
+                ),
+            )
+        for (value in malformed) {
+            assertFailsWith<AdmissionMessageException> {
+                codec.decode(
+                    frame(1, wire.toBuilder().setApply(value).build()),
+                )
+            }
+        }
+    }
+
+    @Test
+    fun `maximum cancellation success and rejection fit logical sizing and dispatch wire bounds`() {
+        val maximum = "한".repeat(85) + "a"
+        val source = ClusterLineage(Long.MIN_VALUE, Long.MAX_VALUE)
+        val destination = ClusterLineage(-1, -2)
+        val fixed =
+            TradingMarketContext(
+                MarketDefinition(MarketId(maximum), AssetId("b".repeat(256)), AssetId("q".repeat(256)), 0),
+                policy.copy(scheduleVersion = Long.MAX_VALUE),
+                Int.MAX_VALUE,
+            )
+        val origin =
+            input(Long.MAX_VALUE - 1, user = maximum, fixed = fixed, source = source, destination = destination).let {
+                it.copy(stream = it.stream.copy(ownershipEpoch = Long.MAX_VALUE, configurationVersion = Long.MAX_VALUE))
+            }
+        val request =
+            origin.copy(
+                dispatchSequence = Long.MAX_VALUE,
+                cancel =
+                    FundsCancelDispatch(
+                        TradingIdentifiers.cancel(source, fixed.ordinal, Long.MAX_VALUE),
+                        RequestToken(origin.order.userId, Int.MAX_VALUE, Long.MAX_VALUE, Long.MAX_VALUE),
+                    ),
+            )
+        val resultStream = MatchingResultStream(destination, source, fixed.market.marketId, Long.MAX_VALUE, Long.MAX_VALUE)
+        val orderBytes = SplitOrderDeliveryCodec().encode(Long.MAX_VALUE, SplitOrderDeliveryCommand.Apply(request))
+        assertTrue(orderBytes.size <= SplitOrderDeliveryCodec.maximumDispatchFrameBytes())
+        for (success in listOf(false, true)) {
+            val result =
+                MatchingResultEnvelope(
+                    resultStream,
+                    Long.MAX_VALUE,
+                    request,
+                    if (success) MatchingOutcome.CANCELLED else MatchingOutcome.CANCEL_REJECTED,
+                    null,
+                    Long.MAX_VALUE - 1,
+                    Long.MAX_VALUE,
+                    if (success) {
+                        listOf(
+                            OrderCancelled(
+                                fixed.market.marketId,
+                                Long.MAX_VALUE,
+                                origin.order.orderId,
+                                origin.order.userId,
+                                origin.order.quantity,
+                            ),
+                        )
+                    } else {
+                        listOf(
+                            OrderCancelRejected(
+                                fixed.market.marketId,
+                                Long.MAX_VALUE,
+                                origin.order.orderId,
+                                origin.order.userId,
+                                "order not found",
+                            ),
+                        )
+                    },
+                    if (success) {
+                        listOf(
+                            MatchingOrderEffect(origin, origin.order.quantity, Quantity.ZERO, MatchingOrderDisposition.CANCELLED),
+                        )
+                    } else {
+                        emptyList()
+                    },
+                )
+            val bytes = codec.encode(Long.MAX_VALUE, SplitResultDeliveryCommand.Apply(result))
+            assertEquals(result, (codec.decode(bytes).command as SplitResultDeliveryCommand.Apply).result)
+            assertTrue(bytes.size <= SplitResultDeliveryCodec.maximumResultFrameBytes(result.canonicalBytes, 1))
+        }
+    }
+
     private fun reply() =
         SplitResultDeliveryReply(
             91,
@@ -515,7 +682,7 @@ class SplitResultDeliveryCodecTest {
                 .wrap(it)
                 .order(ByteOrder.LITTLE_ENDIAN)
                 .putShort(89)
-                .putShort(1)
+                .putShort(2)
                 .putShort(kind.toShort())
                 .putShort(0)
                 .putInt(body.size)

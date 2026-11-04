@@ -24,15 +24,20 @@ import com.exchange.core.order.Side
 import com.exchange.core.order.TimeInForce
 import com.exchange.core.trading.AdmissionReply
 import com.exchange.core.trading.BoundedFundingState
+import com.exchange.core.trading.CancelIntent
+import com.exchange.core.trading.CancelReply
 import com.exchange.core.trading.ClusterLineage
 import com.exchange.core.trading.FundsDispatchConfiguration
 import com.exchange.core.trading.FundsDispatchLimits
 import com.exchange.core.trading.FundsMatchingAppliedAck
+import com.exchange.core.trading.FundsResultStatus
 import com.exchange.core.trading.FundsRoleRecoveryState
+import com.exchange.core.trading.MatchingIntakeConfiguration
 import com.exchange.core.trading.OrderAdmissionCalculator
 import com.exchange.core.trading.OrderIntent
 import com.exchange.core.trading.OrderSettlementCalculator
 import com.exchange.core.trading.RequestToken
+import com.exchange.core.trading.ReservedMatchingState
 import com.exchange.core.trading.SettlementLedgerTransactions
 import com.exchange.core.trading.TradingClusterManifest
 import com.exchange.core.trading.TradingLifecycle
@@ -82,32 +87,16 @@ class FundsRoleSnapshotCodecTest {
     private val token = RequestToken(user, 0, 1, 1)
 
     @Test
-    fun `기존 writer의 v1 예약 자료를 읽고 빈 정산 경계로 복원한 뒤 v2로 기록한다`() {
+    fun `보존된 v1 자료의 지문은 유지하며 새 취소 형식으로 자동 복원하지 않는다`() {
         val legacy = javaClass.getResourceAsStream("/trading/funds167/funds-role-v1-initial.bin")!!.use { it.readBytes() }
         val expectedHash =
             javaClass
                 .getResourceAsStream("/trading/funds167/funds-role-v1-initial.sha256")!!
                 .bufferedReader()
                 .use { it.readText().trim() }
-        val hash = MessageDigest.getInstance("SHA-256").digest(legacy).joinToString("") { "%02x".format(it) }
-        assertEquals(expectedHash, hash)
+        assertEquals(expectedHash, MessageDigest.getInstance("SHA-256").digest(legacy).joinToString("") { "%02x".format(it) })
         assertEquals(1, ByteBuffer.wrap(legacy).getInt(4))
-        val decoded = read(legacy)
-        assertNull(decoded.results)
-        val restored = owner().also { it.restoreFundsRecoveryState(decoded, settlementCalculator()) }
-        assertEquals(Balance(user, usdt, Amount(700), Amount(300)), restored.currentBalance(user, usdt))
-        assertEquals(
-            1,
-            restored
-                .fundsRecoveryState()
-                .financial.liveOrders.size,
-        )
-        val upgraded = bytes(restored.fundsRecoveryState())
-        assertEquals(2, ByteBuffer.wrap(upgraded).getInt(4))
-        val results = assertNotNull(read(upgraded).results)
-        assertTrue(results.receipts.isEmpty())
-        assertTrue(results.streams.all { it.resultThrough == 0L && it.settledEngineSequence == 0L })
-        assertContentEquals(upgraded, bytes(read(upgraded)))
+        assertFails { read(legacy) }
     }
 
     @Test
@@ -130,6 +119,111 @@ class FundsRoleSnapshotCodecTest {
         assertFalse(repeated.newlyRecorded)
         assertContentEquals(bytes, bytes(restored.fundsRecoveryState()))
         assertFails { BoundedTradingStateCodec().read(ByteArrayInputStream(bytes), manifest, POSITION) }
+    }
+
+    @Test
+    fun `v3 preserves queued cancellation approval origin and typed inbox after receipt retirement`() {
+        for (retire in listOf(false, true)) {
+            val original = prepared()
+            val admitted = assertIs<AdmissionReply.Recorded>(original.admit(token, intent, Instant.EPOCH))
+            val cancelToken = token.copy(sequence = 2)
+            val cancelIntent = CancelIntent(market.marketId, assertNotNull(admitted.receipt.orderId), 7)
+            val first = assertIs<CancelReply.Recorded>(original.cancel(cancelToken, cancelIntent))
+            if (retire) original.acknowledgeReceipts(user, 0, 1, 2)
+            val encoded = bytes(original.fundsRecoveryState())
+            assertEquals(3, ByteBuffer.wrap(encoded).getInt(4))
+            val saved = read(encoded)
+            val restored = owner().also { it.restoreFundsRecoveryState(saved, settlementCalculator()) }
+            assertContentEquals(encoded, bytes(restored.fundsRecoveryState()))
+            assertEquals(1, saved.approvalInputs.size)
+            assertEquals(1, saved.cancellations.size)
+            assertEquals(
+                listOf(false, true),
+                saved.dispatch.streams
+                    .single()
+                    .outstanding
+                    .map { it.isCancellation },
+            )
+            assertEquals(Balance(user, usdt, Amount(700), Amount(300)), restored.currentBalance(user, usdt))
+            if (!retire) {
+                val repeated = assertIs<CancelReply.Recorded>(restored.cancel(cancelToken, cancelIntent))
+                assertEquals(first.receipt, repeated.receipt)
+                assertFalse(repeated.newlyRecorded)
+                assertEquals(
+                    1,
+                    saved.financial.inbox.channels
+                        .single()
+                        .cancelEntries.size,
+                )
+            } else {
+                assertTrue(
+                    saved.financial.inbox.channels
+                        .single()
+                        .cancelEntries
+                        .isEmpty(),
+                )
+                assertIs<CancelReply.Refused>(restored.cancel(cancelToken, cancelIntent))
+            }
+        }
+    }
+
+    @Test
+    fun `settled cancellation receipt restores and repeated result releases no additional funds`() {
+        val funds = prepared()
+        val admitted = assertIs<AdmissionReply.Recorded>(funds.admit(token, intent, Instant.EPOCH))
+        funds.cancel(token.copy(sequence = 2), CancelIntent(market.marketId, assertNotNull(admitted.receipt.orderId), 7))
+        val matching =
+            ReservedMatchingState(
+                MatchingIntakeConfiguration(
+                    topology,
+                    TradingRoleDeclaration(
+                        TradingServiceRole.MATCHING,
+                        ClusterLineage(201, 202),
+                        7,
+                        manifest.markets,
+                        mapOf(market.marketId to 1L),
+                    ),
+                ),
+            ).also { it.initialize() }
+        val dispatches =
+            funds
+                .fundsRecoveryState()
+                .dispatch.streams
+                .single()
+                .outstanding
+        val results = dispatches.map { assertNotNull(matching.apply(it).result) }
+        for (result in results) {
+            assertEquals(
+                FundsResultStatus.APPLIED,
+                funds.applyMatchingResult(result, Instant.EPOCH, settlementCalculator()).status,
+            )
+        }
+        assertEquals(Balance(user, usdt, Amount(1_000), Amount.ZERO), funds.currentBalance(user, usdt))
+        val encoded = bytes(funds.fundsRecoveryState())
+        val saved = read(encoded)
+        val restored = owner().also { it.restoreFundsRecoveryState(saved, settlementCalculator()) }
+        assertTrue(saved.cancellations.isEmpty() && saved.approvalInputs.isEmpty())
+        assertEquals(
+            2L,
+            saved.results!!
+                .streams
+                .single()
+                .resultThrough,
+        )
+        assertEquals(
+            1L,
+            saved.results!!
+                .streams
+                .single()
+                .settledMarketAdmissionSequence,
+        )
+        assertContentEquals(encoded, bytes(restored.fundsRecoveryState()))
+        assertEquals(
+            FundsResultStatus.DUPLICATE,
+            restored.applyMatchingResult(results.last(), Instant.EPOCH.plusSeconds(1), settlementCalculator()).status,
+        )
+        assertEquals(Balance(user, usdt, Amount(1_000), Amount.ZERO), restored.currentBalance(user, usdt))
+        assertContentEquals(encoded, bytes(restored.fundsRecoveryState()))
     }
 
     @Test

@@ -3,6 +3,8 @@ package com.exchange.core.api.trading.infrastructure.aeron
 import com.exchange.core.api.trading.infrastructure.codec.SplitOrderDeliveryCodec
 import com.exchange.core.api.trading.infrastructure.codec.SplitOrderDeliveryCommand
 import com.exchange.core.api.trading.infrastructure.codec.SplitOrderDeliveryReply
+import com.exchange.core.trading.CancelIntent
+import com.exchange.core.trading.RequestToken
 import io.aeron.Publication
 import io.aeron.cluster.client.AeronCluster
 import org.agrona.concurrent.UnsafeBuffer
@@ -216,6 +218,11 @@ internal class SplitOrderDeliveryClient(
             response = null
         }
     }
+
+    fun cancel(
+        token: RequestToken,
+        intent: CancelIntent,
+    ): SplitOrderDeliveryReply = request(SplitOrderDeliveryCommand.Cancel(token, intent))
 
     override fun close() = connection.close()
 }

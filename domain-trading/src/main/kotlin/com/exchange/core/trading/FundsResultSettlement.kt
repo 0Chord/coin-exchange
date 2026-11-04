@@ -69,6 +69,8 @@ data class FundsResultStreamRecovery(
     val retiredEngineSequence: Long,
     val receiptEntries: Int,
     val receiptBytes: Long,
+    val settledMarketAdmissionSequence: Long = resultThrough,
+    val retiredMarketAdmissionSequence: Long = retiredThrough,
 )
 
 /** receipts는 자금에 적용한 전체 순서다. 복원 뒤에도 같은 FIFO 회수를 재현한다. */
@@ -94,6 +96,8 @@ internal class FundsResultData(
         var retiredEngineSequence = 0L
         var receiptEntries = 0
         var receiptBytes = 0L
+        var settledMarketAdmissionSequence = 0L
+        var retiredMarketAdmissionSequence = 0L
     }
 
     private val markets = configuration.assignments.associate { it.marketId to Progress() }
@@ -157,6 +161,7 @@ internal class FundsResultData(
         progress.receiptEntries++
         progress.resultThrough = result.resultSequence
         progress.settledEngineSequence = result.engineSequenceAfter
+        if (!result.input.isCancellation) progress.settledMarketAdmissionSequence = result.input.marketAdmissionSequence
     }
 
     private fun retire(key: Pair<MarketId, Long>) {
@@ -166,6 +171,7 @@ internal class FundsResultData(
         val charge = receipt.canonicalBytes
         progress.retiredThrough = key.second
         progress.retiredEngineSequence = receipt.result.engineSequenceAfter
+        if (!receipt.result.input.isCancellation) progress.retiredMarketAdmissionSequence = receipt.result.input.marketAdmissionSequence
         progress.receiptEntries--
         progress.receiptBytes -= charge
         receiptBytes -= charge
@@ -184,6 +190,8 @@ internal class FundsResultData(
                     progress.retiredEngineSequence,
                     progress.receiptEntries,
                     progress.receiptBytes,
+                    progress.settledMarketAdmissionSequence,
+                    progress.retiredMarketAdmissionSequence,
                 )
             },
             receipts.values.toList(),
@@ -203,12 +211,21 @@ internal class FundsResultData(
         val dispatchMarkets = dispatch.streams.associateBy { it.stream.marketId }
         val next = linkedMapOf<MarketId, Long>()
         val engines = linkedMapOf<MarketId, Long>()
+        val admissions = linkedMapOf<MarketId, Long>()
         for (entry in saved.streams) {
             require(matches(entry.stream))
             val market = entry.stream.marketId
             val finance = requireNotNull(financialMarkets[market])
             val delivery = requireNotNull(dispatchMarkets[market])
-            require(entry.resultThrough == finance.executedThrough && entry.resultThrough in 0..delivery.matchingAppliedThrough)
+            require(
+                entry.settledMarketAdmissionSequence == finance.executedThrough &&
+                    entry.resultThrough in entry.settledMarketAdmissionSequence..delivery.matchingAppliedThrough,
+            )
+            require(entry.retiredMarketAdmissionSequence in 0..entry.settledMarketAdmissionSequence)
+            require(entry.retiredMarketAdmissionSequence <= entry.retiredThrough)
+            if (entry.retiredThrough == entry.resultThrough) {
+                require(entry.retiredMarketAdmissionSequence == entry.settledMarketAdmissionSequence)
+            }
             require(entry.retiredThrough in 0..entry.resultThrough)
             require(entry.settledEngineSequence >= 0 && entry.retiredEngineSequence in 0..entry.settledEngineSequence)
             require(entry.resultThrough != 0L || entry.settledEngineSequence == 0L)
@@ -218,6 +235,7 @@ internal class FundsResultData(
             if (entry.retiredThrough == entry.resultThrough) require(entry.retiredEngineSequence == entry.settledEngineSequence)
             next[market] = entry.retiredThrough
             engines[market] = entry.retiredEngineSequence
+            admissions[market] = entry.retiredMarketAdmissionSequence
         }
         val counts = linkedMapOf<MarketId, Int>()
         val bytes = linkedMapOf<MarketId, Long>()
@@ -233,11 +251,16 @@ internal class FundsResultData(
             require(previous < Long.MAX_VALUE && result.resultSequence == previous + 1)
             require(result.engineSequenceBefore == engines.getValue(market))
             requireResult(result)
-            require(
-                result.input.admissionSequence in 1..financial.lastAdmissionSequence && seenAdmissions.add(result.input.admissionSequence),
-            )
-            require(result.input.admissionSequence > (sourceAdmissions[market] ?: 0L))
-            sourceAdmissions[market] = result.input.admissionSequence
+            require(result.input.admissionSequence in 1..financial.lastAdmissionSequence)
+            if (!result.input.isCancellation) {
+                require(seenAdmissions.add(result.input.admissionSequence))
+                require(result.input.admissionSequence > (sourceAdmissions[market] ?: 0L))
+                require(result.input.marketAdmissionSequence == Math.addExact(admissions.getValue(market), 1L))
+                sourceAdmissions[market] = result.input.admissionSequence
+                admissions[market] = result.input.marketAdmissionSequence
+            } else {
+                require(result.input.marketAdmissionSequence <= admissions.getValue(market))
+            }
             next[market] = result.resultSequence
             engines[market] = result.engineSequenceAfter
             counts[market] = Math.addExact(counts[market] ?: 0, 1)
@@ -256,7 +279,10 @@ internal class FundsResultData(
         }
         require(totalBytes == saved.receiptBytes)
         for ((market, entry) in byMarket) {
-            require(next[market] == entry.resultThrough && engines[market] == entry.settledEngineSequence)
+            require(
+                next[market] == entry.resultThrough && engines[market] == entry.settledEngineSequence &&
+                    admissions[market] == entry.settledMarketAdmissionSequence,
+            )
             require((counts[market] ?: 0) == entry.receiptEntries && (bytes[market] ?: 0L) == entry.receiptBytes)
         }
         val liveByOrder = financial.liveOrders.associateBy { it.order.marketId to it.order.orderId }
@@ -279,6 +305,8 @@ internal class FundsResultData(
             progress.retiredEngineSequence = entry.retiredEngineSequence
             progress.receiptEntries = entry.receiptEntries
             progress.receiptBytes = entry.receiptBytes
+            progress.settledMarketAdmissionSequence = entry.settledMarketAdmissionSequence
+            progress.retiredMarketAdmissionSequence = entry.retiredMarketAdmissionSequence
         }
         for (receipt in saved.receipts) {
             val key = receipt.result.stream.marketId to receipt.result.resultSequence
@@ -306,7 +334,8 @@ internal fun requireFundsOriginal(
 ) {
     require(
         origin.order == live.order && origin.admissionSequence == live.admissionSequence &&
-            origin.marketAdmissionSequence == live.marketAdmissionSequence && origin.dispatchSequence == live.marketAdmissionSequence,
+            origin.marketAdmissionSequence == live.marketAdmissionSequence &&
+            origin.dispatchSequence >= live.marketAdmissionSequence && !origin.isCancellation,
     ) { "matching origin differs from local financial approval" }
     val current = live.reservation
     val initial = origin.reservation
@@ -320,12 +349,20 @@ internal fun fundsResultReleaseTransaction(
     reservation: com.exchange.core.order.OrderReservation,
     appliedAt: Instant,
 ): com.exchange.core.ledger.LedgerTransaction {
-    require(result.outcome == MatchingOutcome.NOT_EXECUTED && result.events.isEmpty())
+    require(
+        (result.outcome == MatchingOutcome.NOT_EXECUTED && result.events.isEmpty()) ||
+            (result.outcome == MatchingOutcome.CANCELLED && result.events.singleOrNull() is com.exchange.core.matching.OrderCancelled),
+    )
     val id =
-        "F3" + TradingIdentifiers.settlement(result.stream.fundsLineage, result.input.context.ordinal, result.resultSequence).substring(2)
+        if (result.outcome == MatchingOutcome.CANCELLED) {
+            "F4" + TradingIdentifiers.reserve(result.stream.fundsLineage, result.input.admissionSequence).substring(2)
+        } else {
+            "F3" +
+                TradingIdentifiers.settlement(result.stream.fundsLineage, result.input.context.ordinal, result.resultSequence).substring(2)
+        }
     return com.exchange.core.ledger.LedgerTransaction(
         id,
-        "MATCHING_NOT_EXECUTED:$id",
+        if (result.outcome == MatchingOutcome.CANCELLED) "ORDER_CANCELLED:$id" else "MATCHING_NOT_EXECUTED:$id",
         com.exchange.core.ledger.LedgerTransactionType.RELEASE,
         appliedAt,
         listOf(

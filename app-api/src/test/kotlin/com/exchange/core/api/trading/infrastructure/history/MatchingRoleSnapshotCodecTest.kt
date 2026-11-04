@@ -21,6 +21,7 @@ import com.exchange.core.order.OrderType
 import com.exchange.core.order.Side
 import com.exchange.core.order.TimeInForce
 import com.exchange.core.trading.ClusterLineage
+import com.exchange.core.trading.FundsCancelDispatch
 import com.exchange.core.trading.FundsOrderDispatch
 import com.exchange.core.trading.MarketMatchingIntakeLimits
 import com.exchange.core.trading.MatchingFundsSettledAck
@@ -31,6 +32,7 @@ import com.exchange.core.trading.MatchingNotExecutedReason
 import com.exchange.core.trading.MatchingOutcome
 import com.exchange.core.trading.MatchingRoleRecoveryState
 import com.exchange.core.trading.OrderAdmissionInput
+import com.exchange.core.trading.RequestToken
 import com.exchange.core.trading.ReservedMatchingState
 import com.exchange.core.trading.TradingClusterManifest
 import com.exchange.core.trading.TradingIdentifiers
@@ -66,7 +68,7 @@ class MatchingRoleSnapshotCodecTest {
     private val reservations = OrderReservationCalculator(BuyOrderFundingQuoteCalculator(TradingFeeReserveCalculator()))
 
     @Test
-    fun `공통 결과 codec으로 바꿔도 기존 매칭 v1의 여러 체결 바이트는 그대로다`() {
+    fun `보존된 v1 자료의 지문은 유지하며 새 취소 형식으로 자동 복원하지 않는다`() {
         val legacy = javaClass.getResourceAsStream("/trading/funds167/matching-role-v1-multiple-fills.bin")!!.use { it.readBytes() }
         val expectedHash =
             javaClass
@@ -75,30 +77,7 @@ class MatchingRoleSnapshotCodecTest {
                 .use { it.readText().trim() }
         assertEquals(expectedHash, MessageDigest.getInstance("SHA-256").digest(legacy).joinToString("") { "%02x".format(it) })
         assertEquals(1, ByteBuffer.wrap(legacy).getInt(4))
-        val state = read(legacy)
-        assertContentEquals(legacy, bytes(state))
-        assertEquals(
-            3,
-            state.streams
-                .single { it.stream.marketId == a.marketId }
-                .outstanding.size,
-        )
-        assertEquals(
-            3,
-            state.streams
-                .single { it.stream.marketId == a.marketId }
-                .outstanding
-                .last()
-                .events.size,
-        )
-        assertEquals(
-            1L,
-            state.matching.markets
-                .single { it.marketId == a.marketId }
-                .orders
-                .single()
-                .remainingQuantity.value,
-        )
+        assertFails { read(legacy) }
     }
 
     @Test
@@ -222,34 +201,27 @@ class MatchingRoleSnapshotCodecTest {
     }
 
     @Test
-    fun `크기 거절만 있어 엔진 순번이 영인 상태를 복원하고 다음 정상 사건 일부터 시작한다`() {
-        val small = configuration(limits(singleBytes = 1_200))
+    fun `전체 결과 크기 거절과 기존 주문장을 복원하고 다음 사건 순번을 이어간다`() {
+        // 완전한 최대 취소 한 건을 허용하는 설정에서 여러 maker 체결 결과만 단일 한도를 넘긴다.
+        val small = configuration(limits(singleBytes = 2_400))
         val original = owner(small)
-        val large = input(1, user = "u".repeat(34), expected = small)
+        original.apply(input(1, Side.SELL, 90, 1, user = "s1", expected = small))
+        original.apply(input(2, Side.SELL, 95, 1, user = "s2", expected = small))
+        val large = input(3, user = "u".repeat(34), expected = small)
         val rejected = assertNotNull(original.apply(large).result)
-        // 수기 charge: 큰 원본502 + effect522 + 고정/route/resultID143 = 거절1167.
-        // 같은 원본의 대기 사건119를 더하면1286여서 단일1200을 넘는다.
-        // 설정이 허용해야 할 MAX 번호 원본의 거절은1185, 작은 정상 결과는1121이다.
-        assertEquals(1_167L, rejected.canonicalBytes)
         assertEquals(MatchingOutcome.NOT_EXECUTED, rejected.outcome)
         assertEquals(MatchingNotExecutedReason.RESULT_TOO_LARGE, rejected.reason)
-        assertEquals(0L, rejected.engineSequenceBefore)
-        assertEquals(0L, rejected.engineSequenceAfter)
-        assertTrue(
-            original
-                .recoveryState()
-                .matching.markets
-                .isEmpty(),
-        )
+        assertEquals(2L, rejected.engineSequenceBefore)
+        assertEquals(2L, rejected.engineSequenceAfter)
+        assertEquals(2, original.restingOrders(a.marketId).size)
         val encoded = bytes(original.recoveryState())
         val restored = ReservedMatchingState(small).also { it.restore(read(encoded, small)) }
         assertContentEquals(encoded, bytes(restored.recoveryState()))
         assertEquals(MatchingIntakeStatus.DUPLICATE, restored.apply(large).status)
-        val next = assertNotNull(restored.apply(input(2, user = "u", expected = small)).result)
+        val next = assertNotNull(restored.apply(input(4, quantity = 1, user = "u", expected = small)).result)
         assertEquals(MatchingOutcome.MATCHED, next.outcome)
-        assertEquals(1_121L, next.canonicalBytes)
-        assertEquals(1L, next.events.single().engineSequence)
-        assertEquals(2L, next.resultSequence)
+        assertEquals(3L, next.events.single().engineSequence)
+        assertEquals(4L, next.resultSequence)
     }
 
     @Test
@@ -389,6 +361,36 @@ class MatchingRoleSnapshotCodecTest {
         assertTrue(failure.message.orEmpty().contains("manifest"))
     }
 
+    @Test
+    fun `v2 replays unacknowledged cancellation success and rejection from the same restored prefix`() {
+        for (filled in listOf(false, true)) {
+            val original = owner()
+            val submitted = input(1, quantity = 1)
+            original.apply(submitted)
+            if (filled) original.apply(input(2, Side.SELL, 100, 1, user = "seller"))
+            val sequence = if (filled) 3L else 2L
+            val cancel =
+                submitted.copy(
+                    dispatchSequence = sequence,
+                    cancel =
+                        FundsCancelDispatch(
+                            TradingIdentifiers.cancel(funds, contexts[0].ordinal, sequence),
+                            RequestToken(submitted.order.userId, 0, 1, 1),
+                        ),
+                )
+            val result = assertNotNull(original.apply(cancel).result)
+            assertEquals(if (filled) MatchingOutcome.CANCEL_REJECTED else MatchingOutcome.CANCELLED, result.outcome)
+            val encoded = bytes(original.recoveryState())
+            assertEquals(2, ByteBuffer.wrap(encoded).getInt(4))
+            val restored = ReservedMatchingState(configuration).also { it.restore(read(encoded)) }
+            assertContentEquals(encoded, bytes(restored.recoveryState()))
+            assertEquals(result, restored.apply(cancel).result)
+            assertTrue(restored.restingOrders(a.marketId).isEmpty())
+            restored.acknowledgeFundsSettled(ack(sequence))
+            assertEquals(0, restored.recoveryState().resultEntries)
+        }
+    }
+
     private fun definition(contexts: List<TradingMarketContext>) =
         TradingClusterManifest(
             funds,
@@ -494,7 +496,7 @@ class MatchingRoleSnapshotCodecTest {
         MessageDigest.getInstance("SHA-256").digest(bytes.copyOf(digestOffset)).copyInto(bytes, digestOffset)
     }
 
-    /** 구현 codec와 독립된 v1 필드 순서 이동기다. 내용은 재구성하지 않고 바꿀 위치만 찾는다. */
+    /** 구현 codec와 독립된 v2 필드 순서 이동기다. 내용은 재구성하지 않고 바꿀 위치만 찾는다. */
     @Test
     fun `체크섬을 다시 계산해도 초기 frontier에 과거 사건을 주입할 수 없다`() {
         val completed = owner()
@@ -518,8 +520,8 @@ class MatchingRoleSnapshotCodecTest {
         assertEquals(2, buffer.getInt(cursor))
         cursor += 4
         cursor += 4 + buffer.getInt(cursor)
-        for (offset in listOf(0, 8, 16, 24)) buffer.putLong(cursor + offset, 0)
-        buffer.putLong(cursor + 32, 100)
+        for (offset in listOf(0, 8, 16, 24, 32)) buffer.putLong(cursor + offset, 0)
+        buffer.putLong(cursor + 40, 100)
         buffer.putLong(checkpointSequence, 100)
         resign(damaged)
         assertFails { read(damaged) }
@@ -575,14 +577,16 @@ class MatchingRoleSnapshotCodecTest {
             val reservationLength = cursor
             text()
             if (firstReservationLength == -1) firstReservationLength = reservationLength
+            assertEquals(0, buffer.get(cursor).toInt())
+            cursor++
         }
         repeat(buffer.getInt(activeCount)) { dispatch() }
         val streamCount = cursor
         cursor += 4
         text()
         val firstApplied = cursor
-        val settledEngine = cursor + 32
-        cursor += 60
+        val settledEngine = cursor + 40
+        cursor += 68
         val firstOutstanding = cursor
         cursor += 4
         cursor += 8

@@ -12,6 +12,7 @@ import com.exchange.core.api.trading.infrastructure.history.BoundedTradingStateC
 import com.exchange.core.common.Amount
 import com.exchange.core.common.AssetId
 import com.exchange.core.common.MarketId
+import com.exchange.core.common.OrderId
 import com.exchange.core.common.Price
 import com.exchange.core.common.Quantity
 import com.exchange.core.common.UserId
@@ -27,6 +28,8 @@ import com.exchange.core.order.OrderType
 import com.exchange.core.order.Side
 import com.exchange.core.order.TimeInForce
 import com.exchange.core.trading.BoundedFundingState
+import com.exchange.core.trading.CancelIntent
+import com.exchange.core.trading.CancelReply
 import com.exchange.core.trading.ClusterLineage
 import com.exchange.core.trading.OrderIntent
 import com.exchange.core.trading.RequestToken
@@ -165,6 +168,16 @@ private class ResultVerificationService(
                             saved.dispatch.streams
                                 .single()
                                 .issued,
+                        "admissionIssued" to saved.financial.lastAdmissionSequence,
+                        "pendingCancels" to saved.cancellations.size,
+                        "reservations" to
+                            saved.financial.liveOrders.map {
+                                mapOf(
+                                    "orderId" to it.order.orderId.value,
+                                    "remainingQuantity" to it.reservation.remainingQuantity.value,
+                                    "remainingAmount" to it.reservation.remainingAmount.value,
+                                )
+                            },
                         "executedThrough" to
                             saved.financial.markets
                                 .single()
@@ -244,6 +257,9 @@ private fun resultOrderConnections(bootId: String): SplitOrderDeliveryConnection
                         val command = SplitOrderDeliveryCodec().decode(bytes).command
                         if (command is SplitOrderDeliveryCommand.Apply && command.input.dispatchSequence <= 8) {
                             writeBoundedHttpArtifact(resultControl.resolve("dispatch-${command.input.dispatchSequence}.bin"), bytes, true)
+                        }
+                        if (command is SplitOrderDeliveryCommand.Apply && Files.exists(resultControl.resolve("hold-orders"))) {
+                            return Publication.BACK_PRESSURED
                         }
                         return connection.offer(bytes)
                     }
@@ -389,7 +405,7 @@ private fun setupResultVerification() {
     val manifest =
         TradingClusterManifest(
             ClusterLineage(169, 1),
-            "split-result-settlement-v1",
+            if (resultFixture.startsWith("cancel-")) "split-order-cancellation-v2" else "split-result-settlement-v1",
             BoundedExecutionIdentity.artifactSha256,
             BoundedExecutionIdentity.schemaSha256,
             1,
@@ -548,6 +564,10 @@ private fun resultVerificationCommand(args: Array<String>) {
                             ),
                         )
                     check(reply.code == "ACCEPTED") { reply.toString() }
+                    writeSplitTestJson(
+                        resultControl.resolve("admission-$who-$sequence.json"),
+                        mapOf("orderId" to checkNotNull(reply.control?.admission?.orderId).value),
+                    )
                 }
                 when (args[0]) {
                     "prepare" -> {
@@ -561,7 +581,7 @@ private fun resultVerificationCommand(args: Array<String>) {
                         }
                         val sellerQuantity =
                             when (resultFixture) {
-                                "partial", "cap", "active" -> 2L
+                                "partial", "cap", "active", "cancel-active" -> 2L
                                 "large" -> 1024L
                                 else -> 1L
                             }
@@ -576,6 +596,33 @@ private fun resultVerificationCommand(args: Array<String>) {
                     "admit" -> {
                         val side = args.getOrNull(5)?.let(Side::valueOf) ?: if (args[1] == "seller") Side.SELL else Side.BUY
                         admit(args[1], args[2].toLong(), args[3].toLong(), args[4].toLong(), side)
+                    }
+
+                    "cancel" -> {
+                        val who = args[1]
+                        val admission = resultJson.readTree(Files.readString(resultControl.resolve("admission-$who-${args[3]}.json")))
+                        val reply =
+                            funds.cancel(
+                                RequestToken(if (who == "seller") resultSeller else resultBuyer, 0, 1, args[2].toLong()),
+                                CancelIntent(
+                                    manifest.markets
+                                        .single()
+                                        .market.marketId,
+                                    OrderId(admission.path("orderId").asString()),
+                                    manifest.configurationVersion,
+                                ),
+                            )
+                        val receipt = checkNotNull((reply.cancel as? CancelReply.Recorded)?.receipt) { reply.toString() }
+                        check(receipt.code.name == "ACCEPTED") { reply.toString() }
+                        val evidence =
+                            mapOf(
+                                "code" to receipt.code.name,
+                                "cancelId" to receipt.cancelId,
+                                "targetOrderId" to receipt.targetOrderId?.value,
+                                "inputSequence" to receipt.inputSequence,
+                            )
+                        writeSplitTestJson(resultControl.resolve("cancel-$who-${args[2]}.json"), evidence)
+                        println(resultJson.writeValueAsString(evidence))
                     }
 
                     "makers" -> {

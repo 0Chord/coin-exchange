@@ -3,8 +3,6 @@ package com.exchange.core.api.trading.infrastructure.history
 import com.exchange.core.common.AssetId
 import com.exchange.core.common.MarketId
 import com.exchange.core.common.OrderId
-import com.exchange.core.common.Price
-import com.exchange.core.common.Quantity
 import com.exchange.core.common.UserId
 import com.exchange.core.fee.TradingFeeCalculator
 import com.exchange.core.fee.TradingFeeReserveCalculator
@@ -12,11 +10,13 @@ import com.exchange.core.matching.MatchingCheckpoint
 import com.exchange.core.order.BuyOrderFundingQuoteCalculator
 import com.exchange.core.order.OrderFillSettlementCalculator
 import com.exchange.core.order.OrderReservationCalculator
-import com.exchange.core.order.OrderType
-import com.exchange.core.order.Side
-import com.exchange.core.order.TimeInForce
+import com.exchange.core.order.OrderReservationStatus
 import com.exchange.core.trading.BoundedFundingRecoveryState
 import com.exchange.core.trading.BoundedFundingState
+import com.exchange.core.trading.CancelCode
+import com.exchange.core.trading.CancelIntent
+import com.exchange.core.trading.CancelReceipt
+import com.exchange.core.trading.FundsCancellationSnapshot
 import com.exchange.core.trading.FundsDispatchConfiguration
 import com.exchange.core.trading.FundsDispatchSnapshot
 import com.exchange.core.trading.FundsDispatchStreamSnapshot
@@ -29,9 +29,10 @@ import com.exchange.core.trading.FundsRoleRecoveryState
 import com.exchange.core.trading.MarketFundsDispatchLimits
 import com.exchange.core.trading.MatchingResultStream
 import com.exchange.core.trading.OrderAdmissionCalculator
-import com.exchange.core.trading.OrderAdmissionInput
 import com.exchange.core.trading.OrderSettlementCalculator
 import com.exchange.core.trading.SettlementLedgerTransactions
+import com.exchange.core.trading.TradingCancelInboxEntrySnapshot
+import com.exchange.core.trading.TradingInboxSnapshot
 import com.exchange.core.trading.TradingRecoveryState
 import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
@@ -49,7 +50,6 @@ import java.time.Instant
 /** 자금 역할의 금융 투영과 전달 의무를 함께 담는다. 노드나 Archive를 시작하지 않는다. */
 internal class FundsRoleSnapshotCodec {
     private val financial = BoundedTradingStateCodec()
-    private val reservations = TradingHistoryCodec(MAX_RESERVATION_BYTES)
     private val results = MatchingResultSnapshotCodec()
 
     fun write(
@@ -90,6 +90,7 @@ internal class FundsRoleSnapshotCodec {
         }
         writeDispatch(output, saved.configuration, saved.dispatch)
         writeResults(output, saved.configuration, checkNotNull(saved.results))
+        writeCancellationState(output, saved)
         output.flush()
         checked.on(false)
         output.write(digest.digest())
@@ -110,7 +111,7 @@ internal class FundsRoleSnapshotCodec {
         val input = DataInputStream(checked)
         require(input.readInt() == MAGIC) { "unsupported funds snapshot" }
         val version = input.readInt()
-        require(version == LEGACY_VERSION || version == VERSION) { "unsupported funds snapshot" }
+        require(version == VERSION) { "unsupported funds snapshot" }
         require(input.readLong() == expectedPosition) { "funds snapshot framework position differs" }
         require(input.blob(MAX_CONFIGURATION_BYTES).contentEquals(configurationBytes(expected))) {
             "funds snapshot configuration differs"
@@ -129,12 +130,22 @@ internal class FundsRoleSnapshotCodec {
             require(asset in assets && total >= 0 && totals.put(asset, total) == null) { "invalid funds snapshot asset total" }
         }
         val dispatch = readDispatch(input, expected)
-        val resultState = if (version == VERSION) readResults(input, expected, expectedResultLimits) { limited.remaining } else null
+        val resultState = readResults(input, expected, expectedResultLimits) { limited.remaining }
+        val cancellationState = readCancellationState(input, expected, saved.inbox)
         checked.on(false)
         val expectedDigest = ByteArray(32).also(input::readFully)
         require(MessageDigest.isEqual(digest.digest(), expectedDigest)) { "funds snapshot checksum differs" }
         require(input.readInt() == END && input.read() == -1) { "funds snapshot footer differs" }
-        val state = FundsRoleRecoveryState(expected, fundingProjection(saved), dispatch, totals, resultState)
+        val state =
+            FundsRoleRecoveryState(
+                expected,
+                fundingProjection(saved, cancellationState.inbox),
+                dispatch,
+                totals,
+                resultState,
+                cancellationState.approvals,
+                cancellationState.cancellations,
+            )
         // 체크섬 뒤에도 금융·전달·정산 경계의 관계를 빈 소유자에서 검사한다.
         validatedState(state, expectedResultLimits)
         return state
@@ -161,6 +172,8 @@ internal class FundsRoleSnapshotCodec {
             output.writeLong(saved.retiredEngineSequence)
             output.writeInt(saved.receiptEntries)
             output.writeLong(saved.receiptBytes)
+            output.writeLong(saved.settledMarketAdmissionSequence)
+            output.writeLong(saved.retiredMarketAdmissionSequence)
         }
         output.writeLong(state.receiptBytes)
         output.writeInt(state.receipts.size)
@@ -216,6 +229,8 @@ internal class FundsRoleSnapshotCodec {
                     input.readLong(),
                     input.readLong(),
                     input.readInt(),
+                    input.readLong(),
+                    input.readLong(),
                     input.readLong(),
                 )
             }
@@ -361,11 +376,7 @@ internal class FundsRoleSnapshotCodec {
             output.writeInt(saved.outstanding.size)
             for (entry in saved.outstanding) {
                 require(entry.stream == saved.stream && entry.context == context) { "funds snapshot envelope configuration differs" }
-                output.writeLong(entry.dispatchSequence)
-                output.writeLong(entry.admissionSequence)
-                output.writeLong(entry.marketAdmissionSequence)
-                output.order(entry.order)
-                output.blob(reservations.encodeReservation(entry.reservation), MAX_RESERVATION_BYTES)
+                results.writeDispatch(output, entry)
             }
         }
     }
@@ -405,19 +416,113 @@ internal class FundsRoleSnapshotCodec {
                 entryCount = Math.addExact(entryCount, count)
                 val outstanding =
                     List(count) {
-                        FundsOrderDispatch(
-                            stream,
-                            input.readLong(),
-                            input.readLong(),
-                            input.readLong(),
-                            input.order(),
-                            reservations.decodeReservation(input.blob(MAX_RESERVATION_BYTES)),
-                            context,
+                        results.readDispatch(
+                            input,
+                            { actual ->
+                                require(actual == market) { "funds dispatch market differs" }
+                                stream
+                            },
+                            { actual ->
+                                require(actual == market) { "funds dispatch context differs" }
+                                context
+                            },
                         )
                     }
                 FundsDispatchStreamSnapshot(stream, issued, applied, outstanding, bytes, active, activeCharge)
             }
         return FundsDispatchSnapshot(streams, dispatchEntries, dispatchBytes, activeOrders, activeBytes)
+    }
+
+    private data class CancellationState(
+        val inbox: TradingInboxSnapshot,
+        val approvals: List<FundsOrderDispatch>,
+        val cancellations: List<FundsCancellationSnapshot>,
+    )
+
+    private fun writeCancellationState(
+        output: DataOutputStream,
+        saved: FundsRoleRecoveryState,
+    ) {
+        output.writeInt(saved.approvalInputs.size)
+        saved.approvalInputs.forEach { results.writeDispatch(output, it) }
+        output.writeInt(saved.cancellations.size)
+        saved.cancellations.forEach {
+            results.writeDispatch(output, it.input)
+            output.writeInt(it.terminalStatus?.ordinal ?: -1)
+        }
+        output.writeInt(saved.financial.inbox.channels.size)
+        for (channel in saved.financial.inbox.channels) {
+            output.text(channel.userId.value)
+            output.writeInt(channel.channel)
+            output.writeInt(channel.cancelEntries.size)
+            for (entry in channel.cancelEntries) {
+                output.writeLong(entry.sequence)
+                output.text(entry.intent.marketId.value)
+                output.text(entry.intent.targetOrderId.value)
+                output.writeLong(entry.intent.expectedConfigurationVersion)
+                val receipt = entry.receipt
+                output.writeInt(receipt.code.ordinal)
+                output.writeBoolean(receipt.cancelId != null)
+                receipt.cancelId?.let { output.text(it) }
+                output.writeBoolean(receipt.targetOrderId != null)
+                receipt.targetOrderId?.let { output.text(it.value) }
+                output.writeBoolean(receipt.inputSequence != null)
+                receipt.inputSequence?.let(output::writeLong)
+                output.writeBoolean(receipt.reason != null)
+                receipt.reason?.let { output.text(it) }
+            }
+        }
+    }
+
+    private fun readCancellationState(
+        input: DataInputStream,
+        configuration: FundsDispatchConfiguration,
+        inbox: TradingInboxSnapshot,
+    ): CancellationState {
+        fun context(market: MarketId) = configuration.manifest.markets.single { it.market.marketId == market }
+        val approvals =
+            List(input.count(configuration.limits.maxActiveOrders)) {
+                results.readDispatch(input, configuration::stream, ::context).also { require(!it.isCancellation) }
+            }
+        val cancellations =
+            List(input.count(configuration.limits.maxDispatchEntries)) {
+                val dispatch = results.readDispatch(input, configuration::stream, ::context)
+                val status = input.readInt()
+                FundsCancellationSnapshot(
+                    dispatch,
+                    if (status == -1) null else requireNotNull(OrderReservationStatus.entries.getOrNull(status)),
+                )
+            }
+        require(
+            input.count(configuration.manifest.limits.maxChannels) == inbox.channels.size,
+        ) { "funds cancel inbox channel coverage differs" }
+        var entries = inbox.channels.sumOf { it.entries.size }
+        val limits = configuration.manifest.limits
+        val channels =
+            inbox.channels.map { channel ->
+                require(
+                    input.text() == channel.userId.value && input.readInt() == channel.channel,
+                ) { "funds cancel inbox channel order differs" }
+                val count = input.count(minOf(limits.requestWindow - channel.entries.size, limits.maxInboxEntries - entries))
+                entries = Math.addExact(entries, count)
+                val cancellations =
+                    List(count) {
+                        val sequence = input.readLong()
+                        val intent = CancelIntent(MarketId(input.text()), OrderId(input.text()), input.readLong())
+                        val code = requireNotNull(CancelCode.entries.getOrNull(input.readInt())) { "unknown funds cancel receipt code" }
+                        val receipt =
+                            CancelReceipt(
+                                code,
+                                if (input.readBoolean()) input.text() else null,
+                                if (input.readBoolean()) OrderId(input.text()) else null,
+                                if (input.readBoolean()) input.readLong() else null,
+                                if (input.readBoolean()) input.text() else null,
+                            )
+                        TradingCancelInboxEntrySnapshot(sequence, intent, receipt)
+                    }
+                channel.copy(cancelEntries = cancellations)
+            }
+        return CancellationState(TradingInboxSnapshot(channels), approvals, cancellations)
     }
 
     /** 바이트 계약은 재사용하되 통합 owner나 MatchingEngine은 생성하지 않는다. */
@@ -440,23 +545,25 @@ internal class FundsRoleSnapshotCodec {
             saved.incident,
         )
 
-    private fun fundingProjection(saved: TradingRecoveryState) =
-        BoundedFundingRecoveryState(
-            saved.manifest,
-            saved.lifecycle,
-            saved.balances,
-            saved.feeRevenueByAsset,
-            saved.usedBalances,
-            saved.preparations,
-            saved.accounts,
-            saved.liveOrders,
-            saved.markets,
-            saved.inbox,
-            saved.lastAdmissionSequence,
-            saved.lastPreparationSequence,
-            saved.preparationCanonicalBytes,
-            saved.incident,
-        )
+    private fun fundingProjection(
+        saved: TradingRecoveryState,
+        inbox: TradingInboxSnapshot,
+    ) = BoundedFundingRecoveryState(
+        saved.manifest,
+        saved.lifecycle,
+        saved.balances,
+        saved.feeRevenueByAsset,
+        saved.usedBalances,
+        saved.preparations,
+        saved.accounts,
+        saved.liveOrders,
+        saved.markets,
+        inbox,
+        saved.lastAdmissionSequence,
+        saved.lastPreparationSequence,
+        saved.preparationCanonicalBytes,
+        saved.incident,
+    )
 
     internal fun configurationBytes(configuration: FundsDispatchConfiguration): ByteArray =
         ByteArrayOutputStream().use { bytes ->
@@ -489,29 +596,6 @@ internal class FundsRoleSnapshotCodec {
         writeInt(limits.maxActiveOrders)
         writeLong(limits.maxActiveBytes)
     }
-
-    private fun DataOutputStream.order(order: OrderAdmissionInput) {
-        text(order.marketId.value)
-        text(order.orderId.value)
-        text(order.userId.value)
-        text(order.side.name)
-        text(order.orderType.name)
-        text(order.timeInForce.name)
-        writeLong(order.price.value)
-        writeLong(order.quantity.value)
-    }
-
-    private fun DataInputStream.order() =
-        OrderAdmissionInput(
-            MarketId(text()),
-            OrderId(text()),
-            UserId(text()),
-            Side.valueOf(text()),
-            OrderType.valueOf(text()),
-            TimeInForce.valueOf(text()),
-            Price(readLong()),
-            Quantity(readLong()),
-        )
 
     private fun DataOutputStream.text(value: String) = blob(value.toByteArray(Charsets.UTF_8), MAX_TEXT_BYTES)
 
@@ -597,13 +681,11 @@ internal class FundsRoleSnapshotCodec {
 
     companion object {
         private const val MAGIC = 0x46525350
-        private const val VERSION = 2
-        private const val LEGACY_VERSION = 1
+        private const val VERSION = 3
         private const val FOOTER_BYTES = 36L
         private const val END = 0x46524531
         private const val MAX_TEXT_BYTES = 1_024
         private const val MAX_CONFIGURATION_BYTES = 256 * 1_024
-        private const val MAX_RESERVATION_BYTES = 64 * 1_024
         private const val MAX_SNAPSHOT_BYTES = 128L * 1_024 * 1_024
     }
 }

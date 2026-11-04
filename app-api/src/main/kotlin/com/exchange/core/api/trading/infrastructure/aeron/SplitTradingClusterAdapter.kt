@@ -224,6 +224,32 @@ internal class SplitTradingClusterAdapter(
                         }
                     }
 
+                    is SplitOrderDeliveryCommand.Cancel -> {
+                        when {
+                            role != TradingServiceRole.FUNDS -> {
+                                response(envelope.correlationId, "WRONG_ROLE")
+                            }
+
+                            !resultDeliveryEnabled -> {
+                                response(envelope.correlationId, "UNSUPPORTED_MODE")
+                            }
+
+                            !tradingReady -> {
+                                response(envelope.correlationId, "NOT_READY")
+                            }
+
+                            else -> {
+                                val cancelled = checkNotNull(funds).cancel(command.token, command.intent)
+                                val code =
+                                    when (cancelled) {
+                                        is com.exchange.core.trading.CancelReply.Recorded -> cancelled.receipt.code.name
+                                        is com.exchange.core.trading.CancelReply.Refused -> cancelled.reason
+                                    }
+                                response(envelope.correlationId, code).copy(cancel = cancelled)
+                            }
+                        }
+                    }
+
                     is SplitOrderDeliveryCommand.Apply -> {
                         when {
                             role != TradingServiceRole.MATCHING -> {

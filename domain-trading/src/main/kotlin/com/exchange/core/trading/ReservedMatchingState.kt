@@ -6,6 +6,8 @@ import com.exchange.core.common.Quantity
 import com.exchange.core.matching.BoundedSubmitPreparation
 import com.exchange.core.matching.MatchingCheckpoint
 import com.exchange.core.matching.MatchingEngine
+import com.exchange.core.matching.OrderCancelRejected
+import com.exchange.core.matching.OrderCancelled
 import com.exchange.core.matching.RestingOrderSnapshot
 import com.exchange.core.matching.SubmitOrderPlan
 import com.exchange.core.order.Side
@@ -17,6 +19,7 @@ class ReservedMatchingState(
     private class Progress {
         var appliedThrough = 0L
         var lastSourceAdmissionSequence = 0L
+        var lastSourceMarketAdmissionSequence = 0L
         var resultIssued = 0L
         var fundsSettledThrough = 0L
         var settledEngineSequence = 0L
@@ -60,7 +63,7 @@ class ReservedMatchingState(
 
     fun apply(input: FundsOrderDispatch): MatchingIntakeReply {
         val state = usable()
-        if (input.formatVersion != 1 || input.dispatchSequence <= 0 || !configuration.matches(input.stream)) {
+        if (input.formatVersion != 2 || input.dispatchSequence <= 0 || !configuration.matches(input.stream)) {
             return MatchingIntakeReply(MatchingIntakeStatus.INVALID_STREAM)
         }
         val progress = state.markets.getValue(input.stream.marketId)
@@ -79,7 +82,18 @@ class ReservedMatchingState(
         if (input.dispatchSequence != next) return MatchingIntakeReply(MatchingIntakeStatus.GAP, expectedSequence = next)
         try {
             MatchingInputValidation.requireValid(configuration, input)
-            require(input.admissionSequence > progress.lastSourceAdmissionSequence) { "source admission does not advance" }
+            if (input.isCancellation) {
+                require(input.admissionSequence <= progress.lastSourceAdmissionSequence) { "cancellation precedes its admission" }
+                require(input.marketAdmissionSequence <= progress.lastSourceMarketAdmissionSequence)
+                state.active[input.stream.marketId to input.order.orderId]?.let {
+                    MatchingInputValidation.requireCancellationOrigin(input, it)
+                }
+            } else {
+                require(input.admissionSequence > progress.lastSourceAdmissionSequence) { "source admission does not advance" }
+                require(input.marketAdmissionSequence == Math.addExact(progress.lastSourceMarketAdmissionSequence, 1)) {
+                    "source market admission does not advance"
+                }
+            }
         } catch (_: IllegalArgumentException) {
             return MatchingIntakeReply(MatchingIntakeStatus.INVALID_INPUT)
         } catch (_: ArithmeticException) {
@@ -89,6 +103,7 @@ class ReservedMatchingState(
         if (before == Long.MAX_VALUE || progress.resultIssued == Long.MAX_VALUE) {
             return MatchingIntakeReply(MatchingIntakeStatus.SEQUENCE_EXHAUSTED)
         }
+        if (input.isCancellation) return applyCancellation(state, progress, input, before)
         // 어떤 제출 이벤트도 고정폭만으로 32 byte 이상이다. 이 보수적 하한을 넘는 계획은
         // 전체 결과에도 들어갈 수 없으므로 작은 byte 예산에서 거대한 임시 목록을 만들지 않는다.
         val candidateEvents = minOf(configuration.limits.maxResultEvents.toLong(), configuration.limits.maxSingleResultBytes / 32).toInt()
@@ -159,6 +174,7 @@ class ReservedMatchingState(
             check(progress.outstanding.put(result.resultSequence, result) == null)
             progress.appliedThrough = input.dispatchSequence
             progress.lastSourceAdmissionSequence = input.admissionSequence
+            progress.lastSourceMarketAdmissionSequence = input.marketAdmissionSequence
             progress.resultIssued = result.resultSequence
             progress.resultBytes = newLocalResultBytes
             progress.activeOrders = newLocalActiveCount
@@ -175,6 +191,75 @@ class ReservedMatchingState(
             }
         }
         return MatchingIntakeReply(MatchingIntakeStatus.APPLIED, result, ack())
+    }
+
+    /** 전체 결과의 단일건·누적 예산을 확인한 뒤에만 취소 후보와 prefix를 함께 반영한다. */
+    private fun applyCancellation(
+        state: Data,
+        progress: Progress,
+        input: FundsOrderDispatch,
+        before: Long,
+    ): MatchingIntakeReply {
+        val plan = state.engine.prepareCancel(MatchingInputValidation.cancelCommand(input))
+        val origin = state.active[input.stream.marketId to input.order.orderId]
+        val event = plan.event
+        check(event !is OrderCancelRejected || event.reason == "order not found") { "matching cancellation owner differs" }
+        val effects =
+            if (event is OrderCancelled) {
+                listOf(
+                    MatchingOrderEffect(checkNotNull(origin), event.remainingQuantity, Quantity.ZERO, MatchingOrderDisposition.CANCELLED),
+                )
+            } else {
+                check(origin == null) { "matching cancellation origin remains without an order" }
+                emptyList()
+            }
+        val result =
+            MatchingResultEnvelope(
+                configuration.resultStream(input.stream.marketId),
+                input.dispatchSequence,
+                input,
+                if (event is OrderCancelled) MatchingOutcome.CANCELLED else MatchingOutcome.CANCEL_REJECTED,
+                null,
+                before,
+                plan.lastEngineSequence,
+                plan.events,
+                effects,
+            )
+        MatchingInputValidation.requireResult(configuration, result)
+        val bytes = result.canonicalBytes
+        val local = configuration.limits.marketLimits.getValue(input.stream.marketId)
+        if (state.resultEntries >= configuration.limits.maxResultEntries || progress.outstanding.size >= local.maxResultEntries ||
+            bytes > configuration.limits.maxResultBytes - state.resultBytes || bytes > local.maxResultBytes - progress.resultBytes
+        ) {
+            return MatchingIntakeReply(MatchingIntakeStatus.BUSY)
+        }
+        val releasedBytes = if (effects.isEmpty()) 0L else MatchingResultCharge.active(checkNotNull(origin))
+        val activeBytes = Math.subtractExact(state.activeBytes, releasedBytes)
+        val localActiveBytes = Math.subtractExact(progress.activeBytes, releasedBytes)
+        val resultBytes = Math.addExact(state.resultBytes, bytes)
+        val localResultBytes = Math.addExact(progress.resultBytes, bytes)
+        val resultEntries = Math.addExact(state.resultEntries, 1)
+        mutate {
+            state.engine.apply(plan)
+            if (effects.isNotEmpty()) {
+                check(state.active.remove(input.stream.marketId to input.order.orderId) == origin)
+                progress.activeOrders--
+                state.engine.releaseTerminalOrderIdentity(input.stream.marketId, input.order.orderId)
+            }
+            check(progress.outstanding.put(result.resultSequence, result) == null)
+            progress.appliedThrough = input.dispatchSequence
+            progress.resultIssued = result.resultSequence
+            progress.resultBytes = localResultBytes
+            progress.activeBytes = localActiveBytes
+            state.activeBytes = activeBytes
+            state.resultBytes = resultBytes
+            state.resultEntries = resultEntries
+        }
+        return MatchingIntakeReply(
+            MatchingIntakeStatus.APPLIED,
+            result,
+            FundsMatchingAppliedAck(input.stream, progress.appliedThrough, configuration.context(input.stream.marketId)),
+        )
     }
 
     fun readResults(
@@ -307,6 +392,7 @@ class ReservedMatchingState(
                     progress.resultBytes,
                     progress.activeOrders,
                     progress.activeBytes,
+                    progress.lastSourceMarketAdmissionSequence,
                 )
             },
             state.resultEntries,
@@ -368,7 +454,9 @@ class ReservedMatchingState(
             val local = configuration.limits.marketLimits.getValue(row.stream.marketId)
             require(row.appliedThrough >= 0 && row.resultIssued == row.appliedThrough && row.fundsSettledThrough in 0..row.resultIssued)
             require(
-                row.lastSourceAdmissionSequence >= row.appliedThrough &&
+                row.lastSourceMarketAdmissionSequence in 0..row.appliedThrough &&
+                    row.lastSourceAdmissionSequence >= row.lastSourceMarketAdmissionSequence &&
+                    (row.appliedThrough == 0L) == (row.lastSourceMarketAdmissionSequence == 0L) &&
                     (row.appliedThrough == 0L) == (row.lastSourceAdmissionSequence == 0L),
             )
             require(row.settledEngineSequence >= 0 && row.settledEngineSequence <= restored.engine.lastEngineSequence(row.stream.marketId))
@@ -382,22 +470,37 @@ class ReservedMatchingState(
             var previous = row.fundsSettledThrough
             var engine = row.settledEngineSequence
             var source = 0L
+            var marketSource =
+                Math.subtractExact(
+                    row.lastSourceMarketAdmissionSequence,
+                    row.outstanding.count { !it.input.isCancellation }.toLong(),
+                )
+            require(marketSource in 0..row.fundsSettledThrough) { "matching recovery source market frontier differs" }
             var bytes = 0L
             for (result in row.outstanding) {
                 MatchingInputValidation.requireResult(configuration, result)
                 require(result.input.stream == row.stream && result.resultSequence == Math.addExact(previous, 1))
-                require(result.engineSequenceBefore == engine && result.input.admissionSequence > source)
+                require(result.engineSequenceBefore == engine && result.input.admissionSequence <= row.lastSourceAdmissionSequence)
+                if (!result.input.isCancellation) {
+                    require(result.input.admissionSequence > source)
+                    require(result.input.marketAdmissionSequence == Math.addExact(marketSource, 1))
+                    source = result.input.admissionSequence
+                    marketSource = result.input.marketAdmissionSequence
+                } else {
+                    require(result.input.marketAdmissionSequence <= marketSource)
+                    if (source > 0L) require(result.input.admissionSequence <= source)
+                }
                 previous = result.resultSequence
-                source = result.input.admissionSequence
                 engine = result.engineSequenceAfter
                 bytes = Math.addExact(bytes, result.canonicalBytes)
                 progress.outstanding[result.resultSequence] = result
             }
             require(engine == restored.engine.lastEngineSequence(row.stream.marketId)) { "matching recovery event frontier differs" }
-            require(row.outstanding.isEmpty() || source == row.lastSourceAdmissionSequence)
+            require(source == 0L || source == row.lastSourceAdmissionSequence)
             require(bytes == row.resultBytes && bytes <= local.maxResultBytes)
             progress.appliedThrough = row.appliedThrough
             progress.lastSourceAdmissionSequence = row.lastSourceAdmissionSequence
+            progress.lastSourceMarketAdmissionSequence = row.lastSourceMarketAdmissionSequence
             progress.resultIssued = row.resultIssued
             progress.fundsSettledThrough = row.fundsSettledThrough
             progress.settledEngineSequence = row.settledEngineSequence
@@ -407,8 +510,10 @@ class ReservedMatchingState(
         }
         for (input in saved.active) {
             MatchingInputValidation.requireValid(configuration, input)
+            require(!input.isCancellation) { "active matching origin cannot be a cancellation" }
             val progress = restored.markets.getValue(input.stream.marketId)
             require(input.dispatchSequence <= progress.appliedThrough && input.admissionSequence <= progress.lastSourceAdmissionSequence)
+            require(input.marketAdmissionSequence <= progress.lastSourceMarketAdmissionSequence)
             require(restored.active.put(input.stream.marketId to input.order.orderId, input) == null)
             progress.outstanding[input.dispatchSequence]?.let { require(it.input == input) }
             val charge = MatchingResultCharge.active(input)
@@ -465,6 +570,15 @@ class ReservedMatchingState(
         val remaining = book.associate { it.orderId to it.remainingQuantity }.toMutableMap()
         val origins = active.filterKeys { it.first == row.stream.marketId }.mapKeys { it.key.second }.toMutableMap()
         for (result in row.outstanding.asReversed()) {
+            if (result.input.isCancellation) {
+                require(result.input.order.orderId !in remaining) { "cancelled or rejected target remains active" }
+                if (result.outcome == MatchingOutcome.CANCELLED) {
+                    val effect = result.effects.single()
+                    remaining[effect.orderId] = effect.beforeQuantity
+                    origins[effect.orderId] = effect.origin
+                }
+                continue
+            }
             if (result.outcome == MatchingOutcome.NOT_EXECUTED) {
                 require(result.input.order.orderId !in remaining)
                 continue
@@ -521,6 +635,22 @@ class ReservedMatchingState(
             )
         }
         for (result in row.outstanding) {
+            if (result.input.isCancellation) {
+                val plan = engine.prepareCancel(MatchingInputValidation.cancelCommand(result.input))
+                require(plan.events == result.events) { "matching recovery cancellation differs from its book prefix" }
+                if (result.outcome == MatchingOutcome.CANCELLED) {
+                    val effect = result.effects.single()
+                    require(origins[effect.orderId] == effect.origin) { "matching recovery cancellation origin differs" }
+                    origins.remove(effect.orderId)
+                } else {
+                    require(result.input.order.orderId !in origins)
+                }
+                engine.apply(plan)
+                if (result.outcome == MatchingOutcome.CANCELLED) {
+                    engine.releaseTerminalOrderIdentity(row.stream.marketId, result.input.order.orderId)
+                }
+                continue
+            }
             if (result.outcome == MatchingOutcome.NOT_EXECUTED) {
                 validateRejection(result, engine, origins)
                 continue
@@ -576,7 +706,7 @@ class ReservedMatchingState(
             require(tooLarge) { "result-too-large rejection fits the permanent budget" }
             return
         }
-        require(!tooLarge && candidate != null) { "active-order rejection conceals an oversized result" }
+        require(!tooLarge) { "active-order rejection conceals an oversized result" }
         val removed = candidate.effects.drop(1).filter { it.disposition == MatchingOrderDisposition.TERMINAL }
         val add = candidate.effects.first().disposition == MatchingOrderDisposition.RESTING
         val afterCount = origins.size.toLong() - removed.size + (if (add) 1 else 0)

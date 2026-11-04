@@ -87,8 +87,8 @@ internal class SplitTradingConfiguration(
         funds()
         matching()
         resultLimits.requireCompatible(matchingLimits)
-        // FundsDispatchCharge의 고정245byte와 최대256byte인 문자열12개(길이4byte 포함)의 보수적 상한이다.
-        require(deliveryLimits.maxReadBytes >= 245L + 12L * (4L + 256L)) { "단일 정상 승인 원본을 조회할 공간이 필요합니다" }
+        // 신규 원본의 고정245byte·최대 문자열12개와 취소의 고정80byte·최대 요청자256byte를 포함한다.
+        require(deliveryLimits.maxReadBytes >= 245L + 12L * (4L + 256L) + 80L + 256L) { "단일 정상 승인 원본을 조회할 공간이 필요합니다" }
         require(SplitOrderDeliveryCodec.maximumDispatchFrameBytes() <= SplitOrderDeliveryCodec.MAX_MESSAGE_BYTES)
     }
 
@@ -100,7 +100,7 @@ internal class SplitTradingConfiguration(
                 MatchingRoleSnapshotCodec().configurationBytes(matchingConfiguration),
             )
         return encodeConfiguration { out ->
-            out.writeUTF("split-order-delivery-v1;schema=88;version=1;frame=32768;session-limit=16")
+            out.writeUTF("split-order-delivery-v2;schema=88;version=2;frame=32768;session-limit=16")
             for (part in roleConfigurations) {
                 out.writeInt(part.size)
                 out.write(part)
@@ -118,7 +118,7 @@ internal class SplitTradingConfiguration(
     /** 기존 주문 지문에 결과 프로토콜과 별도 전달 한도를 묶어 결과 모드 지문을 만든다. */
     private fun resultDeliveryConfigurationBytes(): ByteArray =
         encodeConfiguration { out ->
-            out.writeUTF("split-result-delivery-v1;schema=89;version=1;header=12;session-limit=16")
+            out.writeUTF("split-result-delivery-v2;schema=89;version=2;header=12;session-limit=16")
             out.writeUTF(topologySha256)
             out.writeInt(SplitResultDeliveryCodec.MAX_MESSAGE_BYTES)
             writeResultDeliveryLimits(out)

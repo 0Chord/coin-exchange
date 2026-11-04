@@ -1,6 +1,12 @@
 package com.exchange.core.api.trading.infrastructure.codec
 
 import com.exchange.core.api.trading.infrastructure.codec.generated.SplitAppliedAck
+import com.exchange.core.api.trading.infrastructure.codec.generated.SplitCancelCode
+import com.exchange.core.api.trading.infrastructure.codec.generated.SplitCancelInput
+import com.exchange.core.api.trading.infrastructure.codec.generated.SplitCancelReceipt
+import com.exchange.core.api.trading.infrastructure.codec.generated.SplitCancelRecorded
+import com.exchange.core.api.trading.infrastructure.codec.generated.SplitCancelReply
+import com.exchange.core.api.trading.infrastructure.codec.generated.SplitCancellation
 import com.exchange.core.api.trading.infrastructure.codec.generated.SplitDeliveryCommand
 import com.exchange.core.api.trading.infrastructure.codec.generated.SplitDeliveryReply
 import com.exchange.core.api.trading.infrastructure.codec.generated.SplitDirection
@@ -10,6 +16,7 @@ import com.exchange.core.api.trading.infrastructure.codec.generated.SplitFeePoli
 import com.exchange.core.api.trading.infrastructure.codec.generated.SplitLineage
 import com.exchange.core.api.trading.infrastructure.codec.generated.SplitMarketContext
 import com.exchange.core.api.trading.infrastructure.codec.generated.SplitOrderInput
+import com.exchange.core.api.trading.infrastructure.codec.generated.SplitRequestToken
 import com.exchange.core.api.trading.infrastructure.codec.generated.SplitReservation
 import com.exchange.core.api.trading.infrastructure.codec.generated.SplitReservationStatus
 import com.exchange.core.api.trading.infrastructure.codec.generated.SplitRole
@@ -32,11 +39,17 @@ import com.exchange.core.order.OrderReservationStatus
 import com.exchange.core.order.OrderType
 import com.exchange.core.order.Side
 import com.exchange.core.order.TimeInForce
+import com.exchange.core.trading.CancelCode
+import com.exchange.core.trading.CancelIntent
+import com.exchange.core.trading.CancelReceipt
+import com.exchange.core.trading.CancelReply
 import com.exchange.core.trading.ClusterLineage
+import com.exchange.core.trading.FundsCancelDispatch
 import com.exchange.core.trading.FundsDispatchStream
 import com.exchange.core.trading.FundsMatchingAppliedAck
 import com.exchange.core.trading.FundsOrderDispatch
 import com.exchange.core.trading.OrderAdmissionInput
+import com.exchange.core.trading.RequestToken
 import com.exchange.core.trading.TradingLifecycle
 import com.exchange.core.trading.TradingMarketContext
 import com.exchange.core.trading.TradingServiceRole
@@ -65,6 +78,11 @@ internal sealed interface SplitOrderDeliveryCommand {
         val command: BoundedTradingCommand,
     ) : SplitOrderDeliveryCommand
 
+    data class Cancel(
+        val token: RequestToken,
+        val intent: CancelIntent,
+    ) : SplitOrderDeliveryCommand
+
     data class Apply(
         val input: FundsOrderDispatch,
     ) : SplitOrderDeliveryCommand
@@ -90,9 +108,10 @@ internal data class SplitOrderDeliveryReply(
     val expectedSequence: Long? = null,
     val control: BoundedTradingReply? = null,
     val lifecycle: String? = null,
+    val cancel: CancelReply? = null,
 )
 
-/** schema88/version1은 별도 프레임을 사용하며 기존 통합 v2/v3 계약을 바꾸지 않는다. */
+/** schema88/version2은 별도 프레임을 사용하며 기존 통합 v2/v3 계약을 바꾸지 않는다. */
 internal class SplitOrderDeliveryCodec {
     private val bounded = BoundedTradingCodec()
 
@@ -117,6 +136,17 @@ internal class SplitOrderDeliveryCodec {
                 // 저빈도 제어 명령은 기존 타입 검증을 재사용한다.
                 bounded.decode(bytes)
                 builder.control = WireControl.parser().parseFrom(bytes, HEADER_BYTES, bytes.size - HEADER_BYTES).also(::known)
+            }
+
+            is SplitOrderDeliveryCommand.Cancel -> {
+                builder.cancel =
+                    SplitCancelInput
+                        .newBuilder()
+                        .setToken(token(command.token))
+                        .setMarketId(text(command.intent.marketId.value))
+                        .setTargetOrderId(text(command.intent.targetOrderId.value))
+                        .setExpectedConfigurationVersion(command.intent.expectedConfigurationVersion)
+                        .build()
             }
 
             is SplitOrderDeliveryCommand.Apply -> {
@@ -158,6 +188,19 @@ internal class SplitOrderDeliveryCodec {
                         SplitOrderDeliveryCommand.Control(control.command)
                     }
 
+                    SplitDeliveryCommand.BodyCase.CANCEL -> {
+                        val cancel = wire.cancel
+                        complete(cancel)
+                        SplitOrderDeliveryCommand.Cancel(
+                            token(cancel.token),
+                            CancelIntent(
+                                MarketId(text(cancel.marketId)),
+                                OrderId(text(cancel.targetOrderId)),
+                                cancel.expectedConfigurationVersion,
+                            ),
+                        )
+                    }
+
                     SplitDeliveryCommand.BodyCase.APPLY -> {
                         SplitOrderDeliveryCommand.Apply(dispatch(wire.apply))
                     }
@@ -197,6 +240,7 @@ internal class SplitOrderDeliveryCodec {
             builder.control = WireControlReply.parser().parseFrom(bytes, HEADER_BYTES, bytes.size - HEADER_BYTES).also(::known)
         }
         reply.lifecycle?.let { builder.lifecycle = TradingLifecycle.valueOf(it).name }
+        reply.cancel?.let { builder.cancel = cancelReply(it) }
         return frame(REPLY_KIND, builder.build())
     }
 
@@ -209,7 +253,7 @@ internal class SplitOrderDeliveryCodec {
             validate(bytes, offset, length, REPLY_KIND)
             val wire = SplitDeliveryReply.parser().parseFrom(bytes, offset + HEADER_BYTES, length - HEADER_BYTES)
             known(wire)
-            complete(wire, setOf("ack", "expected_sequence", "control", "lifecycle"))
+            complete(wire, setOf("ack", "expected_sequence", "control", "lifecycle", "cancel"))
             require(wire.correlationId >= 0 && wire.appliedLogPosition >= 0)
             val control =
                 if (wire.hasControl()) {
@@ -231,27 +275,38 @@ internal class SplitOrderDeliveryCodec {
                 if (wire.hasExpectedSequence()) wire.expectedSequence.also { require(it > 0) } else null,
                 control,
                 if (wire.hasLifecycle()) TradingLifecycle.valueOf(wire.lifecycle).name else null,
+                if (wire.hasCancel()) cancelReply(wire.cancel) else null,
             )
         }
 
     internal fun dispatch(input: FundsOrderDispatch): SplitDispatch {
         require(input.dispatchSequence > 0 && input.admissionSequence > 0 && input.marketAdmissionSequence > 0)
-        return SplitDispatch
-            .newBuilder()
-            .setFormatVersion(input.formatVersion)
-            .setStream(stream(input.stream))
-            .setDispatchSequence(input.dispatchSequence)
-            .setAdmissionSequence(input.admissionSequence)
-            .setMarketAdmissionSequence(input.marketAdmissionSequence)
-            .setOrder(order(input.order))
-            .setReservation(reservation(input.reservation))
-            .setContext(context(input.context))
-            .build()
+        require(input.formatVersion == 2)
+        val builder =
+            SplitDispatch
+                .newBuilder()
+                .setFormatVersion(input.formatVersion)
+                .setStream(stream(input.stream))
+                .setDispatchSequence(input.dispatchSequence)
+                .setAdmissionSequence(input.admissionSequence)
+                .setMarketAdmissionSequence(input.marketAdmissionSequence)
+                .setOrder(order(input.order))
+                .setReservation(reservation(input.reservation))
+                .setContext(context(input.context))
+        input.cancel?.let {
+            builder.cancellation =
+                SplitCancellation
+                    .newBuilder()
+                    .setCancelId(text(it.cancelId))
+                    .setRequestToken(token(it.requestToken))
+                    .build()
+        }
+        return builder.build()
     }
 
     internal fun dispatch(wire: SplitDispatch): FundsOrderDispatch {
-        complete(wire)
-        require(wire.formatVersion == 1)
+        complete(wire, setOf("cancellation"))
+        require(wire.formatVersion == 2)
         require(wire.dispatchSequence > 0 && wire.admissionSequence > 0 && wire.marketAdmissionSequence > 0)
         return FundsOrderDispatch(
             stream(wire.stream),
@@ -261,6 +316,12 @@ internal class SplitOrderDeliveryCodec {
             order(wire.order),
             reservation(wire.reservation),
             context(wire.context),
+            if (wire.hasCancellation()) {
+                complete(wire.cancellation)
+                FundsCancelDispatch(text(wire.cancellation.cancelId), token(wire.cancellation.requestToken))
+            } else {
+                null
+            },
         )
     }
 
@@ -457,6 +518,89 @@ internal class SplitOrderDeliveryCodec {
             else -> throw IllegalArgumentException("unknown split role")
         }
 
+    private fun token(value: RequestToken): SplitRequestToken =
+        SplitRequestToken
+            .newBuilder()
+            .setUserId(text(value.userId.value))
+            .setChannel(value.channel)
+            .setEpoch(value.epoch)
+            .setSequence(value.sequence)
+            .build()
+
+    private fun token(wire: SplitRequestToken): RequestToken {
+        complete(wire)
+        return RequestToken(UserId(text(wire.userId)), wire.channel, wire.epoch, wire.sequence)
+    }
+
+    private fun cancelReply(value: CancelReply): SplitCancelReply {
+        val builder = SplitCancelReply.newBuilder()
+        when (value) {
+            is CancelReply.Recorded -> {
+                val receipt = value.receipt
+                val saved =
+                    SplitCancelReceipt
+                        .newBuilder()
+                        .setCode(
+                            if (receipt.code ==
+                                CancelCode.ACCEPTED
+                            ) {
+                                SplitCancelCode.SPLIT_CANCEL_ACCEPTED
+                            } else {
+                                SplitCancelCode.SPLIT_CANCEL_REJECTED
+                            },
+                        )
+                receipt.cancelId?.let { saved.cancelId = text(it) }
+                receipt.targetOrderId?.let { saved.targetOrderId = text(it.value) }
+                receipt.inputSequence?.let { saved.inputSequence = it.also { require(it > 0) } }
+                receipt.reason?.let { saved.reason = text(it) }
+                builder.recorded =
+                    SplitCancelRecorded
+                        .newBuilder()
+                        .setReceipt(saved)
+                        .setNewlyRecorded(value.newlyRecorded)
+                        .build()
+            }
+
+            is CancelReply.Refused -> {
+                builder.refusedReason = text(value.reason)
+            }
+        }
+        return builder.build()
+    }
+
+    private fun cancelReply(wire: SplitCancelReply): CancelReply =
+        when (wire.bodyCase) {
+            SplitCancelReply.BodyCase.RECORDED -> {
+                complete(wire.recorded)
+                val receipt = wire.recorded.receipt
+                complete(receipt, setOf("cancel_id", "target_order_id", "input_sequence", "reason"))
+                val code =
+                    when (receipt.code) {
+                        SplitCancelCode.SPLIT_CANCEL_ACCEPTED -> CancelCode.ACCEPTED
+                        SplitCancelCode.SPLIT_CANCEL_REJECTED -> CancelCode.REJECTED
+                        else -> throw IllegalArgumentException("unknown cancel receipt code")
+                    }
+                CancelReply.Recorded(
+                    CancelReceipt(
+                        code,
+                        if (receipt.hasCancelId()) text(receipt.cancelId) else null,
+                        if (receipt.hasTargetOrderId()) OrderId(text(receipt.targetOrderId)) else null,
+                        if (receipt.hasInputSequence()) receipt.inputSequence.also { require(it > 0) } else null,
+                        if (receipt.hasReason()) text(receipt.reason) else null,
+                    ),
+                    wire.recorded.newlyRecorded,
+                )
+            }
+
+            SplitCancelReply.BodyCase.REFUSED_REASON -> {
+                CancelReply.Refused(text(wire.refusedReason))
+            }
+
+            else -> {
+                throw IllegalArgumentException("missing cancel reply body")
+            }
+        }
+
     private fun allowedControl(command: BoundedTradingCommand) {
         require(command !is BoundedTradingCommand.Execution && command !is BoundedTradingCommand.Quarantine) {
             "integrated execution and quarantine cannot enter split wire"
@@ -559,7 +703,7 @@ internal class SplitOrderDeliveryCodec {
         private const val COMMAND_KIND = 1
         private const val REPLY_KIND = 2
         private const val SCHEMA = 88
-        private const val VERSION = 1
+        private const val VERSION = 2
         private const val MAX_MARKETS = 128
         private val SHA256 = Regex("[0-9a-f]{64}")
 
@@ -575,6 +719,7 @@ internal class SplitOrderDeliveryCodec {
                     check(!field.isRepeated)
                     val value: Any =
                         when (field.javaType) {
+                            JavaType.BOOLEAN -> true
                             JavaType.INT -> -1
                             JavaType.LONG -> -1L
                             JavaType.STRING -> "x".repeat(AdmissionMessageFormat.MAX_IDENTIFIER_LENGTH)

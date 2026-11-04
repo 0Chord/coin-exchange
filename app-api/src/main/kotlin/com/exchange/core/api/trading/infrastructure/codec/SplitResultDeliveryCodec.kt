@@ -7,6 +7,8 @@ import com.exchange.core.api.trading.infrastructure.codec.generated.SplitMatchin
 import com.exchange.core.api.trading.infrastructure.codec.generated.SplitMatchingOutcome
 import com.exchange.core.api.trading.infrastructure.codec.generated.SplitMatchingResult
 import com.exchange.core.api.trading.infrastructure.codec.generated.SplitNotExecutedReason
+import com.exchange.core.api.trading.infrastructure.codec.generated.SplitOrderCancelRejected
+import com.exchange.core.api.trading.infrastructure.codec.generated.SplitOrderCancelled
 import com.exchange.core.api.trading.infrastructure.codec.generated.SplitOrderDisposition
 import com.exchange.core.api.trading.infrastructure.codec.generated.SplitOrderEnteredBook
 import com.exchange.core.api.trading.infrastructure.codec.generated.SplitResultCommand
@@ -21,6 +23,8 @@ import com.exchange.core.common.Price
 import com.exchange.core.common.Quantity
 import com.exchange.core.common.UserId
 import com.exchange.core.matching.MatchingEvent
+import com.exchange.core.matching.OrderCancelRejected
+import com.exchange.core.matching.OrderCancelled
 import com.exchange.core.matching.OrderEnteredBook
 import com.exchange.core.matching.TradeExecuted
 import com.exchange.core.order.Side
@@ -222,7 +226,7 @@ internal class SplitResultDeliveryCodec {
 
     private fun result(wire: SplitMatchingResult): MatchingResultEnvelope {
         complete(wire, setOf("reason", "events", "effects"))
-        require(wire.formatVersion == 1 && wire.eventCount == wire.eventsCount)
+        require(wire.formatVersion == 2 && wire.eventCount == wire.eventsCount)
         val result =
             MatchingResultEnvelope(
                 stream(wire.stream),
@@ -314,8 +318,28 @@ internal class SplitResultDeliveryCodec {
                         .build()
             }
 
-            else -> {
-                throw IllegalArgumentException("unsupported result event")
+            is OrderCancelled -> {
+                builder.cancelled =
+                    SplitOrderCancelled
+                        .newBuilder()
+                        .setMarketId(text(value.marketId.value))
+                        .setEngineSequence(value.engineSequence)
+                        .setOrderId(text(value.orderId.value))
+                        .setUserId(text(value.userId.value))
+                        .setRemainingQuantity(value.remainingQuantity.value)
+                        .build()
+            }
+
+            is OrderCancelRejected -> {
+                builder.cancelRejected =
+                    SplitOrderCancelRejected
+                        .newBuilder()
+                        .setMarketId(text(value.marketId.value))
+                        .setEngineSequence(value.engineSequence)
+                        .setOrderId(text(value.orderId.value))
+                        .setUserId(text(value.userId.value))
+                        .setReason(text(value.reason))
+                        .build()
             }
         }
         return builder.build()
@@ -355,6 +379,32 @@ internal class SplitResultDeliveryCodec {
                 }
             }
 
+            SplitMatchingEvent.BodyCase.CANCELLED -> {
+                wire.cancelled.let {
+                    complete(it)
+                    OrderCancelled(
+                        MarketId(text(it.marketId)),
+                        it.engineSequence,
+                        OrderId(text(it.orderId)),
+                        UserId(text(it.userId)),
+                        Quantity(it.remainingQuantity),
+                    )
+                }
+            }
+
+            SplitMatchingEvent.BodyCase.CANCEL_REJECTED -> {
+                wire.cancelRejected.let {
+                    complete(it)
+                    OrderCancelRejected(
+                        MarketId(text(it.marketId)),
+                        it.engineSequence,
+                        OrderId(text(it.orderId)),
+                        UserId(text(it.userId)),
+                        text(it.reason),
+                    )
+                }
+            }
+
             else -> {
                 throw IllegalArgumentException("missing result event body")
             }
@@ -372,6 +422,7 @@ internal class SplitResultDeliveryCodec {
                     MatchingOrderDisposition.RESTING -> SplitOrderDisposition.SPLIT_RESTING
                     MatchingOrderDisposition.TERMINAL -> SplitOrderDisposition.SPLIT_TERMINAL
                     MatchingOrderDisposition.NOT_EXECUTED -> SplitOrderDisposition.SPLIT_ORDER_NOT_EXECUTED
+                    MatchingOrderDisposition.CANCELLED -> SplitOrderDisposition.SPLIT_ORDER_CANCELLED
                 },
             ).build()
 
@@ -385,6 +436,7 @@ internal class SplitResultDeliveryCodec {
                 SplitOrderDisposition.SPLIT_RESTING -> MatchingOrderDisposition.RESTING
                 SplitOrderDisposition.SPLIT_TERMINAL -> MatchingOrderDisposition.TERMINAL
                 SplitOrderDisposition.SPLIT_ORDER_NOT_EXECUTED -> MatchingOrderDisposition.NOT_EXECUTED
+                SplitOrderDisposition.SPLIT_ORDER_CANCELLED -> MatchingOrderDisposition.CANCELLED
                 else -> throw IllegalArgumentException("unknown result disposition")
             },
         )
@@ -392,7 +444,7 @@ internal class SplitResultDeliveryCodec {
 
     private fun requireResult(value: MatchingResultEnvelope) {
         require(value.resultSequence > 0 && value.resultSequence == value.input.dispatchSequence)
-        require(value.eventCount <= MAX_RESULT_EVENTS && value.effects.size in 1..MAX_RESULT_EVENTS + 1)
+        require(value.formatVersion == 2 && value.eventCount <= MAX_RESULT_EVENTS && value.effects.size in 0..MAX_RESULT_EVENTS + 1)
         require(value.engineSequenceBefore >= 0 && value.engineSequenceAfter >= value.engineSequenceBefore)
         requireContext(value.stream, value.input.context)
         val dispatchStream =
@@ -411,7 +463,9 @@ internal class SplitResultDeliveryCodec {
             require(input.order.side == input.reservation.side && input.context.feePolicySnapshot == input.reservation.feePolicySnapshot)
         }
         original(value.input)
-        require(value.effects.first().origin == value.input) { "result taker origin differs" }
+        if (!value.input.isCancellation) {
+            require(value.effects.isNotEmpty() && value.effects.first().origin == value.input) { "result taker origin differs" }
+        }
         require(
             value.effects
                 .map { it.orderId }
@@ -428,25 +482,57 @@ internal class SplitResultDeliveryCodec {
             when (it) {
                 is TradeExecuted -> require(it.quantity.value > 0)
                 is OrderEnteredBook -> require(it.remainingQuantity.value > 0)
-                else -> throw IllegalArgumentException("unsupported result event")
+                is OrderCancelled -> require(it.remainingQuantity.value > 0)
+                is OrderCancelRejected -> require(it.reason == "order not found")
             }
         }
         when (value.outcome) {
             MatchingOutcome.NOT_EXECUTED -> {
+                require(!value.input.isCancellation)
                 require(value.reason != null && value.events.isEmpty() && value.effects.size == 1)
                 require(value.engineSequenceAfter == value.engineSequenceBefore)
                 require(value.effects.first().disposition == MatchingOrderDisposition.NOT_EXECUTED)
             }
 
             MatchingOutcome.MATCHED -> {
+                require(!value.input.isCancellation)
                 require(value.reason == null && value.eventCount > 0)
                 // 외부 원문의 범위 오류가 ArithmeticException으로 서비스 소유자 실패 경계를 넘지 않게 한다.
                 require(value.eventCount.toLong() <= Long.MAX_VALUE - value.engineSequenceBefore) { "result engine frontier overflows" }
                 require(value.engineSequenceAfter == value.engineSequenceBefore + value.eventCount.toLong())
+                require(value.events.all { it is TradeExecuted || it is OrderEnteredBook })
+                require(value.effects.none { it.origin.isCancellation || it.disposition == MatchingOrderDisposition.CANCELLED })
                 require(value.effects.size == value.events.count { it is TradeExecuted } + 1)
                 value.events.forEachIndexed { index, event ->
                     // index+1은 위에서 검증한 eventCount 이하여서 같은 범위 안에 있다.
                     require(event.engineSequence == value.engineSequenceBefore + index.toLong() + 1)
+                }
+            }
+
+            MatchingOutcome.CANCELLED, MatchingOutcome.CANCEL_REJECTED -> {
+                val cancellation = requireNotNull(value.input.cancel) { "missing cancellation input" }
+                require(cancellation.requestToken.userId == value.input.order.userId)
+                require(value.reason == null && value.events.size == 1)
+                require(value.engineSequenceBefore < Long.MAX_VALUE && value.engineSequenceAfter == value.engineSequenceBefore + 1)
+                val event = value.events.single()
+                require(event.engineSequence == value.engineSequenceAfter)
+                if (value.outcome == MatchingOutcome.CANCELLED) {
+                    require(event is OrderCancelled && value.effects.size == 1)
+                    require(event.orderId == value.input.order.orderId && event.userId == cancellation.requestToken.userId)
+                    val effect = value.effects.single()
+                    val origin = effect.origin
+                    require(!origin.isCancellation && origin.dispatchSequence < value.input.dispatchSequence)
+                    require(
+                        origin.admissionSequence == value.input.admissionSequence &&
+                            origin.marketAdmissionSequence == value.input.marketAdmissionSequence,
+                    )
+                    require(origin.order == value.input.order && origin.reservation == value.input.reservation)
+                    require(effect.beforeQuantity == event.remainingQuantity && effect.afterQuantity.value == 0L)
+                    require(effect.disposition == MatchingOrderDisposition.CANCELLED)
+                } else {
+                    require(event is OrderCancelRejected && value.effects.isEmpty())
+                    require(event.orderId == value.input.order.orderId && event.userId == cancellation.requestToken.userId)
+                    require(event.reason == "order not found")
                 }
             }
         }
@@ -603,7 +689,7 @@ internal class SplitResultDeliveryCodec {
         const val MAX_BODY_BYTES = MAX_MESSAGE_BYTES - HEADER_BYTES
         const val MAX_RESULT_EVENTS = 16_384
         private const val SCHEMA = 89
-        private const val VERSION = 1
+        private const val VERSION = 2
         private const val COMMAND_KIND = 1
         private const val REPLY_KIND = 2
         private val SHA256 = Regex("[0-9a-f]{64}")
@@ -639,12 +725,37 @@ internal class SplitResultDeliveryCodec {
                     check(!field.isRepeated)
                     val value: Any =
                         when (field.javaType) {
-                            JavaType.INT -> -1
-                            JavaType.LONG -> -1L
-                            JavaType.STRING -> "x".repeat(AdmissionMessageFormat.MAX_IDENTIFIER_LENGTH)
-                            JavaType.ENUM -> field.enumType.values.maxBy { it.number }
-                            JavaType.MESSAGE -> maximum(builder.newBuilderForField(field).build())
-                            else -> error("unsupported result sizing field ${field.name}")
+                            JavaType.INT -> {
+                                -1
+                            }
+
+                            JavaType.LONG -> {
+                                -1L
+                            }
+
+                            JavaType.STRING -> {
+                                "x".repeat(
+                                    if (field.name ==
+                                        "cancel_id"
+                                    ) {
+                                        40
+                                    } else {
+                                        AdmissionMessageFormat.MAX_IDENTIFIER_LENGTH
+                                    },
+                                )
+                            }
+
+                            JavaType.ENUM -> {
+                                field.enumType.values.maxBy { it.number }
+                            }
+
+                            JavaType.MESSAGE -> {
+                                maximum(builder.newBuilderForField(field).build())
+                            }
+
+                            else -> {
+                                error("unsupported result sizing field ${field.name}")
+                            }
                         }
                     builder.setField(field, value)
                 }
@@ -660,15 +771,21 @@ internal class SplitResultDeliveryCodec {
                     }
                 }
             val dispatch = maximum(SplitDispatch.getDefaultInstance())
-            // FundsDispatchCharge의 고정245 + 길이12×4. wire에는 문자열11개, charge에는 원본ID 한 번이 더 있다.
-            check(strings(dispatch.descriptorForType) == 11)
-            check(dispatch.serializedSize - 11 * 256 - 293 <= 256)
+            // 취소 ID는 고정40byte, 요청자는 최대256byte다. 논리 취소 charge80에는 ID와 고정 slot이 포함된다.
+            // wire의 문자열13개 중12개가 최대256byte이며, 원본 reserve ID는 논리 charge에서 한 번 더 센다.
+            check(strings(dispatch.descriptorForType) == 13)
+            check(dispatch.serializedSize - (12 * 256 + 40) - (293 + 40) <= 256)
             val trade = maximum(SplitTradeExecuted.getDefaultInstance()) as SplitTradeExecuted
             val entered = maximum(SplitOrderEnteredBook.getDefaultInstance()) as SplitOrderEnteredBook
             check(strings(trade.descriptorForType) == 5 && strings(entered.descriptorForType) == 3)
             // 사건의 oneof와 반복 wrapper는 최대 각각4바이트로 함께 센다.
             check(trade.serializedSize - 5 * 256 + 8 - (36 + 5 * 4) <= 32)
             check(entered.serializedSize - 3 * 256 + 8 - (32 + 3 * 4) <= 32)
+            val cancelled = maximum(SplitOrderCancelled.getDefaultInstance())
+            val cancelRejected = maximum(SplitOrderCancelRejected.getDefaultInstance())
+            check(strings(cancelled.descriptorForType) == 3 && strings(cancelRejected.descriptorForType) == 4)
+            check(cancelled.serializedSize - 3 * 256 + 8 - (20 + 3 * 4) <= 32)
+            check(cancelRejected.serializedSize - 4 * 256 + 8 - (12 + 4 * 4) <= 32)
             val effect = maximum(SplitMatchingEffect.getDefaultInstance())
             check(effect.serializedSize - dispatch.serializedSize + 4 - 20 <= 32)
             val rootFields = SplitMatchingResult.getDescriptor().fields

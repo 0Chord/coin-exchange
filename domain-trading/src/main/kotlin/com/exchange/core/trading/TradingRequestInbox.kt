@@ -53,6 +53,7 @@ data class TradingInboxChannelSnapshot(
     val retiredThrough: Long,
     val processedThrough: Long,
     val entries: List<TradingInboxEntrySnapshot>,
+    val cancelEntries: List<TradingCancelInboxEntrySnapshot> = emptyList(),
 )
 
 data class TradingInboxSnapshot(
@@ -74,6 +75,7 @@ class TradingRequestInbox(
         var processedThrough: Long = 0,
     ) {
         val entries = HashMap<Long, TradingInboxEntrySnapshot>()
+        val cancelEntries = HashMap<Long, TradingCancelInboxEntrySnapshot>()
     }
 
     private val channels = LinkedHashMap<ChannelKey, Channel>()
@@ -98,6 +100,7 @@ class TradingRequestInbox(
         if (token.epoch < state.epoch) return rejected(InboxRejection.FENCED_EPOCH)
         if (token.epoch > state.epoch) return rejected(InboxRejection.UNISSUED_EPOCH)
         if (token.sequence <= state.retiredThrough) return rejected(InboxRejection.RETIRED_UNAVAILABLE)
+        if (state.cancelEntries.containsKey(token.sequence)) return rejected(InboxRejection.REQUEST_CONTENT_CONFLICT)
         state.entries[token.sequence]?.let {
             return if (it.intent == intent) InboxLookup.Repeated(it.receipt) else rejected(InboxRejection.REQUEST_CONTENT_CONFLICT)
         }
@@ -134,7 +137,71 @@ class TradingRequestInbox(
         state.entries[token.sequence] = TradingInboxEntrySnapshot(token.sequence, intent, receipt)
         entryCount = Math.addExact(entryCount, 1)
         canonicalBytes = Math.addExact(canonicalBytes, bytes)
-        while (state.processedThrough < Long.MAX_VALUE && state.entries.containsKey(state.processedThrough + 1)) {
+        while (state.processedThrough < Long.MAX_VALUE &&
+            (state.entries.containsKey(state.processedThrough + 1) || state.cancelEntries.containsKey(state.processedThrough + 1))
+        ) {
+            state.processedThrough++
+        }
+    }
+
+    fun lookupCancel(
+        token: RequestToken,
+        intent: CancelIntent,
+    ): CancelInboxLookup {
+        fun rejected(reason: InboxRejection) = CancelInboxLookup.Rejected(reason)
+        if (tradingTextBytes(token.userId.value) > limits.maxIdentifierBytes ||
+            tradingTextBytes(intent.marketId.value) > limits.maxIdentifierBytes ||
+            tradingTextBytes(intent.targetOrderId.value) > limits.maxIdentifierBytes
+        ) {
+            return rejected(InboxRejection.INVALID_IDENTIFIER)
+        }
+        val state = channels[ChannelKey(token.userId, token.channel)] ?: return rejected(InboxRejection.UNKNOWN_CHANNEL)
+        if (token.epoch < state.epoch) return rejected(InboxRejection.FENCED_EPOCH)
+        if (token.epoch > state.epoch) return rejected(InboxRejection.UNISSUED_EPOCH)
+        if (token.sequence <= state.retiredThrough) return rejected(InboxRejection.RETIRED_UNAVAILABLE)
+        if (state.entries.containsKey(token.sequence)) return rejected(InboxRejection.REQUEST_CONTENT_CONFLICT)
+        state.cancelEntries[token.sequence]?.let {
+            return if (it.intent == intent) {
+                CancelInboxLookup.Repeated(it.receipt)
+            } else {
+                rejected(InboxRejection.REQUEST_CONTENT_CONFLICT)
+            }
+        }
+        if (token.sequence - state.retiredThrough > limits.requestWindow) return rejected(InboxRejection.RETRYABLE_CAPACITY)
+        if (entryCount >= limits.maxInboxEntries ||
+            canonicalCancelEntryBytes(token.userId, intent) > limits.maxInboxBytes - canonicalBytes
+        ) {
+            return rejected(InboxRejection.RETRYABLE_CAPACITY)
+        }
+        return CancelInboxLookup.Ready
+    }
+
+    fun rememberCancel(
+        token: RequestToken,
+        intent: CancelIntent,
+        receipt: CancelReceipt,
+    ) {
+        when (val previous = lookupCancel(token, intent)) {
+            is CancelInboxLookup.Repeated -> {
+                check(previous.receipt == receipt) { "first cancel receipt cannot change" }
+                return
+            }
+
+            CancelInboxLookup.Ready -> {
+                Unit
+            }
+
+            is CancelInboxLookup.Rejected -> {
+                error("cannot remember cancellation: ${previous.reason}")
+            }
+        }
+        val state = channels.getValue(ChannelKey(token.userId, token.channel))
+        state.cancelEntries[token.sequence] = TradingCancelInboxEntrySnapshot(token.sequence, intent, receipt)
+        entryCount = Math.addExact(entryCount, 1)
+        canonicalBytes = Math.addExact(canonicalBytes, canonicalCancelEntryBytes(token.userId, intent))
+        while (state.processedThrough < Long.MAX_VALUE &&
+            (state.entries.containsKey(state.processedThrough + 1) || state.cancelEntries.containsKey(state.processedThrough + 1))
+        ) {
             state.processedThrough++
         }
     }
@@ -155,9 +222,14 @@ class TradingRequestInbox(
         if (through <= state.retiredThrough) return reply(AckStatus.ACKNOWLEDGED)
         var sequence = state.retiredThrough + 1
         while (sequence <= through) {
-            val removed = checkNotNull(state.entries.remove(sequence)) { "acknowledgement crossed an inbox hole" }
+            val removed = state.entries.remove(sequence)
+            if (removed != null) {
+                canonicalBytes -= canonicalEntryBytes(userId, removed.intent)
+            } else {
+                val cancel = checkNotNull(state.cancelEntries.remove(sequence)) { "acknowledgement crossed an inbox hole" }
+                canonicalBytes -= canonicalCancelEntryBytes(userId, cancel.intent)
+            }
             entryCount--
-            canonicalBytes -= canonicalEntryBytes(userId, removed.intent)
             if (sequence == Long.MAX_VALUE) break
             sequence++
         }
@@ -199,8 +271,10 @@ class TradingRequestInbox(
         if (expectedEpoch > state.epoch) return EpochReceipt(EpochStatus.UNISSUED_EPOCH, state.epoch)
         if (state.epoch == Long.MAX_VALUE) return EpochReceipt(EpochStatus.EXHAUSTED, state.epoch)
         for (entry in state.entries.values) canonicalBytes -= canonicalEntryBytes(userId, entry.intent)
-        entryCount -= state.entries.size
+        for (entry in state.cancelEntries.values) canonicalBytes -= canonicalCancelEntryBytes(userId, entry.intent)
+        entryCount -= state.entries.size + state.cancelEntries.size
         state.entries.clear()
+        state.cancelEntries.clear()
         state.epoch++
         state.retiredThrough = 0
         state.processedThrough = 0
@@ -220,6 +294,7 @@ class TradingRequestInbox(
                             state.retiredThrough,
                             state.processedThrough,
                             immutable(state.entries.values.sortedBy { it.sequence }),
+                            immutable(state.cancelEntries.values.sortedBy { it.sequence }),
                         )
                     },
             ),
@@ -249,6 +324,14 @@ class TradingRequestInbox(
                 candidate.remember(token, entry.intent, entry.receipt)
                 previous = entry.sequence
             }
+            previous = saved.retiredThrough
+            for (entry in saved.cancelEntries) {
+                require(entry.sequence > previous) { "unordered or duplicate cancel inbox entry" }
+                val token = RequestToken(saved.userId, saved.channel, saved.epoch, entry.sequence)
+                require(candidate.lookupCancel(token, entry.intent) == CancelInboxLookup.Ready) { "cancel inbox exceeds resource limits" }
+                candidate.rememberCancel(token, entry.intent, entry.receipt)
+                previous = entry.sequence
+            }
             require(state.processedThrough == saved.processedThrough) { "inbox processed prefix crosses a hole" }
         }
         channels.putAll(candidate.channels)
@@ -268,6 +351,12 @@ class TradingRequestInbox(
          * 금융 상태를 쓰기 전에 고정 슬롯으로 두 종류 중 어느 최초 결과라도 담을 공간을 예약한다.
          * JVM 객체 크기를 나타내는 값은 아니며, 요청마다 인코딩용 메모리를 할당할 필요도 없다.
          */
+        fun canonicalCancelEntryBytes(
+            userId: UserId,
+            intent: CancelIntent,
+        ): Long =
+            464L + tradingTextBytes(userId.value) + tradingTextBytes(intent.marketId.value) + tradingTextBytes(intent.targetOrderId.value)
+
         fun canonicalEntryBytes(
             userId: UserId,
             intent: OrderIntent,

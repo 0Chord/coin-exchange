@@ -83,6 +83,12 @@ class AdmissionIdentifiers internal constructor(
 
 /** 고정 길이 숫자를 그대로 encode한다. 시장 문자열 hash나 로컬 시각에 의존하지 않는다. */
 object TradingIdentifiers {
+    fun cancel(
+        lineage: ClusterLineage,
+        marketOrdinal: Int,
+        inputSequence: Long,
+    ): String = "C2" + settlement(lineage, marketOrdinal, inputSequence).substring(2)
+
     fun order(
         lineage: ClusterLineage,
         sequence: Long,

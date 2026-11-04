@@ -108,6 +108,8 @@ class FundsResultValidationRegressionTest {
                 saved.dispatch,
                 saved.assetTotals,
                 FundsResultRecoveryState(retained.limits, retained.streams, listOf(receipt.copy(result = altered)), retained.receiptBytes),
+                saved.approvalInputs,
+                saved.cancellations,
             )
 
         assertFailsWith<IllegalArgumentException> { f.owner(false).restoreFundsRecoveryState(damaged, f.calculator) }

@@ -5,6 +5,8 @@ import com.exchange.core.api.trading.infrastructure.codec.SplitResultDeliveryCom
 import com.exchange.core.common.Quantity
 import com.exchange.core.common.UserId
 import com.exchange.core.fee.TradingFeeReserveCalculator
+import com.exchange.core.matching.OrderCancelRejected
+import com.exchange.core.matching.OrderCancelled
 import com.exchange.core.matching.TradeExecuted
 import com.exchange.core.order.BuyOrderFundingQuoteCalculator
 import com.exchange.core.order.OrderReservation
@@ -24,6 +26,247 @@ import kotlin.test.assertTrue
 
 /** 매 사례는 새 기록·동결 이미지·독립 자금3+매칭3 JVM으로 실제 금융 기대값을 검사한다. */
 class DockerMatchingResultDeliveryTest {
+    @Test
+    fun `C01 C23 C24 부분 체결 뒤 취소 잔여만 반환하고 결과와 ACK의 스냅샷과 로그를 복원한다`() =
+        verify("cancel-partial") { v ->
+            v.tool("admit", "buyer", "1", "100", "3")
+            v.cancellationExpect(
+                "C01 buyer reserves300 before any fill",
+                CancellationExpected(1, 1, 1, 1, 700, 300, 0, 0, 1, 0, 1, 3, 1, 3, 1, 0),
+            )
+            v.tool("admit", "seller", "1", "100", "1")
+            val partial = CancellationExpected(2, 2, 2, 2, 700, 200, 1, 100, 0, 0, 1, 2, 1, 2, 2, 1)
+            v.cancellationExpect("C01 one fill spends100 and keeps200 reserved", partial)
+
+            v.hold("results")
+            v.cancellationSnapshots("C23 snapshot before the first matching cancellation", partial)
+            v.tool("cancel", "buyer", "2", "1")
+            val confirmed = partial.copy(issued = 3, applied = 3, engine = 3, bookOrders = 0, bookQuantity = 0, pendingCancels = 1)
+            v.cancellationExpect("C01 matching cancels2 while all funds copies still reserve200", confirmed)
+            v.assertCancellationResult(3, 2)
+            v.assertCancellationTail("matching")
+            v.hold("orders")
+            v.restartResults("C23 cancelled book and retained complete result survive snapshot plus tail", true, confirmed::matches)
+            v.release("orders")
+            v.tool("replay-order", "3")
+            v.cancellationExpect("C23 duplicate input after recovery preserves the first cancellation", confirmed)
+
+            v.hold("result-records")
+            v.cancellationSnapshots("C24 snapshot before the first funds cancellation return", confirmed)
+            v.release("results")
+            val released = confirmed.copy(fundsThrough = 3, buyerQ = 900, buyerHold = 0, live = 0, remaining = 0, pendingCancels = 0)
+            v.cancellationExpect("C01 funds releases exactly200 after the earlier trade", released)
+            v.assertCancellationTail("funds")
+            v.hold("results")
+            v.restartResults("C24 returned funds survive snapshot tail before ACK", true, released::matches)
+            v.release("results")
+            v.tool("replay-result", "3")
+            v.cancellationExpect("C24 duplicate cancellation result returns no second200", released)
+
+            v.cancellationSnapshots("C24 snapshot before matching commits cancellation ACK3", released)
+            v.release("result-records")
+            val completed = released.copy(matchingSettled = 3)
+            v.cancellationExpect("C24 matching logs ACK3 and reclaims cancellation result", completed)
+            v.assertCancellationTail("matching")
+            v.hold("result-records")
+            v.restartResults("C24 reclaimed result remains reclaimed after snapshot tail", true, completed::matches)
+            v.release("result-records")
+            v.tool("replay-ack")
+            v.tool("replay-result", "3")
+            v.tool("replay-order", "3")
+            v.cancellationExpect("C24 reclaimed originals preserve all six completed copies", completed)
+            v.tool("admit", "buyer", "3", "120", "1", "SELL")
+            v.cancellationExpect(
+                "C26 subsequent normal order completes after cancellation recovery",
+                completed.copy(
+                    issued = 4,
+                    applied = 4,
+                    fundsThrough = 4,
+                    matchingSettled = 4,
+                    admissions = 3,
+                    buyerX = 0,
+                    buyerXHold = 1,
+                    live = 1,
+                    remaining = 1,
+                    bookOrders = 1,
+                    bookQuantity = 1,
+                    engine = 4,
+                ),
+            )
+        }
+
+    @Test
+    fun `C02 C23 원래 주문 전달 전 접수한 취소는 스냅샷 복원 뒤 예약을 한 번 반환한다`() =
+        verify("cancel-before-delivery") { v ->
+            v.hold("orders")
+            val pending =
+                CancellationExpected(
+                    2,
+                    0,
+                    0,
+                    0,
+                    700,
+                    300,
+                    0,
+                    0,
+                    1,
+                    0,
+                    1,
+                    3,
+                    0,
+                    0,
+                    0,
+                    0,
+                    admissions = 1,
+                    pendingOrders = 1,
+                    dispatchEntries = 2,
+                    pendingCancels = 1,
+                )
+            v.duringMatchingOutage {
+                v.tool("admit", "buyer", "1", "100", "3")
+                v.tool("cancel", "buyer", "2", "1")
+                v.cancellationExpect("C02 all three funds copies accept cancellation while matching3 is stopped", pending)
+            }
+            v.cancellationExpect("C02 original then cancellation issued before matching receives either", pending)
+            val first = v.mapper.readTree(Files.readString(v.control.resolve("cancel-buyer-2.json")))
+            check(first.path("inputSequence").asLong() == 2L && first.path("cancelId").asString().isNotBlank())
+            v.cancellationSnapshots("C23 funds cancellation obligation before delivery", pending)
+            v.tool("cancel", "buyer", "2", "1")
+            check(v.mapper.readTree(Files.readString(v.control.resolve("cancel-buyer-2.json"))) == first) {
+                "동일 취소 요청의 최초 identity와 입력 순번이 바뀌었습니다"
+            }
+            v.assertCancellationTail("funds")
+            v.restartResults("C23 pending original and cancellation survive snapshot tail", true, pending::matches)
+            v.release("orders")
+            val completed = CancellationExpected(2, 2, 2, 2, 1000, 0, 0, 0, 1, 0, 0, 0, 0, 0, 2, 0, admissions = 1)
+            v.cancellationExpect("C02 original input1 then cancel input2 return the untouched300 once", completed)
+            v.assertCancellationResult(2, 3)
+            v.tool("replay-order", "2")
+            v.tool("replay-result", "2")
+            v.tool("cancel", "buyer", "2", "1")
+            v.cancellationExpect("C02 original request and wire duplicates keep one cancellation", completed)
+            v.tool("admit", "buyer", "3", "100", "1")
+            v.cancellationExpect(
+                "C26 new order after cancel advances input3 but only approval2",
+                completed.copy(
+                    issued = 3,
+                    applied = 3,
+                    fundsThrough = 3,
+                    matchingSettled = 3,
+                    admissions = 2,
+                    buyerQ = 900,
+                    buyerHold = 100,
+                    live = 1,
+                    remaining = 1,
+                    bookOrders = 1,
+                    bookQuantity = 1,
+                    engine = 3,
+                ),
+            )
+        }
+
+    @Test
+    fun `C07 전량 체결 뒤 취소 거절은 선행 정산을 마치고 돈을 반환하지 않는다`() =
+        verify("cancel-filled") { v ->
+            v.hold("results")
+            v.tool("admit", "buyer", "1", "100", "1")
+            v.tool("admit", "seller", "1", "100", "1")
+            v.awaitStates("C07 matching fills the order while funds still owns both reservations", 45_000) { states ->
+                states.all { (name, state) ->
+                    if (name.startsWith("funds")) {
+                        val funds = state.path("funds")
+                        funds.path("buyerQ").asLong() == 900L && funds.path("buyerQHold").asLong() == 100L &&
+                            funds.path("sellerXHold").asLong() == 1L && funds.path("resultThrough").asLong() == 0L
+                    } else {
+                        val matching = state.path("matching")
+                        matching.path("appliedThrough").asLong() == 2L && matching.path("bookOrders").asLong() == 0L
+                    }
+                }
+            }
+            v.tool("cancel", "buyer", "2", "1")
+            v.awaitStates("C07 cancellation rejection waits behind the complete trade results", 45_000) { states ->
+                states.all { (name, state) ->
+                    if (name.startsWith("funds")) {
+                        state.path("funds").path("resultThrough").asLong() == 0L &&
+                            state.path("funds").path("pendingCancels").asLong() == 1L
+                    } else {
+                        state.path("matching").path("appliedThrough").asLong() == 3L &&
+                            state.path("matching").path("engineSequence").asLong() == 3L
+                    }
+                }
+            }
+            v.release("results")
+            val completed = CancellationExpected(3, 3, 3, 3, 900, 0, 1, 100, 0, 0, 0, 0, 0, 0, 3, 1, admissions = 2)
+            v.cancellationExpect("C07 full fill spends100 and rejected cancellation returns0", completed)
+            v.assertCancellationResult(3, null)
+            v.tool("replay-result", "3")
+            v.cancellationExpect("C07 repeated rejected cancellation cannot refund the trade", completed)
+            v.tool("admit", "buyer", "3", "120", "1", "SELL")
+            v.cancellationExpect(
+                "C07 following order proves the rejected cancellation advanced the prefix",
+                completed.copy(
+                    issued = 4,
+                    applied = 4,
+                    fundsThrough = 4,
+                    matchingSettled = 4,
+                    admissions = 3,
+                    buyerX = 0,
+                    buyerXHold = 1,
+                    live = 1,
+                    remaining = 1,
+                    bookOrders = 1,
+                    bookQuantity = 1,
+                    engine = 4,
+                ),
+            )
+        }
+
+    @Test
+    fun `C07 신규 최종 거절 뒤 취소 거절은 추가 반환 없이 다음 입력으로 진행한다`() =
+        verify("cancel-active") { v ->
+            v.tool("admit", "seller", "1", "400", "1")
+            v.expect("C07 original resting seller occupies matching active cap", ResultExpected(1, 1, 1000, 0, 0, 0, 1, 1, 1, 1, 1, 0))
+            v.hold("results")
+            v.tool("admit", "buyer", "1", "300", "1")
+            v.awaitStates("C07 matching final rejection exists while buyer reservation remains", 45_000) { states ->
+                states.all { (name, state) ->
+                    if (name.startsWith("funds")) {
+                        state.path("funds").path("buyerQHold").asLong() == 300L && state.path("funds").path("resultThrough").asLong() == 1L
+                    } else {
+                        state.path("matching").path("resultIssued").asLong() == 2L
+                    }
+                }
+            }
+            v.tool("cancel", "buyer", "2", "1")
+            v.release("results")
+            val completed = CancellationExpected(3, 3, 3, 3, 1000, 0, 0, 0, 1, 1, 1, 1, 1, 1, 2, 0, admissions = 2)
+            v.cancellationExpect("C07 original final rejection returns300 and cancellation returns0", completed)
+            v.assertCancellationResult(3, null)
+            v.tool("replay-result", "3")
+            v.cancellationExpect("C07 rejected-original cancellation duplicate keeps quote1000", completed)
+            v.tool("admit", "buyer", "3", "400", "1")
+            v.cancellationExpect(
+                "C07 subsequent crossing order completes after no-live cancellation",
+                completed.copy(
+                    issued = 4,
+                    applied = 4,
+                    fundsThrough = 4,
+                    matchingSettled = 4,
+                    admissions = 3,
+                    buyerQ = 600,
+                    buyerX = 1,
+                    sellerQ = 400,
+                    sellerHold = 0,
+                    live = 0,
+                    remaining = 0,
+                    bookOrders = 0,
+                    bookQuantity = 0,
+                    engine = 3,
+                    trades = 1,
+                ),
+            )
+        }
+
     @Test
     fun `settlement replies and committed ACKs survive loss full log and snapshot tail recovery`() =
         verify("baseline") { v ->
@@ -417,6 +660,136 @@ private data class ResultExpected(
                         (issued != settled || matching.path("resultBytes").asLong() == 0L)
                 }
             }
+}
+
+/** 취소 input 수와 신규 승인 수를 따로 기대하고, 잔고·예약·주문장을 역할별 세 사본에서 대조한다. */
+private data class CancellationExpected(
+    val issued: Long,
+    val applied: Long,
+    val fundsThrough: Long,
+    val matchingSettled: Long,
+    val buyerQ: Long,
+    val buyerHold: Long,
+    val buyerX: Long,
+    val sellerQ: Long,
+    val sellerX: Long,
+    val sellerHold: Long,
+    val live: Long,
+    val remaining: Long,
+    val bookOrders: Long,
+    val bookQuantity: Long,
+    val engine: Long,
+    val trades: Long,
+    val feeQ: Long = 0,
+    val buyerXHold: Long = 0,
+    val admissions: Long = issued,
+    val pendingOrders: Long = 0,
+    val dispatchEntries: Long = 0,
+    val pendingCancels: Long = 0,
+) {
+    fun matches(states: Map<String, JsonNode>): Boolean =
+        states.size == 6 &&
+            states.all { (name, state) ->
+                if (!state.path("initialized").asBoolean()) {
+                    false
+                } else {
+                    val fundsRole = name.startsWith("funds")
+                    val role = state.path(if (fundsRole) "funds" else "matching")
+                    val expected =
+                        if (fundsRole) {
+                            mapOf(
+                                "buyerQ" to buyerQ,
+                                "buyerQHold" to buyerHold,
+                                "buyerX" to buyerX,
+                                "buyerXHold" to buyerXHold,
+                                "sellerQ" to sellerQ,
+                                "sellerX" to sellerX,
+                                "sellerXHold" to sellerHold,
+                                "feeQ" to feeQ,
+                                "liveOrders" to live,
+                                "activeOrders" to live,
+                                "remainingQuantity" to remaining,
+                                "pendingOrders" to pendingOrders,
+                                "dispatchEntries" to dispatchEntries,
+                                "pendingCancels" to pendingCancels,
+                                "issued" to issued,
+                                "admissionIssued" to admissions,
+                                "matchingAppliedThrough" to applied,
+                                "resultThrough" to fundsThrough,
+                                "executedThrough" to (admissions - pendingOrders),
+                                "settlementTrades" to trades,
+                            )
+                        } else {
+                            mapOf(
+                                "bookOrders" to bookOrders,
+                                "bookQuantity" to bookQuantity,
+                                "activeOrders" to bookOrders,
+                                "engineSequence" to engine,
+                                "appliedThrough" to applied,
+                                "resultIssued" to applied,
+                                "resultEntries" to (applied - matchingSettled),
+                                "fundsSettledThrough" to matchingSettled,
+                            )
+                        }
+                    expected.all { (field, value) ->
+                        role.has(field) && role.path(field).isIntegralNumber && role.path(field).asLong() == value
+                    } &&
+                        (!fundsRole || dispatchEntries != 0L || role.path("dispatchBytes").asLong() == 0L) &&
+                        (fundsRole || applied != matchingSettled || role.path("resultBytes").asLong() == 0L)
+                }
+            }
+}
+
+private fun DockerFundsOrderDeliveryVerification.cancellationExpect(
+    label: String,
+    expected: CancellationExpected,
+): Map<String, JsonNode> = awaitStates(label, 45_000, expected::matches)
+
+private fun DockerFundsOrderDeliveryVerification.assertCancellationResult(
+    sequence: Long,
+    cancelledQuantity: Long?,
+) {
+    val result =
+        (
+            SplitResultDeliveryCodec()
+                .decode(
+                    Files.readAllBytes(control.resolve("result-$sequence.bin")),
+                ).command as SplitResultDeliveryCommand.Apply
+        ).result
+    check(result.resultSequence == sequence && result.input.isCancellation)
+    if (cancelledQuantity == null) {
+        check(
+            result.outcome == MatchingOutcome.CANCEL_REJECTED && result.events.single() is OrderCancelRejected && result.effects.isEmpty(),
+        )
+    } else {
+        check(result.outcome == MatchingOutcome.CANCELLED)
+        check((result.events.single() as OrderCancelled).remainingQuantity.value == cancelledQuantity)
+        check(result.effects.single().disposition == MatchingOrderDisposition.CANCELLED)
+    }
+}
+
+private fun DockerFundsOrderDeliveryVerification.cancellationSnapshots(
+    label: String,
+    expected: CancellationExpected,
+) {
+    val before = readStates()
+    tool("snapshot", "funds")
+    tool("snapshot", "matching")
+    awaitStates(label, 45_000) { states ->
+        expected.matches(states) &&
+            states.all { (name, state) ->
+                number(state, "snapshotCount") > number(before.getValue(name), "snapshotCount") &&
+                    number(state, "lastSnapshotPosition") > 0
+            }
+    }
+}
+
+private fun DockerFundsOrderDeliveryVerification.assertCancellationTail(role: String) {
+    awaitStates("$role cancellation operation is committed after its snapshot", 30_000) { states ->
+        states.filterKeys { it.startsWith(role) }.values.all {
+            number(it, "logPosition") > number(it, "lastSnapshotPosition")
+        }
+    }
 }
 
 private fun DockerFundsOrderDeliveryVerification.hold(name: String) {

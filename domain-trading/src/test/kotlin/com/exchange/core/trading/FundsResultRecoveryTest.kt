@@ -342,7 +342,13 @@ class FundsResultRecoveryTest {
                 delivery.activeBytes,
             )
         val results = saved.results!!
-        val frontier = results.streams.first().copy(resultThrough = Long.MAX_VALUE - 1, retiredThrough = Long.MAX_VALUE - 1)
+        val frontier =
+            results.streams.first().copy(
+                resultThrough = Long.MAX_VALUE - 1,
+                retiredThrough = Long.MAX_VALUE - 1,
+                settledMarketAdmissionSequence = Long.MAX_VALUE - 1,
+                retiredMarketAdmissionSequence = Long.MAX_VALUE - 1,
+            )
         val advanced =
             replace(
                 saved,
@@ -362,6 +368,7 @@ class FundsResultRecoveryTest {
                     ),
                 dispatch = dispatch,
                 results = replace(results, streams = listOf(frontier) + results.streams.drop(1)),
+                approvalInputs = listOf(lastInput),
             )
         val restored = f.owner(false).also { it.restoreFundsRecoveryState(advanced, f.calculator) }
         val result =
@@ -468,7 +475,8 @@ class FundsResultRecoveryTest {
         dispatch: FundsDispatchSnapshot = source.dispatch,
         totals: Map<com.exchange.core.common.AssetId, Long> = source.assetTotals,
         results: FundsResultRecoveryState? = source.results,
-    ) = FundsRoleRecoveryState(source.configuration, financial, dispatch, totals, results)
+        approvalInputs: List<FundsOrderDispatch> = source.approvalInputs,
+    ) = FundsRoleRecoveryState(source.configuration, financial, dispatch, totals, results, approvalInputs, source.cancellations)
 
     private fun financial(
         source: BoundedFundingRecoveryState,

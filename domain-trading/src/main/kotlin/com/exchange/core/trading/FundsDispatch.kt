@@ -179,7 +179,9 @@ class FundsDispatchConfiguration(
             bound = Math.addExact(bound, Math.multiplyExact(base.maxInboxBytes, 2L))
             bound = Math.addExact(bound, Math.multiplyExact(base.maxPreparationBytes, 4L))
             // 두 보존 예산 모두 주문·예약·정책의 전체 문자열을 포함한다.
-            // 네 배의 여유로 enum 문자열·예약 blob·목록 구분 비용을 포함한다.
+            // 활성 예산의 네 배는 금융 live와 최초 승인 원본을 함께 담는다.
+            // 전달 예산의 네 배는 outstanding과 ACK 뒤에도 남는 취소 의무를 각각 두 배 이내로 담는다.
+            // 길이 prefix·enum 문자열·예약 blob·목록 구분 비용은 이 여유에 포함한다.
             bound = Math.addExact(bound, Math.multiplyExact(dispatch.maxActiveBytes, 4L))
             bound = Math.addExact(bound, Math.multiplyExact(dispatch.maxDispatchBytes, 4L))
             bound = Math.addExact(bound, product(base.maxBalanceKeys, 4L * base.maxIdentifierBytes + 128))
@@ -200,10 +202,14 @@ data class FundsOrderDispatch(
     val order: OrderAdmissionInput,
     val reservation: OrderReservation,
     val context: TradingMarketContext,
+    val cancel: FundsCancelDispatch? = null,
 ) {
-    val formatVersion: Int get() = 1
+    val formatVersion: Int get() = 2
+    val isCancellation: Boolean get() = cancel != null
     val reservationId: String get() = TradingIdentifiers.reserve(stream.fundsLineage, admissionSequence)
-    val dispatchCanonicalBytes: Long get() = FundsDispatchCharge.dispatch(order, context)
+    val dispatchCanonicalBytes: Long get() =
+        FundsDispatchCharge.dispatch(order, context) +
+            (cancel?.let { 80L + tradingTextBytes(it.requestToken.userId.value) } ?: 0L)
     val activeCanonicalBytes: Long get() = FundsDispatchCharge.active(order, context)
 }
 
@@ -346,7 +352,6 @@ internal class FundsDispatchData(
         require(canAdmit(live.order)) { "dispatch capacity exceeded" }
         val progress = markets.getValue(live.order.marketId)
         val next = Math.addExact(progress.issued, 1L)
-        require(live.marketAdmissionSequence == next) { "dispatch and market admission sequence differ" }
         return FundsOrderDispatch(
             configuration.stream(live.order.marketId),
             next,
@@ -362,7 +367,7 @@ internal class FundsDispatchData(
         val progress = markets.getValue(prepared.order.marketId)
         check(configuration.matches(prepared.stream) && prepared.context == configuration.context(prepared.order.marketId))
         check(prepared.dispatchSequence == Math.addExact(progress.issued, 1L))
-        check(prepared.marketAdmissionSequence == prepared.dispatchSequence)
+        check(!prepared.isCancellation)
         check(canAdmit(prepared.order)) { "prepared dispatch capacity changed" }
         check(progress.outstanding.put(prepared.dispatchSequence, prepared) == null)
         progress.issued = prepared.dispatchSequence
@@ -373,6 +378,28 @@ internal class FundsDispatchData(
         dispatchBytes = Math.addExact(dispatchBytes, prepared.dispatchCanonicalBytes)
         activeBytes = Math.addExact(activeBytes, prepared.activeCanonicalBytes)
         activeOrders = Math.addExact(activeOrders, 1)
+    }
+
+    fun nextSequence(market: MarketId): Long = Math.addExact(markets.getValue(market).issued, 1L)
+
+    fun canCancel(input: FundsOrderDispatch): Boolean {
+        require(input.isCancellation)
+        val progress = markets.getValue(input.stream.marketId)
+        val local = configuration.limits.marketLimits.getValue(input.stream.marketId)
+        return dispatchEntries < configuration.limits.maxDispatchEntries && progress.outstanding.size < local.maxDispatchEntries &&
+            input.dispatchCanonicalBytes <= configuration.limits.maxDispatchBytes - dispatchBytes &&
+            input.dispatchCanonicalBytes <= local.maxDispatchBytes - progress.dispatchBytes
+    }
+
+    fun recordCancellation(input: FundsOrderDispatch) {
+        val progress = markets.getValue(input.stream.marketId)
+        check(configuration.matches(input.stream) && input.context == configuration.context(input.stream.marketId))
+        check(input.dispatchSequence == nextSequence(input.stream.marketId) && canCancel(input))
+        check(progress.outstanding.put(input.dispatchSequence, input) == null)
+        progress.issued = input.dispatchSequence
+        progress.dispatchBytes = Math.addExact(progress.dispatchBytes, input.dispatchCanonicalBytes)
+        dispatchEntries = Math.addExact(dispatchEntries, 1)
+        dispatchBytes = Math.addExact(dispatchBytes, input.dispatchCanonicalBytes)
     }
 
     fun read(
@@ -508,10 +535,14 @@ internal class FundsDispatchData(
         saved: FundsDispatchSnapshot,
         liveOrders: List<TradingLiveOrderSnapshot>,
         financialMarkets: List<TradingMarketProgressSnapshot>,
+        approvalInputs: List<FundsOrderDispatch> = emptyList(),
+        cancellations: List<FundsCancellationSnapshot> = emptyList(),
     ) {
         check(dispatchEntries == 0 && activeOrders == 0 && markets.values.all { it.issued == 0L })
         val candidate = FundsDispatchData(configuration)
         val liveByAdmission = liveOrders.associateBy { it.admissionSequence }
+        val originals = approvalInputs.associateBy { it.admissionSequence }
+        val cancelBySequence = cancellations.associateBy { it.input.stream.marketId to it.input.dispatchSequence }
         require(liveByAdmission.size == liveOrders.size) { "duplicate financial admission" }
         for (live in liveOrders) {
             if (live.phase == LiveOrderPhase.PENDING) candidate.requireInitial(live)
@@ -531,8 +562,8 @@ internal class FundsDispatchData(
             require(configuration.matches(stream.stream)) { "restored stream differs from fixed assignment" }
             val financial = finances.getValue(stream.stream.marketId)
             require(stream.issued >= 0 && stream.matchingAppliedThrough in 0..stream.issued)
-            require(financial.lastAssigned == stream.issued && financial.executedThrough in 0..stream.matchingAppliedThrough)
-            require(financial.pendingAdmissionSequences.size.toLong() == stream.issued - financial.executedThrough)
+            require(financial.lastAssigned <= stream.issued && financial.executedThrough in 0..stream.matchingAppliedThrough)
+            require(financial.pendingAdmissionSequences.size.toLong() == financial.lastAssigned - financial.executedThrough)
             val financialOrders =
                 liveOrders
                     .filter {
@@ -550,13 +581,18 @@ internal class FundsDispatchData(
             var previous = stream.matchingAppliedThrough
             for (entry in stream.outstanding) {
                 require(previous < Long.MAX_VALUE && entry.dispatchSequence == previous + 1)
-                require(entry.stream == stream.stream && entry.marketAdmissionSequence == entry.dispatchSequence)
+                require(entry.stream == stream.stream && entry.marketAdmissionSequence in 1..entry.dispatchSequence)
                 require(entry.context == configuration.context(entry.order.marketId) && entry.order.marketId == stream.stream.marketId)
-                val live = requireNotNull(liveByAdmission[entry.admissionSequence]) { "orphan dispatch envelope" }
-                require(
-                    live.order == entry.order && live.reservation == entry.reservation &&
-                        live.marketAdmissionSequence == entry.marketAdmissionSequence && seenAdmissions.add(entry.admissionSequence),
-                ) { "dispatch differs from initial financial order" }
+                if (entry.isCancellation) {
+                    require(cancelBySequence[entry.stream.marketId to entry.dispatchSequence]?.input == entry) { "orphan cancel dispatch" }
+                } else {
+                    val live = requireNotNull(liveByAdmission[entry.admissionSequence]) { "orphan dispatch envelope" }
+                    require(
+                        live.order == entry.order && live.reservation == entry.reservation &&
+                            live.marketAdmissionSequence == entry.marketAdmissionSequence && seenAdmissions.add(entry.admissionSequence),
+                    ) { "dispatch differs from initial financial order" }
+                    originals[entry.admissionSequence]?.let { require(it == entry) { "dispatch approval differs" } }
+                }
                 progress.outstanding[entry.dispatchSequence] = entry
                 progress.dispatchBytes = Math.addExact(progress.dispatchBytes, entry.dispatchCanonicalBytes)
                 candidate.dispatchEntries = Math.addExact(candidate.dispatchEntries, 1)

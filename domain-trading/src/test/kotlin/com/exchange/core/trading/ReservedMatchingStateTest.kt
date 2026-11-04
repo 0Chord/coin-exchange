@@ -435,9 +435,9 @@ class ReservedMatchingStateTest {
     fun `수기 논리 byte와 한 byte 부족 경계를 검사한다`() {
         val small = MatchingIntakeTestFixture(identifierBytes = 34)
         // user34: 원본502 + effect522 + book119 + 고정104 + market11 + resultId28 = 1286.
-        // 최대 순번의 거절도 원본502 + effect522 + 고정104 + market11 + resultId46 = 1185로 들어간다.
+        // 최대 취소 결과1406을 단일건 한도로 허용하며 제출 결과의 누적 경계를 별도로 검사한다.
         for (budget in listOf(2_572L, 2_571L)) {
-            val owner = small.owner(small.limits(resultBytes = budget, maxSingleResultBytes = 1_286))
+            val owner = small.owner(small.limits(resultBytes = budget, maxSingleResultBytes = 1_406))
             val first = assertNotNull(owner.apply(small.input(1, user = "u".repeat(34))).result)
             assertEquals(1_286L, first.canonicalBytes)
             assertEquals(502L, owner.recoveryState().activeBytes)
@@ -459,18 +459,18 @@ class ReservedMatchingStateTest {
     }
 
     @Test
-    fun `최대 원본의 거절 한 건을 저장하지 못하는 설정은 미리 거절한다`() {
+    fun `최대 원본의 완전한 취소 한 건을 저장하지 못하는 설정은 미리 거절한다`() {
         val small = MatchingIntakeTestFixture(identifierBytes = 34)
         assertFailsWith<IllegalArgumentException> {
-            small.configuration(small.limits(resultBytes = 1_185, maxSingleResultBytes = 1_184))
+            small.configuration(small.limits(resultBytes = 1_406, maxSingleResultBytes = 1_405))
         }
         assertFailsWith<IllegalArgumentException> {
-            small.configuration(small.limits(resultBytes = 1_184, maxSingleResultBytes = 1_185))
+            small.configuration(small.limits(resultBytes = 1_405, maxSingleResultBytes = 1_406))
         }
         assertFailsWith<IllegalArgumentException> {
             small.configuration(small.limits(resultBytes = 16_777_216, activeBytes = 16_777_216))
         }
-        small.configuration(small.limits(resultBytes = 1_185, maxSingleResultBytes = 1_185))
+        small.configuration(small.limits(resultBytes = 1_406, maxSingleResultBytes = 1_406))
     }
 
     @Test

@@ -68,6 +68,7 @@ internal class MatchingRoleSnapshotCodec {
             output.text(stream.stream.marketId.value)
             output.writeLong(stream.appliedThrough)
             output.writeLong(stream.lastSourceAdmissionSequence)
+            output.writeLong(stream.lastSourceMarketAdmissionSequence)
             output.writeLong(stream.resultIssued)
             output.writeLong(stream.fundsSettledThrough)
             output.writeLong(stream.settledEngineSequence)
@@ -145,6 +146,7 @@ internal class MatchingRoleSnapshotCodec {
                 require(market in owned) { "unassigned matching stream" }
                 val applied = input.readLong()
                 val source = input.readLong()
+                val sourceMarket = input.readLong()
                 val issued = input.readLong()
                 val settled = input.readLong()
                 val engine = input.readLong()
@@ -174,6 +176,7 @@ internal class MatchingRoleSnapshotCodec {
                     bytes,
                     localActive,
                     localActiveBytes,
+                    sourceMarket,
                 )
             }
         checked.on(false)
@@ -329,7 +332,7 @@ internal class MatchingRoleSnapshotCodec {
 
     companion object {
         private const val MAGIC = 0x4D525350
-        private const val VERSION = 1
+        private const val VERSION = 2
         private const val END = 0x4D524531
         private const val MAX_TEXT_BYTES = 1_024
         private const val MAX_CONFIGURATION_BYTES = 256 * 1_024

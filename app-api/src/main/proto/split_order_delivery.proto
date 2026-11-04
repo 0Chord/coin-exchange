@@ -7,7 +7,7 @@ import "order_admission.proto";
 option java_package = "com.exchange.core.api.trading.infrastructure.codec.generated";
 option java_multiple_files = true;
 
-// A separate schema88/version1 frame carries these typed bodies. No snapshot blobs.
+// schema88/version2 별도 프레임에 타입별 본문을 싣는다. snapshot blob은 보내지 않는다.
 message SplitDeliveryCommand {
   optional int64 correlation_id = 1;
   oneof body {
@@ -16,6 +16,7 @@ message SplitDeliveryCommand {
     exchange.admission.BoundedTradingCommand control = 12;
     SplitDispatch apply = 13;
     SplitAppliedAck record_ack = 14;
+    SplitCancelInput cancel = 15;
   }
 }
 
@@ -30,6 +31,7 @@ message SplitDeliveryReply {
   optional int64 expected_sequence = 8;
   optional exchange.admission.BoundedTradingReply control = 9;
   optional string lifecycle = 10;
+  optional SplitCancelReply cancel = 11;
 }
 
 enum SplitRole {
@@ -66,6 +68,7 @@ message SplitDispatch {
   optional SplitOrderInput order = 6;
   optional SplitReservation reservation = 7;
   optional SplitMarketContext context = 8;
+  optional SplitCancellation cancellation = 9;
 }
 
 message SplitOrderInput {
@@ -128,4 +131,50 @@ message SplitAppliedAck {
   optional SplitDispatchStream stream = 1;
   optional int64 through = 2;
   optional SplitMarketContext context = 3;
+}
+
+// 대상 승인 원본은 SplitDispatch에 남긴다. 이 식별자는 취소 요청을 가리킨다.
+message SplitRequestToken {
+  optional string user_id = 1;
+  optional int32 channel = 2;
+  optional int64 epoch = 3;
+  optional int64 sequence = 4;
+}
+
+message SplitCancellation {
+  optional string cancel_id = 1;
+  optional SplitRequestToken request_token = 2;
+}
+
+message SplitCancelInput {
+  optional SplitRequestToken token = 1;
+  optional string market_id = 2;
+  optional string target_order_id = 3;
+  optional int64 expected_configuration_version = 4;
+}
+
+enum SplitCancelCode {
+  SPLIT_CANCEL_CODE_UNSPECIFIED = 0;
+  SPLIT_CANCEL_ACCEPTED = 1;
+  SPLIT_CANCEL_REJECTED = 2;
+}
+
+message SplitCancelReceipt {
+  optional SplitCancelCode code = 1;
+  optional string cancel_id = 2;
+  optional string target_order_id = 3;
+  optional int64 input_sequence = 4;
+  optional string reason = 5;
+}
+
+message SplitCancelRecorded {
+  optional SplitCancelReceipt receipt = 1;
+  optional bool newly_recorded = 2;
+}
+
+message SplitCancelReply {
+  oneof body {
+    SplitCancelRecorded recorded = 1;
+    string refused_reason = 2;
+  }
 }

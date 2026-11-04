@@ -1,5 +1,7 @@
 package com.exchange.core.api.trading.infrastructure.aeron
 
+import com.exchange.core.api.trading.infrastructure.history.FundsRoleSnapshotCodec
+import com.exchange.core.api.trading.infrastructure.history.MatchingRoleSnapshotCodec
 import com.exchange.core.common.AssetId
 import com.exchange.core.common.MarketId
 import com.exchange.core.fee.FeeProductType
@@ -22,9 +24,12 @@ import com.exchange.core.trading.TradingServiceRole
 import io.aeron.driver.exceptions.InvalidChannelException
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.io.TempDir
+import java.io.ByteArrayOutputStream
+import java.io.DataOutputStream
 import java.net.UnknownHostException
 import java.nio.file.Files
 import java.nio.file.Path
+import java.security.MessageDigest
 import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
@@ -175,7 +180,7 @@ class SplitTradingRoleStartupTest {
     }
 
     @Test
-    fun `주문과 결과 구성 지문은 기존 바이트의 SHA256을 보존한다`() {
+    fun `v1 writer 지문을 보존하고 v2의 고정 프로토콜과 한도 바이트를 독립 검산한다`() {
         // 실행물 자체의 지문은 빌드마다 달라지므로 고정된 manifest 입력으로 인코딩 계약을 검사한다.
         val configuration =
             configuration(
@@ -184,9 +189,16 @@ class SplitTradingRoleStartupTest {
                 deliveryLimits = FundsOrderDeliveryLimits(maxReadEntries = 31, maxInFlightEntries = 47, ackBatchSize = 13),
                 resultDeliveryLimits = MatchingResultDeliveryLimits(maxReadEntries = 3, maxInFlightEntries = 5, ackBatchSize = 11),
             )
-        // dbf021c의 기존 writer를 이 입력으로 실행해 얻은 두 지문이다.
-        assertEquals("cf97094917f8cd11f86a79e16267038d4d3fb35891d5289c3033152bb3234535", configuration.topologySha256)
-        assertEquals("d81ee8995db8f2d2977b79a67368c3eb80785b1900ad9ad43b20c633ace36876", configuration.resultTopologySha256)
+        // dbf021c writer의 고정 입력/출력은 유지한다. 역할 configuration 바이트까지 달라지면 이 기준이 먼저 실패한다.
+        val legacy = fixedWriterFingerprints(configuration, protocolVersion = 1)
+        assertEquals("cf97094917f8cd11f86a79e16267038d4d3fb35891d5289c3033152bb3234535", legacy.first)
+        assertEquals("d81ee8995db8f2d2977b79a67368c3eb80785b1900ad9ad43b20c633ace36876", legacy.second)
+        // actual 지문을 기대값으로 복사하지 않고, 새 marker와 고정폭 slot을 별도 writer로 계산한다.
+        val current = fixedWriterFingerprints(configuration, protocolVersion = 2)
+        assertNotEquals(legacy.first, current.first)
+        assertNotEquals(legacy.second, current.second)
+        assertEquals(current.first, configuration.topologySha256)
+        assertEquals(current.second, configuration.resultTopologySha256)
     }
 
     @Test
@@ -352,6 +364,66 @@ class SplitTradingRoleStartupTest {
             assertNotEquals(baseline.resultTopologySha256, it.resultTopologySha256)
         }
         assertEquals(variants.size, variants.map { it.resultTopologySha256 }.toSet().size)
+    }
+
+    /** 이 시험의 고정 입력만 기록한다. 제품의 지문 writer나 한도 getter를 호출하지 않는다. */
+    private fun fixedWriterFingerprints(
+        configuration: SplitTradingConfiguration,
+        protocolVersion: Int,
+    ): Pair<String, String> {
+        fun hash(write: (DataOutputStream) -> Unit): String {
+            val bytes = ByteArrayOutputStream()
+            DataOutputStream(bytes).use(write)
+            return MessageDigest.getInstance("SHA-256").digest(bytes.toByteArray()).joinToString("") { "%02x".format(it) }
+        }
+
+        fun worker(
+            output: DataOutputStream,
+            readEntries: Int,
+            readBytes: Long,
+            flightEntries: Int,
+            flightBytes: Long,
+            ackBatch: Int,
+        ) {
+            output.writeInt(readEntries)
+            output.writeLong(readBytes)
+            output.writeInt(flightEntries)
+            output.writeLong(flightBytes)
+            output.writeInt(ackBatch)
+            // ack delay, attempt timeout, reconnect, busy min/max, keepalive, shutdown 순서의 64-bit slot이다.
+            for (value in listOf(2_000_000L, 3_000_000_000L, 50_000_000L, 1_000_000L, 20_000_000L, 500_000_000L, 5_000L)) {
+                output.writeLong(value)
+            }
+        }
+        val order =
+            hash { output ->
+                output.writeUTF("split-order-delivery-v$protocolVersion;schema=88;version=$protocolVersion;frame=32768;session-limit=16")
+                // 이 두 입력의 기존 계약은 위의 고정 v1 SHA256으로 별도 검증한다.
+                val parts =
+                    listOf(
+                        FundsRoleSnapshotCodec().configurationBytes(configuration.dispatchConfiguration),
+                        MatchingRoleSnapshotCodec().configurationBytes(configuration.matchingConfiguration),
+                    )
+                for (part in parts) {
+                    output.writeInt(part.size)
+                    output.write(part)
+                }
+                output.writeInt(1_024)
+                output.writeLong(1_024L * 1_024)
+                output.writeInt(4_096)
+                output.writeLong(4L * 1_024 * 1_024)
+                output.writeInt(2_048)
+                output.writeLong(2L * 1_024 * 1_024)
+                worker(output, 31, 256L * 1_024, 47, 512L * 1_024, 13)
+            }
+        val result =
+            hash { output ->
+                output.writeUTF("split-result-delivery-v$protocolVersion;schema=89;version=$protocolVersion;header=12;session-limit=16")
+                output.writeUTF(order)
+                output.writeInt(2 * 1_024 * 1_024 - 32)
+                worker(output, 3, 2L * 1_024 * 1_024, 5, 4L * 1_024 * 1_024, 11)
+            }
+        return order to result
     }
 
     private fun replaceIdentityText(

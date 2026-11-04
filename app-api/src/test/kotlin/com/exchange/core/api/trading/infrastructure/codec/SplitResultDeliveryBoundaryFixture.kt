@@ -124,7 +124,7 @@ internal object SplitResultDeliveryBoundaryFixture {
                         .wrap(bytes)
                         .order(ByteOrder.LITTLE_ENDIAN)
                         .putShort(89)
-                        .putShort(1)
+                        .putShort(2)
                         .putShort(1)
                         .putShort(0)
                         .putInt(root.serializedSize)
@@ -263,7 +263,7 @@ internal object SplitResultDeliveryBoundaryFixture {
         val builder =
             SplitMatchingResult
                 .newBuilder()
-                .setFormatVersion(1)
+                .setFormatVersion(2)
                 .setStream(
                     SplitResultStream
                         .newBuilder()

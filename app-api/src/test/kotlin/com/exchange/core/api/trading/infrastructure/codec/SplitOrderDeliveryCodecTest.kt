@@ -25,8 +25,13 @@ import com.exchange.core.order.OrderReservationCalculator
 import com.exchange.core.order.OrderType
 import com.exchange.core.order.Side
 import com.exchange.core.order.TimeInForce
+import com.exchange.core.trading.CancelCode
+import com.exchange.core.trading.CancelIntent
+import com.exchange.core.trading.CancelReceipt
+import com.exchange.core.trading.CancelReply
 import com.exchange.core.trading.ClusterLineage
 import com.exchange.core.trading.ExecuteAdmission
+import com.exchange.core.trading.FundsCancelDispatch
 import com.exchange.core.trading.FundsDispatchStream
 import com.exchange.core.trading.FundsMatchingAppliedAck
 import com.exchange.core.trading.FundsOrderDispatch
@@ -66,7 +71,7 @@ class SplitOrderDeliveryCodecTest {
             val input = dispatch(side)
             val bytes = codec.encode(91, SplitOrderDeliveryCommand.Apply(input))
             val wire = command(bytes)
-            assertEquals(1, wire.apply.formatVersion)
+            assertEquals(2, wire.apply.formatVersion)
             assertEquals(SplitDirection.SPLIT_FUNDS_TO_MATCHING, wire.apply.stream.direction)
             assertEquals(17L, wire.apply.reservation.feePolicy.scheduleVersion)
             assertEquals(7_000L, wire.apply.context.feePolicy.makerPpm)
@@ -150,7 +155,7 @@ class SplitOrderDeliveryCodecTest {
         assertEquals(bytes.size - 8, header.short.toInt() and 65535)
         assertEquals(1, header.short.toInt())
         assertEquals(88, header.short.toInt())
-        assertEquals(1, header.short.toInt())
+        assertEquals(2, header.short.toInt())
         val sliced = ByteArray(5) + bytes + ByteArray(11)
         assertEquals(codec.decode(bytes), codec.decode(sliced, 5, bytes.size))
         val reply = codec.encodeReply(reply("DESCRIBED"))
@@ -309,7 +314,7 @@ class SplitOrderDeliveryCodecTest {
         val input = valid.apply
         val invalid =
             listOf(
-                input.toBuilder().setFormatVersion(2),
+                input.toBuilder().setFormatVersion(1),
                 input.toBuilder().setDispatchSequence(0),
                 input.toBuilder().setAdmissionSequence(-1),
                 input.toBuilder().setMarketAdmissionSequence(0),
@@ -478,6 +483,42 @@ class SplitOrderDeliveryCodecTest {
         assertFailsWith<IllegalArgumentException> { codec.encodeReply(reply("DESCRIBED").copy(role = TradingServiceRole.INTEGRATED)) }
     }
 
+    @Test
+    fun `v2 cancel preserves separate request identity target approval and first receipt`() {
+        val original = dispatch()
+        val token = RequestToken(original.order.userId, 1, 2, 9)
+        val identity = TradingIdentifiers.cancel(source, context.ordinal, 4)
+        val cancel = original.copy(dispatchSequence = 4, cancel = FundsCancelDispatch(identity, token))
+        val intent = CancelIntent(context.market.marketId, original.order.orderId, 19)
+        for (command in listOf(SplitOrderDeliveryCommand.Cancel(token, intent), SplitOrderDeliveryCommand.Apply(cancel))) {
+            assertEquals(command, codec.decode(codec.encode(91, command)).command)
+        }
+        val first = CancelReceipt(CancelCode.ACCEPTED, identity, original.order.orderId, 4)
+        for (cancelReply in listOf(
+            CancelReply.Recorded(first, true),
+            CancelReply.Recorded(first, false),
+            CancelReply.Recorded(
+                CancelReceipt(CancelCode.REJECTED, targetOrderId = original.order.orderId, reason = "CANCEL_PENDING"),
+                true,
+            ),
+            CancelReply.Refused("REQUEST_CONTENT_CONFLICT"),
+        )) {
+            val expected = reply("ACCEPTED").copy(cancel = cancelReply)
+            assertEquals(expected, codec.decodeReply(codec.encodeReply(expected)))
+        }
+        val wire = command(codec.encode(91, SplitOrderDeliveryCommand.Apply(cancel)))
+        for ((path, damaged) in unknownFields(wire)) {
+            assertFailsWith<AdmissionMessageException>(path) { codec.decode(frame(1, damaged)) }
+        }
+        for ((path, missing) in missingRequired(wire)) {
+            if (path.endsWith(".cancellation")) continue
+            assertFailsWith<AdmissionMessageException>(path) { codec.decode(frame(1, missing)) }
+        }
+        val legacy = codec.encode(91, SplitOrderDeliveryCommand.Apply(original))
+        ByteBuffer.wrap(legacy).order(ByteOrder.LITTLE_ENDIAN).putShort(6, 1)
+        assertFailsWith<AdmissionMessageException> { codec.decode(legacy) }
+    }
+
     private fun dispatch(side: Side = Side.BUY): FundsOrderDispatch {
         val order =
             OrderAdmissionInput(
@@ -524,7 +565,7 @@ class SplitOrderDeliveryCodecTest {
             .putShort(body.size.toShort())
             .putShort(kind.toShort())
             .putShort(88)
-            .putShort(1)
+            .putShort(2)
         body.copyInto(bytes, 8)
         return bytes
     }

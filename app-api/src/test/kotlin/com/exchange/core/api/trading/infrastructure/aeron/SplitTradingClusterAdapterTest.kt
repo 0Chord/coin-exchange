@@ -85,6 +85,52 @@ class SplitTradingClusterAdapterTest {
     private val timestamp = 1_793_664_000_000L
 
     @Test
+    fun `취소 callback은 역할과 준비를 확인하고 최초 응답 뒤에도 예약을 유지한다`() {
+        val source = fixture(TradingServiceRole.FUNDS, results = true)
+        val target = fixture(TradingServiceRole.MATCHING)
+        val orderId =
+            com.exchange.core.trading.TradingIdentifiers
+                .order(configuration.topology.fundsManifest.lineage, 1)
+        val command =
+            SplitOrderDeliveryCommand.Cancel(
+                RequestToken(user, 0, 1, 2),
+                com.exchange.core.trading
+                    .CancelIntent(market.marketId, orderId, 7),
+            )
+        val unsupported = fixture(TradingServiceRole.FUNDS)
+        assertEquals("UNSUPPORTED_MODE", unsupported.command(command).code)
+        assertEquals("NOT_READY", source.command(command).code)
+        assertEquals("WRONG_ROLE", target.command(command).code)
+        prepare(source)
+        source.command(admit(1, 3))
+        val reply = source.command(command)
+        assertEquals("ACCEPTED", reply.code)
+        val first = reply.cancel as com.exchange.core.trading.CancelReply.Recorded
+        assertTrue(first.newlyRecorded)
+        assertEquals(orderId, first.receipt.targetOrderId)
+        assertEquals(2L, first.receipt.inputSequence)
+        assertEquals(Balance(user, quote, Amount(700), Amount(300)), source.funds().currentBalance(user, quote))
+        assertEquals(
+            1L,
+            source
+                .funds()
+                .fundsRecoveryState()
+                .financial.lastAdmissionSequence,
+        )
+        assertEquals(2, source.read(1).entries.size)
+        assertEquals(first.receipt, (source.command(command).cancel as com.exchange.core.trading.CancelReply.Recorded).receipt)
+        assertEquals(
+            1,
+            source
+                .funds()
+                .fundsRecoveryState()
+                .cancellations.size,
+        )
+        assertTrue(source.failures.isEmpty())
+        assertTrue(target.failures.isEmpty())
+    }
+
+    @Test
     fun `자금 callback은 예약과 전달만 기록하고 적용 ACK는 payload만 회수한다`() {
         val source = fixture(TradingServiceRole.FUNDS)
         assertNull(source.service.activeGeneration())

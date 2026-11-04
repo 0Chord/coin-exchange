@@ -8,7 +8,7 @@ import "split_order_delivery.proto";
 option java_package = "com.exchange.core.api.trading.infrastructure.codec.generated";
 option java_multiple_files = true;
 
-// schema89/version1의 별도 프레임이며 전체 원문만 전달한다.
+// schema89/version2의 별도 프레임이며 전체 원문만 전달한다.
 message SplitResultCommand {
   optional int64 correlation_id = 1;
   oneof body {
@@ -61,6 +61,8 @@ enum SplitMatchingOutcome {
   SPLIT_MATCHING_OUTCOME_UNSPECIFIED = 0;
   SPLIT_MATCHED = 1;
   SPLIT_NOT_EXECUTED = 2;
+  SPLIT_CANCELLED = 3;
+  SPLIT_CANCEL_REJECTED = 4;
 }
 
 enum SplitNotExecutedReason {
@@ -74,6 +76,7 @@ enum SplitOrderDisposition {
   SPLIT_RESTING = 1;
   SPLIT_TERMINAL = 2;
   SPLIT_ORDER_NOT_EXECUTED = 3;
+  SPLIT_ORDER_CANCELLED = 4;
 }
 
 message SplitMatchingResult {
@@ -94,6 +97,8 @@ message SplitMatchingEvent {
   oneof body {
     SplitTradeExecuted trade = 1;
     SplitOrderEnteredBook entered = 2;
+    SplitOrderCancelled cancelled = 3;
+    SplitOrderCancelRejected cancel_rejected = 4;
   }
 }
 
@@ -124,4 +129,20 @@ message SplitMatchingEffect {
   optional int64 before_quantity = 2;
   optional int64 after_quantity = 3;
   optional SplitOrderDisposition disposition = 4;
+}
+
+message SplitOrderCancelled {
+  optional string market_id = 1;
+  optional int64 engine_sequence = 2;
+  optional string order_id = 3;
+  optional string user_id = 4;
+  optional int64 remaining_quantity = 5;
+}
+
+message SplitOrderCancelRejected {
+  optional string market_id = 1;
+  optional int64 engine_sequence = 2;
+  optional string order_id = 3;
+  optional string user_id = 4;
+  optional string reason = 5;
 }

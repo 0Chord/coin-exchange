@@ -50,7 +50,7 @@ internal class DockerFundsOrderDeliveryVerification(
             "SPLIT_RECOVER_EXISTING" to "false",
             "SPLIT_RESULT_FIXTURE" to (resultFixture ?: "baseline"),
             "SPLIT_MAX_RESULT_ENTRIES" to (if (resultFixture == "cap") "1" else "4096"),
-            "SPLIT_MAX_MATCHING_ACTIVE" to (if (resultFixture == "active") "1" else "8192"),
+            "SPLIT_MAX_MATCHING_ACTIVE" to (if (resultFixture in setOf("active", "cancel-active")) "1" else "8192"),
         )
     private val commands = VerificationCommands(project, reports, environment)
     val failures = mutableListOf<String>()
@@ -273,6 +273,55 @@ internal class DockerFundsOrderDeliveryVerification(
             check(sha256(control.resolve("manifest.bin")) == frozenManifestSha256)
             checkStorageBudget()
         }
+    }
+
+    internal fun duringMatchingOutage(scenario: () -> Unit) {
+        val matchingServices = SERVICES.filter { it.startsWith("matching") }
+        val fundsServices = SERVICES.filter { it.startsWith("funds") }
+        val before = readStates()
+        val fundsBoots = fundsServices.associateWith { before.getValue(it).path("bootId").asString() }
+        val matchingBoots = matchingServices.associateWith { before.getValue(it).path("bootId").asString() }
+        val fundsContainers = fundsServices.associateWith { containers.getValue(it) }
+        must(compose(listOf("stop", "--timeout", "15") + matchingServices, 30_000), "취소 전 매칭3노드 실제 단절")
+        val stopped = matchingServices.associateWith { inspect(containers.getValue(it)) }
+        check(
+            stopped.values.all {
+                !it.path("State").path("Running").asBoolean() && !it.path("State").path("OOMKilled").asBoolean() &&
+                    it.path("State").path("ExitCode").asInt() in setOf(0, 143)
+            },
+        )
+        check(fundsServices.all { inspect(containers.getValue(it)).path("State").path("Running").asBoolean() })
+        checkpoints += mapOf("case" to "C02 matching3 stopped while funds3 retains its original boots", "matchingContainers" to stopped)
+        scenario()
+        check(matchingServices.all { !inspect(containers.getValue(it)).path("State").path("Running").asBoolean() })
+        for (service in matchingServices) {
+            Files.deleteIfExists(control.resolve("state-$service.json"))
+            Files.deleteIfExists(control.resolve("runtime-$service.json"))
+        }
+        environment["SPLIT_RECOVER_EXISTING"] = "true"
+        val startupDeadline = minOf(workDeadline, System.nanoTime() + TimeUnit.SECONDS.toNanos(90))
+        must(
+            compose(listOf("up", "-d", "--no-deps", "--force-recreate") + matchingServices, remaining(startupDeadline)),
+            "매칭3노드 같은 기록에서 복구",
+        )
+        for (service in matchingServices) {
+            val id =
+                must(compose(listOf("ps", "-q", service), minOf(10_000, remaining(startupDeadline))), "$service 재기동 식별").stdout.trim()
+            check(id.matches(Regex("[0-9a-f]{12,64}")))
+            containers[service] = id
+        }
+        awaitStates("C02 matching recovers independently while all funds boots remain unchanged", remaining(startupDeadline)) { states ->
+            fundsBoots.all { (service, boot) -> states.getValue(service).path("bootId").asString() == boot } &&
+                matchingBoots.all { (service, boot) ->
+                    val state = states.getValue(service)
+                    state.path("bootId").asString() != boot && runtimeReadyFor(service, state)
+                }
+        }
+        for ((service, original) in fundsContainers) {
+            val current = must(compose(listOf("ps", "-q", service), 10_000), "$service 계속 실행한 컨테이너 식별").stdout.trim()
+            check(current == original) { "매칭 복구 중 자금 컨테이너가 바뀌었습니다" }
+        }
+        inspectIsolation("C02 matching-only recovery")
     }
 
     private fun verifyFundsProgressWhileMatchingStopped() {
