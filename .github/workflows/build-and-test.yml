@@ -93,7 +93,8 @@ jobs:
   build-and-test:
     name: Build and test
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    # 실제 결과 정산 3+3 복원·경계 사례가 추가된다. 개별 run의 자원/시간 한도는 유지한다.
+    timeout-minutes: 30
 
     steps:
       - name: Check out source

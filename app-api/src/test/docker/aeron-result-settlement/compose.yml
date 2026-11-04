@@ -1,0 +1,29 @@
+# #168 배치를 그대로 사용하고 명시한 결과 정산 시험 모드만 덮어쓴다.
+x-result-environment: &result-environment
+  SPLIT_MODE: RESULT_SETTLEMENT_DEV
+  SPLIT_MATCHING_LINEAGE_HIGH: "169"
+  SPLIT_RESULT_FIXTURE: ${SPLIT_RESULT_FIXTURE:-baseline}
+  SPLIT_MAX_RESULT_ENTRIES: ${SPLIT_MAX_RESULT_ENTRIES:-4096}
+  SPLIT_MAX_MATCHING_ACTIVE: ${SPLIT_MAX_MATCHING_ACTIVE:-8192}
+
+services:
+  funds0:
+    command: [com.exchange.core.api.trading.infrastructure.aeron.MatchingResultVerificationToolKt, node]
+    environment: *result-environment
+  funds1:
+    command: [com.exchange.core.api.trading.infrastructure.aeron.MatchingResultVerificationToolKt, node]
+    environment: *result-environment
+  funds2:
+    command: [com.exchange.core.api.trading.infrastructure.aeron.MatchingResultVerificationToolKt, node]
+    environment: *result-environment
+  matching0:
+    command: [com.exchange.core.api.trading.infrastructure.aeron.MatchingResultVerificationToolKt, node]
+    environment: *result-environment
+  matching1:
+    command: [com.exchange.core.api.trading.infrastructure.aeron.MatchingResultVerificationToolKt, node]
+    environment: *result-environment
+  matching2:
+    command: [com.exchange.core.api.trading.infrastructure.aeron.MatchingResultVerificationToolKt, node]
+    environment: *result-environment
+  client:
+    environment: *result-environment

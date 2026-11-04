@@ -6,6 +6,9 @@ import com.exchange.core.api.trading.infrastructure.codec.BoundedTradingReply
 import com.exchange.core.api.trading.infrastructure.codec.SplitOrderDeliveryCodec
 import com.exchange.core.api.trading.infrastructure.codec.SplitOrderDeliveryCommand
 import com.exchange.core.api.trading.infrastructure.codec.SplitOrderDeliveryReply
+import com.exchange.core.api.trading.infrastructure.codec.SplitResultDeliveryCodec
+import com.exchange.core.api.trading.infrastructure.codec.SplitResultDeliveryCommand
+import com.exchange.core.api.trading.infrastructure.codec.SplitResultDeliveryReply
 import com.exchange.core.api.trading.infrastructure.history.FundsRoleSnapshotCodec
 import com.exchange.core.api.trading.infrastructure.history.MatchingRoleSnapshotCodec
 import com.exchange.core.ledger.OpeningBalanceConflictException
@@ -15,6 +18,10 @@ import com.exchange.core.trading.BoundedFundingState
 import com.exchange.core.trading.FundsDispatchRead
 import com.exchange.core.trading.FundsDispatchStream
 import com.exchange.core.trading.FundsMatchingAppliedAck
+import com.exchange.core.trading.MatchingFundsSettledAck
+import com.exchange.core.trading.MatchingResultAckStatus
+import com.exchange.core.trading.MatchingResultRead
+import com.exchange.core.trading.MatchingResultStream
 import com.exchange.core.trading.ReservedMatchingState
 import com.exchange.core.trading.TradingCapacityException
 import com.exchange.core.trading.TradingFundingInputException
@@ -31,6 +38,7 @@ import io.aeron.logbuffer.Header
 import org.agrona.DirectBuffer
 import org.agrona.concurrent.AgentTerminationException
 import org.agrona.concurrent.UnsafeBuffer
+import java.nio.ByteOrder
 import java.time.Instant
 import java.util.concurrent.CompletableFuture
 import java.util.concurrent.TimeUnit
@@ -40,18 +48,23 @@ internal class SplitTradingClusterAdapter(
     val role: TradingServiceRole,
     private val configuration: SplitTradingConfiguration,
     private val onFatal: (Throwable) -> Unit = {},
+    private val resultDeliveryEnabled: Boolean = false,
 ) : ClusteredService,
-    FundsDispatchSource {
+    FundsDispatchSource,
+    MatchingResultSource {
     // 시험의 callback 관찰 wrapper도 이 실제 소유자를 관찰한다. 운영 전체 상태 조회 입구는 두지 않는다.
     private val funds: BoundedFundingState? = if (role == TradingServiceRole.FUNDS) configuration.funds() else null
     private val matching: ReservedMatchingState? = if (role == TradingServiceRole.MATCHING) configuration.matching() else null
     private val codec = SplitOrderDeliveryCodec()
+    private val resultCodec = SplitResultDeliveryCodec()
+    private val settlementCalculator = configuration.settlementCalculator()
     private lateinit var cluster: Cluster
     private lateinit var serviceThread: Thread
     private var liveLeader = false
     private var snapshotInProgress = false
     private var generationCounter = 0L
     private val reads = ArrayDeque<DispatchReadQuery>()
+    private val resultReads = ArrayDeque<ResultReadQuery>()
 
     @Volatile
     var started: Boolean = false
@@ -143,10 +156,38 @@ internal class SplitTradingClusterAdapter(
         try {
             requireMillisecondClock(cluster.timeUnit())
             appliedLogPosition = cluster.logPosition()
+            val bytes =
+                try {
+                    require(
+                        offset >= 0 && length in 8..SplitResultDeliveryCodec.MAX_MESSAGE_BYTES && offset <= buffer.capacity() - length,
+                    ) {
+                        "invalid split frame range"
+                    }
+                    // 두 헤더의 schema 위치가 다르다. 기존 schema88의 길이 필드를 새 schema로 오인하지 않는다.
+                    val orderFrame = (buffer.getShort(offset + 4, ByteOrder.LITTLE_ENDIAN).toInt() and 65535) == 88
+                    val resultFrame = (buffer.getShort(offset, ByteOrder.LITTLE_ENDIAN).toInt() and 65535) == 89
+                    require(orderFrame || resultFrame) { "unknown split schema" }
+                    require(
+                        if (orderFrame) {
+                            length <= SplitOrderDeliveryCodec.MAX_MESSAGE_BYTES
+                        } else {
+                            length >=
+                                SplitResultDeliveryCodec.HEADER_BYTES
+                        },
+                    )
+                    ByteArray(length).also { buffer.getBytes(offset, it) }
+                } catch (_: IllegalArgumentException) {
+                    malformedMessages++
+                    return
+                }
+            if ((buffer.getShort(offset + 4, ByteOrder.LITTLE_ENDIAN).toInt() and 65535) != 88) {
+                onResultMessage(session, timestamp, bytes)
+                refreshReadiness()
+                return
+            }
             val envelope =
                 try {
-                    require(offset >= 0 && length in 8..32_768 && offset <= buffer.capacity() - length) { "invalid split frame range" }
-                    codec.decode(ByteArray(length).also { buffer.getBytes(offset, it) })
+                    codec.decode(bytes)
                 } catch (_: IllegalArgumentException) {
                     malformedMessages++
                     return
@@ -231,6 +272,132 @@ internal class SplitTradingClusterAdapter(
             send(session, reply)
         } catch (error: Throwable) {
             fail(error)
+        }
+    }
+
+    /** 결과 적용과 회수도 상대 호출의 수신이 아니라 자기 확정 로그 callback에서만 수행한다. */
+    private fun onResultMessage(
+        session: ClientSession?,
+        timestamp: Long,
+        bytes: ByteArray,
+    ) {
+        val envelope =
+            try {
+                resultCodec.decode(bytes)
+            } catch (_: IllegalArgumentException) {
+                malformedMessages++
+                return
+            }
+        val command = envelope.command
+        val correlation = envelope.correlationId
+        val reply =
+            when {
+                !resultDeliveryEnabled -> {
+                    resultResponse(correlation, "UNSUPPORTED_MODE")
+                }
+
+                command == SplitResultDeliveryCommand.DescribePeer -> {
+                    resultResponse(correlation, "DESCRIBED")
+                }
+
+                !tradingReady -> {
+                    resultResponse(correlation, "NOT_READY")
+                }
+
+                else -> {
+                    when (command) {
+                        is SplitResultDeliveryCommand.Apply -> {
+                            if (role != TradingServiceRole.FUNDS) {
+                                resultResponse(correlation, "WRONG_ROLE")
+                            } else {
+                                val applied =
+                                    checkNotNull(funds).applyMatchingResult(
+                                        command.result,
+                                        Instant.ofEpochMilli(timestamp),
+                                        settlementCalculator,
+                                    )
+                                resultResponse(
+                                    correlation,
+                                    applied.status.name,
+                                ).copy(ack = applied.ack, expectedSequence = applied.expectedSequence)
+                            }
+                        }
+
+                        is SplitResultDeliveryCommand.Progress -> {
+                            if (role != TradingServiceRole.FUNDS) {
+                                resultResponse(correlation, "WRONG_ROLE")
+                            } else {
+                                val ack = checkNotNull(funds).matchingSettlementAck(command.stream)
+                                if (ack == null || ack.context != command.context) {
+                                    resultResponse(correlation, "INVALID_STREAM")
+                                } else {
+                                    resultResponse(correlation, "PROGRESS").copy(ack = ack)
+                                }
+                            }
+                        }
+
+                        is SplitResultDeliveryCommand.RecordAck -> {
+                            if (role != TradingServiceRole.MATCHING) {
+                                resultResponse(correlation, "WRONG_ROLE")
+                            } else {
+                                val owner = checkNotNull(matching)
+                                val recorded = owner.acknowledgeFundsSettled(command.ack)
+                                if (recorded.status == MatchingResultAckStatus.ACKNOWLEDGED) {
+                                    // 확인된 prefix의 조회는 원본을 복사하지 않고 진행 정보만 읽는다.
+                                    val progress = owner.readResults(command.ack.stream, 1, 1, 1)
+                                    resultResponse(correlation, recorded.status.name).copy(
+                                        ack =
+                                            MatchingFundsSettledAck(
+                                                command.ack.stream,
+                                                recorded.fundsSettledThrough,
+                                                command.ack.context,
+                                            ),
+                                        resultIssued = progress.resultIssued,
+                                    )
+                                } else {
+                                    resultResponse(correlation, recorded.status.name)
+                                }
+                            }
+                        }
+
+                        SplitResultDeliveryCommand.DescribePeer -> {
+                            error("describe was handled before readiness")
+                        }
+                    }
+                }
+            }
+        sendResult(session, reply)
+    }
+
+    private fun resultResponse(
+        correlationId: Long,
+        code: String,
+    ) = SplitResultDeliveryReply(
+        correlationId,
+        code,
+        role,
+        if (role == TradingServiceRole.FUNDS) configuration.fundsLineage else configuration.matchingLineage,
+        configuration.resultTopologySha256,
+        appliedLogPosition,
+        lifecycle = lifecycle,
+    )
+
+    private fun sendResult(
+        session: ClientSession?,
+        reply: SplitResultDeliveryReply,
+    ) {
+        if (session == null || !liveLeader || cluster.role() != Cluster.Role.LEADER) return
+        val bytes = resultCodec.encodeReply(reply)
+        val buffer = UnsafeBuffer(bytes)
+        repeat(3) {
+            if (!liveLeader || cluster.role() != Cluster.Role.LEADER) return
+            val offered = session.offer(buffer, 0, bytes.size)
+            if (offered > 0 || offered == Publication.CLOSED || offered == Publication.MAX_POSITION_EXCEEDED ||
+                offered == Publication.NOT_CONNECTED
+            ) {
+                return
+            }
+            cluster.idleStrategy().idle()
         }
     }
 
@@ -334,7 +501,9 @@ internal class SplitTradingClusterAdapter(
         }
     }
 
-    override fun activeGeneration(): Long? = generation
+    override fun activeGeneration(): Long? = if (role == TradingServiceRole.FUNDS) generation else null
+
+    override fun activeResultGeneration(): Long? = if (role == TradingServiceRole.MATCHING && resultDeliveryEnabled) generation else null
 
     override fun readDispatch(
         generation: Long,
@@ -366,9 +535,41 @@ internal class SplitTradingClusterAdapter(
         return result
     }
 
+    override fun readResults(
+        generation: Long,
+        stream: MatchingResultStream,
+        fromSequence: Long,
+        maxEntries: Int,
+        maxBytes: Long,
+    ): CompletableFuture<MatchingResultRead> {
+        val result = CompletableFuture<MatchingResultRead>()
+        synchronized(reads) {
+            when {
+                this.generation != generation || role != TradingServiceRole.MATCHING || !resultDeliveryEnabled -> {
+                    result.completeExceptionally(IllegalStateException("매칭 리더 세대가 활성 상태가 아닙니다"))
+                }
+
+                maxEntries > configuration.resultDeliveryLimits.maxReadEntries ||
+                    maxBytes > configuration.resultDeliveryLimits.maxReadBytes -> {
+                    result.completeExceptionally(IllegalArgumentException("결과 조회가 고정 batch 한도를 넘었습니다"))
+                }
+
+                resultReads.size >= MAX_RESULT_READ_REQUESTS -> {
+                    result.completeExceptionally(IllegalStateException("결과 조회 요청 버퍼가 가득 찼습니다"))
+                }
+
+                else -> {
+                    resultReads.addLast(ResultReadQuery(generation, stream, fromSequence, maxEntries, maxBytes, result))
+                }
+            }
+        }
+        return result
+    }
+
     override fun doBackgroundWork(nowNs: Long): Int {
         if (!started || snapshotInProgress || generation == null) return 0
         ensureRunning()
+        if (role == TradingServiceRole.MATCHING) return readMatchingResults()
         var work = 0
         repeat(MAX_READ_REQUESTS) {
             val request = synchronized(reads) { if (reads.isEmpty()) null else reads.removeFirst() } ?: return work
@@ -381,6 +582,27 @@ internal class SplitTradingClusterAdapter(
             try {
                 request.result.complete(
                     checkNotNull(funds).pendingDispatch(request.stream, request.fromSequence, request.maxEntries, request.maxBytes),
+                )
+            } catch (error: Throwable) {
+                request.result.completeExceptionally(error)
+            }
+        }
+        return work
+    }
+
+    private fun readMatchingResults(): Int {
+        var work = 0
+        repeat(MAX_RESULT_READ_REQUESTS) {
+            val request = synchronized(reads) { if (resultReads.isEmpty()) null else resultReads.removeFirst() } ?: return work
+            work++
+            if (request.result.isDone) return@repeat
+            if (request.generation != generation) {
+                request.result.completeExceptionally(IllegalStateException("결과 조회의 리더 세대가 만료됐습니다"))
+                return@repeat
+            }
+            try {
+                request.result.complete(
+                    checkNotNull(matching).readResults(request.stream, request.fromSequence, request.maxEntries, request.maxBytes),
                 )
             } catch (error: Throwable) {
                 request.result.completeExceptionally(error)
@@ -438,7 +660,8 @@ internal class SplitTradingClusterAdapter(
     }
 
     private fun refreshGeneration() {
-        if (generation == null && role == TradingServiceRole.FUNDS && started && tradingReady && liveLeader && !snapshotInProgress &&
+        val sends = role == TradingServiceRole.FUNDS || (resultDeliveryEnabled && role == TradingServiceRole.MATCHING)
+        if (generation == null && sends && started && tradingReady && liveLeader && !snapshotInProgress &&
             failure == null
         ) {
             synchronized(reads) {
@@ -452,9 +675,12 @@ internal class SplitTradingClusterAdapter(
         val waiting =
             synchronized(reads) {
                 generation = null
-                reads.toList().also { reads.clear() }
+                (reads.map { it.result } + resultReads.map { it.result }).also {
+                    reads.clear()
+                    resultReads.clear()
+                }
             }
-        waiting.forEach { it.result.completeExceptionally(IllegalStateException(reason)) }
+        waiting.forEach { it.completeExceptionally(IllegalStateException(reason)) }
     }
 
     private fun ensureRunning() {
@@ -529,7 +755,17 @@ internal class SplitTradingClusterAdapter(
         val result: CompletableFuture<FundsDispatchRead>,
     )
 
+    private data class ResultReadQuery(
+        val generation: Long,
+        val stream: MatchingResultStream,
+        val fromSequence: Long,
+        val maxEntries: Int,
+        val maxBytes: Long,
+        val result: CompletableFuture<MatchingResultRead>,
+    )
+
     companion object {
+        private const val MAX_RESULT_READ_REQUESTS = 4
         private const val MAX_READ_REQUESTS = 16
     }
 }

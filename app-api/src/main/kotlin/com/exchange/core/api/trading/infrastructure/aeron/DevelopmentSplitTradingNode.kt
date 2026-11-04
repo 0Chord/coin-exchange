@@ -34,7 +34,7 @@ import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicReference
 
-/** 일반 main의 역할 차단과 별개로 명시한 개발용 한 방향 실행만 허용한다. */
+/** 일반 main의 역할 차단과 별개로 명시한 개발 실행만 허용한다. */
 internal data class SplitTradingNodeSettings(
     val transport: DevelopmentFundingSettings,
     val role: TradingServiceRole,
@@ -43,10 +43,12 @@ internal data class SplitTradingNodeSettings(
     val matchingIngressEndpoints: String,
     val mode: String = "DISABLED",
 ) {
+    val resultDeliveryEnabled: Boolean get() = mode == "RESULT_SETTLEMENT_DEV"
     val clusterId: Int get() = if (role == TradingServiceRole.FUNDS) FUNDS_CLUSTER_ID else MATCHING_CLUSTER_ID
 
     init {
-        require(mode == "ORDER_DELIVERY_DEV") { "분리 역할은 ORDER_DELIVERY_DEV에서만 실행합니다" }
+        require(mode == "ORDER_DELIVERY_DEV" || resultDeliveryEnabled) { "분리 역할은 명시한 개발 모드에서만 실행합니다" }
+        if (resultDeliveryEnabled) configuration.requireResultDeliveryCompatible()
         require(role == TradingServiceRole.FUNDS || role == TradingServiceRole.MATCHING)
         require(transport.serviceRole == TradingServiceRole.INTEGRATED) {
             "기존 실행 설정의 역할 차단을 우회하지 않습니다"
@@ -88,10 +90,10 @@ internal data class SplitTradingNodeSettings(
     fun identityBytes(): ByteArray =
         ByteArrayOutputStream().use { bytes ->
             DataOutputStream(bytes).use { out ->
-                out.writeUTF("exchange-split-order-delivery-run-v1")
+                out.writeUTF(if (resultDeliveryEnabled) "exchange-split-result-delivery-run-v1" else "exchange-split-order-delivery-run-v1")
                 out.writeUTF(mode)
                 out.writeUTF(role.name)
-                out.writeUTF(configuration.topologySha256)
+                out.writeUTF(if (resultDeliveryEnabled) configuration.resultTopologySha256 else configuration.topologySha256)
                 out.writeUTF(BoundedExecutionIdentity.artifactSha256)
                 out.writeUTF(BoundedExecutionIdentity.schemaSha256)
                 out.writeInt(clusterId)
@@ -137,6 +139,7 @@ internal class DevelopmentSplitTradingNode private constructor(
     val settings: SplitTradingNodeSettings,
     private val serviceDecorator: (SplitTradingClusterAdapter) -> ClusteredService,
     private val deliveryFactory: ((SplitTradingClusterAdapter) -> FundsOrderDeliveryAgent)?,
+    private val resultDeliveryFactory: ((SplitTradingClusterAdapter) -> MatchingResultDeliveryAgent)?,
 ) : AutoCloseable {
     private val stopped = AtomicBoolean()
     private val failure = AtomicReference<Throwable?>()
@@ -147,8 +150,9 @@ internal class DevelopmentSplitTradingNode private constructor(
     private var container: ClusteredServiceContainer? = null
     private var run: SplitTradingRun? = null
     private var delivery: FundsOrderDeliveryAgent? = null
-    private val service = SplitTradingClusterAdapter(settings.role, settings.configuration, ::fail)
-    val error: Throwable? get() = failure.get() ?: delivery?.failure
+    private var resultDelivery: MatchingResultDeliveryAgent? = null
+    private val service = SplitTradingClusterAdapter(settings.role, settings.configuration, ::fail, settings.resultDeliveryEnabled)
+    val error: Throwable? get() = failure.get() ?: delivery?.failure ?: resultDelivery?.failure
     val isClosed: Boolean get() = stopped.get()
     val role: Cluster.Role get() = Cluster.Role.get(checkNotNull(consensus).context().clusterNodeRoleCounter().get())
     val tradingReady: Boolean get() = service.tradingReady
@@ -281,6 +285,18 @@ internal class DevelopmentSplitTradingNode private constructor(
                     )
                 ).also { it.start() }
         }
+        if (settings.resultDeliveryEnabled && settings.role == TradingServiceRole.MATCHING) {
+            resultDelivery =
+                (
+                    resultDeliveryFactory?.invoke(service) ?: MatchingResultDeliveryAgent(
+                        settings.configuration,
+                        service,
+                        settings.endpoint(false),
+                        settings.endpoint(true),
+                        onFailure = ::fail,
+                    )
+                ).also { it.start() }
+        }
         Thread({
             signal.await()
             close()
@@ -290,7 +306,7 @@ internal class DevelopmentSplitTradingNode private constructor(
     override fun close() {
         if (!stopped.compareAndSet(false, true)) return
         signal.countDown()
-        listOf(delivery, container, consensus, archive, driver, run).forEach { resource ->
+        listOf(resultDelivery, delivery, container, consensus, archive, driver, run).forEach { resource ->
             try {
                 resource?.close()
             } catch (error: Throwable) {
@@ -303,9 +319,10 @@ internal class DevelopmentSplitTradingNode private constructor(
         fun start(
             settings: SplitTradingNodeSettings,
             serviceDecorator: (SplitTradingClusterAdapter) -> ClusteredService = { it },
+            resultDeliveryFactory: ((SplitTradingClusterAdapter) -> MatchingResultDeliveryAgent)? = null,
             deliveryFactory: ((SplitTradingClusterAdapter) -> FundsOrderDeliveryAgent)? = null,
         ): DevelopmentSplitTradingNode =
-            DevelopmentSplitTradingNode(settings, serviceDecorator, deliveryFactory).also { node ->
+            DevelopmentSplitTradingNode(settings, serviceDecorator, deliveryFactory, resultDeliveryFactory).also { node ->
                 try {
                     node.launch()
                 } catch (failure: Throwable) {

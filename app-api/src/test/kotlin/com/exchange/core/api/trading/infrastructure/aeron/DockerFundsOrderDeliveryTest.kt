@@ -27,13 +27,19 @@ class DockerFundsOrderDeliveryTest {
     }
 }
 
-private class DockerFundsOrderDeliveryVerification {
-    private val mapper = jacksonObjectMapper()
+internal class DockerFundsOrderDeliveryVerification(
+    private val resultFixture: String? = null,
+    private val resultScenario: ((DockerFundsOrderDeliveryVerification) -> Unit)? = null,
+) {
+    internal val mapper = jacksonObjectMapper()
     private val project = Path.of(requireNotNull(System.getProperty("fundingProjectDirectory")))
     private val distribution = Path.of(requireNotNull(System.getProperty("fundingDistributionDirectory")))
     private val runId = "delivery${System.currentTimeMillis()}${UUID.randomUUID().toString().take(8)}"
-    val reports: Path = project.resolve("build/reports/aeron-funding/order-delivery/$runId")
-    private val control = reports.resolve("control")
+    val reports: Path =
+        project.resolve(
+            "build/reports/aeron-funding/${if (resultScenario == null) "order-delivery" else "result-settlement"}/$runId",
+        )
+    internal val control = reports.resolve("control")
     private val image = "exchange-order-delivery:$runId"
     private val composeFile = project.resolve("src/test/docker/aeron-order-delivery/compose.yml")
     private val environment =
@@ -42,10 +48,13 @@ private class DockerFundsOrderDeliveryVerification {
             "SPLIT_RUN_ID" to runId,
             "SPLIT_CONTROL_DIRECTORY" to control.toString(),
             "SPLIT_RECOVER_EXISTING" to "false",
+            "SPLIT_RESULT_FIXTURE" to (resultFixture ?: "baseline"),
+            "SPLIT_MAX_RESULT_ENTRIES" to (if (resultFixture == "cap") "1" else "4096"),
+            "SPLIT_MAX_MATCHING_ACTIVE" to (if (resultFixture == "active") "1" else "8192"),
         )
     private val commands = VerificationCommands(project, reports, environment)
     val failures = mutableListOf<String>()
-    private val checkpoints = mutableListOf<Map<String, Any?>>()
+    internal val checkpoints = mutableListOf<Map<String, Any?>>()
     private val containers = linkedMapOf<String, String>()
     private val inspections = linkedMapOf<String, JsonNode>()
     private var originalVolumes = emptyMap<String, String>()
@@ -103,61 +112,67 @@ private class DockerFundsOrderDeliveryVerification {
             tool("prepare")
             awaitStates("initialized roles", 60_000) { states -> states.values.all { it.path("initialized").asBoolean() } }
 
-            stage = "pipeline while first matching ACK is lost"
-            Files.writeString(control.resolve("hold-matching-acks"), UUID.randomUUID().toString())
-            tool("admit", "1", "6")
-            awaitExpected("G3 first matching application with missing ACK", 1, 6, 1, 0)
-            recordFragmentedDispatchEvidence()
-            verifyObservationReadableByDifferentUser()
-            tool("admit", "2", "2")
-            awaitExpected("G4 second matching log application before ACK1", 2, 8, 2, 0)
-            Files.delete(control.resolve("hold-matching-acks"))
-            awaitExpected("G3 G4 source committed cumulative ACK2", 2, 8, 0, 2)
-            val duplicate = mapper.readTree(tool("replay", "2").stdout.lineSequence().last { it.isNotBlank() })
-            check(duplicate.path("code").asString() == "DUPLICATE" && number(duplicate, "through") == 2L)
-            awaitExpected("G5 original dispatch2 sent again without another matching effect", 2, 8, 0, 2)
+            if (resultScenario != null) {
+                stage = "result settlement ${resultFixture ?: "baseline"}"
+                resultScenario.invoke(this)
+            } else {
+                stage = "pipeline while first matching ACK is lost"
+                Files.writeString(control.resolve("hold-matching-acks"), UUID.randomUUID().toString())
+                tool("admit", "1", "6")
+                awaitExpected("G3 first matching application with missing ACK", 1, 6, 1, 0)
+                recordFragmentedDispatchEvidence()
+                verifyObservationReadableByDifferentUser()
+                tool("admit", "2", "2")
+                awaitExpected("G4 second matching log application before ACK1", 2, 8, 2, 0)
+                Files.delete(control.resolve("hold-matching-acks"))
+                awaitExpected("G3 G4 source committed cumulative ACK2", 2, 8, 0, 2)
+                val duplicate = mapper.readTree(tool("replay", "2").stdout.lineSequence().last { it.isNotBlank() })
+                check(duplicate.path("code").asString() == "DUPLICATE" && number(duplicate, "through") == 2L)
+                awaitExpected("G5 original dispatch2 sent again without another matching effect", 2, 8, 0, 2)
 
-            stage = "full log restart after committed source ACK"
-            check(readStates().values.all { number(it, "snapshotCount") == 0L }) { "전체 로그 복구 전에 snapshot이 생겼습니다" }
-            restart("G18 full log recovery", 2, 8, 0, 2, false)
+                stage = "full log restart after committed source ACK"
+                check(readStates().values.all { number(it, "snapshotCount") == 0L }) { "전체 로그 복구 전에 snapshot이 생겼습니다" }
+                restart("G18 full log recovery", 2, 8, 0, 2, false)
 
-            stage = "snapshots at input2 followed by input3 in each log tail"
-            tool("snapshot", "funds")
-            tool("snapshot", "matching")
-            val atSnapshot =
-                awaitStates("both role snapshots at input2", 60_000) { states ->
-                    expected(states, 2, 8, 0, 2) &&
-                        states.values.all { number(it, "snapshotCount") >= 1 && number(it, "lastSnapshotPosition") > 0 }
+                stage = "snapshots at input2 followed by input3 in each log tail"
+                tool("snapshot", "funds")
+                tool("snapshot", "matching")
+                val atSnapshot =
+                    awaitStates("both role snapshots at input2", 60_000) { states ->
+                        expected(states, 2, 8, 0, 2) &&
+                            states.values.all { number(it, "snapshotCount") >= 1 && number(it, "lastSnapshotPosition") > 0 }
+                    }
+                Files.writeString(control.resolve("hold-source-records"), UUID.randomUUID().toString())
+                Files.deleteIfExists(control.resolve("received-matching-ack.json"))
+                tool("admit", "3", "1")
+                val beforeRestart = awaitExpected("G6 source retains input3 after matching ACK reception", 3, 9, 1, 2)
+                awaitFile(control.resolve("received-matching-ack.json"), 30_000)
+                validateMatchingAck(3, beforeRestart)
+                Files.copy(control.resolve("received-matching-ack.json"), reports.resolve("matching-ack-before-source-record.json"))
+                for (service in SERVICES) {
+                    check(
+                        number(beforeRestart.getValue(service), "logPosition") >
+                            number(atSnapshot.getValue(service), "lastSnapshotPosition"),
+                    ) {
+                        "$service input3이 snapshot 이후의 자기 로그 tail에 없습니다"
+                    }
                 }
-            Files.writeString(control.resolve("hold-source-records"), UUID.randomUUID().toString())
-            Files.deleteIfExists(control.resolve("received-matching-ack.json"))
-            tool("admit", "3", "1")
-            val beforeRestart = awaitExpected("G6 source retains input3 after matching ACK reception", 3, 9, 1, 2)
-            awaitFile(control.resolve("received-matching-ack.json"), 30_000)
-            validateMatchingAck(3, beforeRestart)
-            Files.copy(control.resolve("received-matching-ack.json"), reports.resolve("matching-ack-before-source-record.json"))
-            for (service in SERVICES) {
-                check(
-                    number(beforeRestart.getValue(service), "logPosition") > number(atSnapshot.getValue(service), "lastSnapshotPosition"),
-                ) {
-                    "$service input3이 snapshot 이후의 자기 로그 tail에 없습니다"
-                }
+                Files.delete(control.resolve("received-matching-ack.json"))
+                restart("G6 G19 snapshot2 plus log tail3 with source obligation", 3, 9, 1, 2, true)
+                awaitFile(control.resolve("received-matching-ack.json"), 30_000)
+                validateMatchingAck(3, readStates(), setOf("DUPLICATE", "PRUNED"))
+                Files.copy(control.resolve("received-matching-ack.json"), reports.resolve("matching-ack-after-recovery.json"))
+                Files.delete(control.resolve("hold-source-records"))
+                awaitExpected("G6 G19 replayed input3 ACK committed without matching again", 3, 9, 0, 3)
+
+                stage = "source ACK3 restored from the tail after snapshot2"
+                restart("G20 funds snapshot2 plus committed ACK3 log tail", 3, 9, 0, 3, true)
+
+                stage = "G16 funds admission progress and snapshot while matching is stopped"
+                verifyFundsProgressWhileMatchingStopped()
+                tool("admit", "4", "1")
+                awaitExpected("G5 repeated user request keeps original identity and one effect", 4, 10, 0, 4)
             }
-            Files.delete(control.resolve("received-matching-ack.json"))
-            restart("G6 G19 snapshot2 plus log tail3 with source obligation", 3, 9, 1, 2, true)
-            awaitFile(control.resolve("received-matching-ack.json"), 30_000)
-            validateMatchingAck(3, readStates(), setOf("DUPLICATE", "PRUNED"))
-            Files.copy(control.resolve("received-matching-ack.json"), reports.resolve("matching-ack-after-recovery.json"))
-            Files.delete(control.resolve("hold-source-records"))
-            awaitExpected("G6 G19 replayed input3 ACK committed without matching again", 3, 9, 0, 3)
-
-            stage = "source ACK3 restored from the tail after snapshot2"
-            restart("G20 funds snapshot2 plus committed ACK3 log tail", 3, 9, 0, 3, true)
-
-            stage = "G16 funds admission progress and snapshot while matching is stopped"
-            verifyFundsProgressWhileMatchingStopped()
-            tool("admit", "4", "1")
-            awaitExpected("G5 repeated user request keeps original identity and one effect", 4, 10, 0, 4)
             check(sha256(control.resolve("manifest.bin")) == frozenManifestSha256) { "복구 도중 manifest가 변경됐습니다" }
             checkStorageBudget()
         } catch (failure: Throwable) {
@@ -229,6 +244,35 @@ private class DockerFundsOrderDeliveryVerification {
             "전체 로그 복구와 snapshot+tail 복구의 실제 snapshotImage 사용이 다릅니다"
         }
         check(sha256(control.resolve("manifest.bin")) == frozenManifestSha256)
+    }
+
+    internal fun restartResults(
+        label: String,
+        restoredSnapshot: Boolean,
+        expectation: (Map<String, JsonNode>) -> Boolean,
+    ): Map<String, JsonNode> {
+        val before = readStates()
+        val boots = before.mapValues { (_, state) -> state.path("bootId").asString() }
+        val receipts = before.filterKeys { it.startsWith("funds") }.mapValues { (_, state) -> state.path("funds").path("receipts") }
+        collectLogs("before-result-restart-${checkpoints.size}")
+        must(compose(listOf("stop", "--timeout", "15") + SERVICES, 30_000), "같은 기록의 6노드 종료")
+        for ((service, id) in containers) {
+            val state = inspect(id).path("State")
+            check(!state.path("Running").asBoolean() && !state.path("OOMKilled").asBoolean())
+            check(state.path("ExitCode").asInt() in setOf(0, 143)) { "$service 비정상 종료: $state" }
+            Files.deleteIfExists(control.resolve("state-$service.json"))
+            Files.deleteIfExists(control.resolve("runtime-$service.json"))
+        }
+        environment["SPLIT_RECOVER_EXISTING"] = "true"
+        startNodes(label, boots)
+        return awaitStates(label, 45_000, expectation).also { states ->
+            check(states.values.all { it.path("restoredSnapshot").asBoolean() == restoredSnapshot })
+            check(receipts.all { (name, expected) -> states.getValue(name).path("funds").path("receipts") == expected }) {
+                "재시작으로 최초 정산 시각이나 완결 사건·효과가 바뀌었습니다"
+            }
+            check(sha256(control.resolve("manifest.bin")) == frozenManifestSha256)
+            checkStorageBudget()
+        }
     }
 
     private fun verifyFundsProgressWhileMatchingStopped() {
@@ -343,7 +387,7 @@ private class DockerFundsOrderDeliveryVerification {
             }
         }
 
-    private fun awaitStates(
+    internal fun awaitStates(
         label: String,
         timeoutMs: Long,
         condition: (Map<String, JsonNode>) -> Boolean,
@@ -366,7 +410,7 @@ private class DockerFundsOrderDeliveryVerification {
         error("$label: 전체 6사본 기대값 대기 상한 초과")
     }
 
-    private fun readStates(): Map<String, JsonNode> =
+    internal fun readStates(): Map<String, JsonNode> =
         SERVICES.associateWith { service ->
             val file = control.resolve("state-$service.json")
             check(Files.isRegularFile(file) && Files.size(file) in 1..MAX_OBSERVATION_BYTES)
@@ -483,7 +527,7 @@ private class DockerFundsOrderDeliveryVerification {
         checkReportBudget()
     }
 
-    private fun verifyObservationReadableByDifferentUser() {
+    internal fun verifyObservationReadableByDifferentUser() {
         val id = containers.getValue("funds0")
         val reader = "65534:65534"
         val prefix = listOf("docker", "exec", "--user", reader, id)
@@ -575,7 +619,7 @@ private class DockerFundsOrderDeliveryVerification {
         check(size <= 16L * MIB) { "진단물 16MiB 상한 초과: $size" }
     }
 
-    private fun awaitFile(
+    internal fun awaitFile(
         path: Path,
         timeoutMs: Long,
     ) {
@@ -602,11 +646,28 @@ private class DockerFundsOrderDeliveryVerification {
         check(received.path("topologySha256").asString().matches(Regex("[0-9a-f]{64}")))
     }
 
-    private fun tool(vararg arguments: String): VerificationCommandResult {
+    internal fun tool(vararg arguments: String): VerificationCommandResult {
         val name = "$runId-client-${clientSequence++}"
         return must(
             compose(
-                listOf("run", "--rm", "--no-deps", "--name", name, "--env", "FUNDING_HOST=$name", "client", TOOL) + arguments,
+                listOf(
+                    "run",
+                    "--rm",
+                    "--no-deps",
+                    "--name",
+                    name,
+                    "--env",
+                    "FUNDING_HOST=$name",
+                    "client",
+                    if (resultScenario ==
+                        null
+                    ) {
+                        TOOL
+                    } else {
+                        RESULT_TOOL
+                    },
+                ) +
+                    arguments,
                 60_000,
             ),
             "실제 Aeron client ${arguments.joinToString(" ")}",
@@ -630,7 +691,20 @@ private class DockerFundsOrderDeliveryVerification {
         arguments: List<String>,
         timeoutMs: Long,
     ): VerificationCommandResult =
-        command(listOf("docker", "compose", "--project-name", runId, "--file", composeFile.toString()) + arguments, timeoutMs)
+        command(
+            listOf("docker", "compose", "--project-name", runId, "--file", composeFile.toString()) +
+                (
+                    if (resultScenario ==
+                        null
+                    ) {
+                        emptyList()
+                    } else {
+                        listOf("--file", project.resolve("src/test/docker/aeron-result-settlement/compose.yml").toString())
+                    }
+                ) +
+                arguments,
+            timeoutMs,
+        )
 
     private fun command(
         arguments: List<String>,
@@ -709,13 +783,36 @@ private class DockerFundsOrderDeliveryVerification {
                 "src/main/kotlin/com/exchange/core/api/trading/infrastructure/aeron/SplitOrderDeliveryClient.kt",
                 "src/main/kotlin/com/exchange/core/api/trading/infrastructure/codec/SplitOrderDeliveryCodec.kt",
                 "src/main/proto/split_order_delivery.proto",
+            ).plus(
+                if (resultScenario == null) {
+                    emptyList()
+                } else {
+                    listOf(
+                        "src/main/kotlin/com/exchange/core/api/trading/infrastructure/aeron/MatchingResultDeliveryAgent.kt",
+                        "src/main/kotlin/com/exchange/core/api/trading/infrastructure/aeron/SplitResultDeliveryClient.kt",
+                        "src/main/kotlin/com/exchange/core/api/trading/infrastructure/codec/SplitResultDeliveryCodec.kt",
+                        "src/main/proto/split_result_delivery.proto",
+                        "src/test/kotlin/com/exchange/core/api/trading/infrastructure/aeron/MatchingResultVerificationTool.kt",
+                        "src/test/kotlin/com/exchange/core/api/trading/infrastructure/aeron/DockerMatchingResultDeliveryTest.kt",
+                    )
+                },
             ).associateWith { path -> runCatching { sha256(project.resolve(path)) }.getOrNull() }
         val report =
             linkedMapOf(
                 "runId" to runId,
                 "createdAt" to Instant.now().toString(),
                 "success" to (failures.isEmpty() && cleaned),
-                "baseCommit" to "8d2572bfc98748f44569f5fecbaa8a7c47e87285",
+                "baseCommit" to
+                    (
+                        if (resultScenario ==
+                            null
+                        ) {
+                            "8d2572bfc98748f44569f5fecbaa8a7c47e87285"
+                        } else {
+                            "33e464fef96327bc19100c8a098aae9b7eafd0ff"
+                        }
+                    ),
+                "fixture" to resultFixture,
                 "headCommit" to headCommit,
                 "productSourceSha256" to fingerprints,
                 "image" to image,
@@ -740,15 +837,25 @@ private class DockerFundsOrderDeliveryVerification {
                 "checkpoints" to checkpoints,
                 "issues" to failures,
                 "commands" to commands.records,
-                "unverified" to listOf("#169 결과 역전달·정산", "장애 과반·복합 복원·장기 부하", "악의적 peer 인증·위조 방어"),
+                "unverified" to
+                    (
+                        (if (resultScenario == null) listOf("#169 결과 역전달·정산") else emptyList()) +
+                            listOf("장애 과반·복합 복원·장기 부하", "악의적 peer 인증·위조 방어")
+                    ),
             )
         val encoded = mapper.writerWithDefaultPrettyPrinter().writeValueAsString(report)
         check(encoded.toByteArray(Charsets.UTF_8).size <= 4L * MIB) { "결과 보고서 단일 파일 4MiB 상한 초과" }
-        Files.writeString(reports.resolve("result.json"), encoded)
+        if (resultScenario ==
+            null
+        ) {
+            Files.writeString(reports.resolve("result.json"), encoded)
+        } else {
+            writeSplitTestJson(reports.resolve("result.json"), report)
+        }
         checkReportBudget()
     }
 
-    private fun number(
+    internal fun number(
         node: JsonNode,
         field: String,
     ): Long {
@@ -770,6 +877,7 @@ private class DockerFundsOrderDeliveryVerification {
 
     companion object {
         private val SERVICES = listOf("funds0", "funds1", "funds2", "matching0", "matching1", "matching2")
+        private const val RESULT_TOOL = "com.exchange.core.api.trading.infrastructure.aeron.MatchingResultVerificationToolKt"
         private const val TOOL = "com.exchange.core.api.trading.infrastructure.aeron.SplitTradingVerificationToolKt"
         private const val MIB = 1_024L * 1_024
         private const val GIB = 1_024L * MIB

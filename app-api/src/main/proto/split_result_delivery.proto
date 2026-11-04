@@ -1,0 +1,127 @@
+syntax = "proto3";
+
+package exchange.resultdelivery;
+
+import "order_admission.proto";
+import "split_order_delivery.proto";
+
+option java_package = "com.exchange.core.api.trading.infrastructure.codec.generated";
+option java_multiple_files = true;
+
+// schema89/version1의 별도 프레임이며 전체 원문만 전달한다.
+message SplitResultCommand {
+  optional int64 correlation_id = 1;
+  oneof body {
+    bool describe_peer = 10;
+    SplitMatchingResult apply = 11;
+    SplitSettlementProgress progress = 12;
+    SplitFundsSettledAck record_ack = 13;
+  }
+}
+
+message SplitResultReply {
+  optional int64 correlation_id = 1;
+  optional string code = 2;
+  optional exchange.delivery.SplitRole role = 3;
+  optional exchange.delivery.SplitLineage lineage = 4;
+  optional string topology_sha256 = 5;
+  optional int64 applied_log_position = 6;
+  optional SplitFundsSettledAck ack = 7;
+  optional int64 expected_sequence = 8;
+  optional int64 result_issued = 9;
+  optional string lifecycle = 10;
+}
+
+enum SplitResultDirection {
+  SPLIT_RESULT_DIRECTION_UNSPECIFIED = 0;
+  SPLIT_MATCHING_TO_FUNDS = 1;
+}
+
+message SplitResultStream {
+  optional exchange.delivery.SplitLineage matching_lineage = 1;
+  optional exchange.delivery.SplitLineage funds_lineage = 2;
+  optional string market_id = 3;
+  optional SplitResultDirection direction = 4;
+  optional int64 ownership_epoch = 5;
+  optional int64 configuration_version = 6;
+}
+
+message SplitSettlementProgress {
+  optional SplitResultStream stream = 1;
+  optional exchange.delivery.SplitMarketContext context = 2;
+}
+
+message SplitFundsSettledAck {
+  optional SplitResultStream stream = 1;
+  optional int64 through = 2;
+  optional exchange.delivery.SplitMarketContext context = 3;
+}
+
+enum SplitMatchingOutcome {
+  SPLIT_MATCHING_OUTCOME_UNSPECIFIED = 0;
+  SPLIT_MATCHED = 1;
+  SPLIT_NOT_EXECUTED = 2;
+}
+
+enum SplitNotExecutedReason {
+  SPLIT_NOT_EXECUTED_REASON_UNSPECIFIED = 0;
+  SPLIT_ACTIVE_ORDER_LIMIT = 1;
+  SPLIT_RESULT_TOO_LARGE = 2;
+}
+
+enum SplitOrderDisposition {
+  SPLIT_ORDER_DISPOSITION_UNSPECIFIED = 0;
+  SPLIT_RESTING = 1;
+  SPLIT_TERMINAL = 2;
+  SPLIT_ORDER_NOT_EXECUTED = 3;
+}
+
+message SplitMatchingResult {
+  optional int32 format_version = 1;
+  optional SplitResultStream stream = 2;
+  optional int64 result_sequence = 3;
+  optional exchange.delivery.SplitDispatch input = 4;
+  optional SplitMatchingOutcome outcome = 5;
+  optional SplitNotExecutedReason reason = 6;
+  optional int64 engine_sequence_before = 7;
+  optional int64 engine_sequence_after = 8;
+  optional int32 event_count = 9;
+  repeated SplitMatchingEvent events = 10;
+  repeated SplitMatchingEffect effects = 11;
+}
+
+message SplitMatchingEvent {
+  oneof body {
+    SplitTradeExecuted trade = 1;
+    SplitOrderEnteredBook entered = 2;
+  }
+}
+
+message SplitTradeExecuted {
+  optional string market_id = 1;
+  optional int64 engine_sequence = 2;
+  optional string maker_order_id = 3;
+  optional string taker_order_id = 4;
+  optional string maker_user_id = 5;
+  optional string taker_user_id = 6;
+  optional exchange.admission.Side side = 7;
+  optional int64 price = 8;
+  optional int64 quantity = 9;
+}
+
+message SplitOrderEnteredBook {
+  optional string market_id = 1;
+  optional int64 engine_sequence = 2;
+  optional string order_id = 3;
+  optional string user_id = 4;
+  optional exchange.admission.Side side = 5;
+  optional int64 price = 6;
+  optional int64 remaining_quantity = 7;
+}
+
+message SplitMatchingEffect {
+  optional exchange.delivery.SplitDispatch origin = 1;
+  optional int64 before_quantity = 2;
+  optional int64 after_quantity = 3;
+  optional SplitOrderDisposition disposition = 4;
+}

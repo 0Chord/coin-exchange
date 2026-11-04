@@ -175,6 +175,21 @@ class SplitTradingRoleStartupTest {
     }
 
     @Test
+    fun `주문과 결과 구성 지문은 기존 바이트의 SHA256을 보존한다`() {
+        // 실행물 자체의 지문은 빌드마다 달라지므로 고정된 manifest 입력으로 인코딩 계약을 검사한다.
+        val configuration =
+            configuration(
+                artifactSha256 = "a".repeat(64),
+                schemaSha256 = "b".repeat(64),
+                deliveryLimits = FundsOrderDeliveryLimits(maxReadEntries = 31, maxInFlightEntries = 47, ackBatchSize = 13),
+                resultDeliveryLimits = MatchingResultDeliveryLimits(maxReadEntries = 3, maxInFlightEntries = 5, ackBatchSize = 11),
+            )
+        // dbf021c의 기존 writer를 이 입력으로 실행해 얻은 두 지문이다.
+        assertEquals("cf97094917f8cd11f86a79e16267038d4d3fb35891d5289c3033152bb3234535", configuration.topologySha256)
+        assertEquals("d81ee8995db8f2d2977b79a67368c3eb80785b1900ad9ad43b20c633ace36876", configuration.resultTopologySha256)
+    }
+
+    @Test
     fun `구성 지문은 정책 담당 세대와 금융 전달 매칭 결과 및 worker 한도에 결속한다`() {
         val baseline = configuration()
         val dispatch = baseline.dispatchLimits
@@ -277,6 +292,68 @@ class SplitTradingRoleStartupTest {
         }
     }
 
+    @Test
+    fun `양방향 결과 모드는 결과 작업 지문과 복구 identity를 별도로 결속한다`() {
+        val baseline = configuration()
+        val changed = configuration(resultDeliveryLimits = MatchingResultDeliveryLimits(maxInFlightEntries = 7))
+        assertEquals(baseline.topologySha256, changed.topologySha256, "기존 schema88 배치 지문은 바꾸지 않는다")
+        assertNotEquals(baseline.resultTopologySha256, changed.resultTopologySha256)
+        val root = directory.resolve("result-mode")
+        val old = settings(root, baseline)
+        val fresh = settings(root, baseline, mode = "RESULT_SETTLEMENT_DEV")
+        assertFalse(old.resultDeliveryEnabled)
+        assertTrue(fresh.resultDeliveryEnabled)
+        assertFalse(old.identityBytes().contentEquals(fresh.identityBytes()))
+        assertTrue(fresh.identityBytes().toString(Charsets.ISO_8859_1).contains(baseline.resultTopologySha256))
+        assertFalse(old.identityBytes().toString(Charsets.ISO_8859_1).contains(baseline.resultTopologySha256))
+        val different = settings(root, changed, mode = "RESULT_SETTLEMENT_DEV")
+        assertFalse(fresh.identityBytes().contentEquals(different.identityBytes()))
+        assertFalse(Files.exists(root))
+    }
+
+    @Test
+    fun `정상 결과 한 건이나 ACK 공간을 수용하지 못하는 새 모드는 자원 생성 전에 거절한다`() {
+        val variants =
+            listOf(
+                MatchingResultDeliveryLimits(maxReadBytes = 1),
+                MatchingResultDeliveryLimits(maxInFlightBytes = 1024),
+            )
+        variants.forEachIndexed { index, limits ->
+            val root = directory.resolve("undersized-result-$index")
+            val configuration = configuration(resultDeliveryLimits = limits)
+            // 한 방향 실행은 이 별도 결과 한도를 사용하지 않는다.
+            assertFalse(settings(root, configuration).resultDeliveryEnabled)
+            assertFailsWith<IllegalArgumentException> { settings(root, configuration, mode = "RESULT_SETTLEMENT_DEV") }
+            assertFalse(Files.exists(root))
+        }
+    }
+
+    @Test
+    fun `양방향 지문은 결과 조회 전송 ACK 재시도 종료의 모든 한도 변경을 구분한다`() {
+        val limits = MatchingResultDeliveryLimits()
+        val baseline = configuration(resultDeliveryLimits = limits)
+        val variants =
+            listOf(
+                limits.copy(maxReadEntries = 7),
+                limits.copy(maxReadBytes = limits.maxReadBytes - 1),
+                limits.copy(maxInFlightEntries = 7),
+                limits.copy(maxInFlightBytes = limits.maxInFlightBytes - 1),
+                limits.copy(ackBatchSize = 15),
+                limits.copy(ackDelayNs = limits.ackDelayNs - 1),
+                limits.copy(attemptTimeoutNs = limits.attemptTimeoutNs - 1),
+                limits.copy(reconnectDelayNs = limits.reconnectDelayNs - 1),
+                limits.copy(busyMinDelayNs = limits.busyMinDelayNs - 1),
+                limits.copy(busyMaxDelayNs = limits.busyMaxDelayNs - 1),
+                limits.copy(keepAliveNs = limits.keepAliveNs - 1),
+                limits.copy(shutdownTimeoutMs = limits.shutdownTimeoutMs - 1),
+            ).map { configuration(resultDeliveryLimits = it) }
+        variants.forEach {
+            assertEquals(baseline.topologySha256, it.topologySha256)
+            assertNotEquals(baseline.resultTopologySha256, it.resultTopologySha256)
+        }
+        assertEquals(variants.size, variants.map { it.resultTopologySha256 }.toSet().size)
+    }
+
     private fun replaceIdentityText(
         original: ByteArray,
         text: String,
@@ -316,10 +393,13 @@ class SplitTradingRoleStartupTest {
         policyVersion: Long = 1,
         ownershipEpoch: Long = 1,
         resourceLimits: TradingResourceLimits = TradingResourceLimits(),
+        artifactSha256: String = BoundedExecutionIdentity.artifactSha256,
+        schemaSha256: String = BoundedExecutionIdentity.schemaSha256,
         dispatchLimits: FundsDispatchLimits? = null,
         matchingLimits: MatchingIntakeLimits? = null,
         resultLimits: FundsResultLimits = FundsResultLimits(),
         deliveryLimits: FundsOrderDeliveryLimits = FundsOrderDeliveryLimits(),
+        resultDeliveryLimits: MatchingResultDeliveryLimits = MatchingResultDeliveryLimits(),
     ): SplitTradingConfiguration {
         val context =
             TradingMarketContext(
@@ -336,8 +416,8 @@ class SplitTradingRoleStartupTest {
             TradingClusterManifest(
                 fundsLineage,
                 "split-startup-test",
-                BoundedExecutionIdentity.artifactSha256,
-                BoundedExecutionIdentity.schemaSha256,
+                artifactSha256,
+                schemaSha256,
                 7,
                 listOf(context),
                 resourceLimits,
@@ -353,6 +433,7 @@ class SplitTradingRoleStartupTest {
             matchingLimits ?: MatchingIntakeLimits.defaults(topology, matching),
             resultLimits,
             deliveryLimits,
+            resultDeliveryLimits,
         )
     }
 

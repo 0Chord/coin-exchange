@@ -54,7 +54,7 @@ internal fun splitTradingConfiguration(
 }
 
 internal fun splitTradingSettings(environment: Map<String, String> = System.getenv()): SplitTradingNodeSettings {
-    require(environment["SPLIT_MODE"] == "ORDER_DELIVERY_DEV") { "분리 노드는 명시한 개발 모드가 필요합니다" }
+    require(environment["SPLIT_MODE"] in setOf("ORDER_DELIVERY_DEV", "RESULT_SETTLEMENT_DEV")) { "분리 노드는 명시한 개발 모드가 필요합니다" }
 
     fun required(name: String) = requireNotNull(environment[name]) { "$name 설정이 필요합니다" }
     val role = TradingServiceRole.parse(required("SPLIT_ROLE"))
@@ -88,7 +88,7 @@ internal fun splitTradingSettings(environment: Map<String, String> = System.gete
     )
 }
 
-/** 명시한 개발 모드의 실제 실행 진입점이다. 인증·인가 및 역방향 정산은 포함하지 않는다. */
+/** 명시한 개발 모드의 실제 실행 진입점이다. 일반 HTTP와 인증·인가는 변경하지 않는다. */
 fun main() {
     val settings = splitTradingSettings()
     DevelopmentSplitTradingNode.start(settings).use { node ->
@@ -97,11 +97,13 @@ fun main() {
             mapOf(
                 "kind" to "SPLIT_RUNTIME_READY",
                 "role" to settings.role.name,
+                "mode" to settings.mode,
                 "memberId" to settings.transport.memberId,
                 "pid" to ProcessHandle.current().pid(),
                 "clusterId" to settings.clusterId,
                 "storageLevels" to node.storageLevels,
                 "topologySha256" to settings.configuration.topologySha256,
+                "resultTopologySha256" to if (settings.resultDeliveryEnabled) settings.configuration.resultTopologySha256 else null,
                 "tradingReady" to node.tradingReady,
             ),
         )
