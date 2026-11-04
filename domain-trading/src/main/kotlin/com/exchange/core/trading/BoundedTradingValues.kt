@@ -121,12 +121,13 @@ class TradingRecoveryState(
     liveOrders: List<TradingLiveOrderSnapshot>,
     markets: List<TradingMarketProgressSnapshot>,
     val matching: MatchingCheckpoint,
-    val inbox: TradingInboxSnapshot,
+    inbox: TradingInboxSnapshot,
     val lastAdmissionSequence: Long,
     val lastPreparationSequence: Long,
     val preparationCanonicalBytes: Long,
     val incident: TradingIncident? = null,
 ) {
+    val inbox = orderRequestInbox(inbox)
     val balances = Collections.unmodifiableList(balances.toList())
     val feeRevenueByAsset = Collections.unmodifiableMap(LinkedHashMap(feeRevenueByAsset))
     val usedBalances = Collections.unmodifiableList(usedBalances.toList())
@@ -164,14 +165,7 @@ class BoundedFundingRecoveryState(
     val preparations = Collections.unmodifiableList(preparations.toList())
     val accounts = Collections.unmodifiableList(accounts.toList())
     val liveOrders = Collections.unmodifiableList(liveOrders.toList())
-    val inbox =
-        TradingInboxSnapshot(
-            Collections.unmodifiableList(
-                inbox.channels.map {
-                    it.copy(entries = Collections.unmodifiableList(it.entries.toList()))
-                },
-            ),
-        )
+    val inbox = orderRequestInbox(inbox)
     val markets =
         Collections.unmodifiableList(
             markets.map {
@@ -179,6 +173,17 @@ class BoundedFundingRecoveryState(
             },
         )
 }
+
+/** 기존 금융 복구 형식에 아직 지원하지 않는 취소 기록을 섞어 저장하지 않는다. */
+private fun orderRequestInbox(inbox: TradingInboxSnapshot): TradingInboxSnapshot =
+    TradingInboxSnapshot(
+        Collections.unmodifiableList(
+            inbox.channels.map {
+                require(it.cancelEntries.isEmpty()) { "financial recovery does not support cancellation receipts yet" }
+                it.copy(entries = Collections.unmodifiableList(it.entries.toList()), cancelEntries = emptyList())
+            },
+        ),
+    )
 
 internal data class BoundedFundingExecution(
     val manifest: TradingClusterManifest,
