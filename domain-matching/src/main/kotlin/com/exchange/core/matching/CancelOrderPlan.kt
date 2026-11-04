@@ -7,7 +7,6 @@ class CancelOrderPlan internal constructor(
     private val engineToken: Any,
     internal val baseSequence: Long,
     val command: CancelOrderCommand,
-    internal val target: RestingOrderSnapshot?,
     val event: MatchingEvent,
 ) {
     val events: List<MatchingEvent> = Collections.singletonList(event)

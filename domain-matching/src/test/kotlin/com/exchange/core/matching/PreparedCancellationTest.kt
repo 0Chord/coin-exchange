@@ -31,6 +31,8 @@ class PreparedCancellationTest {
         assertEquals(2L, engine.lastEngineSequence(market))
         assertEquals(plan.events, engine.apply(plan))
         assertTrue(engine.restingOrders(market).isEmpty())
+        assertFailsWith<IllegalStateException> { engine.apply(plan) }
+        assertEquals(3L, engine.lastEngineSequence(market))
         val following = engine.process(submit(OrderId("following"), Side.SELL, 2))
         assertTrue(following.single() is OrderEnteredBook)
         assertFailsWith<IllegalStateException> { engine.apply(plan) }
@@ -69,6 +71,29 @@ class PreparedCancellationTest {
         assertFailsWith<IllegalStateException> { engine.apply(plan) }
         assertEquals(before, engine.restingOrders(market))
         assertEquals(2L, engine.lastEngineSequence(market))
+
+        val empty = MatchingEngine()
+        val beforeRestore = empty.prepareCancel(CancelOrderCommand(market, target, user))
+        empty.restoreActiveCheckpoint(MatchingCheckpoint(emptyList()))
+        assertFailsWith<IllegalArgumentException> { empty.apply(beforeRestore) }
+        assertEquals(0L, empty.lastEngineSequence(market))
+        assertTrue(empty.restingOrders(market).isEmpty())
+    }
+
+    @Test
+    fun `준비 뒤 부분 체결되면 이전 취소 후보는 현재 잔량을 바꾸지 않는다`() {
+        val engine = MatchingEngine()
+        engine.process(submit(target, Side.BUY, 3))
+        val command = CancelOrderCommand(market, target, user)
+        val plan = engine.prepareCancel(command)
+        engine.process(submit(OrderId("sell"), Side.SELL, 1))
+        val before = engine.restingOrders(market)
+
+        assertFailsWith<IllegalStateException> { engine.apply(plan) }
+        assertEquals(before, engine.restingOrders(market))
+        assertEquals(Quantity(2), before.single().remainingQuantity)
+        assertEquals(2L, engine.lastEngineSequence(market))
+        assertEquals(listOf(OrderCancelled(market, 3, target, user, Quantity(2))), engine.process(command))
     }
 
     private fun submit(

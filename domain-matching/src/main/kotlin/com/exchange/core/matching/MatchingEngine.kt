@@ -302,19 +302,13 @@ class MatchingEngine {
                     OrderCancelled(command.marketId, sequence, existing.orderId, existing.userId, existing.remainingQuantity)
                 }
             }
-        val target =
-            existing?.let {
-                RestingOrderSnapshot(it.orderId, it.userId, it.side, it.price, it.originalQuantity, it.remainingQuantity)
-            }
-        return CancelOrderPlan(planToken, before, command, target, event)
+        return CancelOrderPlan(planToken, before, command, event)
     }
 
     /** 준비 뒤 같은 마켓이 전진했거나 다른 엔진에서 발급한 후보는 적용하지 않는다. */
     fun validate(plan: CancelOrderPlan) {
         require(plan.belongsTo(planToken)) { "matching plan belongs to another engine" }
         check(lastSequence(plan.command.marketId) == plan.baseSequence) { "matching plan is stale or already applied" }
-        val expected = prepareCancel(plan.command)
-        check(expected.target == plan.target && expected.event == plan.event) { "matching cancellation target changed" }
     }
 
     fun apply(plan: CancelOrderPlan): List<MatchingEvent> {
