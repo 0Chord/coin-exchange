@@ -13,7 +13,7 @@ import java.util.Collections
  * LIMIT/GTC 매칭 상태의 소유자. 한 실행자가 같은 마켓의 명령을 순차 호출해야 한다.
  *
  * 새 주문은 [prepareSubmit]으로 읽기 전용 후보를 만들고 [apply]에서만 반영한다.
- * 기존 [process]도 동일한 계산·적용 경로를 사용하며, CANCEL은 즉시 처리한다.
+ * 취소도 [prepareCancel]로 후보를 만든 뒤 [apply]에서만 주문장과 순번을 변경한다.
  */
 class MatchingEngine {
     private val orderBooks = HashMap<MarketId, OrderBook>()
@@ -84,7 +84,7 @@ class MatchingEngine {
     fun process(command: MatchingCommand): List<MatchingEvent> =
         when (command) {
             is SubmitOrderCommand -> apply(prepareSubmit(command))
-            is CancelOrderCommand -> processCancel(command)
+            is CancelOrderCommand -> apply(prepareCancel(command))
         }
 
     /** 매수 가격 우선·매도 가격 우선, 같은 가격 FIFO 순서의 현재 주문 값 복사본. */
@@ -283,11 +283,11 @@ class MatchingEngine {
         return plan.events
     }
 
-    private fun processCancel(command: CancelOrderCommand): List<MatchingEvent> {
+    fun prepareCancel(command: CancelOrderCommand): CancelOrderPlan {
         // 순번이 부족하면 빈 book 생성이나 주문 삭제보다 먼저 실패한다.
-        val sequence = Math.addExact(lastSequence(command.marketId), 1L)
-        val book = orderBook(command.marketId)
-        val existing = book.find(command.orderId)
+        val before = lastSequence(command.marketId)
+        val sequence = Math.addExact(before, 1L)
+        val existing = orderBooks[command.marketId]?.find(command.orderId)
         val event =
             when {
                 existing == null -> {
@@ -302,9 +302,22 @@ class MatchingEngine {
                     OrderCancelled(command.marketId, sequence, existing.orderId, existing.userId, existing.remainingQuantity)
                 }
             }
-        if (event is OrderCancelled) checkNotNull(book.cancel(command.orderId)) { "order disappeared while cancelling" }
-        lastEngineSequences[command.marketId] = sequence
-        return listOf(event)
+        return CancelOrderPlan(planToken, before, command, event)
+    }
+
+    /** 준비 뒤 같은 마켓이 전진했거나 다른 엔진에서 발급한 후보는 적용하지 않는다. */
+    fun validate(plan: CancelOrderPlan) {
+        require(plan.belongsTo(planToken)) { "matching plan belongs to another engine" }
+        check(lastSequence(plan.command.marketId) == plan.baseSequence) { "matching plan is stale or already applied" }
+    }
+
+    fun apply(plan: CancelOrderPlan): List<MatchingEvent> {
+        validate(plan)
+        if (plan.event is OrderCancelled) {
+            checkNotNull(orderBooks[plan.command.marketId]?.cancel(plan.command.orderId)) { "order disappeared while cancelling" }
+        }
+        lastEngineSequences[plan.command.marketId] = plan.lastEngineSequence
+        return plan.events
     }
 
     private fun validateSupportedSubmit(command: SubmitOrderCommand) {
