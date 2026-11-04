@@ -234,7 +234,7 @@ internal class SplitOrderDeliveryCodec {
             )
         }
 
-    private fun dispatch(input: FundsOrderDispatch): SplitDispatch {
+    internal fun dispatch(input: FundsOrderDispatch): SplitDispatch {
         require(input.dispatchSequence > 0 && input.admissionSequence > 0 && input.marketAdmissionSequence > 0)
         return SplitDispatch
             .newBuilder()
@@ -249,7 +249,7 @@ internal class SplitOrderDeliveryCodec {
             .build()
     }
 
-    private fun dispatch(wire: SplitDispatch): FundsOrderDispatch {
+    internal fun dispatch(wire: SplitDispatch): FundsOrderDispatch {
         complete(wire)
         require(wire.formatVersion == 1)
         require(wire.dispatchSequence > 0 && wire.admissionSequence > 0 && wire.marketAdmissionSequence > 0)
@@ -337,7 +337,7 @@ internal class SplitOrderDeliveryCodec {
         )
     }
 
-    private fun context(value: TradingMarketContext): SplitMarketContext {
+    internal fun context(value: TradingMarketContext): SplitMarketContext {
         require(value.ordinal >= 0)
         val market = value.market
         return SplitMarketContext
@@ -353,7 +353,7 @@ internal class SplitOrderDeliveryCodec {
             .build()
     }
 
-    private fun context(wire: SplitMarketContext): TradingMarketContext {
+    internal fun context(wire: SplitMarketContext): TradingMarketContext {
         complete(wire)
         require(wire.ordinal >= 0)
         return TradingMarketContext(
@@ -431,26 +431,26 @@ internal class SplitOrderDeliveryCodec {
         return FundsMatchingAppliedAck(stream(wire.stream), wire.through, context(wire.context))
     }
 
-    private fun lineage(value: ClusterLineage): SplitLineage =
+    internal fun lineage(value: ClusterLineage): SplitLineage =
         SplitLineage
             .newBuilder()
             .setHigh(value.high)
             .setLow(value.low)
             .build()
 
-    private fun lineage(wire: SplitLineage): ClusterLineage {
+    internal fun lineage(wire: SplitLineage): ClusterLineage {
         complete(wire)
         return ClusterLineage(wire.high, wire.low)
     }
 
-    private fun role(value: TradingServiceRole): SplitRole =
+    internal fun role(value: TradingServiceRole): SplitRole =
         when (value) {
             TradingServiceRole.FUNDS -> SplitRole.SPLIT_FUNDS
             TradingServiceRole.MATCHING -> SplitRole.SPLIT_MATCHING
             else -> throw IllegalArgumentException("integrated role cannot enter split wire")
         }
 
-    private fun role(wire: SplitRole): TradingServiceRole =
+    internal fun role(wire: SplitRole): TradingServiceRole =
         when (wire) {
             SplitRole.SPLIT_FUNDS -> TradingServiceRole.FUNDS
             SplitRole.SPLIT_MATCHING -> TradingServiceRole.MATCHING

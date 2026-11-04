@@ -277,6 +277,68 @@ class SplitTradingRoleStartupTest {
         }
     }
 
+    @Test
+    fun `양방향 결과 모드는 결과 작업 지문과 복구 identity를 별도로 결속한다`() {
+        val baseline = configuration()
+        val changed = configuration(resultDeliveryLimits = MatchingResultDeliveryLimits(maxInFlightEntries = 7))
+        assertEquals(baseline.topologySha256, changed.topologySha256, "기존 schema88 배치 지문은 바꾸지 않는다")
+        assertNotEquals(baseline.resultTopologySha256, changed.resultTopologySha256)
+        val root = directory.resolve("result-mode")
+        val old = settings(root, baseline)
+        val fresh = settings(root, baseline, mode = "RESULT_SETTLEMENT_DEV")
+        assertFalse(old.resultDeliveryEnabled)
+        assertTrue(fresh.resultDeliveryEnabled)
+        assertFalse(old.identityBytes().contentEquals(fresh.identityBytes()))
+        assertTrue(fresh.identityBytes().toString(Charsets.ISO_8859_1).contains(baseline.resultTopologySha256))
+        assertFalse(old.identityBytes().toString(Charsets.ISO_8859_1).contains(baseline.resultTopologySha256))
+        val different = settings(root, changed, mode = "RESULT_SETTLEMENT_DEV")
+        assertFalse(fresh.identityBytes().contentEquals(different.identityBytes()))
+        assertFalse(Files.exists(root))
+    }
+
+    @Test
+    fun `정상 결과 한 건이나 ACK 공간을 수용하지 못하는 새 모드는 자원 생성 전에 거절한다`() {
+        val variants =
+            listOf(
+                MatchingResultDeliveryLimits(maxReadBytes = 1),
+                MatchingResultDeliveryLimits(maxInFlightBytes = 1024),
+            )
+        variants.forEachIndexed { index, limits ->
+            val root = directory.resolve("undersized-result-$index")
+            val configuration = configuration(resultDeliveryLimits = limits)
+            // 한 방향 실행은 이 별도 결과 한도를 사용하지 않는다.
+            assertFalse(settings(root, configuration).resultDeliveryEnabled)
+            assertFailsWith<IllegalArgumentException> { settings(root, configuration, mode = "RESULT_SETTLEMENT_DEV") }
+            assertFalse(Files.exists(root))
+        }
+    }
+
+    @Test
+    fun `양방향 지문은 결과 조회 전송 ACK 재시도 종료의 모든 한도 변경을 구분한다`() {
+        val limits = MatchingResultDeliveryLimits()
+        val baseline = configuration(resultDeliveryLimits = limits)
+        val variants =
+            listOf(
+                limits.copy(maxReadEntries = 7),
+                limits.copy(maxReadBytes = limits.maxReadBytes - 1),
+                limits.copy(maxInFlightEntries = 7),
+                limits.copy(maxInFlightBytes = limits.maxInFlightBytes - 1),
+                limits.copy(ackBatchSize = 15),
+                limits.copy(ackDelayNs = limits.ackDelayNs - 1),
+                limits.copy(attemptTimeoutNs = limits.attemptTimeoutNs - 1),
+                limits.copy(reconnectDelayNs = limits.reconnectDelayNs - 1),
+                limits.copy(busyMinDelayNs = limits.busyMinDelayNs - 1),
+                limits.copy(busyMaxDelayNs = limits.busyMaxDelayNs - 1),
+                limits.copy(keepAliveNs = limits.keepAliveNs - 1),
+                limits.copy(shutdownTimeoutMs = limits.shutdownTimeoutMs - 1),
+            ).map { configuration(resultDeliveryLimits = it) }
+        variants.forEach {
+            assertEquals(baseline.topologySha256, it.topologySha256)
+            assertNotEquals(baseline.resultTopologySha256, it.resultTopologySha256)
+        }
+        assertEquals(variants.size, variants.map { it.resultTopologySha256 }.toSet().size)
+    }
+
     private fun replaceIdentityText(
         original: ByteArray,
         text: String,
@@ -320,6 +382,7 @@ class SplitTradingRoleStartupTest {
         matchingLimits: MatchingIntakeLimits? = null,
         resultLimits: FundsResultLimits = FundsResultLimits(),
         deliveryLimits: FundsOrderDeliveryLimits = FundsOrderDeliveryLimits(),
+        resultDeliveryLimits: MatchingResultDeliveryLimits = MatchingResultDeliveryLimits(),
     ): SplitTradingConfiguration {
         val context =
             TradingMarketContext(
@@ -353,6 +416,7 @@ class SplitTradingRoleStartupTest {
             matchingLimits ?: MatchingIntakeLimits.defaults(topology, matching),
             resultLimits,
             deliveryLimits,
+            resultDeliveryLimits,
         )
     }
 

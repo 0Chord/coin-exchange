@@ -1,6 +1,7 @@
 package com.exchange.core.api.trading.infrastructure.aeron
 
 import com.exchange.core.api.trading.infrastructure.codec.SplitOrderDeliveryCodec
+import com.exchange.core.api.trading.infrastructure.codec.SplitResultDeliveryCodec
 import com.exchange.core.api.trading.infrastructure.history.FundsRoleSnapshotCodec
 import com.exchange.core.api.trading.infrastructure.history.MatchingRoleSnapshotCodec
 import com.exchange.core.fee.TradingFeeCalculator
@@ -35,12 +36,14 @@ internal class SplitTradingConfiguration(
     val matchingLimits: MatchingIntakeLimits = MatchingIntakeLimits.defaults(topology, matchingDeclaration),
     val resultLimits: FundsResultLimits = FundsResultLimits(),
     val deliveryLimits: FundsOrderDeliveryLimits = FundsOrderDeliveryLimits(),
+    val resultDeliveryLimits: MatchingResultDeliveryLimits = MatchingResultDeliveryLimits(),
 ) {
     val fundsLineage get() = topology.fundsManifest.lineage
     val matchingLineage get() = matchingDeclaration.lineage
     val dispatchConfiguration = FundsDispatchConfiguration(topology, dispatchLimits)
     val matchingConfiguration = MatchingIntakeConfiguration(topology, matchingDeclaration, matchingLimits)
     val topologySha256: String
+    val resultTopologySha256: String
 
     init {
         require(fundsDeclaration.serviceRole == TradingServiceRole.FUNDS)
@@ -89,6 +92,40 @@ internal class SplitTradingConfiguration(
                 }
                 MessageDigest.getInstance("SHA-256").digest(bytes.toByteArray()).joinToString("") { "%02x".format(it) }
             }
+        resultTopologySha256 =
+            ByteArrayOutputStream().use { bytes ->
+                DataOutputStream(bytes).use { out ->
+                    out.writeUTF("split-result-delivery-v1;schema=89;version=1;header=12;session-limit=16")
+                    out.writeUTF(topologySha256)
+                    out.writeInt(SplitResultDeliveryCodec.MAX_MESSAGE_BYTES)
+                    with(resultDeliveryLimits) {
+                        out.writeInt(maxReadEntries)
+                        out.writeLong(maxReadBytes)
+                        out.writeInt(maxInFlightEntries)
+                        out.writeLong(maxInFlightBytes)
+                        out.writeInt(ackBatchSize)
+                        out.writeLong(ackDelayNs)
+                        out.writeLong(attemptTimeoutNs)
+                        out.writeLong(reconnectDelayNs)
+                        out.writeLong(busyMinDelayNs)
+                        out.writeLong(busyMaxDelayNs)
+                        out.writeLong(keepAliveNs)
+                        out.writeLong(shutdownTimeoutMs)
+                    }
+                }
+                MessageDigest.getInstance("SHA-256").digest(bytes.toByteArray()).joinToString("") { "%02x".format(it) }
+            }
+    }
+
+    /** 기존 한 방향 실행의 한도를 바꾸지 않고 새 양방향 모드만 자원 생성 전에 검사한다. */
+    fun requireResultDeliveryCompatible() {
+        resultLimits.requireCompatible(matchingLimits)
+        require(resultDeliveryLimits.maxReadBytes >= matchingLimits.maxSingleResultBytes) { "단일 최대 결과를 조회할 공간이 필요합니다" }
+        require(
+            SplitResultDeliveryCodec.maximumResultFrameBytes(matchingLimits.maxSingleResultBytes, matchingLimits.maxResultEvents) <=
+                SplitResultDeliveryCodec.MAX_MESSAGE_BYTES,
+        ) { "허용된 전체 결과가 전송 한도를 넘습니다" }
+        resultDeliveryLimits.requireCompatible(this)
     }
 
     fun funds(): BoundedFundingState =
