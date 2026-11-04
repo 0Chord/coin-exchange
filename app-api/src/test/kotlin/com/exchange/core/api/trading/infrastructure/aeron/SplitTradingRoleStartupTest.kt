@@ -175,6 +175,21 @@ class SplitTradingRoleStartupTest {
     }
 
     @Test
+    fun `주문과 결과 구성 지문은 기존 바이트의 SHA256을 보존한다`() {
+        // 실행물 자체의 지문은 빌드마다 달라지므로 고정된 manifest 입력으로 인코딩 계약을 검사한다.
+        val configuration =
+            configuration(
+                artifactSha256 = "a".repeat(64),
+                schemaSha256 = "b".repeat(64),
+                deliveryLimits = FundsOrderDeliveryLimits(maxReadEntries = 31, maxInFlightEntries = 47, ackBatchSize = 13),
+                resultDeliveryLimits = MatchingResultDeliveryLimits(maxReadEntries = 3, maxInFlightEntries = 5, ackBatchSize = 11),
+            )
+        // dbf021c의 기존 writer를 이 입력으로 실행해 얻은 두 지문이다.
+        assertEquals("cf97094917f8cd11f86a79e16267038d4d3fb35891d5289c3033152bb3234535", configuration.topologySha256)
+        assertEquals("d81ee8995db8f2d2977b79a67368c3eb80785b1900ad9ad43b20c633ace36876", configuration.resultTopologySha256)
+    }
+
+    @Test
     fun `구성 지문은 정책 담당 세대와 금융 전달 매칭 결과 및 worker 한도에 결속한다`() {
         val baseline = configuration()
         val dispatch = baseline.dispatchLimits
@@ -378,6 +393,8 @@ class SplitTradingRoleStartupTest {
         policyVersion: Long = 1,
         ownershipEpoch: Long = 1,
         resourceLimits: TradingResourceLimits = TradingResourceLimits(),
+        artifactSha256: String = BoundedExecutionIdentity.artifactSha256,
+        schemaSha256: String = BoundedExecutionIdentity.schemaSha256,
         dispatchLimits: FundsDispatchLimits? = null,
         matchingLimits: MatchingIntakeLimits? = null,
         resultLimits: FundsResultLimits = FundsResultLimits(),
@@ -399,8 +416,8 @@ class SplitTradingRoleStartupTest {
             TradingClusterManifest(
                 fundsLineage,
                 "split-startup-test",
-                BoundedExecutionIdentity.artifactSha256,
-                BoundedExecutionIdentity.schemaSha256,
+                artifactSha256,
+                schemaSha256,
                 7,
                 listOf(context),
                 resourceLimits,

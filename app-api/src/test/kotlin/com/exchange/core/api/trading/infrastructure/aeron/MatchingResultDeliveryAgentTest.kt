@@ -47,6 +47,7 @@ import java.util.concurrent.CompletableFuture
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
+import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
@@ -369,6 +370,156 @@ class MatchingResultDeliveryAgentTest {
             f.advance(f.config.resultDeliveryLimits.busyMaxDelayNs)
             f.cycles(20)
             assertEquals(4L, f.confirmed())
+            assertNull(f.agent.failure)
+        }
+    }
+
+    @Test
+    fun `전송이 두 번 거절되어도 같은 결과의 바이트와 요청 번호를 유지한다`() {
+        val f = Fixture()
+        f.produce()
+        f.transport.applyOfferResult = Publication.BACK_PRESSURED
+        f.agent.use {
+            f.cycles(5)
+            val connection = f.transport.fundsConnection
+
+            fun applyOffers() =
+                connection.offers.filter {
+                    f.transport.codec
+                        .decode(it)
+                        .command is SplitResultDeliveryCommand.Apply
+                }
+
+            val first = applyOffers().first()
+            val beforeAdminAction = applyOffers().size
+            assertTrue(f.transport.applies.isEmpty())
+            f.transport.applyOfferResult = Publication.ADMIN_ACTION
+            f.cycles(2)
+            assertTrue(applyOffers().size > beforeAdminAction)
+            assertTrue(f.transport.applies.isEmpty())
+            assertEquals(1, f.matching.recoveryState().resultEntries)
+
+            f.transport.applyOfferResult = null
+            f.cycles(10)
+            val offers = applyOffers()
+            assertTrue(offers.size > beforeAdminAction + 2)
+            offers.forEach { assertContentEquals(first, it) }
+            assertEquals(
+                listOf(
+                    f.transport.codec
+                        .decode(first)
+                        .correlationId,
+                ),
+                offers
+                    .map {
+                        f.transport.codec
+                            .decode(it)
+                            .correlationId
+                    }.distinct(),
+            )
+            assertEquals(1, f.transport.applies.size)
+            assertEquals(1L, f.confirmed())
+            assertNull(f.agent.failure)
+        }
+    }
+
+    @Test
+    fun `연결이나 peer 확인 응답이 끝나지 않으면 기한 뒤에만 다시 연결한다`() {
+        for (waitingForConnection in listOf(true, false)) {
+            val f = Fixture()
+            f.produce()
+            f.transport.deferConnect = waitingForConnection
+            f.transport.dropDescriptions = !waitingForConnection
+            f.agent.use {
+                f.cycles(2)
+                val attempts = f.transport.attempts.toList()
+                val connections = f.transport.connections.toList()
+                assertEquals(2, attempts.size)
+                assertTrue(f.transport.applies.isEmpty())
+
+                f.advance(f.config.resultDeliveryLimits.attemptTimeoutNs - 1)
+                f.cycles(1)
+                assertEquals(2, f.transport.attempts.size)
+                if (waitingForConnection) {
+                    assertTrue(attempts.none { it.closed })
+                } else {
+                    assertTrue(connections.none { it.closed })
+                }
+                f.advance(1)
+                f.cycles(1)
+                assertTrue(attempts.all { it.closed })
+                if (!waitingForConnection) assertTrue(connections.all { it.closed })
+                assertEquals(
+                    if (waitingForConnection) {
+                        "split result peer connection attempt timed out"
+                    } else {
+                        "split result peer description timed out"
+                    },
+                    f.agent.diagnostic,
+                )
+                assertTrue(f.transport.applies.isEmpty())
+                assertEquals(1, f.matching.recoveryState().resultEntries)
+
+                f.transport.deferConnect = false
+                f.transport.dropDescriptions = false
+                f.advance(f.config.resultDeliveryLimits.reconnectDelayNs - 1)
+                f.cycles(1)
+                assertEquals(2, f.transport.attempts.size)
+                f.advance(1)
+                f.cycles(15)
+                assertEquals(4, f.transport.attempts.size)
+                assertEquals(1, f.transport.applies.size)
+                assertEquals(1L, f.confirmed())
+                assertNull(f.agent.failure)
+            }
+        }
+    }
+
+    @Test
+    fun `poll 중 다시 연결하면 닫은 연결을 더 쓰지 않고 늦은 응답을 버린다`() {
+        val f = Fixture()
+        f.produce()
+        var rejectFirstAck = true
+        f.transport.overrideRecorded = { envelope ->
+            if (rejectFirstAck) {
+                rejectFirstAck = false
+                f.transport.reply(envelope, TradingServiceRole.MATCHING, "NOT_READY")
+            } else {
+                null
+            }
+        }
+        f.agent.use {
+            repeat(10) {
+                if (f.transport.recordedAcks.isEmpty()) f.cycles(1)
+            }
+            assertEquals(listOf(1L), f.transport.recordedAcks.map { it.through })
+            val connections = f.transport.connections.toList()
+            val matching = connections.single { it.role == TradingServiceRole.MATCHING }
+            val request = matching.offers.map { f.transport.codec.decode(it) }.single { it.command is SplitResultDeliveryCommand.RecordAck }
+            val offers = matching.offers.size
+            val keepAlives = matching.keepAlives
+
+            // keepalive 기한에 도착한 poll 안에서 NOT_READY가 연결을 닫는다.
+            f.advance(f.config.resultDeliveryLimits.keepAliveNs)
+            f.cycles(1)
+            assertTrue(connections.all { it.closed })
+            assertEquals(offers, matching.offers.size)
+            assertEquals(keepAlives, matching.keepAlives)
+            assertEquals(0L, f.confirmed())
+            assertEquals(1, f.matching.recoveryState().resultEntries)
+            assertEquals("matching result ACK peer is not ready", f.agent.diagnostic)
+
+            // 이전 세션의 응답은 peer 검증에 들어가기 전부터 무시해야 한다.
+            matching.onReply(
+                f.transport.reply(request, TradingServiceRole.MATCHING, "ACKNOWLEDGED", f.ack(1)).copy(topologySha256 = "f".repeat(64)),
+            )
+            assertNull(f.agent.failure)
+            assertEquals(0L, f.confirmed())
+            f.advance(f.config.resultDeliveryLimits.reconnectDelayNs)
+            f.cycles(15)
+            assertEquals(offers, matching.offers.size)
+            assertEquals(keepAlives, matching.keepAlives)
+            assertEquals(1L, f.confirmed())
             assertNull(f.agent.failure)
         }
     }
@@ -752,6 +903,7 @@ class MatchingResultDeliveryAgentTest {
     ) : SplitResultDeliveryConnectionFactory {
         val codec = SplitResultDeliveryCodec()
         val connections = mutableListOf<Connection>()
+        val attempts = mutableListOf<Attempt>()
         val ownerThreads = ConcurrentHashMap.newKeySet<Thread>()
         val offeredApply = CountDownLatch(1)
         val applies = mutableListOf<SplitResultDeliveryEnvelope>()
@@ -759,6 +911,8 @@ class MatchingResultDeliveryAgentTest {
         var progressQueries = 0
         var holdFunds = false
         var dropMatchingReplies = false
+        var deferConnect = false
+        var dropDescriptions = false
         var wrongTopology = false
         var applyOfferResult: Long? = null
         var ackOfferResult: Long? = null
@@ -775,15 +929,23 @@ class MatchingResultDeliveryAgentTest {
             ownerThreads += Thread.currentThread()
             val connection = Connection(if (endpoint.clusterId == 198) TradingServiceRole.FUNDS else TradingServiceRole.MATCHING, onReply)
             connections += connection
-            return object : SplitResultDeliveryConnectAttempt {
-                override fun poll(): SplitResultDeliveryConnection {
-                    ownerThreads += Thread.currentThread()
-                    return connection
-                }
+            return Attempt(connection).also { attempts += it }
+        }
 
-                override fun close() {
-                    ownerThreads += Thread.currentThread()
-                }
+        inner class Attempt(
+            private val connection: Connection,
+        ) : SplitResultDeliveryConnectAttempt {
+            var closed = false
+
+            override fun poll(): SplitResultDeliveryConnection? {
+                ownerThreads += Thread.currentThread()
+                check(!closed)
+                return if (deferConnect) null else connection
+            }
+
+            override fun close() {
+                ownerThreads += Thread.currentThread()
+                closed = true
             }
         }
 
@@ -825,17 +987,19 @@ class MatchingResultDeliveryAgentTest {
             var closed = false
             var polls = 0
             var keepAlives = 0
+            val offers = mutableListOf<ByteArray>()
             val ready = ArrayDeque<SplitResultDeliveryReply>()
             val held = mutableListOf<SplitResultDeliveryReply>()
             override val isClosed get() = closed
 
             override fun offer(bytes: ByteArray): Long {
                 ownerThreads += Thread.currentThread()
+                offers += bytes.copyOf()
                 check(!closed)
                 val envelope = codec.decode(bytes)
                 when (val command = envelope.command) {
                     SplitResultDeliveryCommand.DescribePeer -> {
-                        ready += reply(envelope, role, "DESCRIBED")
+                        if (!dropDescriptions) ready += reply(envelope, role, "DESCRIBED")
                     }
 
                     is SplitResultDeliveryCommand.Apply -> {

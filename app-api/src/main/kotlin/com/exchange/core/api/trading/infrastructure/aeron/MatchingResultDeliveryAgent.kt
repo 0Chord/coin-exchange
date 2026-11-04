@@ -1,18 +1,15 @@
 package com.exchange.core.api.trading.infrastructure.aeron
 
+import com.exchange.core.api.trading.infrastructure.aeron.MatchingResultDeliveryTransport.Frame
 import com.exchange.core.api.trading.infrastructure.codec.SplitResultDeliveryCodec
 import com.exchange.core.api.trading.infrastructure.codec.SplitResultDeliveryCommand
 import com.exchange.core.api.trading.infrastructure.codec.SplitResultDeliveryReply
-import com.exchange.core.trading.ClusterLineage
 import com.exchange.core.trading.MatchingFundsSettledAck
 import com.exchange.core.trading.MatchingResultEnvelope
 import com.exchange.core.trading.MatchingResultRead
 import com.exchange.core.trading.MatchingResultReadStatus
 import com.exchange.core.trading.MatchingResultStream
-import com.exchange.core.trading.TradingLifecycle
 import com.exchange.core.trading.TradingMarketContext
-import com.exchange.core.trading.TradingServiceRole
-import io.aeron.Publication
 import java.util.concurrent.CompletableFuture
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
@@ -110,25 +107,10 @@ internal class MatchingResultDeliveryAgent(
     fundsEndpoint: SplitOrderDeliveryEndpoint,
     matchingEndpoint: SplitOrderDeliveryEndpoint,
     private val limits: MatchingResultDeliveryLimits = configuration.resultDeliveryLimits,
-    private val connectionFactory: SplitResultDeliveryConnectionFactory = AeronSplitResultDeliveryConnectionFactory,
+    connectionFactory: SplitResultDeliveryConnectionFactory = AeronSplitResultDeliveryConnectionFactory,
     private val onFailure: (Throwable) -> Unit = {},
     private val nanoTime: () -> Long = System::nanoTime,
 ) : AutoCloseable {
-    private class Peer(
-        val endpoint: SplitOrderDeliveryEndpoint,
-        val role: TradingServiceRole,
-        val lineage: ClusterLineage,
-    ) {
-        var attempt: SplitResultDeliveryConnectAttempt? = null
-        var connection: SplitResultDeliveryConnection? = null
-        var openedAt = 0L
-        var retryAt: Long? = null
-        var lastKeepAlive = 0L
-        var description: Frame? = null
-        var verified = false
-        var epoch = 0L
-    }
-
     private class Stream(
         val identity: MatchingResultStream,
         val context: TradingMarketContext,
@@ -152,13 +134,6 @@ internal class MatchingResultDeliveryAgent(
         var ackCount = 0
         var ackSince = 0L
     }
-
-    private data class Frame(
-        val correlation: Long,
-        val bytes: ByteArray,
-        val createdAt: Long,
-        var accepted: Boolean = false,
-    )
 
     private data class Flight(
         val stream: Stream,
@@ -197,9 +172,19 @@ internal class MatchingResultDeliveryAgent(
         val frame: Frame,
     )
 
-    private val codec = SplitResultDeliveryCodec()
-    private val funds = Peer(fundsEndpoint, TradingServiceRole.FUNDS, configuration.fundsLineage)
-    private val matching = Peer(matchingEndpoint, TradingServiceRole.MATCHING, configuration.matchingLineage)
+    private val transport =
+        MatchingResultDeliveryTransport(
+            configuration = configuration,
+            fundsEndpoint = fundsEndpoint,
+            matchingEndpoint = matchingEndpoint,
+            limits = limits,
+            connectionFactory = connectionFactory,
+            isCurrentGeneration = { generation != null && source.activeResultGeneration() == generation },
+            onFundsReply = ::receiveFunds,
+            onMatchingReply = ::receiveRecordedAck,
+            onReconnectRequired = ::reconnect,
+            nanoTime = nanoTime,
+        )
     private val streams =
         configuration.matchingConfiguration.markets.map {
             Stream(configuration.matchingConfiguration.resultStream(it.market.marketId), it)
@@ -212,7 +197,6 @@ internal class MatchingResultDeliveryAgent(
     private var ackRequest: AckSubmission? = null
     private var progressRequest: ProgressQuery? = null
     private var generation: Long? = null
-    private var nextCorrelation = 1L
     private var nextStream = 0
     private var thread: Thread? = null
     private var owner: Thread? = null
@@ -253,9 +237,9 @@ internal class MatchingResultDeliveryAgent(
             while (!Thread.currentThread().isInterrupted && generation != null && source.activeResultGeneration() == generation &&
                 nanoTime() - started < flushNs
             ) {
-                if (!funds.verified || !matching.verified) break
-                pollPeers(nanoTime())
-                flushAck(nanoTime(), force = true)
+                if (!transport.ready) break
+                transport.poll(nanoTime())
+                recordSettlementAck(nanoTime(), force = true)
                 if (ackRequest == null && streams.all { it.pendingAck == null }) break
                 idle.idle()
             }
@@ -282,12 +266,12 @@ internal class MatchingResultDeliveryAgent(
         }
         if (active == null || stopping.get()) return 0
         val now = nanoTime()
-        var work = pollPeers(now)
+        var work = transport.poll(now)
         if (source.activeResultGeneration() != generation) {
             clearGeneration()
             return work
         }
-        if (!funds.verified || !matching.verified) return work
+        if (!transport.ready) return work
         if (flights.values.any { now - it.sentAt >= limits.attemptTimeoutNs } ||
             ackRequest?.let { now - it.frame.createdAt >= limits.attemptTimeoutNs } == true ||
             progressRequest?.let { now - it.frame.createdAt >= limits.attemptTimeoutNs } == true ||
@@ -297,98 +281,14 @@ internal class MatchingResultDeliveryAgent(
             reconnect(now, "split result request attempt timed out")
             return work + 1
         }
-        work += consumeRead(now)
-        work += flushAck(now, force = false)
-        work += queryProgress(now)
-        work += scheduleRead(now, metadataOnly = true)
-        work += offerBatch(now)
-        work += scheduleRead(now, metadataOnly = false)
+        // 받은 조회를 반영하고, 이전 정산 확인을 먼저 기록한 뒤 새 결과를 보낸다.
+        work += receiveResultRead(now)
+        work += recordSettlementAck(now, force = false)
+        work += verifyFundsProgress(now)
+        work += refreshResultIssuance(now)
+        work += sendResults(now)
+        work += readNextResults(now)
         return work
-    }
-
-    private fun pollPeers(now: Long): Int {
-        var work = 0
-        for (peer in listOf(funds, matching)) {
-            if (generation == null || source.activeResultGeneration() != generation) break
-            try {
-                if (peer.connection == null && peer.attempt == null && peer.retryAt?.let { now - it >= 0 } != false) {
-                    val epoch = ++peer.epoch
-                    peer.openedAt = now
-                    peer.attempt =
-                        connectionFactory.begin(peer.endpoint, limits.attemptTimeoutNs) { reply ->
-                            if (peer.epoch == epoch && generation != null &&
-                                source.activeResultGeneration() == generation
-                            ) {
-                                receive(peer, reply)
-                            }
-                        }
-                    work++
-                }
-                val attempt = peer.attempt
-                if (attempt != null) {
-                    val connection = attempt.poll()
-                    if (connection != null) {
-                        peer.connection = connection
-                        peer.attempt = null
-                        attempt.close()
-                        peer.lastKeepAlive = now
-                        peer.description = frame(SplitResultDeliveryCommand.DescribePeer, now)
-                        work++
-                    } else if (now - peer.openedAt >= limits.attemptTimeoutNs) {
-                        reconnect(now, "split result peer connection attempt timed out")
-                        return work + 1
-                    }
-                }
-                val connection = peer.connection ?: continue
-                if (connection.isClosed) {
-                    reconnect(now, "split result peer connection closed")
-                    return work + 1
-                }
-                work += connection.poll()
-                if (source.activeResultGeneration() != generation || peer.connection !== connection) return work
-                if (now - peer.lastKeepAlive >= limits.keepAliveNs) {
-                    connection.keepAlive()
-                    peer.lastKeepAlive = now
-                    work++
-                }
-                val description = peer.description
-                if (!peer.verified && description != null) {
-                    if (now - description.createdAt >= limits.attemptTimeoutNs) {
-                        reconnect(now, "split result peer description timed out")
-                        return work + 1
-                    }
-                    if (!description.accepted) work += offer(peer, description, now)
-                }
-            } catch (error: IllegalArgumentException) {
-                throw error
-            } catch (error: Exception) {
-                reconnect(now, "split result transport unavailable: ${error.message}")
-                return work + 1
-            }
-        }
-        return work
-    }
-
-    private fun receive(
-        peer: Peer,
-        reply: SplitResultDeliveryReply,
-    ) {
-        require(reply.role == peer.role && reply.lineage == peer.lineage && reply.topologySha256 == configuration.resultTopologySha256) {
-            "split result peer role, lineage or topology does not match"
-        }
-        val description = peer.description
-        if (!peer.verified && description?.correlation == reply.correlationId) {
-            require(reply.code == "DESCRIBED") { "unexpected split result peer description: ${reply.code}" }
-            if (reply.lifecycle != TradingLifecycle.RUNNING) {
-                reconnect(nanoTime(), "split result peer is not initialized: ${reply.lifecycle}")
-                return
-            }
-            peer.verified = true
-            peer.description = null
-            return
-        }
-        if (!peer.verified) return
-        if (peer === matching) receiveRecordedAck(reply) else receiveFunds(reply)
     }
 
     private fun receiveFunds(reply: SplitResultDeliveryReply) {
@@ -504,7 +404,7 @@ internal class MatchingResultDeliveryAgent(
         acceptOrRefreshAck(stream, ack)
     }
 
-    private fun consumeRead(now: Long): Int {
+    private fun receiveResultRead(now: Long): Int {
         val request = read ?: return 0
         if (!request.result.isDone) return 0
         read = null
@@ -595,23 +495,21 @@ internal class MatchingResultDeliveryAgent(
         return 1
     }
 
-    private fun scheduleRead(
-        now: Long,
-        metadataOnly: Boolean,
-    ): Int {
+    /** 오래된 조회보다 앞선 누적 ACK는 실제 발급 순번을 재확인한 뒤 기록한다. */
+    private fun refreshResultIssuance(now: Long): Int {
         if (read != null) return 0
-        val candidate = streams.firstOrNull { it.failure == null && it.needsIssuedRefresh }
-        if (candidate != null) {
-            // 1byte로 읽으면 정상 결과 본문은 반환하지 않고 현재 발급·회수 경계만 확인할 수 있다.
-            val future = source.readResults(checkNotNull(generation), candidate.identity, 1, 1, 1)
-            read = Read(candidate, candidate.epoch, 1, now, checkNotNull(candidate.pendingAck).through, future)
-            return 1
-        }
-        if (metadataOnly || prepared != null || streams.any { it.batchIndex < it.batch.size } ||
-            flights.size >= limits.maxInFlightEntries
-        ) {
-            return 0
-        }
+        val stream = streams.firstOrNull { it.failure == null && it.needsIssuedRefresh } ?: return 0
+        // 1byte 조회는 결과 본문 없이 현재 발급·회수 순번만 받는다.
+        val future = source.readResults(checkNotNull(generation), stream.identity, 1, 1, 1)
+        read = Read(stream, stream.epoch, 1, now, checkNotNull(stream.pendingAck).through, future)
+        return 1
+    }
+
+    /** 전송 중인 묶음을 늘리기 전에 앞선 ACK의 발급 순번 검증과 현재 보관 한도를 확인한다. */
+    private fun readNextResults(now: Long): Int {
+        val metadataWork = refreshResultIssuance(now)
+        if (read != null) return metadataWork
+        if (prepared != null || streams.any { it.batchIndex < it.batch.size } || flights.size >= limits.maxInFlightEntries) return 0
         repeat(streams.size) {
             val stream = streams[nextStream]
             nextStream = (nextStream + 1) % streams.size
@@ -626,11 +524,11 @@ internal class MatchingResultDeliveryAgent(
         return 0
     }
 
-    private fun offerBatch(now: Long): Int {
+    private fun sendResults(now: Long): Int {
         var work = 0
         // 한 번에 최대8건만 발행한 뒤 polling과 ACK 제어 경로로 돌아간다.
         repeat(limits.maxInFlightEntries) {
-            if (source.activeResultGeneration() != generation || !funds.verified || !matching.verified) return work
+            if (source.activeResultGeneration() != generation || !transport.ready) return work
             if (flights.size + (if (prepared == null) 0 else 1) > limits.maxInFlightEntries) return work
             var item = prepared
             if (item == null) {
@@ -641,13 +539,13 @@ internal class MatchingResultDeliveryAgent(
                 val maximum = SplitResultDeliveryCodec.maximumResultFrameBytes(input.canonicalBytes, maxOf(1, input.eventCount))
                 // encode로 준비 frame을 만들기 전부터 예산을 확보해 일시적인 초과 보관도 막는다.
                 if (maximum > resultByteBudget - resultBytes) return work
-                val next = frame(SplitResultDeliveryCommand.Apply(input), now)
+                val next = transport.newFrame(SplitResultDeliveryCommand.Apply(input), now)
                 if (next.bytes.size > resultByteBudget - resultBytes) return work
                 item = Prepared(stream, input, next)
                 prepared = item
                 resultBytes += next.bytes.size
             }
-            val offered = offer(funds, item.frame, now)
+            val offered = transport.offerFunds(item.frame, now)
             work += offered
             if (!item.frame.accepted || prepared !== item) return work
             flights[item.frame.correlation] = Flight(item.stream, item.input.resultSequence, item.stream.epoch, item.frame.bytes.size, now)
@@ -662,11 +560,11 @@ internal class MatchingResultDeliveryAgent(
         return work
     }
 
-    private fun flushAck(
+    private fun recordSettlementAck(
         now: Long,
         force: Boolean,
     ): Int {
-        if (!funds.verified || !matching.verified || source.activeResultGeneration() != generation) return 0
+        if (!transport.ready || source.activeResultGeneration() != generation) return 0
         var request = ackRequest
         if (request == null) {
             val stream =
@@ -677,13 +575,13 @@ internal class MatchingResultDeliveryAgent(
                     )
                 } ?: return 0
             val ack = checkNotNull(stream.pendingAck)
-            request = AckSubmission(stream, stream.epoch, ack, frame(SplitResultDeliveryCommand.RecordAck(ack), now))
+            request = AckSubmission(stream, stream.epoch, ack, transport.newFrame(SplitResultDeliveryCommand.RecordAck(ack), now))
             ackRequest = request
         }
-        return if (request.frame.accepted) 0 else offer(matching, request.frame, now)
+        return if (request.frame.accepted) 0 else transport.offerMatching(request.frame, now)
     }
 
-    private fun queryProgress(now: Long): Int {
+    private fun verifyFundsProgress(now: Long): Int {
         var request = progressRequest
         if (request == null) {
             val stream =
@@ -695,48 +593,17 @@ internal class MatchingResultDeliveryAgent(
                     stream,
                     stream.epoch,
                     checkNotNull(stream.gap),
-                    frame(SplitResultDeliveryCommand.Progress(stream.identity, stream.context), now),
+                    transport.newFrame(SplitResultDeliveryCommand.Progress(stream.identity, stream.context), now),
                 )
             progressRequest = request
         }
-        return if (request.frame.accepted) 0 else offer(funds, request.frame, now)
+        return if (request.frame.accepted) 0 else transport.offerFunds(request.frame, now)
     }
 
     private fun retryStream(stream: Stream) {
         val delay = if (stream.busyDelay == 0L) limits.busyMinDelayNs else minOf(limits.busyMaxDelayNs, stream.busyDelay * 2)
         resetStream(stream, after(stream.confirmed), nanoTime() + delay, preserveAck = true)
         stream.busyDelay = delay
-    }
-
-    private fun offer(
-        peer: Peer,
-        frame: Frame,
-        now: Long,
-    ): Int {
-        val result = peer.connection?.offer(frame.bytes) ?: return 0
-        when {
-            result > 0 -> {
-                frame.accepted = true
-            }
-
-            result == Publication.NOT_CONNECTED || result == Publication.CLOSED || result == Publication.MAX_POSITION_EXCEEDED -> {
-                reconnect(now, "split result publication unavailable: $result")
-            }
-
-            result != Publication.BACK_PRESSURED && result != Publication.ADMIN_ACTION -> {
-                throw IllegalStateException("unexpected split result publication result: $result")
-            }
-        }
-        return if (result > 0) 1 else 0
-    }
-
-    private fun frame(
-        command: SplitResultDeliveryCommand,
-        now: Long,
-    ): Frame {
-        check(nextCorrelation < Long.MAX_VALUE) { "split result correlation sequence exhausted" }
-        val correlation = nextCorrelation++
-        return Frame(correlation, codec.encode(correlation, command), now)
     }
 
     private fun removeFlights(
@@ -816,33 +683,11 @@ internal class MatchingResultDeliveryAgent(
         reason: String,
     ) {
         diagnostic = reason
-        closePeers()
+        transport.close()
         for (stream in streams) {
             if (stream.failure == null) resetStream(stream, 1, now + limits.reconnectDelayNs)
         }
-        funds.retryAt = now + limits.reconnectDelayNs
-        matching.retryAt = now + limits.reconnectDelayNs
-    }
-
-    private fun closePeers() {
-        var failure: Throwable? = null
-        for (peer in listOf(funds, matching)) {
-            peer.epoch++
-            for (resource in listOf(peer.attempt, peer.connection)) {
-                try {
-                    resource?.close()
-                } catch (error: Throwable) {
-                    val previous = failure
-                    if (previous == null) failure = error
-                    if (previous != null && previous !== error) previous.addSuppressed(error)
-                }
-            }
-            peer.attempt = null
-            peer.connection = null
-            peer.description = null
-            peer.verified = false
-        }
-        failure?.let { throw it }
+        transport.retryAfter(now + limits.reconnectDelayNs)
     }
 
     private fun clearGeneration() {
@@ -857,9 +702,8 @@ internal class MatchingResultDeliveryAgent(
         flights.clear()
         resultBytes = 0
         // nanoTime의 음수 원점도 유효하므로 0을 재시도 sentinel로 쓰지 않는다.
-        funds.retryAt = null
-        matching.retryAt = null
-        closePeers()
+        transport.retryAfter(null)
+        transport.close()
     }
 
     private fun report(error: Throwable) {

@@ -3,6 +3,9 @@ package com.exchange.core.api.trading.infrastructure.aeron
 import com.exchange.core.api.trading.infrastructure.codec.SplitResultDeliveryCodec
 import com.exchange.core.api.trading.infrastructure.codec.SplitResultDeliveryCommand
 import com.exchange.core.api.trading.infrastructure.codec.SplitResultDeliveryReply
+import com.exchange.core.trading.ClusterLineage
+import com.exchange.core.trading.TradingLifecycle
+import com.exchange.core.trading.TradingServiceRole
 import io.aeron.Publication
 import io.aeron.cluster.client.AeronCluster
 import org.agrona.concurrent.UnsafeBuffer
@@ -102,6 +105,199 @@ internal object AeronSplitResultDeliveryConnectionFactory : SplitResultDeliveryC
 
             override fun close() = attempt.close()
         }
+    }
+}
+
+/** 두 상대와의 연결·규격 확인·바이트 송신만 담당한다. 결과 순서와 정산 ACK의 의미는 Agent가 판단한다. */
+internal class MatchingResultDeliveryTransport(
+    private val configuration: SplitTradingConfiguration,
+    fundsEndpoint: SplitOrderDeliveryEndpoint,
+    matchingEndpoint: SplitOrderDeliveryEndpoint,
+    private val limits: MatchingResultDeliveryLimits,
+    private val connectionFactory: SplitResultDeliveryConnectionFactory,
+    private val isCurrentGeneration: () -> Boolean,
+    private val onFundsReply: (SplitResultDeliveryReply) -> Unit,
+    private val onMatchingReply: (SplitResultDeliveryReply) -> Unit,
+    private val onReconnectRequired: (Long, String) -> Unit,
+    private val nanoTime: () -> Long,
+) : AutoCloseable {
+    private class Peer(
+        val endpoint: SplitOrderDeliveryEndpoint,
+        val role: TradingServiceRole,
+        val lineage: ClusterLineage,
+    ) {
+        var attempt: SplitResultDeliveryConnectAttempt? = null
+        var connection: SplitResultDeliveryConnection? = null
+        var openedAt = 0L
+        var retryAt: Long? = null
+        var lastKeepAlive = 0L
+        var description: Frame? = null
+        var verified = false
+        var epoch = 0L
+    }
+
+    data class Frame(
+        val correlation: Long,
+        val bytes: ByteArray,
+        val createdAt: Long,
+        var accepted: Boolean = false,
+    )
+
+    private val codec = SplitResultDeliveryCodec()
+    private val funds = Peer(fundsEndpoint, TradingServiceRole.FUNDS, configuration.fundsLineage)
+    private val matching = Peer(matchingEndpoint, TradingServiceRole.MATCHING, configuration.matchingLineage)
+    private var nextCorrelation = 1L
+
+    val ready: Boolean get() = funds.verified && matching.verified
+
+    fun offerFunds(
+        frame: Frame,
+        now: Long,
+    ): Int = offer(funds, frame, now)
+
+    fun offerMatching(
+        frame: Frame,
+        now: Long,
+    ): Int = offer(matching, frame, now)
+
+    fun retryAfter(deadline: Long?) {
+        funds.retryAt = deadline
+        matching.retryAt = deadline
+    }
+
+    fun poll(now: Long): Int {
+        var work = 0
+        for (peer in listOf(funds, matching)) {
+            if (!isCurrentGeneration()) break
+            try {
+                if (peer.connection == null && peer.attempt == null && peer.retryAt?.let { now - it >= 0 } != false) {
+                    val epoch = ++peer.epoch
+                    peer.openedAt = now
+                    peer.attempt =
+                        connectionFactory.begin(peer.endpoint, limits.attemptTimeoutNs) { reply ->
+                            if (peer.epoch == epoch && isCurrentGeneration()) {
+                                receive(peer, reply)
+                            }
+                        }
+                    work++
+                }
+                val attempt = peer.attempt
+                if (attempt != null) {
+                    val connection = attempt.poll()
+                    if (connection != null) {
+                        peer.connection = connection
+                        peer.attempt = null
+                        attempt.close()
+                        peer.lastKeepAlive = now
+                        peer.description = newFrame(SplitResultDeliveryCommand.DescribePeer, now)
+                        work++
+                    } else if (now - peer.openedAt >= limits.attemptTimeoutNs) {
+                        onReconnectRequired(now, "split result peer connection attempt timed out")
+                        return work + 1
+                    }
+                }
+                val connection = peer.connection ?: continue
+                if (connection.isClosed) {
+                    onReconnectRequired(now, "split result peer connection closed")
+                    return work + 1
+                }
+                work += connection.poll()
+                if (!isCurrentGeneration() || peer.connection !== connection) return work
+                if (now - peer.lastKeepAlive >= limits.keepAliveNs) {
+                    connection.keepAlive()
+                    peer.lastKeepAlive = now
+                    work++
+                }
+                val description = peer.description
+                if (!peer.verified && description != null) {
+                    if (now - description.createdAt >= limits.attemptTimeoutNs) {
+                        onReconnectRequired(now, "split result peer description timed out")
+                        return work + 1
+                    }
+                    if (!description.accepted) work += offer(peer, description, now)
+                }
+            } catch (error: IllegalArgumentException) {
+                throw error
+            } catch (error: Exception) {
+                onReconnectRequired(now, "split result transport unavailable: ${error.message}")
+                return work + 1
+            }
+        }
+        return work
+    }
+
+    private fun receive(
+        peer: Peer,
+        reply: SplitResultDeliveryReply,
+    ) {
+        require(reply.role == peer.role && reply.lineage == peer.lineage && reply.topologySha256 == configuration.resultTopologySha256) {
+            "split result peer role, lineage or topology does not match"
+        }
+        val description = peer.description
+        if (!peer.verified && description?.correlation == reply.correlationId) {
+            require(reply.code == "DESCRIBED") { "unexpected split result peer description: ${reply.code}" }
+            if (reply.lifecycle != TradingLifecycle.RUNNING) {
+                onReconnectRequired(nanoTime(), "split result peer is not initialized: ${reply.lifecycle}")
+                return
+            }
+            peer.verified = true
+            peer.description = null
+            return
+        }
+        if (!peer.verified) return
+        if (peer === matching) onMatchingReply(reply) else onFundsReply(reply)
+    }
+
+    private fun offer(
+        peer: Peer,
+        frame: Frame,
+        now: Long,
+    ): Int {
+        val result = peer.connection?.offer(frame.bytes) ?: return 0
+        when {
+            result > 0 -> {
+                frame.accepted = true
+            }
+
+            result == Publication.NOT_CONNECTED || result == Publication.CLOSED || result == Publication.MAX_POSITION_EXCEEDED -> {
+                onReconnectRequired(now, "split result publication unavailable: $result")
+            }
+
+            result != Publication.BACK_PRESSURED && result != Publication.ADMIN_ACTION -> {
+                throw IllegalStateException("unexpected split result publication result: $result")
+            }
+        }
+        return if (result > 0) 1 else 0
+    }
+
+    fun newFrame(
+        command: SplitResultDeliveryCommand,
+        now: Long,
+    ): Frame {
+        check(nextCorrelation < Long.MAX_VALUE) { "split result correlation sequence exhausted" }
+        val correlation = nextCorrelation++
+        return Frame(correlation, codec.encode(correlation, command), now)
+    }
+
+    override fun close() {
+        var failure: Throwable? = null
+        for (peer in listOf(funds, matching)) {
+            peer.epoch++
+            for (resource in listOf(peer.attempt, peer.connection)) {
+                try {
+                    resource?.close()
+                } catch (error: Throwable) {
+                    val previous = failure
+                    if (previous == null) failure = error
+                    if (previous != null && previous !== error) previous.addSuppressed(error)
+                }
+            }
+            peer.attempt = null
+            peer.connection = null
+            peer.description = null
+            peer.verified = false
+        }
+        failure?.let { throw it }
     }
 }
 

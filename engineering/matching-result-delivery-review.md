@@ -1,10 +1,18 @@
 # #169 · 매칭 결과 전달·자금 정산·매칭 로그 ACK 구현 기록
 
-작성: 2026-11-04. 기준 통합 `33e464fef96327bc19100c8a098aae9b7eafd0ff`, 작업 브랜치 `feat/aeron-result-delivery/169`. [명세](matching-result-delivery-spec.md)가 계약 원본이다. **로컬 구현·검증 완료 기록**이다. 명세 R1~R28의 해당 수준을 대조했고 독립 최종 재검토의 확인된 미해결 결함은 없다. 운영 전체 장애·성능·보안 보장을 뜻하지 않는다. 게시 준비 시점(2026-11-04)의 기록이며, 이 기록을 얻을 때는 커밋·PR·원격 CI·병합·이슈/보드 변경을 수행하지 않았다.
+작성: 2026-11-04. 작업 브랜치 `feat/aeron-result-delivery/169`. [명세](matching-result-delivery-spec.md)가 계약 원본이다. 최초 구현은 통합 `33e464fef96327bc19100c8a098aae9b7eafd0ff`에서 시작했고, 이번 읽기 정리의 비교 기준은 `dbf021c754773245885df57fd952f0c7309b985e`다.
 
-**완료 범위:** 별도 자금3 + 매칭3 JVM의 전체 결과 전달 → 자금 정산 → 매칭 자기 로그의 정산 ACK → 결과 전달 자료 회수를 연결했다. 새 Docker 시나리오6개와 기존 한 방향 전달1개가 통과했다. 최종 선택 회귀·구조 검사591개(실패/오류/skip0), 전체 `ktlintCheck`와 구조 보고서 확인도 성공했다. 전체 저장소의 모든 제품/DB 테스트를 한 번에 실행했다는 뜻은 아니다.
+**검증 시점을 먼저 구분한다.** §1~9의 단위63개·선택 회귀/구조591개·실제 Docker9회와 독립 리뷰는 정리 전 구현의 실행 기록이다. 당시에는 별도 자금3 + 매칭3 JVM의 결과 전달 → 정산 → 매칭 로그 ACK → 전달 자료 회수까지 검증했다. 이번 책임 분리와 지문 계산 정리의 새 실행·리뷰 상태는 [§10](#10-읽기-정리--dbf021c-이후)에 따로 남긴다.
 
-**실행 소스 식별:** 아래 실행 기록은 기준 통합 commit 위의 미커밋 제품·시험 변경을 대상으로 얻었다. 실제 Docker 보고서는 동결 이미지와 제품·시험 파일의 SHA-256으로 실행 대상을 구분한다. 기준 commit을 구현 commit이라고 부르지 않는다.
+## 처음 읽을 코드
+
+처음에는 다음 세 곳으로 정상 흐름과 상태가 바뀌는 경계를 읽는다.
+
+1. **실제 정산·회수:** [Adapter의 확정 callback](../app-api/src/main/kotlin/com/exchange/core/api/trading/infrastructure/aeron/SplitTradingClusterAdapter.kt#L279). 자금의 `applyMatchingResult()`와 매칭의 `acknowledgeFundsSettled()`가 실제 잔고·예약·정산 확인·보관 결과를 바꾼다.
+2. **결과와 확인의 진행:** [Agent의 doWork()](../app-api/src/main/kotlin/com/exchange/core/api/trading/infrastructure/aeron/MatchingResultDeliveryAgent.kt#L258). 완료 조회 반영 → 이전 정산 ACK 기록 → 필요한 진행 확인 → 결과 전송 → 다음 조회 순서를 읽는다.
+3. **연결과 바이트 송신:** [기존 Client 파일 안의 MatchingResultDeliveryTransport](../app-api/src/main/kotlin/com/exchange/core/api/trading/infrastructure/aeron/SplitResultDeliveryClient.kt#L112). 연결 시도·peer 확인·poll·keepalive·offer·정리를 맡는다. 정산 ACK의 의미와 결과 순서는 Agent가 판단한다.
+
+이후 궁금한 경계에 따라 [중단 시 보존 규칙](#두-로그-사이에서-중단되면), [파일 지도](#3-파일과-책임), [상세 검사 표](#4-단위-검사의-읽기-순서)를 펼친다. [설정 지문 계산](../app-api/src/main/kotlin/com/exchange/core/api/trading/infrastructure/aeron/SplitTradingConfiguration.kt#L48)과 [codec](../app-api/src/main/kotlin/com/exchange/core/api/trading/infrastructure/codec/SplitResultDeliveryCodec.kt)은 구성·바이트 경계가 필요할 때 이어 읽는다.
 
 ## 1. 이번에 연결하는 흐름
 
@@ -26,10 +34,10 @@
 
 ### 실제 코드가 이어지는 곳
 
-다음은 현재 소스에서 발췌한 코드다. 위치는 작성일의 최종 파일 기준이며 생성한 예시 코드가 아니다.
+다음은 현재 소스에서 발췌한 코드다. 링크는 이번 정리 후 소스 위치로 갱신했으며 생성한 예시 코드가 아니다.
 
 1. [adapter의 비소비 조회](../app-api/src/main/kotlin/com/exchange/core/api/trading/infrastructure/aeron/SplitTradingClusterAdapter.kt#L593)는 서비스 스레드에서 `matching.readResults(...)`를 호출해 future를 완료한다. 전송 작업이 owner의 mutable Map을 직접 읽지 않는다. [기존 코어 readResults](../domain-trading/src/main/kotlin/com/exchange/core/trading/ReservedMatchingState.kt#L180)는 결과와 issued/settled 진행 정보를 함께 반환한다.
-2. [worker의 receiveFunds](../app-api/src/main/kotlin/com/exchange/core/api/trading/infrastructure/aeron/MatchingResultDeliveryAgent.kt#L394)는 correlation·stream·context·through를 확인한다. `APPLIED`, `DUPLICATE`, `PRUNED`는 유효 누적 ACK가 있을 때만 다음 단계로 간다. 오래된 source read보다 ACK가 앞서면 소유 스레드에 최신 issued를 다시 확인한다. 낮은 ACK로 prefix를 후퇴시키지 않는다.
+2. [worker의 receiveFunds](../app-api/src/main/kotlin/com/exchange/core/api/trading/infrastructure/aeron/MatchingResultDeliveryAgent.kt#L294)는 correlation·stream·context·through를 확인한다. `APPLIED`, `DUPLICATE`, `PRUNED`는 유효 누적 ACK가 있을 때만 다음 단계로 간다. 오래된 source read보다 ACK가 앞서면 소유 스레드에 최신 issued를 다시 확인한다. 낮은 ACK로 prefix를 후퇴시키지 않는다.
 3. [자금 확정 callback](../app-api/src/main/kotlin/com/exchange/core/api/trading/infrastructure/aeron/SplitTradingClusterAdapter.kt#L309)은 기존 자금 코어를 그대로 사용한다.
 
 ```kotlin
@@ -43,7 +51,7 @@ val applied =
 
 `timestamp`는 확정 callback의 시각이다. 원격 작업이 자기 시계로 돈을 바꾸지 않는다. [기존 applyMatchingResult](../domain-trading/src/main/kotlin/com/exchange/core/trading/BoundedFundingState.kt#L272)는 원본·정책·체결/효과·순서와 정산 후보를 검증하고 한 번 적용한다. 뒤늦은 같은 결과는 최초 금융 효과·receipt 시각을 다시 만들지 않는다.
 
-4. [worker의 flushAck](../app-api/src/main/kotlin/com/exchange/core/api/trading/infrastructure/aeron/MatchingResultDeliveryAgent.kt#L665)는 자기 matching 연결로 `SplitResultDeliveryCommand.RecordAck(ack)`를 보낸다. 자금 응답을 받은 것과 이 명령의 확정은 별개다. ACK를 한 번에 최신 누적값 하나로 보관하고 기본16건/2ms 또는 drain 조건에서 제출한다. 회수 제어용 byte 여유를 별도로 남겨 결과가 찼다고 ACK까지 굶지 않게 한다.
+4. [worker의 recordSettlementAck](../app-api/src/main/kotlin/com/exchange/core/api/trading/infrastructure/aeron/MatchingResultDeliveryAgent.kt#L563)는 자기 matching 연결로 `SplitResultDeliveryCommand.RecordAck(ack)`를 보낸다. 자금 응답을 받은 것과 이 명령의 확정은 별개다. ACK를 한 번에 최신 누적값 하나로 보관하고 기본16건/2ms 또는 drain 조건에서 제출한다. 회수 제어용 byte 여유를 별도로 남겨 결과가 찼다고 ACK까지 굶지 않게 한다.
 5. [매칭 확정 callback](../app-api/src/main/kotlin/com/exchange/core/api/trading/infrastructure/aeron/SplitTradingClusterAdapter.kt#L339)의 아래 호출이 실제 source 회수 경계다.
 
 ```kotlin
@@ -67,21 +75,20 @@ val recorded = owner.acknowledgeFundsSettled(command.ack)
 
 ## 3. 파일과 책임
 
-| 분류 | 파일 | 입력과 결과 |
+[PR #175](https://github.com/0Chord/coin-exchange/pull/175)의 변경23파일은 제품9·테스트/도구10·문서3·CI1로 나뉜다. 결과 전달 기능, 그 증거를 만드는 시험, 설명과 실행 설정의 책임을 나눈 것이다. 이번 정리에서 새 제품 파일을 추가하지 않았다.
+
+| 묶음 | 왜 나뉘었는가 | 먼저 볼 곳 |
 | --- | --- | --- |
-| 제품 실행 | `codec/SplitResultDeliveryCodec.kt`, `proto/split_result_delivery.proto` | 결과 전체·정산 ACK를 schema89 바이트로 변환. 기존 schema88 bytes 유지 |
-| 제품 실행 | `aeron/SplitResultDeliveryClient.kt` | 실제 async Aeron 연결·세션 헤더 포함 길이 검사·완결 응답 수신·연결 정리 |
-| 제품 실행 | `aeron/MatchingResultDeliveryAgent.kt` | 비소비 조회·제한 pipeline·재전송·GAP/PRUNED·ACK 환류. mutable owner 직접 접근 없음 |
-| 제품 실행 | `aeron/SplitTradingClusterAdapter.kt` | schema별 수신 경계·확정 금융 적용·ACK 기록·소유 스레드 조회·세대 무효화 |
-| 제품 실행 | `aeron/SplitTradingConfiguration.kt`, `DevelopmentSplitTradingNode.kt`, `DevelopmentSplitTradingMain.kt` | 명시 RESULT_SETTLEMENT_DEV·결과 한도/지문·리더 작업 생명주기. 기존 한 방향/통합 실행 유지 |
-| 공통 지원 | 기존 `SplitOrderDeliveryCodec.kt` | dispatch/context/lineage/role 순수 필드 변환만 internal로 공유 |
-| 테스트 | 새 codec/client/worker 테스트와 기존 adapter/startup 테스트 확장 | 아래 Given/When/Then의 단위 경계 |
-| 검증 도구 | `MatchingResultVerificationTool.kt`, 새 Docker 테스트·compose override | 시험 wrapper의 관찰·응답 보류·실제 독립3+3·기록 복원. 제품 gate/전체 상태 endpoint 없음 |
-| 검증 공통 | 기존 `DockerFundsOrderDeliveryTest.kt` | 기존 기본 시나리오 유지, 같은 이미지/정리/한도 기반을 결과 시나리오에서 재사용 |
+| 제품9 | Adapter·Agent·Client가 확정 상태/진행/통신을 담당한다. 설정과 Node/Main이 모드·생명주기를 조립하고, codec2개·proto1개가 바이트 계약을 맡는다. | 상단의 세 코드 진입점 |
+| 테스트·도구10 | 단위 테스트5개, wire 경계 fixture1개, 실제 관측 도구1개, Docker 테스트2개, compose1개로 각 경계와 실제3+3 복원을 확인한다. | §4에서 확인하려는 실패 사례 하나를 선택 |
+| 문서3 | 명세는 계약, 이 기록은 코드·실행 근거, README는 실행 진입점을 설명한다. | [명세](matching-result-delivery-spec.md), 이 기록, [README](../README.md) |
+| CI1 | 기존 Build and test가 늘어난 실제 시나리오를 실행할 수 있도록 기한을 조정했다. | [기존 workflow](../.github/workflows/build-and-test.yml) |
+
+결과가 중복되거나 끊겼을 때의 핵심 판단은 앞의 보존 규칙에 모았다. 파일별 바이트 필드나 시험 장치가 필요할 때 해당 상세로 내려간다.
 
 ## 4. 단위 검사의 읽기 순서
 
-모든 fixture의 테스트 이름·준비·실제 assertion은 최종 소스에 맞춰 아래 표에 이어 기록한다. 공통 Mockito callback은 실제 역할 owner를 사용하지만 실제 Aeron·quorum·Archive를 대신 증명하지 않는다. worker 대역은 실제 도메인 소유자와 전송 응답 순서를 통제하며, 네트워크 증거는 Docker 검사에서 따로 얻는다.
+아래 개수와 U/D 실행 지위는 원검증 대상 기준이다. 기존 fixture의 준비·행동·assertion 설명을 보존하고 코드 링크는 현재 줄로 갱신했다. 이번 정리에서 추가한 회귀4개는 §10에 따로 둔다. 공통 Mockito callback은 실제 역할 owner를 사용하지만 실제 Aeron·quorum·Archive를 대신 증명하지 않는다. worker 대역은 실제 도메인 소유자와 전송 응답 순서를 통제하며, 네트워크 증거는 Docker 검사에서 따로 얻는다.
 
 
 기준 통합 `33e464fef96327bc19100c8a098aae9b7eafd0ff` 위의 미커밋 diff와 새 파일을 읽고 테스트의 준비·행동·assertion을 대조했다. 명세의 [수용 사례](matching-result-delivery-spec.md#11-수용-사례--구현-후-확인할-기대값) R1~R28은 의도이고, 구현 설명 자체는 통과의 증거로 사용하지 않았다. 이 읽기 검토는 새 빌드·Docker 실행과 구분한다.
@@ -95,13 +102,13 @@ val recorded = owner.acknowledgeFundsSettled(command.ack)
 | 새 실행 모드·한도·복구 지문 | startup 기존 11개에 새 3개 / 설정·임시 파일 경계 | 새 3개 전부 설명. U |
 | 독립 자금 3 + 매칭 3의 통신·복원 | Docker 새 6개 / 실제 통합을 수행하는 테스트 | 전부 설명. D |
 
-신규 대상은 단위 `@Test` 정의 44개와 Docker 정의 6개다. 단위 전체 클래스 63개에는 기존 adapter 8개·startup 11개가 포함된다. JUnit 파라미터 공급자·skip은 없고, 아래 반복 분기는 한 메서드 안에서 모두 assertion을 수행한다. 이 수는 수용 조건의 개수나 결함 없음 보장을 뜻하지 않는다.
+신규 대상은 단위 `@Test` 정의 44개와 Docker 정의 6개다. 대상 다섯 클래스의 단위 검사63개에는 기존 adapter 8개·startup 11개가 포함된다. JUnit 파라미터 공급자·skip은 없고, 아래 반복 분기는 한 메서드 안에서 모두 assertion을 수행한다. 이 수는 수용 조건의 개수나 결함 없음 보장을 뜻하지 않는다.
 
 아래 실행·리뷰 로그의 `build/issue169-*` 경로는 미게시 로컬 산출물이다. 실행 수치의 기록과 CI에서 재현·수집할 보고서 경로(§9)를 구분한다.
 
-**실행 지위 U:** units7 XML·합계 (`build/issue169-verification/units7/counts.json`)에서 다섯 클래스 63개, 실패·오류·skip 각각 0을 확인했다. XML 시간은 2026-11-04 05:42:32~34 UTC이며 로그 (`build/issue169-verification/units7/execution.log`)는 `BUILD SUCCESSFUL`이다. XML testcase 이름을 현재 정의와 전수 대조해 누락 0이었다. adapter의 산술 넘침 사례, codec의 MAX frame·산술 넘침 사례도 실제 XML에 있다. XML에는 소스 해시가 없으므로 아래 현재 소스의 바이트 동일성까지 XML만으로 증명하지 않는다. 이후 native frame Docker 도구·harness 변경의 실행 근거로 이 단위 기록을 쓰지 않는다.
+**실행 지위 U:** units7 XML·합계 (`build/issue169-verification/units7/counts.json`)에서 다섯 클래스 63개, 실패·오류·skip 각각 0을 확인했다. XML 시간은 2026-11-04 05:42:32~34 UTC이며 로그 (`build/issue169-verification/units7/execution.log`)는 `BUILD SUCCESSFUL`이다. XML testcase 이름을 원검증 당시 정의와 전수 대조해 누락 0이었다. adapter의 산술 넘침 사례, codec의 MAX frame·산술 넘침 사례도 실제 XML에 있다. XML에는 소스 해시가 없으므로 아래 원검증 소스의 바이트 동일성까지 XML만으로 증명하지 않는다. 이후 native frame Docker 도구·harness 변경의 실행 근거로 이 단위 기록을 쓰지 않는다.
 
-**실행 지위 D:** baseline XML의 테스트1개와 cases XML의 테스트5개가 각각 실패·오류·skip0이고, 해당6개 JSON은 success=true·issues=[]·자원정리=true다. R14 중간 예약·거절 재전송과 R9 실제 FIFO/PRUNED 단계를 추가한 뒤 **D05·D06의 최종 재실행도 성공**했다. 최종 XML (`build/issue169-verification/docker-final-boundaries/TEST-com.exchange.core.api.trading.infrastructure.aeron.DockerMatchingResultDeliveryTest.xml`)은2개·실패/오류/skip0, 로그 (`build/issue169-verification/docker-final-boundaries/execution.log`)는 BUILD SUCCESSFUL이다. 최종 두 JSON은 success=true·issues=[]·자원정리=true이며, 저장한 제품/시험 소스12개의 SHA-256을 현재 파일과 직접 대조해 모두 일치했다. 아래 표에서 이전 실행과 마지막 재실행을 나눠 연결한다. 전체 필수 회귀는 아래 §5의 required-final 실행 근거에 별도로 연결한다.
+**실행 지위 D:** baseline XML의 테스트1개와 cases XML의 테스트5개가 각각 실패·오류·skip0이고, 해당6개 JSON은 success=true·issues=[]·자원정리=true다. R14 중간 예약·거절 재전송과 R9 실제 FIFO/PRUNED 단계를 추가한 뒤 **D05·D06의 최종 재실행도 성공**했다. 최종 XML (`build/issue169-verification/docker-final-boundaries/TEST-com.exchange.core.api.trading.infrastructure.aeron.DockerMatchingResultDeliveryTest.xml`)은2개·실패/오류/skip0, 로그 (`build/issue169-verification/docker-final-boundaries/execution.log`)는 BUILD SUCCESSFUL이다. 최종 두 JSON은 success=true·issues=[]·자원정리=true이며, 저장한 제품/시험 소스12개의 SHA-256을 원검증 당시 파일과 직접 대조해 모두 일치했다. 이번 정리 후 소스와의 동일성을 주장하는 기록은 아니다. 아래 표에서 이전 실행과 마지막 재실행을 나눠 연결한다. 전체 필수 회귀는 아래 §5의 required-final 실행 근거에 별도로 연결한다.
 
 | 실제 시나리오 | 확인한 실행 근거 |
 | --- | --- |
@@ -114,6 +121,9 @@ val recorded = owner.acknowledgeFundsSettled(command.ack)
 
 당시 cases XML에는 결과 5개만 수집되었고 baseline은 별도 XML에 있다. 함께 있는 기존 DockerFundsOrderDeliveryTest 1개 성공은 신규 결과 시나리오 6개 수에 더하지 않았다.
 
+<details>
+<summary>상세 검사: 공통 준비 · Given / When / Then · 실제 관측과 한계</summary>
+
 ### 공통 준비와 용어
 
 `resultThrough`는 자금이 정산한 연속 결과 번호, `fundsSettledThrough`는 매칭 자기 로그에 기록한 정산 확인 번호다. `ACK`는 이 연속 구간을 확인한 응답이다. 자금 ACK를 받는 단계와 매칭 자기 로그에 ACK를 기록해 결과 자료를 회수하는 단계가 다르다. `PRUNED`는 자금에서 과거 비교 receipt를 회수한 응답일 수도, 매칭에서 이미 정산 확인한 결과 구간을 조회한 응답일 수도 있다. 각 행에서 어느 쪽인지 구분했다.
@@ -122,10 +132,10 @@ val recorded = owner.acknowledgeFundsSettled(command.ack)
 | --- | --- |
 | codec [codec:66](../app-api/src/test/kotlin/com/exchange/core/api/trading/infrastructure/codec/SplitResultDeliveryCodecTest.kt#L66) · [codec:403](../app-api/src/test/kotlin/com/exchange/core/api/trading/infrastructure/codec/SplitResultDeliveryCodecTest.kt#L403) · [codec:447](../app-api/src/test/kotlin/com/exchange/core/api/trading/infrastructure/codec/SplitResultDeliveryCodecTest.kt#L447) | X/Q, scale 0, 가격100. lineage 자금(1,2)/매칭(3,4), epoch13/config19, context ordinal7, maker0.7%/taker1.5%. 기본 `result(n)`은 BUY(n+1), SELL1 maker n명, 체결 n건 후 BUY 잔량1의 대기 사건을 직접 구성한다. 실제 예약 계산기를 쓰지만 일반 fixture는 실제 매칭 실행이 아니다. C05만 실제 매칭 owner가 결과를 만든다. |
 | client [client:58](../app-api/src/test/kotlin/com/exchange/core/api/trading/infrastructure/aeron/SplitResultDeliveryClientTest.kt#L58) | `/existing-node-driver`와 endpoint를 Factory 대역에 넘긴다. offer는 codec으로 correlation을 읽고 poll은 **다른 correlation 응답을 먼저**, 맞는 응답을 뒤에 준다. 실제 Aeron/Driver 생성·서버·복제 로그 없음. |
-| worker [worker:593](../app-api/src/test/kotlin/com/exchange/core/api/trading/infrastructure/aeron/MatchingResultDeliveryAgentTest.kt#L593) · [worker:722](../app-api/src/test/kotlin/com/exchange/core/api/trading/infrastructure/aeron/MatchingResultDeliveryAgentTest.kt#L722) · [worker:750](../app-api/src/test/kotlin/com/exchange/core/api/trading/infrastructure/aeron/MatchingResultDeliveryAgentTest.kt#L750) | 실제 자금·매칭 도메인 상태. buyer Q1,000 / seller A5, 수수료0, A/Q scale0, epoch1/config7. 기본 `produce()`는 BUY1@1을 실제 승인·예약 후 매칭에 적용한다. 예약·준비·epoch 회전 시각은 EPOCH. source 대역은 future를 즉시/지연 완료한다. 전송 대역 offer는 실제 자금 정산(고정 `1970-01-01T00:00:00.123Z`)·매칭 ACK 도메인 함수를 호출한다. `holdFunds`는 정산 **후 응답만 보류**한다. override 응답이 있으면 그 도메인 호출 자체를 건너뛰므로 그 행의 가짜 ACK를 실제 금융 정산 증거로 읽지 않는다. `cycles()`는 고정 가상시계로 doWork를 반복하며 실제 시간 경과가 아니다. |
-| worker 시간·한도 [limits:35](../app-api/src/main/kotlin/com/exchange/core/api/trading/infrastructure/aeron/MatchingResultDeliveryAgent.kt#L35) | 가상 now=1ns. 시도3초, 재연결50ms, BUSY1~20ms, ACK2ms/16건, keepalive500ms, 종료5초. 조회8건·논리2MiB / 전송8건·실제4MiB가 기본. 아래 시각 경계는 `advance()`로 이동한다. |
+| worker [worker:744](../app-api/src/test/kotlin/com/exchange/core/api/trading/infrastructure/aeron/MatchingResultDeliveryAgentTest.kt#L744) · [worker:873](../app-api/src/test/kotlin/com/exchange/core/api/trading/infrastructure/aeron/MatchingResultDeliveryAgentTest.kt#L873) · [worker:901](../app-api/src/test/kotlin/com/exchange/core/api/trading/infrastructure/aeron/MatchingResultDeliveryAgentTest.kt#L901) | 실제 자금·매칭 도메인 상태. buyer Q1,000 / seller A5, 수수료0, A/Q scale0, epoch1/config7. 기본 `produce()`는 BUY1@1을 실제 승인·예약 후 매칭에 적용한다. 예약·준비·epoch 회전 시각은 EPOCH. source 대역은 future를 즉시/지연 완료한다. 전송 대역 offer는 실제 자금 정산(고정 `1970-01-01T00:00:00.123Z`)·매칭 ACK 도메인 함수를 호출한다. `holdFunds`는 정산 **후 응답만 보류**한다. override 응답이 있으면 그 도메인 호출 자체를 건너뛰므로 그 행의 가짜 ACK를 실제 금융 정산 증거로 읽지 않는다. `cycles()`는 고정 가상시계로 doWork를 반복하며 실제 시간 경과가 아니다. |
+| worker 시간·한도 [limits:32](../app-api/src/main/kotlin/com/exchange/core/api/trading/infrastructure/aeron/MatchingResultDeliveryAgent.kt#L32) | 가상 now=1ns. 시도3초, 재연결50ms, BUSY1~20ms, ACK2ms/16건, keepalive500ms, 종료5초. 조회8건·논리2MiB / 전송8건·실제4MiB가 기본. 아래 시각 경계는 `advance()`로 이동한다. |
 | adapter [adapter:76](../app-api/src/test/kotlin/com/exchange/core/api/trading/infrastructure/aeron/SplitTradingClusterAdapterTest.kt#L76) · [adapter:677](../app-api/src/test/kotlin/com/exchange/core/api/trading/infrastructure/aeron/SplitTradingClusterAdapterTest.kt#L677) · [adapter:711](../app-api/src/test/kotlin/com/exchange/core/api/trading/infrastructure/aeron/SplitTradingClusterAdapterTest.kt#L711) | 실제 역할 owner와 실제 codec/callback. buyer QUOTE1,000, BASE/QUOTE scale0, 수수료0, 기본 BUY1@100. callback 확정 시각 T=`1,793,664,000,000ms`(2026-11-03T00:00:00Z). Mockito Cluster·ClientSession·snapshot publication/Image가 통신·Archive를 대신한다. command당 모의 logPosition +64, frame 앞32byte를 두고 callback에 본문 offset32를 준다. 따라서 실제 quorum·force·Archive 재생 증거는 아니다. |
-| startup [startup:44](../app-api/src/test/kotlin/com/exchange/core/api/trading/infrastructure/aeron/SplitTradingRoleStartupTest.kt#L44) · [startup:352](../app-api/src/test/kotlin/com/exchange/core/api/trading/infrastructure/aeron/SplitTradingRoleStartupTest.kt#L352) · [startup:377](../app-api/src/test/kotlin/com/exchange/core/api/trading/infrastructure/aeron/SplitTradingRoleStartupTest.kt#L377) | `@TempDir` 아래 root와 실제 설정 객체·identity bytes를 사용한다. 새 3개는 설정 단계만 호출하며 실제 노드/Driver를 시작하지 않는다. 경로 미생성 assertion을 실제 네트워크 기동 성공으로 넓히지 않는다. |
+| startup [startup:44](../app-api/src/test/kotlin/com/exchange/core/api/trading/infrastructure/aeron/SplitTradingRoleStartupTest.kt#L44) · [startup:367](../app-api/src/test/kotlin/com/exchange/core/api/trading/infrastructure/aeron/SplitTradingRoleStartupTest.kt#L367) · [startup:392](../app-api/src/test/kotlin/com/exchange/core/api/trading/infrastructure/aeron/SplitTradingRoleStartupTest.kt#L392) | `@TempDir` 아래 root와 실제 설정 객체·identity bytes를 사용한다. 새 3개는 설정 단계만 호출하며 실제 노드/Driver를 시작하지 않는다. 경로 미생성 assertion을 실제 네트워크 기동 성공으로 넓히지 않는다. |
 
 ### codec — 원문을 복원하거나 잘못된 입력을 거절한다 (모두 U)
 
@@ -158,26 +168,26 @@ val recorded = owner.acknowledgeFundsSettled(command.ack)
 
 | 사례·소스 / 계약 | Given → When(단계) | Then: 해당 단계에서 실제 확인 |
 | --- | --- | --- |
-| W01 무체결 후 실제 체결 [worker:61](../app-api/src/test/kotlin/com/exchange/core/api/trading/infrastructure/aeron/MatchingResultDeliveryAgentTest.kt#L61) / R4,R5 | SELL1@100 → 15cycle. 이어 BUY1@100, 빈 조회 backoff1ms 이동 →15cycle. | ① seller A가용4/hold1, 대기1, 결과0. ② buyer Q900/A1, seller Q100/A4, 관련 hold0, 확인2·결과0·주문장0·failure없음. seller 초기는 A5다. |
-| W02 앞 응답 없이 pipeline [worker:85](../app-api/src/test/kotlin/com/exchange/core/api/trading/infrastructure/aeron/MatchingResultDeliveryAgentTest.kt#L85) / R11,R23 | BUY1@1 2개. 자금 응답만 보류→8cycle. 누적 ACK2 응답 **마지막 하나만** release→10cycle. 늦은 첫 correlation ACK1 주입→2cycle. | ① 실제 Apply 순번[1,2], source 결과2·ACK 제출0. ② 기록 ACK목록[2], 확인2·결과0. ③ ACK목록 여전히[2], failure없음. |
-| W03 자금 응답 유실 재전송 [worker:109](../app-api/src/test/kotlin/com/exchange/core/api/trading/infrastructure/aeron/MatchingResultDeliveryAgentTest.kt#L109) / R8,R15 | BUY1@1. 자금은 정산하고 응답만 hold. 8cycle 후 상태 저장→3초 이동·1cycle→hold 해제·50ms 이동·16cycle. | ① timeout 뒤 모든 연결 closed. ② Apply 원문 목록 정확히[first,first], 최초 receipt 시각123ms 동일, buyer Q999/hold1, 확인1·failure없음. 대기 주문 예약은 반환하지 않는다. 새 확정시각을 준 중복은 A02가 검사한다. |
-| W04 매칭 기록 응답만 유실 [worker:134](../app-api/src/test/kotlin/com/exchange/core/api/trading/infrastructure/aeron/MatchingResultDeliveryAgentTest.kt#L134) / R11,R19 | ACK 도메인 기록은 수행하되 응답 drop. 8cycle→3초 timeout→drop 해제·50ms 재연결·16cycle. | 첫 단계 확인1. 복구 뒤 Apply 총1·결과0·from1 source 조회≥2·failure없음. 이미 기록한 source prefix를 다시 읽어 payload를 되살리지 않는다. |
-| W05 자금 PRUNED 처리 [worker:154](../app-api/src/test/kotlin/com/exchange/core/api/trading/infrastructure/aeron/MatchingResultDeliveryAgentTest.kt#L154) / R9 | 실제 funds 적용 대신 PRUNED+typed ACK1을 제어 응답으로 제공. | 확인1·결과0·failure없음. **실제 receipt FIFO 축출·금융 재정산0을 검사하는 사례는 아니다.** |
-| W06 낮은 ACK 두 경로 [worker:167](../app-api/src/test/kotlin/com/exchange/core/api/trading/infrastructure/aeron/MatchingResultDeliveryAgentTest.kt#L167) / R11 | 두 독립 fixture: ① result1에 funds APPLIED+ACK0, ② 제출 ACK1에 matching ACKNOWLEDGED+ACK0. | 두 경우 failure 존재·확인0·결과1 보존. 둘째는 recorded 응답 override가 실제 matching 적용도 대체한다. |
-| W07 잘못된 ACK 세 변형 [worker:188](../app-api/src/test/kotlin/com/exchange/core/api/trading/infrastructure/aeron/MatchingResultDeliveryAgentTest.kt#L188) / R18,R24 | funds 성공 응답의 ACK를 각각 epoch2 / ordinal1 / 미래 through2로 변조. | 세 경우 failure 존재·확인0·결과1·기록 ACK목록 empty. 각 경우 실제 금융값은 별도 비교하지 않는다. |
-| W08 오래된 조회보다 앞선 ACK [worker:210](../app-api/src/test/kotlin/com/exchange/core/api/trading/infrastructure/aeron/MatchingResultDeliveryAgentTest.kt#L210) / R11,R23 | result1 조회 future를 지연하고 old issued1 결과를 보관. result2를 만든 뒤 old future 완료. funds가 ACK2를 응답. | 확인2·bytes1의 issued 재확인 조회 존재·failure없음. 오래된 관측만 보고 정상 누적 ACK2를 거절하지 않는다. |
-| W09 재확인 중 더 높은 ACK [worker:229](../app-api/src/test/kotlin/com/exchange/core/api/trading/infrastructure/aeron/MatchingResultDeliveryAgentTest.kt#L229) / R11,R23 | result1 조회 완료→아직 result2가 없던 empty 관측 준비→result2 생성·ACK2 release. issued2 재확인 future를 지연→result3 생성·같은 correlation ACK3 주입·2ms 이동. 이후 issued2 future 완료. | ① issued 검증 전에는 ACK제출0·확인0·결과3. ② bytes1 재조회 정확히2회, 최종 기록 ACK목록[3]·확인3·결과0·failure없음. 단순 마지막 상태만으로 앞 단계를 설명하지 않는다. |
-| W10 앞 결과를 요구하는 GAP [worker:276](../app-api/src/test/kotlin/com/exchange/core/api/trading/infrastructure/aeron/MatchingResultDeliveryAgentTest.kt#L276) / R12 | BUY 2개, 첫 funds 응답만 GAP expected1, 그 뒤 실제 도메인 처리. 25cycle. | 확인2·result1 Apply≥2·funds receipt2·failure없음. 모든 offer 순서 목록의 완전 일치는 검사하지 않는다. |
-| W11 이미 회수한 구간의 GAP 두 경우 [worker:300](../app-api/src/test/kotlin/com/exchange/core/api/trading/infrastructure/aeron/MatchingResultDeliveryAgentTest.kt#L300) / R12,R22 | result1은 실제 자금 EPOCH 정산·matching ACK1 회수 후 result2 생성. 첫 응답 GAP1. progress 대역을 ACK1 또는 뒤처진 ACK0으로 제공. | 공통 progress조회1. ACK1이면 확인2·결과0·failure없음. ACK0이면 failure 존재·확인1·결과1 보존. 잔고·예약 전체 equality assertion은 없다. |
-| W12 backpressure 중 제어 경로 [worker:336](../app-api/src/test/kotlin/com/exchange/core/api/trading/infrastructure/aeron/MatchingResultDeliveryAgentTest.kt#L336) / R15,R17,R23 | 전송창2, 결과4개·funds응답 hold→10cycle. Apply offer를 BACK_PRESSURED로 하고 응답 release·500ms 이동. ACK delay의2ms-1ns→+1ns로 진행. 이후 backpressure 해제, 첫 응답 NOT_READY,20ms 이동 후 재시도. | ① 먼저 Apply2. ② 모든 연결 poll·keepalive>0. ACK기한 전 확인0, 정확한 기한 뒤 확인2·결과2. ③ 최종 확인4·failure없음. 실제 네트워크 포화·시간벽 계측은 아니다. |
-| W13 byte 창 먼저 포화 [worker:377](../app-api/src/test/kotlin/com/exchange/core/api/trading/infrastructure/aeron/MatchingResultDeliveryAgentTest.kt#L377) / R23 | producer 단일4,096byte/사건1, 전송창7,000byte, BUY 결과8개·응답 hold. | ① Apply1~7건, 그 frame 실제 encode 합+제어 reserve≤7,000, source 결과8·확인0. ② 응답 release 뒤 확인8·결과0·failure없음. private future·준비 버퍼 전체 실메모리를 계측하는 assertion은 아니다. |
-| W14 ACK offer만 차단 [worker:408](../app-api/src/test/kotlin/com/exchange/core/api/trading/infrastructure/aeron/MatchingResultDeliveryAgentTest.kt#L408) / R17,R23 | 전송창1, 결과4개. matching ACK offer만 BACK_PRESSURED→25cycle. 해제·2ms 이동. | ① Apply4·funds 누적정산4, source 결과4·확인0. ② 확인4·결과0·failure없음. 응답/ACK 경로가 신규 결과창과 별도로 진행한다. |
-| W15 세대 변경과 늦은 응답 [worker:428](../app-api/src/test/kotlin/com/exchange/core/api/trading/infrastructure/aeron/MatchingResultDeliveryAgentTest.kt#L428) / R19 | result1 조회 future 지연→source generation=null→3cycle. 다시 generation2·15cycle. 옛 funds connection으로 미래 ACK2 응답 callback 주입. | ① future cancelled·모든 연결 closed·Apply0. ② 확인1. ③ 옛 응답을 준 직후 failure없음. 팔로워 실제 선출·네트워크는 대역이다. |
-| W16 음수 시계·재연결 경계 [worker:451](../app-api/src/test/kotlin/com/exchange/core/api/trading/infrastructure/aeron/MatchingResultDeliveryAgentTest.kt#L451) / R19 | now=-1,000,000,000,000ns, NOT_CONNECTED로 연결 실패. 재연결50ms-1ns 이동→1cycle, +1ns·연결 정상화. | 기한 전 새 연결 수 불변, 정확한 경계 뒤 확인1·failure없음. JVM nanoTime 절댓값의 양수 가정에 의존하지 않는다. |
-| W17 마지막 Long cursor [worker:471](../app-api/src/test/kotlin/com/exchange/core/api/trading/infrastructure/aeron/MatchingResultDeliveryAgentTest.kt#L471) / R24 | source override: from1은 PRUNED·확인 MAX-1·issued MAX·next MAX. fromMAX는 마지막 결과1개·next=null. 양쪽 ACK MAX를 제어 응답. | source 조회 from 목록 정확히[1,MAX], Apply1·failure없음. 다른 from은 fixture가 error로 실패한다. 실제 도메인에서 MAX까지 발급·정산한 검사는 아니다. |
-| W18 진행 불가·오배치 [worker:526](../app-api/src/test/kotlin/com/exchange/core/api/trading/infrastructure/aeron/MatchingResultDeliveryAgentTest.kt#L526) / R18,R23 | ① BATCH_TOO_SMALL(required3,000,000) 조회. ② 다른 fixture의 peer topology를 f×64로 변조. | ① failure 존재·Apply0. ② IllegalArgumentException·결과1 보존·Apply0. 서로 다른 실패 경계를 한 fixture로 섞지 않는다. |
-| W19 설정 불일치 [worker:548](../app-api/src/test/kotlin/com/exchange/core/api/trading/infrastructure/aeron/MatchingResultDeliveryAgentTest.kt#L548) / R1,R23 | worker에 config와 다른 readEntries1을 전달하거나 readBytes1 / inFlightBytes1을 호환 검사. | 모두 IllegalArgumentException, 전송 연결 생성0. 작은 한도가 실제 큰 결과를 전송한 뒤 실패하는 사례는 아니다. |
-| W20 연결의 단일 작업 스레드 [worker:576](../app-api/src/test/kotlin/com/exchange/core/api/trading/infrastructure/aeron/MatchingResultDeliveryAgentTest.kt#L576) / R19 | 실제 worker thread 시작. Apply offer latch를 최대3초 기다리고 finally close. | latch 도달, begin/poll/offer/keepalive/close에서 기록한 owner thread 집합1개·이름 matching-result-delivery·종료 후 살아있지 않음, 모든 connection closed·failure없음. 실제 Aeron thread 안전 전수 검사는 아니다. |
+| W01 무체결 후 실제 체결 [worker:62](../app-api/src/test/kotlin/com/exchange/core/api/trading/infrastructure/aeron/MatchingResultDeliveryAgentTest.kt#L62) / R4,R5 | SELL1@100 → 15cycle. 이어 BUY1@100, 빈 조회 backoff1ms 이동 →15cycle. | ① seller A가용4/hold1, 대기1, 결과0. ② buyer Q900/A1, seller Q100/A4, 관련 hold0, 확인2·결과0·주문장0·failure없음. seller 초기는 A5다. |
+| W02 앞 응답 없이 pipeline [worker:86](../app-api/src/test/kotlin/com/exchange/core/api/trading/infrastructure/aeron/MatchingResultDeliveryAgentTest.kt#L86) / R11,R23 | BUY1@1 2개. 자금 응답만 보류→8cycle. 누적 ACK2 응답 **마지막 하나만** release→10cycle. 늦은 첫 correlation ACK1 주입→2cycle. | ① 실제 Apply 순번[1,2], source 결과2·ACK 제출0. ② 기록 ACK목록[2], 확인2·결과0. ③ ACK목록 여전히[2], failure없음. |
+| W03 자금 응답 유실 재전송 [worker:110](../app-api/src/test/kotlin/com/exchange/core/api/trading/infrastructure/aeron/MatchingResultDeliveryAgentTest.kt#L110) / R8,R15 | BUY1@1. 자금은 정산하고 응답만 hold. 8cycle 후 상태 저장→3초 이동·1cycle→hold 해제·50ms 이동·16cycle. | ① timeout 뒤 모든 연결 closed. ② Apply 원문 목록 정확히[first,first], 최초 receipt 시각123ms 동일, buyer Q999/hold1, 확인1·failure없음. 대기 주문 예약은 반환하지 않는다. 새 확정시각을 준 중복은 A02가 검사한다. |
+| W04 매칭 기록 응답만 유실 [worker:135](../app-api/src/test/kotlin/com/exchange/core/api/trading/infrastructure/aeron/MatchingResultDeliveryAgentTest.kt#L135) / R11,R19 | ACK 도메인 기록은 수행하되 응답 drop. 8cycle→3초 timeout→drop 해제·50ms 재연결·16cycle. | 첫 단계 확인1. 복구 뒤 Apply 총1·결과0·from1 source 조회≥2·failure없음. 이미 기록한 source prefix를 다시 읽어 payload를 되살리지 않는다. |
+| W05 자금 PRUNED 처리 [worker:155](../app-api/src/test/kotlin/com/exchange/core/api/trading/infrastructure/aeron/MatchingResultDeliveryAgentTest.kt#L155) / R9 | 실제 funds 적용 대신 PRUNED+typed ACK1을 제어 응답으로 제공. | 확인1·결과0·failure없음. **실제 receipt FIFO 축출·금융 재정산0을 검사하는 사례는 아니다.** |
+| W06 낮은 ACK 두 경로 [worker:168](../app-api/src/test/kotlin/com/exchange/core/api/trading/infrastructure/aeron/MatchingResultDeliveryAgentTest.kt#L168) / R11 | 두 독립 fixture: ① result1에 funds APPLIED+ACK0, ② 제출 ACK1에 matching ACKNOWLEDGED+ACK0. | 두 경우 failure 존재·확인0·결과1 보존. 둘째는 recorded 응답 override가 실제 matching 적용도 대체한다. |
+| W07 잘못된 ACK 세 변형 [worker:189](../app-api/src/test/kotlin/com/exchange/core/api/trading/infrastructure/aeron/MatchingResultDeliveryAgentTest.kt#L189) / R18,R24 | funds 성공 응답의 ACK를 각각 epoch2 / ordinal1 / 미래 through2로 변조. | 세 경우 failure 존재·확인0·결과1·기록 ACK목록 empty. 각 경우 실제 금융값은 별도 비교하지 않는다. |
+| W08 오래된 조회보다 앞선 ACK [worker:211](../app-api/src/test/kotlin/com/exchange/core/api/trading/infrastructure/aeron/MatchingResultDeliveryAgentTest.kt#L211) / R11,R23 | result1 조회 future를 지연하고 old issued1 결과를 보관. result2를 만든 뒤 old future 완료. funds가 ACK2를 응답. | 확인2·bytes1의 issued 재확인 조회 존재·failure없음. 오래된 관측만 보고 정상 누적 ACK2를 거절하지 않는다. |
+| W09 재확인 중 더 높은 ACK [worker:230](../app-api/src/test/kotlin/com/exchange/core/api/trading/infrastructure/aeron/MatchingResultDeliveryAgentTest.kt#L230) / R11,R23 | result1 조회 완료→아직 result2가 없던 empty 관측 준비→result2 생성·ACK2 release. issued2 재확인 future를 지연→result3 생성·같은 correlation ACK3 주입·2ms 이동. 이후 issued2 future 완료. | ① issued 검증 전에는 ACK제출0·확인0·결과3. ② bytes1 재조회 정확히2회, 최종 기록 ACK목록[3]·확인3·결과0·failure없음. 단순 마지막 상태만으로 앞 단계를 설명하지 않는다. |
+| W10 앞 결과를 요구하는 GAP [worker:277](../app-api/src/test/kotlin/com/exchange/core/api/trading/infrastructure/aeron/MatchingResultDeliveryAgentTest.kt#L277) / R12 | BUY 2개, 첫 funds 응답만 GAP expected1, 그 뒤 실제 도메인 처리. 25cycle. | 확인2·result1 Apply≥2·funds receipt2·failure없음. 모든 offer 순서 목록의 완전 일치는 검사하지 않는다. |
+| W11 이미 회수한 구간의 GAP 두 경우 [worker:301](../app-api/src/test/kotlin/com/exchange/core/api/trading/infrastructure/aeron/MatchingResultDeliveryAgentTest.kt#L301) / R12,R22 | result1은 실제 자금 EPOCH 정산·matching ACK1 회수 후 result2 생성. 첫 응답 GAP1. progress 대역을 ACK1 또는 뒤처진 ACK0으로 제공. | 공통 progress조회1. ACK1이면 확인2·결과0·failure없음. ACK0이면 failure 존재·확인1·결과1 보존. 잔고·예약 전체 equality assertion은 없다. |
+| W12 backpressure 중 제어 경로 [worker:337](../app-api/src/test/kotlin/com/exchange/core/api/trading/infrastructure/aeron/MatchingResultDeliveryAgentTest.kt#L337) / R15,R17,R23 | 전송창2, 결과4개·funds응답 hold→10cycle. Apply offer를 BACK_PRESSURED로 하고 응답 release·500ms 이동. ACK delay의2ms-1ns→+1ns로 진행. 이후 backpressure 해제, 첫 응답 NOT_READY,20ms 이동 후 재시도. | ① 먼저 Apply2. ② 모든 연결 poll·keepalive>0. ACK기한 전 확인0, 정확한 기한 뒤 확인2·결과2. ③ 최종 확인4·failure없음. 실제 네트워크 포화·시간벽 계측은 아니다. |
+| W13 byte 창 먼저 포화 [worker:528](../app-api/src/test/kotlin/com/exchange/core/api/trading/infrastructure/aeron/MatchingResultDeliveryAgentTest.kt#L528) / R23 | producer 단일4,096byte/사건1, 전송창7,000byte, BUY 결과8개·응답 hold. | ① Apply1~7건, 그 frame 실제 encode 합+제어 reserve≤7,000, source 결과8·확인0. ② 응답 release 뒤 확인8·결과0·failure없음. private future·준비 버퍼 전체 실메모리를 계측하는 assertion은 아니다. |
+| W14 ACK offer만 차단 [worker:559](../app-api/src/test/kotlin/com/exchange/core/api/trading/infrastructure/aeron/MatchingResultDeliveryAgentTest.kt#L559) / R17,R23 | 전송창1, 결과4개. matching ACK offer만 BACK_PRESSURED→25cycle. 해제·2ms 이동. | ① Apply4·funds 누적정산4, source 결과4·확인0. ② 확인4·결과0·failure없음. 응답/ACK 경로가 신규 결과창과 별도로 진행한다. |
+| W15 세대 변경과 늦은 응답 [worker:579](../app-api/src/test/kotlin/com/exchange/core/api/trading/infrastructure/aeron/MatchingResultDeliveryAgentTest.kt#L579) / R19 | result1 조회 future 지연→source generation=null→3cycle. 다시 generation2·15cycle. 옛 funds connection으로 미래 ACK2 응답 callback 주입. | ① future cancelled·모든 연결 closed·Apply0. ② 확인1. ③ 옛 응답을 준 직후 failure없음. 팔로워 실제 선출·네트워크는 대역이다. |
+| W16 음수 시계·재연결 경계 [worker:602](../app-api/src/test/kotlin/com/exchange/core/api/trading/infrastructure/aeron/MatchingResultDeliveryAgentTest.kt#L602) / R19 | now=-1,000,000,000,000ns, NOT_CONNECTED로 연결 실패. 재연결50ms-1ns 이동→1cycle, +1ns·연결 정상화. | 기한 전 새 연결 수 불변, 정확한 경계 뒤 확인1·failure없음. JVM nanoTime 절댓값의 양수 가정에 의존하지 않는다. |
+| W17 마지막 Long cursor [worker:622](../app-api/src/test/kotlin/com/exchange/core/api/trading/infrastructure/aeron/MatchingResultDeliveryAgentTest.kt#L622) / R24 | source override: from1은 PRUNED·확인 MAX-1·issued MAX·next MAX. fromMAX는 마지막 결과1개·next=null. 양쪽 ACK MAX를 제어 응답. | source 조회 from 목록 정확히[1,MAX], Apply1·failure없음. 다른 from은 fixture가 error로 실패한다. 실제 도메인에서 MAX까지 발급·정산한 검사는 아니다. |
+| W18 진행 불가·오배치 [worker:677](../app-api/src/test/kotlin/com/exchange/core/api/trading/infrastructure/aeron/MatchingResultDeliveryAgentTest.kt#L677) / R18,R23 | ① BATCH_TOO_SMALL(required3,000,000) 조회. ② 다른 fixture의 peer topology를 f×64로 변조. | ① failure 존재·Apply0. ② IllegalArgumentException·결과1 보존·Apply0. 서로 다른 실패 경계를 한 fixture로 섞지 않는다. |
+| W19 설정 불일치 [worker:699](../app-api/src/test/kotlin/com/exchange/core/api/trading/infrastructure/aeron/MatchingResultDeliveryAgentTest.kt#L699) / R1,R23 | worker에 config와 다른 readEntries1을 전달하거나 readBytes1 / inFlightBytes1을 호환 검사. | 모두 IllegalArgumentException, 전송 연결 생성0. 작은 한도가 실제 큰 결과를 전송한 뒤 실패하는 사례는 아니다. |
+| W20 연결의 단일 작업 스레드 [worker:727](../app-api/src/test/kotlin/com/exchange/core/api/trading/infrastructure/aeron/MatchingResultDeliveryAgentTest.kt#L727) / R19 | 실제 worker thread 시작. Apply offer latch를 최대3초 기다리고 finally close. | latch 도달, begin/poll/offer/keepalive/close에서 기록한 owner thread 집합1개·이름 matching-result-delivery·종료 후 살아있지 않음, 모든 connection closed·failure없음. 실제 Aeron thread 안전 전수 검사는 아니다. |
 
 ### adapter — 실제 callback이 정산과 회수를 분리한다 (새 6개, 모두 U)
 
@@ -190,15 +200,15 @@ val recorded = owner.acknowledgeFundsSettled(command.ack)
 | A05 snapshot+tail 시각·회수 [adapter:569](../app-api/src/test/kotlin/com/exchange/core/api/trading/infrastructure/aeron/SplitTradingClusterAdapterTest.kt#L569) / R8,R19,R21 | 대기 결과1이 남은 funds/matching snapshot bytes 저장. follower 역할로 funds snapshot 복원→원래 T의 결과 tail replay→leader에서 T+999ms 중복. matching snapshot 복원→그 ACK tail replay→leader→회수 후 snapshot 재복원. | follower funds replay 응답0·receipt T, 이후 DUPLICATE. matching onStart만으로 전송세대 없음·결과1, ACK replay 응답0·결과0, leader 조회PRUNED·대기1. 회수 snapshot 복원도 결과0·확인1. **mock Image 재생이며 실제 Archive 복원은 D01**이다. |
 | A06 malformed 산술 넘침 [adapter:624](../app-api/src/test/kotlin/com/exchange/core/api/trading/infrastructure/aeron/SplitTradingClusterAdapterTest.kt#L624) / R2,R18,R24 | BUY1 예약·matching 결과1 원문 준비. wire engineBefore/After만 MAX/MAX로 바꿔 funds callback에 직접 투입. 이후 정상 원문 투입. | malformedMessages1·started/ready 유지·failure없음·응답0·executed0·buyer Q900/hold100·matching 결과1. 정상 후 APPLIED·executed1. 입력 산술 오류가 owner 종료/성공 ACK가 되지 않음을 관측한다. |
 
-목록은 실제 diff와 `HEAD`의 메서드 이름을 대조했다. adapter는 기존 8개 + 신규 6개 = 현재 14개다. 마지막 산술 넘침 사례까지 신규 6개에 포함되며 units7 XML에도 존재한다.
+목록은 원검증 당시 diff와 메서드 이름을 대조했다. adapter는 기존 8개 + 신규 6개 = 현재 14개다. 마지막 산술 넘침 사례까지 신규 6개에 포함되며 units7 XML에도 존재한다.
 
 ### startup — 별도 모드와 한도 지문 (새 3개, 모두 U)
 
 | 사례·소스 / 계약 | Given → When | Then: 실제 assertion·한계 |
 | --- | --- | --- |
-| S01 별도 실행 identity [startup:281](../app-api/src/test/kotlin/com/exchange/core/api/trading/infrastructure/aeron/SplitTradingRoleStartupTest.kt#L281) / R1,R27 | 기본 config와 결과 inFlight7 config. ORDER_DELIVERY_DEV와 RESULT_SETTLEMENT_DEV 설정 생성. | 기존 topology SHA 같음, result SHA 다름. 결과 작업 enabled false/true, 두 mode identity bytes 다름, 새 mode에만 result SHA 포함. 한도 변경 identity도 다름. root 미생성. |
-| S02 한 건·제어공간 부족 [startup:300](../app-api/src/test/kotlin/com/exchange/core/api/trading/infrastructure/aeron/SplitTradingRoleStartupTest.kt#L300) / R1,R23 | result maxReadBytes1 또는 maxInFlightBytes1,024를 각각 설정. 기존 mode 생성 후 새 mode 생성 시도. | 기존 mode 결과작업 off, 새 mode IllegalArgumentException, 각 root 미생성. 실제 파일·Driver를 만든 뒤 정리한 검사는 아니다. |
-| S03 모든 한도 지문 [startup:317](../app-api/src/test/kotlin/com/exchange/core/api/trading/infrastructure/aeron/SplitTradingRoleStartupTest.kt#L317) / R1,R23 | 기본값에서 read건수/bytes·inFlight건수/bytes·ACK batch/delay·attempt/reconnect·busy최소/최대·keepalive·shutdown **12종을 각각** 변경. | 각 기존 SHA 유지·각 result SHA는 기본과 다름,12개 결과 SHA도 서로 고유. 설정마다 실제 시간/전송을 실행한 검사는 아니다. |
+| S01 별도 실행 identity [startup:296](../app-api/src/test/kotlin/com/exchange/core/api/trading/infrastructure/aeron/SplitTradingRoleStartupTest.kt#L296) / R1,R27 | 기본 config와 결과 inFlight7 config. ORDER_DELIVERY_DEV와 RESULT_SETTLEMENT_DEV 설정 생성. | 기존 topology SHA 같음, result SHA 다름. 결과 작업 enabled false/true, 두 mode identity bytes 다름, 새 mode에만 result SHA 포함. 한도 변경 identity도 다름. root 미생성. |
+| S02 한 건·제어공간 부족 [startup:315](../app-api/src/test/kotlin/com/exchange/core/api/trading/infrastructure/aeron/SplitTradingRoleStartupTest.kt#L315) / R1,R23 | result maxReadBytes1 또는 maxInFlightBytes1,024를 각각 설정. 기존 mode 생성 후 새 mode 생성 시도. | 기존 mode 결과작업 off, 새 mode IllegalArgumentException, 각 root 미생성. 실제 파일·Driver를 만든 뒤 정리한 검사는 아니다. |
+| S03 모든 한도 지문 [startup:332](../app-api/src/test/kotlin/com/exchange/core/api/trading/infrastructure/aeron/SplitTradingRoleStartupTest.kt#L332) / R1,R23 | 기본값에서 read건수/bytes·inFlight건수/bytes·ACK batch/delay·attempt/reconnect·busy최소/최대·keepalive·shutdown **12종을 각각** 변경. | 각 기존 SHA 유지·각 result SHA는 기본과 다름,12개 결과 SHA도 서로 고유. 설정마다 실제 시간/전송을 실행한 검사는 아니다. |
 
 ### Docker — 실제 두 클러스터를 통과하는 여섯 시나리오 (D: 실행 근거 확인)
 
@@ -263,11 +273,13 @@ D06은 **기본 논리 한도에 근접한 정상 정산**, **receipt FIFO 회�
 | R26 | harness가 정상·실패 경로의 finally와 자원 소유 범위를 구현했으며 baseline은 다른 UID 읽기를 포함한다. 모든 실패 주입·동시 교체 stress를 실행했다고 말하지 않는다. |
 | R27,R28 | 새 테스트만으로 기존 integrated/snapshot golden 전체 회귀, 계산실패·반영 중 owner 차단의 모든 금융 불변식을 완료 판정할 수 없다. 아래 §5~6의 기존 코어·선택 회귀 근거에 별도로 연결한다. |
 
-이 절은 대상별 설명과 assertion 대조다. 실제 실행 기록(§5)과 독립 결함 검토(§7)는 별도로 기록한다. 미설명 대상으로 남긴 새 테스트는 없으며 위 직접 관측 한계를 함께 적용한다.
+이 절은 대상별 설명과 assertion 대조다. 실제 실행 기록(§5)과 독립 결함 검토(§7)는 별도로 기록한다. 원검증 대상의 새 테스트는 모두 설명했고 위 직접 관측 한계를 함께 적용한다. 이번 정리에서 추가한 회귀는 §10에 따로 설명한다.
 
-### 설명 기준의 현재 파일 지문
+</details>
 
-아래 SHA-256은 이 문서 작성 때 읽은 소스 내용의 식별자다. 단위 실행기록 자체의 source manifest는 아니다.
+### 원검증 시점의 파일 지문
+
+아래 SHA-256은 원검증 때 읽은 소스 내용의 식별자다. 이번 정리 후 현재 파일의 지문이나 단위 실행기록 자체의 source manifest가 아니다. 새 실행 대상의 식별은 §10에서 별도로 갱신한다.
 
 | 파일 | SHA-256 |
 | --- | --- |
@@ -286,6 +298,8 @@ D06은 **기본 논리 한도에 근접한 정상 정산**, **receipt FIFO 회�
 
 ## 5. 실제 실행 기록
 
+이 절의 성공·실패 수치와 실제 Docker9회는 모두 이번 읽기 정리 전 구현에 대한 기록이다. 정리 후 실행 결과와 합산하지 않는다.
+
 - 첫 컴파일: 제품 코드 컴파일 성공. 새 test helper의 Int 값에 `.size`를 쓴 준비 코드와 기존 trailing-lambda API 바인딩 오류를 수정했다. 테스트 assertion까지 도달한 TDD Red라고 기록하지 않는다.
 - 첫 선택 unit 실행(`build/impl169-units3.log`):58개 중4개 실패. 고정 가상시계의 empty-read/ACK backoff 경계 미전진2건, Long.MAX 결과 fixture의 dispatch identity 불일치1건, 전체 결과의 사건 범위를 깨뜨린 충돌 fixture1건이었다. 명세를 완화하지 않고 각각 시간 경계·원문 identity·유효 구조를 갖춘 충돌로 준비를 수정했다.
 - 다음 선택 unit(`build/impl169-units4.log`):59개 중58개 통과. 추가 byte-window fixture의2KiB producer 상한이 최대 식별자의 최종 거절 최소 크기보다 작아 기동 검증에서 거절됐다. 테스트 producer를4KiB로, 작은 전송창을7,000byte로 맞춰 실제 byte 한도 동작을 검사하도록 수정했다.
@@ -301,6 +315,8 @@ D06은 **기본 논리 한도에 근접한 정상 정산**, **receipt FIFO 회�
 - 기존 CI의 Build and test 기한만20→30분으로 조정했다. 새6개 시나리오를 기존 test 작업에 추가했기 때문이며, 테스트 제외·실패 무시·별도 CI 플랫폼/권한은 추가하지 않았다. 각 run8분/정리45초/기록2GiB/진단16MiB 상한은 유지한다. 게시 준비 시점의 원격 CI는 미실행이다.
 
 ## 6. 수용 조건과 검증 수준
+
+아래 판정은 원검증 당시의 근거에 따른다. 이번 정리 후 재검증은 §10에 분리한다.
 
 명세 R1~R28의 실제 코드·검사·실행 근거를 최종 결과에 연결한다. 테스트 수·그린 구조 검사만으로 금융/HA 전체를 완료라고 하지 않는다.
 
@@ -340,6 +356,8 @@ D06은 **기본 논리 한도에 근접한 정상 정산**, **receipt FIFO 회�
 
 ## 7. 독립 리뷰와 최종 대상
 
+이 절은 정리 전 구현의 독립 리뷰 기록이다. 이번 책임 분리의 독립 리뷰를 대신하지 않는다.
+
 구현 작성 과정과 분리된 별도 컨텍스트에서 고정 base/head와 명세를 읽고 소스·호출 경계·반례를 검토했다. 독립 검토는 소스 수정·게시 없이 수행했다.
 
 | 고정 대상 | 검토·실행·해소 |
@@ -361,7 +379,7 @@ D06은 **기본 논리 한도에 근접한 정상 정산**, **receipt FIFO 회�
 다음은 실제 실행한 최종 선택 회귀의 재현 명령이다. JDK 25가 `JAVA_HOME`과 `PATH`에 설정되어 있어야 한다. 새 Docker6개와 기존 Docker1개는 앞서 별도 작은 실행으로 완료했으며 이 명령이 그것들을 다시 실행하는 것은 아니다.
 
 ```bash
-cd "$(git rev-parse --show-toplevel)"
+cd /Users/0chord/.codex/worktrees/issue148-http-aeron/exchange-core
 ./gradlew \
   ktlintCheck \
   :domain-trading:test --tests '*FundsResult*' --tests '*ReservedMatching*' \
@@ -380,7 +398,7 @@ cd "$(git rev-parse --show-toplevel)"
 실제 새 Docker6개를 다시 확인할 때는 다음 명령을 사용한다. 이미지·디스크·메모리 전제를 검사하며 Docker가 없으면 skip 성공으로 처리하지 않는다. 이미 통과한 검사를 문서 생성만을 이유로 다시 실행하지 않았다.
 
 ```bash
-cd "$(git rev-parse --show-toplevel)"
+cd /Users/0chord/.codex/worktrees/issue148-http-aeron/exchange-core
 ./gradlew \
   :app-api:test --tests '*DockerMatchingResultDeliveryTest' \
   --no-daemon --max-workers=1 --console=plain
@@ -391,3 +409,68 @@ cd "$(git rev-parse --show-toplevel)"
 위 `build/issue169-*` 실행·리뷰 근거는 로컬 ignored 산출물이며 이 PR에 게시하지 않는다. 경로 문자열은 로컬 실행을 식별하기 위한 기록이고 원격 링크가 아니다. 공개 검토에서는 본 기록과 상대 링크로 연결한 제품·시험 소스, 이후 CI가 수집하는 재현 보고서를 구분해 확인한다. [CI 보고서 수집 설정](../.github/workflows/build-and-test.yml#L135)의 `test-reports`에는 모듈별 `build/test-results/test/*.xml`·`build/reports/tests/test/**`, `build/reports/ktlint/**`, 결과 시나리오의 `app-api/build/reports/aeron-funding/result-settlement/**`가 포함된다. 로컬 `build/issue169-*` 디렉터리를 업로드한다는 뜻은 아니다. 게시 준비 시점에는 push·PR·원격 CI·병합·배포·이슈/보드 변경을 수행하지 않았고, 원격 CI의 성공이나 보고서 생성을 주장하지 않는다.
 
 종료 점검에서 이번 결과 시나리오의 잔존 기록 볼륨0·실행 중 테스트 컨테이너0을 확인했다. 독립 리뷰용 임시 복사본의 재생성 가능한 빌드 산출물705.2MiB도 정리했다. 고정 소스·manifest·리뷰 보고서·JUnit XML·시험 HTML은 유지했고 다른 실행의 자원은 삭제하지 않았다.
+
+
+## 10. 읽기 정리 — dbf021c 이후
+
+비교 기준은 `dbf021c754773245885df57fd952f0c7309b985e`다. Agent 안에서 섞여 있던 결과 진행과 통신을 나누고, 설정 지문의 입력·인코딩·해시 계산을 작은 private 함수로 드러냈다. **새 제품 파일0개**, 제품3파일·시험2파일 수정이다. 같은 manifest·한도 입력의 지문값, schema88/89 프로토콜, 금융 정산·결과 회수 규칙의 변경은0이다. ACK 지연·재시도·keepalive·종료 시간도 기존 지문 입력에 유지했다. 운영 시간 필드를 지문에서 제외하는 설계 변경을 이번 정리에 섞지 않았다.
+
+| 바뀐 파일 | 정리 전 dbf021c | 현재 읽을 책임 |
+| --- | --- | --- |
+| MatchingResultDeliveryAgent.kt | [doWork:274](https://github.com/0Chord/coin-exchange/blob/dbf021c754773245885df57fd952f0c7309b985e/app-api/src/main/kotlin/com/exchange/core/api/trading/infrastructure/aeron/MatchingResultDeliveryAgent.kt#L274) 아래에 peer 연결과 결과 진행이 함께 있었다. | [doWork:258](../app-api/src/main/kotlin/com/exchange/core/api/trading/infrastructure/aeron/MatchingResultDeliveryAgent.kt#L258)는 조회 반영·ACK 기록·진행 확인·결과 송신·다음 조회 순서다. `receiveResultRead`, `recordSettlementAck`, `verifyFundsProgress`, `refreshResultIssuance`, `sendResults`, `readNextResults`가 의도를 드러낸다. |
+| SplitResultDeliveryClient.kt | [기존 연결 factory:36](https://github.com/0Chord/coin-exchange/blob/dbf021c754773245885df57fd952f0c7309b985e/app-api/src/main/kotlin/com/exchange/core/api/trading/infrastructure/aeron/SplitResultDeliveryClient.kt#L36)와 개발 검증 client가 있었다. | 같은 파일의 [MatchingResultDeliveryTransport:112](../app-api/src/main/kotlin/com/exchange/core/api/trading/infrastructure/aeron/SplitResultDeliveryClient.kt#L112)에 Agent의 연결·peer 확인·poll·offer·정리를 모았다. 재연결해도 correlation 발급기를 새로 만들지 않으며 구세대/옛 연결의 응답을 버린다. |
+| SplitTradingConfiguration.kt | [init:48](https://github.com/0Chord/coin-exchange/blob/dbf021c754773245885df57fd952f0c7309b985e/app-api/src/main/kotlin/com/exchange/core/api/trading/infrastructure/aeron/SplitTradingConfiguration.kt#L48)에 검증과 두 SHA writer가 중첩되어 있었다. | [init:48](../app-api/src/main/kotlin/com/exchange/core/api/trading/infrastructure/aeron/SplitTradingConfiguration.kt#L48)은 역할 검증 → 주문 지문 → 결과 지문이다. 프로토콜별 구성 바이트·타입별 한도 writer·공유 encode/hash로 나눴다. 서로 다른 두 한도 타입의12개 필드는 순서를 직접 읽도록 남겼다. |
+| MatchingResultDeliveryAgentTest.kt | [기존 첫 사례:61](https://github.com/0Chord/coin-exchange/blob/dbf021c754773245885df57fd952f0c7309b985e/app-api/src/test/kotlin/com/exchange/core/api/trading/infrastructure/aeron/MatchingResultDeliveryAgentTest.kt#L61)부터20개가 결과·ACK·한도·세대를 다뤘다. | [기존 첫 사례:62](../app-api/src/test/kotlin/com/exchange/core/api/trading/infrastructure/aeron/MatchingResultDeliveryAgentTest.kt#L62)를 유지하고, 추출 경계의 실제 offer bytes·연결 기한·poll 중 재연결 회귀3개를 추가했다. |
+| SplitTradingRoleStartupTest.kt | [기존 모드/identity 사례:281](https://github.com/0Chord/coin-exchange/blob/dbf021c754773245885df57fd952f0c7309b985e/app-api/src/test/kotlin/com/exchange/core/api/trading/infrastructure/aeron/SplitTradingRoleStartupTest.kt#L281)가 모드와 한도 변경의 지문 분리를 확인했다. | [기존 사례:296](../app-api/src/test/kotlin/com/exchange/core/api/trading/infrastructure/aeron/SplitTradingRoleStartupTest.kt#L296)에 더해 [고정 지문 회귀:178](../app-api/src/test/kotlin/com/exchange/core/api/trading/infrastructure/aeron/SplitTradingRoleStartupTest.kt#L178)가 기존 writer의 정확한 SHA를 확인한다. |
+
+추출 뒤에도 정산 ACK는 매칭 자기 로그에 확정된 뒤에만 source 결과를 회수한다. backpressure 중에는 이미 준비한 frame의 bytes·correlation을 유지하고, 인코딩 전 byte 예산과 ACK 제어 공간을 보존한다. poll callback이 재연결을 일으키면 닫은 연결에 keepalive나 송신을 이어가지 않는다. peer 역할·lineage·지문 오류는 실패로 드러내고 일반 전송 단절만 재연결한다.
+
+### 추가 회귀4개의 읽기
+
+worker 회귀3개는 실제 도메인 상태와 제어 가능한 전송/시계 대역을 쓴다. 실제 네트워크 장애나 Docker 재실행으로 세지 않는다.
+
+| 사례·현재 소스 | 준비 → 행동 | 실제 assertion |
+| --- | --- | --- |
+| [동일 frame 유지:378](../app-api/src/test/kotlin/com/exchange/core/api/trading/infrastructure/aeron/MatchingResultDeliveryAgentTest.kt#L378) | 결과1개. offer를 BACK_PRESSURED → ADMIN_ACTION → 수용 순으로 바꿔 doWork를 반복한다. | 거절 중 Apply 미실행·source 결과1개 보존. 모든 시도의 bytes가 첫 frame과 같고 correlation은 하나다. 수용 후 실제 Apply1번·확인1·failure없음. |
+| [연결/peer 확인 기한:427](../app-api/src/test/kotlin/com/exchange/core/api/trading/infrastructure/aeron/MatchingResultDeliveryAgentTest.kt#L427) | 연결 시도 미완료와 Describe 응답 유실 두 경우. 시도 기한-1ns → 정확한 기한 → 재연결 지연-1ns → 정확한 지연으로 이동한다. | 기한 전 기존 자원 유지, 기한에 정리·정확한 diagnostic·결과 보존. 재시도 지연 전 새 연결0, 경계 뒤 연결2개를 다시 시도해 Apply1번·확인1·failure없음. |
+| [poll 안의 재연결:479](../app-api/src/test/kotlin/com/exchange/core/api/trading/infrastructure/aeron/MatchingResultDeliveryAgentTest.kt#L479) | 첫 matching ACK 응답을 NOT_READY로 만든다. keepalive 기한의 poll에서 재연결 후 옛 연결로 틀린 지문의 늦은 ACK를 주입한다. | 옛 연결 모두 닫힘, 그 연결의 offer/keepalive 수 불변, 확인0·source 결과1 보존. 늦은 응답은 failure를 만들지 않으며 새 연결에서 확인1로 진행한다. |
+| [고정 SHA 보존:178](../app-api/src/test/kotlin/com/exchange/core/api/trading/infrastructure/aeron/SplitTradingRoleStartupTest.kt#L178) | artifact=`a`64자·schema=`b`64자로 고정한 manifest. 주문 한도의 Int3개는31/47/13, 결과 한도는3/5/11로 구별한다. 설정 객체를 생성한다. | 주문/결과 SHA가 아래 dbf021c writer 실행값과 각각 같다. 기본 fixture의 실제 실행물 지문과 기존 모드/복구 identity 검사는 유지한다. |
+
+기존 구성 소스의 SHA-256은 `40491dda928e1ab579627efa0e1814605fa8def6f247b49b348420ecdb7c6cc6`이다. 이 원문으로 먼저 얻은 두 지문을 기대값으로 고정했다.
+
+| 고정 fixture | dbf021c writer에서 추출한 SHA-256 |
+| --- | --- |
+| 주문 `topologySha256` | `cf97094917f8cd11f86a79e16267038d4d3fb35891d5289c3033152bb3234535` |
+| 결과 `resultTopologySha256` | `d81ee8995db8f2d2977b79a67368c3eb80785b1900ad9ad43b20c633ace36876` |
+
+기준값 추출 자료는 로컬 `build/issue169-configuration-golden/baseline-values.json`, `baseline.log`, `baseline.xml`이다. 빈 기대값으로 두 실제 값을 출력한 실패는 기준값 수집 절차이며 제품 결함의 TDD Red가 아니다. 원문과 새 helper를 펼친 직렬화 호출36개의 메서드·인자, 역할 검증 본문과 두 role codec 순서도 정적으로 일치했다. 실제 리팩터링 후 실행 판정은 아래 기록과 구분한다.
+
+### 정리 후 실행·리뷰 상태
+
+정리한 제품·시험5파일은 `build/issue169-simplify-review/head`에 고정했다. 기준은 dbf021c, 소스 manifest SHA-256은 `e6e3d5157c1c6734ab31fb86c921bc71e7aa3fd1bce49c01032d2883edc0126b`다. 아래 실행 뒤 작업 파일의5개 hash를 다시 대조해 불일치0을 확인했다. 문서·화면 변경은 이 소스 지문과 구분한다.
+
+| 검사 | 이번 정리 후 실제 결과 |
+| --- | --- |
+| app-api 선택 기능·회귀13클래스 | **148개 성공**, 실패/오류/skip0. 새4개 포함. 기존 선택5클래스는 codec11/client4/worker23/adapter14/startup15로67개이며148개와 겹친다. |
+| domain-trading 결과/매칭 코어 | **61개 성공 결과 재사용(UP-TO-DATE)**. 이 정리에서 도메인 소스는 바꾸지 않았다.61개를 새로 실행했다고 세지 않는다. |
+| architecture | **386개 성공**, 실패/오류/skip0. `verifyArchitectureReport` P01~P09 실행·성공. |
+| Kotlin 형식 | 전체 `ktlintCheck` 성공. 앞 format 시도는 신규 시험의 긴 줄2곳 때문에 실패했고 줄바꿈 수정 뒤 통과했다. 제품 동작 실패와 구분한다. |
+| 실제 Docker | 결과6사례·기존 #168 단방향1사례, **7개 성공**, 실패/오류/skip0. 같은 조건으로 정산·보존·기본 로그/snapshot tail 복원·큰 결과를 다시 대조했다. |
+
+선택 기능/구조 명령은2분23초에 성공했고, 형식+실제 Docker 명령은5분21초에 성공했다. 이는 기능 시험의 경과 시간이며 TPS·지연 성능 수치가 아니다. 이전 구현의63개·591개·실제9회와 이번 실행 수를 합쳐 새 검사 수로 소개하지 않는다.
+
+| 실제 run | 사례 | 경과 | 결과·정리 |
+| --- | --- | --- | --- |
+| `delivery17937817681061c8af9a6` | 기존 단방향 #168 | 93,360ms | success·issues없음·run 자원/볼륨 정리true |
+| `delivery1793781861581e8727bbc` | cap | 21,923ms | success·issues없음·run 자원/볼륨 정리true |
+| `delivery17937818835406d053367` | active | 19,502ms | success·issues없음·run 자원/볼륨 정리true |
+| `delivery17937819030617e08e281` | baseline | 84,184ms | success·issues없음·run 자원/볼륨 정리true |
+| `delivery1793781987292291f4b4d` | partial | 23,990ms | success·issues없음·run 자원/볼륨 정리true |
+| `delivery1793782011307f80ae698` | fee | 18,702ms | success·issues없음·run 자원/볼륨 정리true |
+| `delivery17937820300258984d7c7` | large | 35,023ms | success·issues없음·run 자원/볼륨 정리true |
+
+각 실제 보고서의 제품·시험 source hash를 현재 코드와 대조해 전부 일치했다(결과6회 각12항목, 기존1회6항목). 테스트 컨테이너가 남지 않았음을 확인했고 각 run의 기록2GiB·진단16MiB 상한과 Linux 관찰 파일 읽기 검사를 유지했다. 새 프레임 크기/정산 정책이나 장기 부하를 추가하지 않았다.
+
+작성 과정과 분리된 컨텍스트의 독립 리뷰어가 불변 base/head의5파일과 호출·실패·회수·종료 경로를 검토했다. 직접 실행은 worker23+startup15=38개, 실패/오류/skip0이며 위148개와 중첩된다. 별도 probe에서 dbf021c 원본 writer와 head를 각각 로딩·실행해 두 고정 SHA가 같은 것도 확인했다. probe의 첫 Java classpath 누락은 검토 harness를 보정해 성공했고 제품 결함으로 기록하지 않는다. 검토한 범위에서 새 제품 결함·필수 검증 누락은 확인되지 않았다.
+
+근거는 미게시 로컬 `build/issue169-simplify-verification/required/{counts.json,execution.log,source-sha256.json}`, `docker/{runs.json,execution.log,TEST-*.xml,*-result.json}`, `build/issue169-simplify-review/review-report.md`다. root의 실제Docker7개와 리뷰어의 직접38개를 구분한다. 모든 운영 장애·보안·성능 보장을 완료한 것은 아니며 §8의 제외 범위는 유지한다. 이 기록 작성 시점에는 정리 커밋의 새 원격 CI 결과를 확인하기 전이다.
