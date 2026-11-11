@@ -208,25 +208,42 @@ class TradingCancelInboxTest {
     }
 
     @Test
-    fun `기존 금융 복구 형식은 취소 기록을 조용히 누락하지 않고 거절한다`() {
-        val inbox = opened().also { it.rememberCancel(token(1), intent, accepted) }.snapshot()
+    fun `두 금융 복구 값은 주문과 취소의 최초 응답 및 채널 경계를 그대로 보존한다`() {
+        val inbox =
+            opened()
+                .also {
+                    it.remember(token(1), order, admission)
+                    it.rememberCancel(token(2), intent, accepted)
+                    it.rememberCancel(token(3), intent, rejected)
+                }.snapshot()
         for (project in financialProjections()) {
-            assertFailsWith<IllegalArgumentException> { project(inbox) }
+            assertEquals(inbox, project(inbox))
         }
     }
 
     @Test
-    fun `기존 금융 복구 값은 생성 뒤 입력 목록을 바꿔도 취소 기록이 섞이지 않는다`() {
+    fun `두 금융 복구 값의 주문과 취소 목록은 입력과 독립적이며 직접 변경할 수 없다`() {
         for (project in financialProjections()) {
-            val cancellations = mutableListOf<TradingCancelInboxEntrySnapshot>()
-            val entries = mutableListOf(TradingInboxEntrySnapshot(1, order, admission))
-            val channels = mutableListOf(TradingInboxChannelSnapshot(user, 0, 1, 0, 1, entries, cancellations))
+            val expectedOrder = TradingInboxEntrySnapshot(1, order, admission)
+            val expectedCancel = TradingCancelInboxEntrySnapshot(2, intent, accepted)
+            val cancellations = mutableListOf(expectedCancel)
+            val entries = mutableListOf(expectedOrder)
+            val channels = mutableListOf(TradingInboxChannelSnapshot(user, 0, 1, 0, 2, entries, cancellations))
             val projected = project(TradingInboxSnapshot(channels))
-            cancellations.add(TradingCancelInboxEntrySnapshot(2, intent, accepted))
+            cancellations.clear()
             entries.clear()
             channels.clear()
-            assertEquals(listOf(TradingInboxEntrySnapshot(1, order, admission)), projected.channels.single().entries)
-            assertEquals(emptyList(), projected.channels.single().cancelEntries)
+            assertEquals(listOf(expectedOrder), projected.channels.single().entries)
+            assertEquals(listOf(expectedCancel), projected.channels.single().cancelEntries)
+            assertFailsWith<UnsupportedOperationException> {
+                (projected.channels as MutableList<TradingInboxChannelSnapshot>).clear()
+            }
+            assertFailsWith<UnsupportedOperationException> {
+                (projected.channels.single().entries as MutableList<TradingInboxEntrySnapshot>).clear()
+            }
+            assertFailsWith<UnsupportedOperationException> {
+                (projected.channels.single().cancelEntries as MutableList<TradingCancelInboxEntrySnapshot>).clear()
+            }
         }
     }
 

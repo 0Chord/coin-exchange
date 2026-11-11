@@ -127,7 +127,7 @@ class TradingRecoveryState(
     val preparationCanonicalBytes: Long,
     val incident: TradingIncident? = null,
 ) {
-    val inbox = orderRequestInbox(inbox)
+    val inbox = immutableRequestInbox(inbox)
     val balances = Collections.unmodifiableList(balances.toList())
     val feeRevenueByAsset = Collections.unmodifiableMap(LinkedHashMap(feeRevenueByAsset))
     val usedBalances = Collections.unmodifiableList(usedBalances.toList())
@@ -165,7 +165,7 @@ class BoundedFundingRecoveryState(
     val preparations = Collections.unmodifiableList(preparations.toList())
     val accounts = Collections.unmodifiableList(accounts.toList())
     val liveOrders = Collections.unmodifiableList(liveOrders.toList())
-    val inbox = orderRequestInbox(inbox)
+    val inbox = immutableRequestInbox(inbox)
     val markets =
         Collections.unmodifiableList(
             markets.map {
@@ -174,13 +174,15 @@ class BoundedFundingRecoveryState(
         )
 }
 
-/** 기존 금융 복구 형식에 아직 지원하지 않는 취소 기록을 섞어 저장하지 않는다. */
-private fun orderRequestInbox(inbox: TradingInboxSnapshot): TradingInboxSnapshot =
+/** 두 요청 종류와 채널 경계를 원본 목록에서 독립된 불변 복구 값으로 보존한다. */
+private fun immutableRequestInbox(inbox: TradingInboxSnapshot): TradingInboxSnapshot =
     TradingInboxSnapshot(
         Collections.unmodifiableList(
             inbox.channels.map {
-                require(it.cancelEntries.isEmpty()) { "financial recovery does not support cancellation receipts yet" }
-                it.copy(entries = Collections.unmodifiableList(it.entries.toList()), cancelEntries = emptyList())
+                it.copy(
+                    entries = Collections.unmodifiableList(it.entries.toList()),
+                    cancelEntries = Collections.unmodifiableList(it.cancelEntries.toList()),
+                )
             },
         ),
     )
