@@ -22,12 +22,16 @@ import com.exchange.core.order.Side
 import com.exchange.core.order.TimeInForce
 import com.exchange.core.trading.AdmissionCode
 import com.exchange.core.trading.AdmissionReceipt
+import com.exchange.core.trading.CancelCode
+import com.exchange.core.trading.CancelIntent
+import com.exchange.core.trading.CancelReceipt
 import com.exchange.core.trading.ClusterLineage
 import com.exchange.core.trading.LiveOrderPhase
 import com.exchange.core.trading.OrderAdmissionInput
 import com.exchange.core.trading.OrderAdmissionResult
 import com.exchange.core.trading.OrderIntent
 import com.exchange.core.trading.TradingBalanceKey
+import com.exchange.core.trading.TradingCancelInboxEntrySnapshot
 import com.exchange.core.trading.TradingClusterManifest
 import com.exchange.core.trading.TradingInboxChannelSnapshot
 import com.exchange.core.trading.TradingInboxEntrySnapshot
@@ -52,7 +56,7 @@ import java.security.DigestOutputStream
 import java.security.MessageDigest
 import java.time.Instant
 
-/** 형식 2는 현재 금융 상태만 담으며, 이력 DB나 완료된 원장 객체 그래프는 포함하지 않는다. */
+/** 현재 금융 상태를 담는다. 형식 3은 취소 최초 응답을 더하며, 취소가 없으면 기존 형식 2를 유지한다. */
 internal class BoundedTradingStateCodec {
     private val reservations = TradingHistoryCodec(64 * 1024)
 
@@ -78,11 +82,12 @@ internal class BoundedTradingStateCodec {
         target: OutputStream,
     ) {
         require(position >= 0)
+        val version = if (state.inbox.channels.any { it.cancelEntries.isNotEmpty() }) 3 else 2
         val digest = MessageDigest.getInstance("SHA-256")
         val checked = DigestOutputStream(target, digest)
         val out = DataOutputStream(checked)
         out.writeInt(MAGIC)
-        out.writeInt(2)
+        out.writeInt(version)
         out.writeLong(position)
         out.blob(encodeManifest(state.manifest))
         out.text(state.lifecycle.name)
@@ -155,6 +160,15 @@ internal class BoundedTradingStateCodec {
                 writeIntent(out, e.intent)
                 writeReceipt(out, e.receipt)
             }
+            if (version == 3) {
+                out.rows(c.cancelEntries) { e ->
+                    out.writeLong(e.sequence)
+                    out.text(e.intent.marketId.value)
+                    out.text(e.intent.targetOrderId.value)
+                    out.writeLong(e.intent.expectedConfigurationVersion)
+                    writeCancelReceipt(out, e.receipt)
+                }
+            }
         }
         out.flush()
         checked.on(false)
@@ -171,7 +185,9 @@ internal class BoundedTradingStateCodec {
         val digest = MessageDigest.getInstance("SHA-256")
         val checked = DigestInputStream(LimitedInput(source, MAX_SNAPSHOT_BYTES), digest)
         val input = DataInputStream(checked)
-        require(input.readInt() == MAGIC && input.readInt() == 2) { "unsupported bounded snapshot" }
+        require(input.readInt() == MAGIC) { "unsupported bounded snapshot" }
+        val version = input.readInt()
+        require(version == 2 || version == 3) { "unsupported bounded snapshot" }
         require(input.readLong() == expectedPosition) { "snapshot framework position differs" }
         val manifest = decodeManifest(input.blob(MAX_MANIFEST_BYTES))
         require(manifest == expected) { "snapshot execution manifest differs" }
@@ -254,7 +270,20 @@ internal class BoundedTradingStateCodec {
                         TradingInboxEntrySnapshot(input.readLong(), readIntent(input), readReceipt(input))
                     }
                 entryCount = Math.addExact(entryCount, entries.size)
-                TradingInboxChannelSnapshot(user, channel, epoch, retired, processed, entries)
+                val cancellations =
+                    if (version == 3) {
+                        input.rows(minOf(limits.requestWindow - entries.size, limits.maxInboxEntries - entryCount)) {
+                            TradingCancelInboxEntrySnapshot(
+                                input.readLong(),
+                                CancelIntent(MarketId(input.text()), OrderId(input.text()), input.readLong()),
+                                readCancelReceipt(input),
+                            )
+                        }
+                    } else {
+                        emptyList()
+                    }
+                entryCount = Math.addExact(entryCount, cancellations.size)
+                TradingInboxChannelSnapshot(user, channel, epoch, retired, processed, entries, cancellations)
             }
         checked.on(false)
         val expectedDigest = ByteArray(32).also(input::readFully)
@@ -465,6 +494,30 @@ internal class BoundedTradingStateCodec {
             }
         return AdmissionReceipt(code, order, admission, market, shortage, reason)
     }
+
+    private fun writeCancelReceipt(
+        o: DataOutputStream,
+        r: CancelReceipt,
+    ) {
+        o.text(r.code.name)
+        o.writeBoolean(r.cancelId != null)
+        r.cancelId?.let { o.text(it) }
+        o.writeBoolean(r.targetOrderId != null)
+        r.targetOrderId?.let { o.text(it.value) }
+        o.writeBoolean(r.inputSequence != null)
+        r.inputSequence?.let(o::writeLong)
+        o.writeBoolean(r.reason != null)
+        r.reason?.let { o.text(it) }
+    }
+
+    private fun readCancelReceipt(i: DataInputStream): CancelReceipt =
+        CancelReceipt(
+            CancelCode.valueOf(i.text()),
+            if (i.readBoolean()) i.text() else null,
+            if (i.readBoolean()) OrderId(i.text()) else null,
+            if (i.readBoolean()) i.readLong() else null,
+            if (i.readBoolean()) i.text() else null,
+        )
 
     private fun DataOutputStream.text(text: String) {
         val b = text.toByteArray(Charsets.UTF_8)

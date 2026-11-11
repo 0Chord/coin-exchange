@@ -9,6 +9,7 @@ import com.exchange.core.api.trading.infrastructure.codec.SplitResultDeliveryCod
 import com.exchange.core.api.trading.infrastructure.codec.SplitResultDeliveryCommand
 import com.exchange.core.api.trading.infrastructure.codec.SplitResultDeliveryReply
 import com.exchange.core.api.trading.infrastructure.codec.generated.SplitResultCommand
+import com.exchange.core.api.trading.infrastructure.history.FundsRoleSnapshotCodec
 import com.exchange.core.common.Amount
 import com.exchange.core.common.AssetId
 import com.exchange.core.common.MarketId
@@ -27,19 +28,30 @@ import com.exchange.core.order.MarketDefinition
 import com.exchange.core.order.OrderType
 import com.exchange.core.order.Side
 import com.exchange.core.order.TimeInForce
+import com.exchange.core.trading.BoundedFundingRecoveryState
 import com.exchange.core.trading.BoundedFundingState
+import com.exchange.core.trading.CancelCode
+import com.exchange.core.trading.CancelInboxLookup
+import com.exchange.core.trading.CancelIntent
+import com.exchange.core.trading.CancelReceipt
 import com.exchange.core.trading.ClusterLineage
 import com.exchange.core.trading.FundsDispatchReadStatus
 import com.exchange.core.trading.FundsMatchingAppliedAck
+import com.exchange.core.trading.FundsRoleRecoveryState
+import com.exchange.core.trading.InboxRejection
 import com.exchange.core.trading.MatchingResultEnvelope
 import com.exchange.core.trading.MatchingResultReadStatus
 import com.exchange.core.trading.OrderIntent
 import com.exchange.core.trading.RequestToken
 import com.exchange.core.trading.ReservedMatchingState
+import com.exchange.core.trading.TradingCancelInboxEntrySnapshot
 import com.exchange.core.trading.TradingClusterManifest
+import com.exchange.core.trading.TradingInboxChannelSnapshot
+import com.exchange.core.trading.TradingInboxSnapshot
 import com.exchange.core.trading.TradingLifecycle
 import com.exchange.core.trading.TradingMarketAssignment
 import com.exchange.core.trading.TradingMarketContext
+import com.exchange.core.trading.TradingRequestInbox
 import com.exchange.core.trading.TradingResourceLimits
 import com.exchange.core.trading.TradingRoleDeclaration
 import com.exchange.core.trading.TradingRoleTopology
@@ -61,6 +73,7 @@ import org.mockito.ArgumentMatchers.anyInt
 import org.mockito.Mockito.doAnswer
 import org.mockito.Mockito.mock
 import org.mockito.Mockito.`when`
+import java.io.ByteArrayOutputStream
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.time.Instant
@@ -279,6 +292,101 @@ class SplitTradingClusterAdapterTest {
                 .financial.liveOrders.size,
         )
         assertEquals(Balance(user, quote, Amount(400), Amount(600)), restoredAfterAck.funds().currentBalance(user, quote))
+    }
+
+    @Test
+    fun `취소 응답을 복원한 자금 callback은 다음 snapshot과 재기동에도 최초 응답과 경계를 보존한다`() {
+        val seed = fixture(TradingServiceRole.FUNDS)
+        prepare(seed)
+        assertEquals("ACCEPTED", seed.command(admit(1, 3)).code)
+        val original = seed.funds().fundsRecoveryState()
+        val financial = original.financial
+        val channel = financial.inbox.channels.single()
+        val target =
+            assertNotNull(
+                channel.entries
+                    .single()
+                    .receipt.orderId,
+            )
+        val intent = CancelIntent(market.marketId, target, 7)
+        val accepted = CancelReceipt(CancelCode.ACCEPTED, "C2" + "a".repeat(38), target, 41)
+        val rejected = CancelReceipt(CancelCode.REJECTED, reason = "NOT_OWNER")
+        // 자연 취소 ingress 대신 시험 복구 값의 inbox만 바꾼다. 금융·전달 관계는 실제 접수 결과다.
+        val inbox =
+            TradingInboxSnapshot(
+                listOf(
+                    channel.copy(
+                        epoch = 3,
+                        processedThrough = 3,
+                        cancelEntries =
+                            listOf(
+                                TradingCancelInboxEntrySnapshot(2, intent, accepted),
+                                TradingCancelInboxEntrySnapshot(3, intent, rejected),
+                            ),
+                    ),
+                    TradingInboxChannelSnapshot(user, 1, 4, 2, 2, emptyList()),
+                ),
+            )
+        val seeded =
+            FundsRoleRecoveryState(
+                original.configuration,
+                BoundedFundingRecoveryState(
+                    financial.manifest,
+                    financial.lifecycle,
+                    financial.balances,
+                    financial.feeRevenueByAsset,
+                    financial.usedBalances,
+                    financial.preparations,
+                    financial.accounts,
+                    financial.liveOrders,
+                    financial.markets,
+                    inbox,
+                    financial.lastAdmissionSequence,
+                    financial.lastPreparationSequence,
+                    financial.preparationCanonicalBytes,
+                    financial.incident,
+                ),
+                original.dispatch,
+                original.assetTotals,
+                original.results,
+            )
+        val initialBytes =
+            ByteArrayOutputStream().also { FundsRoleSnapshotCodec().write(seeded, seed.position, it) }.toByteArray()
+        val first = fixture(TradingServiceRole.FUNDS, start = false, position = seed.position)
+        first.service.onStart(first.cluster, snapshotImage(listOf(initialBytes)))
+        assertTrue(first.service.tradingReady)
+        val recording = first.snapshot()
+        val second = fixture(TradingServiceRole.FUNDS, start = false, position = first.position)
+        second.service.onStart(second.cluster, snapshotImage(recording))
+        assertTrue(second.service.tradingReady)
+        val after = second.funds().fundsRecoveryState()
+        assertEquals(inbox, after.financial.inbox)
+        assertEquals(Balance(user, quote, Amount(700), Amount(300)), second.funds().currentBalance(user, quote))
+        assertEquals(financial.balances, after.financial.balances)
+        assertEquals(financial.liveOrders, after.financial.liveOrders)
+        assertEquals(financial.markets, after.financial.markets)
+        assertEquals(financial.feeRevenueByAsset, after.financial.feeRevenueByAsset)
+        assertEquals(original.dispatch, after.dispatch)
+        assertEquals(original.assetTotals, after.assetTotals)
+        assertEquals(original.results!!.streams, after.results!!.streams)
+        assertTrue(after.results!!.receipts.isEmpty())
+        // 복원된 기록의 순수 조회만 실행하며 실제 취소나 반환을 시작하지 않는다.
+        val recovered = TradingRequestInbox(financial.manifest.limits).apply { restore(after.financial.inbox) }
+        val token = RequestToken(user, 0, 3, 2)
+        assertEquals(CancelInboxLookup.Repeated(accepted), recovered.lookupCancel(token, intent))
+        assertEquals(CancelInboxLookup.Repeated(rejected), recovered.lookupCancel(token.copy(sequence = 3), intent))
+        assertEquals(
+            CancelInboxLookup.Rejected(InboxRejection.REQUEST_CONTENT_CONFLICT),
+            recovered.lookupCancel(token, intent.copy(expectedConfigurationVersion = 8)),
+        )
+        assertEquals(CancelInboxLookup.Rejected(InboxRejection.FENCED_EPOCH), recovered.lookupCancel(token.copy(epoch = 2), intent))
+        assertEquals(CancelInboxLookup.Rejected(InboxRejection.UNISSUED_EPOCH), recovered.lookupCancel(token.copy(epoch = 4), intent))
+        assertEquals(
+            CancelInboxLookup.Rejected(InboxRejection.RETIRED_UNAVAILABLE),
+            recovered.lookupCancel(RequestToken(user, 1, 4, 2), intent),
+        )
+        assertEquals(inbox, recovered.snapshot())
+        assertTrue(first.failures.isEmpty() && second.failures.isEmpty())
     }
 
     @Test
