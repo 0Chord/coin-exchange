@@ -26,6 +26,10 @@ class BoundedFundingState(
     private var dispatch: FundsDispatchData? = dispatchConfiguration?.let(::FundsDispatchData)
     private var results: FundsResultData? = dispatchConfiguration?.let { FundsResultData(it, resultLimits) }
     private val assetTotals = linkedMapOf<AssetId, Long>()
+    private val approvalInputs = linkedMapOf<Pair<MarketId, OrderId>, FundsOrderDispatch>()
+    private val cancellations = linkedMapOf<Pair<MarketId, OrderId>, FundsCancellationSnapshot>()
+    private var cancellationBytes = 0L
+    private var lastCancellationSequence = 0L
 
     init {
         require(dispatchConfiguration == null || expectedManifest == dispatchConfiguration.manifest) {
@@ -178,9 +182,85 @@ class BoundedFundingState(
             progress.lastAssigned = marketSequence
             current.lastAdmissionSequence = sequence
             current.inbox.remember(token, intent, receipt)
-            delivery?.let { checkNotNull(dispatch).record(it) }
+            delivery?.let {
+                checkNotNull(dispatch).record(it)
+                approvalInputs[input.marketId to input.orderId] = it
+            }
         }
         return AdmissionReply.Recorded(receipt, newlyRecorded = true)
+    }
+
+    /** 취소 의무만 기록한다. 매칭 종료 결과를 받기 전에는 예약을 반환하지 않는다. */
+    fun admitCancel(
+        token: RequestToken,
+        intent: CancelIntent,
+    ): CancelReply {
+        val current = runningBounded()
+        val configuration = checkNotNull(dispatchConfiguration) { "cancellation requires a split funds role" }
+        val deliveries = checkNotNull(dispatch)
+        check(configuration.inputContractVersion == 2) { "cancellation requires input contract 2" }
+        when (val lookup = current.inbox.lookupCancel(token, intent)) {
+            is CancelInboxLookup.Repeated -> return CancelReply.Recorded(lookup.receipt, false)
+            is CancelInboxLookup.Rejected -> return CancelReply.Refused(lookup.reason.name)
+            CancelInboxLookup.Ready -> Unit
+        }
+        val context = current.contexts[intent.marketId]
+        if (context == null || intent.expectedConfigurationVersion != current.manifest.configurationVersion) {
+            return CancelReply.Refused("EXECUTION_CONTEXT_MISMATCH")
+        }
+        val key = intent.marketId to intent.targetOrderId
+
+        fun reject(reason: String): CancelReply {
+            val receipt = CancelReceipt(CancelCode.REJECTED, targetOrderId = intent.targetOrderId, reason = reason)
+            boundedMutation { current.inbox.rememberCancel(token, intent, receipt) }
+            return CancelReply.Recorded(receipt, true)
+        }
+        cancellations[key]?.let {
+            return reject(if (it.input.order.userId == token.userId) "CANCEL_PENDING" else "NOT_ACTIVE")
+        }
+        val live = current.liveByOrder[key] ?: return reject("NOT_ACTIVE")
+        if (live.order.userId != token.userId) return reject("NOT_ACTIVE")
+        val original = checkNotNull(approvalInputs[key]) { "active approval input is missing" }
+        val sequence =
+            try {
+                deliveries.nextSequence(intent.marketId)
+            } catch (_: ArithmeticException) {
+                return CancelReply.Refused("EXHAUSTED")
+            }
+        val cancelSequence =
+            try {
+                Math.addExact(lastCancellationSequence, 1L)
+            } catch (_: ArithmeticException) {
+                return CancelReply.Refused("EXHAUSTED")
+            }
+        val id = TradingIdentifiers.cancel(configuration.manifest.lineage, cancelSequence)
+        val input =
+            original.copy(
+                dispatchSequence = sequence,
+                cancel = FundsCancelDispatch(id, token, cancelSequence, original.dispatchSequence),
+            )
+        val obligation = FundsCancellationSnapshot(input)
+        val limits = configuration.limits
+        val local = limits.marketLimits.getValue(intent.marketId)
+        if (!deliveries.canCancel(input) || cancellations.size >= limits.maxDispatchEntries ||
+            cancellations.values.count { it.input.stream.marketId == intent.marketId } >= local.maxDispatchEntries ||
+            obligation.canonicalBytes > limits.maxDispatchBytes - cancellationBytes ||
+            obligation.canonicalBytes > local.maxDispatchBytes -
+            cancellations.values
+                .filter { it.input.stream.marketId == intent.marketId }
+                .sumOf { it.canonicalBytes }
+        ) {
+            return CancelReply.Refused("RETRYABLE_CAPACITY")
+        }
+        val receipt = CancelReceipt(CancelCode.ACCEPTED, id, intent.targetOrderId, sequence)
+        boundedMutation {
+            current.inbox.rememberCancel(token, intent, receipt)
+            deliveries.recordCancellation(input)
+            check(cancellations.put(key, obligation) == null)
+            cancellationBytes = Math.addExact(cancellationBytes, obligation.canonicalBytes)
+            lastCancellationSequence = cancelSequence
+        }
+        return CancelReply.Recorded(receipt, true)
     }
 
     fun prepareDevelopmentBalance(
@@ -281,7 +361,9 @@ class BoundedFundingState(
         val context = configuration.context(result.stream.marketId)
         val inputStream = configuration.stream(result.stream.marketId)
         if (result.resultSequence <= 0 || result.input.dispatchSequence != result.resultSequence ||
-            result.input.marketAdmissionSequence != result.resultSequence || result.input.admissionSequence <= 0 ||
+            result.formatVersion != configuration.inputContractVersion ||
+            (configuration.inputContractVersion == 1 && result.input.marketAdmissionSequence != result.resultSequence) ||
+            result.input.marketAdmissionSequence !in 1..result.resultSequence || result.input.admissionSequence <= 0 ||
             result.effects.size.toLong() > resultLimits.maxResultEvents.toLong() + 1 || result.eventCount > resultLimits.maxResultEvents
         ) {
             return FundsResultReply(FundsResultStatus.INVALID_RESULT)
@@ -293,7 +375,9 @@ class BoundedFundingState(
         }
 
         fun validApprovalIdentity(input: FundsOrderDispatch): Boolean =
-            input.admissionSequence > 0 && input.dispatchSequence > 0 && input.marketAdmissionSequence == input.dispatchSequence &&
+            input.formatVersion == configuration.inputContractVersion && input.admissionSequence > 0 && input.dispatchSequence > 0 &&
+                (configuration.inputContractVersion != 1 || input.marketAdmissionSequence == input.dispatchSequence) &&
+                input.marketAdmissionSequence in 1..input.dispatchSequence &&
                 input.order.marketId == result.stream.marketId &&
                 input.order.orderId == TradingIdentifiers.order(configuration.manifest.lineage, input.admissionSequence)
         if (!validApprovalIdentity(result.input) || result.effects.any { !validApprovalIdentity(it.origin) }) {
@@ -309,13 +393,22 @@ class BoundedFundingState(
         currentResults.repeated(result)?.let { return it }
         val next = Math.addExact(currentResults.through(result.stream.marketId), 1L)
         if (result.resultSequence != next) return FundsResultReply(FundsResultStatus.GAP, expectedSequence = next)
+        if (result.input.isCancellation) return applyCancellationResult(result, appliedAt)
         val progress = current.markets.getValue(result.stream.marketId)
         val candidate =
             try {
                 currentResults.requireResult(result)
                 require(result.engineSequenceBefore == currentResults.engine(result.stream.marketId)) { "result engine boundary differs" }
                 val taker = requireNotNull(progress.pending.firstOrNull()) { "result has no pending financial order" }
-                require(taker.admissionSequence == result.input.admissionSequence && taker.marketAdmissionSequence == result.resultSequence)
+                require(
+                    taker.admissionSequence == result.input.admissionSequence &&
+                        taker.marketAdmissionSequence == result.input.marketAdmissionSequence,
+                )
+                if (configuration.inputContractVersion ==
+                    2
+                ) {
+                    require(approvalInputs[result.input.order.marketId to result.input.order.orderId] == result.input)
+                }
                 val participants =
                     result.effects.mapIndexed { index, effect ->
                         val live =
@@ -327,6 +420,11 @@ class BoundedFundingState(
                                 (index > 0 && live.phase == LiveOrderPhase.RESTING),
                         ) { "financial order phase differs" }
                         requireFundsOriginal(effect.origin, live.snapshot())
+                        if (configuration.inputContractVersion ==
+                            2
+                        ) {
+                            require(approvalInputs[effect.origin.order.marketId to effect.orderId] == effect.origin)
+                        }
                         require(effect.beforeQuantity == live.reservation.remainingQuantity) { "financial quantity differs" }
                         live
                     }
@@ -412,16 +510,118 @@ class BoundedFundingState(
                     check(current.liveBySequence.remove(live.admissionSequence) === live)
                     progress.activeCount--
                     checkNotNull(dispatch).finish(live.order)
+                    val key = live.order.marketId to live.order.orderId
+                    approvalInputs.remove(key)
+                    cancellations[key]?.let {
+                        cancellations[key] =
+                            it.copy(
+                                terminalReservation = live.reservation,
+                                terminalResultSequence = result.resultSequence,
+                                terminalEngineSequence = result.engineSequenceAfter,
+                            )
+                    }
                 }
             }
             check(progress.pending.removeFirst() === candidate.taker)
             current.pendingCount--
-            progress.executedThrough = result.resultSequence
+            progress.executedThrough = result.input.marketAdmissionSequence
             currentResults.record(candidate.receipt)
             val confirmed = checkNotNull(dispatch).acknowledge(FundsMatchingAppliedAck(inputStream, result.input.dispatchSequence, context))
             check(confirmed.status == FundsDispatchAckStatus.ACKNOWLEDGED)
         }
         return FundsResultReply(FundsResultStatus.APPLIED, currentResults.ack(result.stream.marketId))
+    }
+
+    private fun applyCancellationResult(
+        result: MatchingResultEnvelope,
+        appliedAt: Instant,
+    ): FundsResultReply {
+        val current = runningBounded()
+        val currentResults = checkNotNull(results)
+        val key = result.input.order.marketId to result.input.order.orderId
+        val obligation = cancellations[key] ?: return FundsResultReply(FundsResultStatus.INVALID_RESULT)
+        val live = current.liveByOrder[key]
+        val context = checkNotNull(dispatchConfiguration).context(key.first)
+        var released: OrderReservation? = null
+        var nextBalance: Balance? = null
+        try {
+            currentResults.requireResult(result)
+            require(result.engineSequenceBefore == currentResults.engine(key.first))
+            require(obligation.input == result.input) { "cancellation input differs from recorded obligation" }
+            when (result.outcome) {
+                MatchingOutcome.CANCELLED -> {
+                    require(live != null && obligation.terminalStatus == null && live.phase == LiveOrderPhase.RESTING)
+                    val effect = result.effects.single()
+                    require(effect.origin == approvalInputs[key])
+                    requireFundsOriginal(effect.origin, live.snapshot())
+                    require(effect.beforeQuantity == live.reservation.remainingQuantity)
+                    require(effect.afterQuantity.value == 0L && effect.disposition == MatchingOrderDisposition.CANCELLED)
+                    require(live.reservation.status == OrderReservationStatus.ACTIVE)
+                    val previous = live.reservation
+                    val balance = requireNotNull(current.balances[TradingBalanceKey(previous.userId, previous.assetId)])
+                    released = previous.release()
+                    nextBalance = balance.release(previous.remainingAmount)
+                    fundsResultReleaseTransaction(result, previous, appliedAt)
+                    val settlement =
+                        OrderSettlementCandidate(
+                            live.order,
+                            context.market,
+                            emptyList(),
+                            listOf(OrderSettlementCandidate.BalanceChange(balance, nextBalance)),
+                            listOf(OrderSettlementCandidate.ReservationChange(previous, released)),
+                        )
+                    validateSettlementCurrent(settlement)
+                    validateResultConservation(settlement, context.market.quoteAssetId, null)
+                }
+
+                MatchingOutcome.CANCEL_REJECTED -> {
+                    require(live == null && obligation.terminalReservation != null)
+                    require(obligation.terminalReservation.remainingAmount == Amount.ZERO)
+                    require(obligation.terminalReservation.remainingFeeReserveAmount == Amount.ZERO)
+                    require(checkNotNull(obligation.terminalResultSequence) <= currentResults.through(key.first))
+                    require(checkNotNull(obligation.terminalEngineSequence) <= result.engineSequenceBefore)
+                    require(result.effects.isEmpty())
+                }
+
+                else -> {
+                    return FundsResultReply(FundsResultStatus.INVALID_RESULT)
+                }
+            }
+        } catch (
+            _: IllegalArgumentException,
+        ) {
+            return FundsResultReply(FundsResultStatus.INVALID_RESULT)
+        } catch (
+            _: IllegalStateException,
+        ) {
+            return FundsResultReply(FundsResultStatus.INVALID_RESULT)
+        } catch (
+            _: ArithmeticException,
+        ) {
+            return FundsResultReply(FundsResultStatus.INVALID_RESULT)
+        }
+        val receipt = FundsResultReceipt(result, appliedAt)
+        boundedMutation {
+            if (released != null) {
+                val order = checkNotNull(live)
+                current.balances[TradingBalanceKey(released.userId, released.assetId)] = checkNotNull(nextBalance)
+                order.reservation = released
+                check(current.liveByOrder.remove(key) === order)
+                check(current.liveBySequence.remove(order.admissionSequence) === order)
+                current.markets.getValue(key.first).activeCount--
+                checkNotNull(dispatch).finish(order.order)
+                approvalInputs.remove(key)
+            }
+            check(cancellations.remove(key) == obligation)
+            cancellationBytes -= obligation.canonicalBytes
+            currentResults.record(receipt)
+            val confirmed =
+                checkNotNull(dispatch).acknowledge(
+                    FundsMatchingAppliedAck(result.input.stream, result.input.dispatchSequence, context),
+                )
+            check(confirmed.status == FundsDispatchAckStatus.ACKNOWLEDGED)
+        }
+        return FundsResultReply(FundsResultStatus.APPLIED, currentResults.ack(key.first))
     }
 
     private data class FundsFinancialResultCandidate(
@@ -466,6 +666,9 @@ class BoundedFundingState(
             checkNotNull(dispatch).snapshot(),
             assetTotals,
             checkNotNull(results).snapshot(),
+            if (checkNotNull(dispatchConfiguration).inputContractVersion == 2) approvalInputs.values.toList() else emptyList(),
+            cancellations.values.toList(),
+            lastCancellationSequence,
         )
     }
 
@@ -506,17 +709,277 @@ class BoundedFundingState(
             }
             require(saved.assetTotals == reconstructed) { "funds asset total counters differ" }
             val restoredDispatch = FundsDispatchData(configuration)
-            restoredDispatch.restore(saved.dispatch, financial.liveOrders, financial.markets)
+            restoredDispatch.restore(saved.dispatch, financial.liveOrders, financial.markets, saved.approvalInputs, saved.cancellations)
             val restoredResults = FundsResultData(configuration, resultLimits)
             saved.results?.let { restoredResults.restore(it, financial, saved.dispatch) }
+            if (configuration.inputContractVersion == 2) {
+                validateCancellationRecovery(saved, restoredResults)
+            } else {
+                require(saved.approvalInputs.isEmpty() && saved.cancellations.isEmpty() && saved.lastCancellationSequence == 0L)
+            }
             bounded = candidate.bounded
             dispatch = restoredDispatch
             results = restoredResults
             assetTotals.putAll(reconstructed)
+            saved.approvalInputs.forEach { approvalInputs[it.order.marketId to it.order.orderId] = it }
+            saved.cancellations.forEach { cancellations[it.input.order.marketId to it.input.order.orderId] = it }
+            cancellationBytes = saved.cancellations.fold(0L) { total, c -> Math.addExact(total, c.canonicalBytes) }
+            lastCancellationSequence = saved.lastCancellationSequence
             isBlocked = false
         } catch (failure: Throwable) {
             isBlocked = true
             throw failure
+        }
+    }
+
+    private fun validateCancellationRecovery(
+        saved: FundsRoleRecoveryState,
+        restoredResults: FundsResultData,
+    ) {
+        val configuration = checkNotNull(dispatchConfiguration)
+        val originals = saved.approvalInputs.associateBy { it.order.marketId to it.order.orderId }
+        val live = saved.financial.liveOrders.associateBy { it.order.marketId to it.order.orderId }
+        require(originals.size == saved.approvalInputs.size && originals.keys == live.keys) { "active approval inputs differ" }
+        require(
+            saved.approvalInputs
+                .map { it.stream.marketId to it.dispatchSequence }
+                .distinct()
+                .size == saved.approvalInputs.size,
+        )
+        val issued = saved.dispatch.streams.associateBy { it.stream.marketId }
+        for ((key, input) in originals) {
+            require(!input.isCancellation && input.stream == configuration.stream(key.first))
+            require(input.context == configuration.context(key.first))
+            require(input.dispatchSequence in 1..issued.getValue(key.first).issued)
+            requireFundsOriginal(input, live.getValue(key))
+            if (live.getValue(key).phase == LiveOrderPhase.RESTING) {
+                require(input.dispatchSequence <= restoredResults.through(key.first))
+            } else {
+                require(input.dispatchSequence > restoredResults.through(key.first))
+            }
+            MatchingInputValidation.requireValid(
+                configuration.manifest,
+                input.context,
+                input.stream,
+                input,
+                configuration.inputContractVersion,
+            )
+        }
+        require(saved.cancellations.size <= configuration.limits.maxDispatchEntries)
+        require(saved.lastCancellationSequence >= 0)
+        val totalInputs = saved.dispatch.streams.fold(java.math.BigInteger.ZERO) { sum, stream -> sum + stream.issued.toBigInteger() }
+        require(totalInputs == saved.financial.lastAdmissionSequence.toBigInteger() + saved.lastCancellationSequence.toBigInteger()) {
+            "source input issuance differs from order and cancellation counters"
+        }
+        val cancellationByRequest = linkedMapOf<RequestToken, FundsOrderDispatch>()
+        val cancellationById = linkedMapOf<String, FundsOrderDispatch>()
+        val cancellationByInput = linkedMapOf<Pair<MarketId, Long>, FundsOrderDispatch>()
+        val channels =
+            saved.financial.inbox.channels
+                .associateBy { it.userId to it.channel }
+
+        // 보관 중인 완료 결과와 미완료 의무에 같은 발급 규칙을 적용한다. 전체 완료 이력을 따로 만들지 않는다.
+        fun cancellationWitness(input: FundsOrderDispatch): FundsCancelDispatch {
+            val identity = requireNotNull(input.cancel)
+            require(identity.cancelSequence in 1..saved.lastCancellationSequence)
+            require(identity.cancelId == TradingIdentifiers.cancel(configuration.manifest.lineage, identity.cancelSequence))
+            val request = identity.requestToken
+            val channel = requireNotNull(channels[request.userId to request.channel]) { "cancellation has no issued channel" }
+            require(request.epoch <= channel.epoch)
+            if (request.epoch == channel.epoch && request.sequence > channel.retiredThrough) {
+                // 처리 경계 뒤의 비연속 요청도 실제 최초 응답이 보관되어 있으면 유효하다.
+                val entry = requireNotNull(channel.cancelEntries.singleOrNull { it.sequence == request.sequence })
+                require(
+                    entry.intent == CancelIntent(input.order.marketId, input.order.orderId, configuration.manifest.configurationVersion),
+                )
+                require(entry.receipt == CancelReceipt(CancelCode.ACCEPTED, identity.cancelId, input.order.orderId, input.dispatchSequence))
+            }
+            cancellationByRequest.put(identity.requestToken, input)?.let { require(it == input) }
+            cancellationById.put(identity.cancelId, input)?.let { require(it == input) }
+            cancellationByInput.put(input.order.marketId to input.dispatchSequence, input)?.let { require(it == input) }
+            return identity
+        }
+        val seen = hashSetOf<Pair<MarketId, OrderId>>()
+        val sequences = hashSetOf<Pair<MarketId, Long>>()
+        val retainedAdmissions =
+            saved.financial.inbox.channels
+                .flatMap { channel ->
+                    channel.entries.filter { it.receipt.code == AdmissionCode.ACCEPTED }.map { entry -> channel to entry }
+                }.associateBy { it.second.receipt.admissionSequence }
+        val retainedOrigins = linkedMapOf<Long, FundsOrderDispatch>()
+        val retainedTerminals = linkedMapOf<Long, OrderReservationStatus>()
+
+        fun witness(origin: FundsOrderDispatch) {
+            require(!origin.isCancellation)
+            retainedOrigins.put(origin.admissionSequence, origin)?.let { require(it == origin) }
+        }
+        for (receipt in saved.results?.receipts.orEmpty()) {
+            val result = receipt.result
+            if (result.input.isCancellation) cancellationWitness(result.input) else witness(result.input)
+            for (effect in result.effects) {
+                witness(effect.origin)
+                when (effect.disposition) {
+                    MatchingOrderDisposition.TERMINAL -> {
+                        retainedTerminals[effect.origin.admissionSequence] = OrderReservationStatus.SETTLED
+                    }
+
+                    MatchingOrderDisposition.NOT_EXECUTED, MatchingOrderDisposition.CANCELLED -> {
+                        retainedTerminals[effect.origin.admissionSequence] = OrderReservationStatus.RELEASED
+                    }
+
+                    MatchingOrderDisposition.RESTING -> {
+                        Unit
+                    }
+                }
+            }
+        }
+        var bytes = 0L
+        for (cancel in saved.cancellations) {
+            val input = cancel.input
+            val identity = cancellationWitness(input)
+            require(identity.targetInputSequence in 1 until input.dispatchSequence)
+            val key = input.order.marketId to input.order.orderId
+            require(seen.add(key) && sequences.add(key.first to input.dispatchSequence))
+            require(input.stream == configuration.stream(key.first) && input.context == configuration.context(key.first))
+            MatchingInputValidation.requireValid(
+                configuration.manifest,
+                input.context,
+                input.stream,
+                input,
+                configuration.inputContractVersion,
+            )
+            require(
+                input.dispatchSequence > restoredResults.through(key.first) && input.dispatchSequence <= issued.getValue(key.first).issued,
+            )
+            val delivery = issued.getValue(key.first)
+            if (input.dispatchSequence > delivery.matchingAppliedThrough) {
+                require(delivery.outstanding.singleOrNull { it.dispatchSequence == input.dispatchSequence } == input) {
+                    "unacknowledged cancellation has no matching dispatch"
+                }
+            }
+            require(input.admissionSequence in 1..saved.financial.lastAdmissionSequence)
+            // 완료 이력을 새로 만들지 않고 보존 중인 최초 응답·정산 원본에 대조한다.
+            retainedAdmissions[input.admissionSequence]?.let { (channel, entry) ->
+                require(channel.userId == input.order.userId && entry.receipt.orderId == input.order.orderId)
+                require(entry.receipt.marketAdmissionSequence == input.marketAdmissionSequence)
+                val sourceOrder = input.order
+                require(
+                    entry.intent ==
+                        OrderIntent(
+                            sourceOrder.marketId,
+                            input.stream.configurationVersion,
+                            sourceOrder.side,
+                            sourceOrder.orderType,
+                            sourceOrder.timeInForce,
+                            sourceOrder.price,
+                            sourceOrder.quantity,
+                        ),
+                ) {
+                    "cancellation origin differs from retained admission"
+                }
+            }
+            retainedOrigins[input.admissionSequence]?.let { origin ->
+                require(origin.dispatchSequence == identity.targetInputSequence && origin.dispatchSequence < input.dispatchSequence)
+                require(origin.copy(dispatchSequence = input.dispatchSequence, cancel = input.cancel) == input) {
+                    "cancellation origin differs from retained settlement"
+                }
+            }
+            retainedTerminals[input.admissionSequence]?.let { require(cancel.terminalStatus == it) }
+            val order = live[key]
+            if (cancel.terminalStatus == null) {
+                require(
+                    order != null && originals[key]?.let { origin ->
+                        origin.dispatchSequence == identity.targetInputSequence && origin.dispatchSequence < input.dispatchSequence &&
+                            origin.copy(dispatchSequence = input.dispatchSequence, cancel = input.cancel) == input
+                    } == true,
+                )
+            } else {
+                require(order == null)
+                require(
+                    input.marketAdmissionSequence <=
+                        saved.financial.markets
+                            .single { it.marketId == key.first }
+                            .executedThrough,
+                )
+            }
+            val terminal = cancel.terminalReservation
+            if (terminal == null) {
+                require(cancel.terminalResultSequence == null && cancel.terminalEngineSequence == null)
+            } else {
+                val initial = input.reservation
+                require(terminal.status == OrderReservationStatus.SETTLED || terminal.status == OrderReservationStatus.RELEASED)
+                require(terminal.remainingAmount == Amount.ZERO && terminal.remainingFeeReserveAmount == Amount.ZERO)
+                require(
+                    terminal.marketId == initial.marketId && terminal.orderId == initial.orderId && terminal.userId == initial.userId &&
+                        terminal.side == initial.side && terminal.assetId == initial.assetId && terminal.limitPrice == initial.limitPrice &&
+                        terminal.initialQuantity == initial.initialQuantity && terminal.reservedAmount == initial.reservedAmount &&
+                        terminal.feePolicySnapshot == initial.feePolicySnapshot &&
+                        terminal.initialFeeReserveAmount == initial.initialFeeReserveAmount,
+                ) { "terminal cancellation evidence differs from original reservation" }
+                require(checkNotNull(cancel.terminalResultSequence) in identity.targetInputSequence until input.dispatchSequence)
+                require(checkNotNull(cancel.terminalResultSequence) <= restoredResults.through(key.first))
+                require(checkNotNull(cancel.terminalEngineSequence) in 0..restoredResults.engine(key.first))
+            }
+            bytes = Math.addExact(bytes, cancel.canonicalBytes)
+        }
+        require(bytes <= configuration.limits.maxDispatchBytes)
+        for (market in configuration.manifest.markets) {
+            val entries = saved.cancellations.filter { it.input.stream.marketId == market.market.marketId }
+            val limits = configuration.limits.marketLimits.getValue(market.market.marketId)
+            require(entries.size <= limits.maxDispatchEntries && entries.sumOf { it.canonicalBytes } <= limits.maxDispatchBytes)
+            // receipt와 전달 payload를 모두 회수했어도 미정산 업무 의무의 빈 순번을 허용하지 않는다.
+            val marketId = market.market.marketId
+            val unsettled = hashSetOf<Long>()
+            for ((key, input) in originals) {
+                if (key.first == marketId && live.getValue(key).phase == LiveOrderPhase.PENDING) {
+                    require(unsettled.add(input.dispatchSequence))
+                }
+            }
+            for (entry in entries) require(unsettled.add(entry.input.dispatchSequence))
+            require(unsettled.size.toLong() == issued.getValue(marketId).issued - restoredResults.through(marketId)) {
+                "unsettled input suffix contains a missing obligation"
+            }
+        }
+        val receiptIds = hashSetOf<String>()
+        val receiptInputs = hashSetOf<Pair<MarketId, Long>>()
+        for (channel in saved.financial.inbox.channels) {
+            for (entry in channel.cancelEntries) {
+                require(entry.intent.expectedConfigurationVersion == configuration.manifest.configurationVersion)
+                require(entry.intent.marketId in configuration.manifest.markets.map { it.market.marketId })
+                if (entry.receipt.code == CancelCode.ACCEPTED) {
+                    val sequence = requireNotNull(entry.receipt.inputSequence)
+                    require(sequence in 1..issued.getValue(entry.intent.marketId).issued)
+                    require(entry.receipt.targetOrderId == entry.intent.targetOrderId)
+                    val id = requireNotNull(entry.receipt.cancelId)
+                    require(TradingIdentifiers.cancelSequence(configuration.manifest.lineage, id) in 1..saved.lastCancellationSequence)
+                    require(receiptIds.add(id) && receiptInputs.add(entry.intent.marketId to sequence)) {
+                        "retained cancellation receipts reuse an issued identity"
+                    }
+                    val token = RequestToken(channel.userId, channel.channel, channel.epoch, entry.sequence)
+
+                    fun requireSameReceipt(input: FundsOrderDispatch) {
+                        val identity = requireNotNull(input.cancel)
+                        require(identity.requestToken == token && identity.cancelId == id && input.dispatchSequence == sequence)
+                        require(input.order.marketId == entry.intent.marketId && input.order.orderId == entry.intent.targetOrderId)
+                    }
+                    cancellationByRequest[token]?.let(::requireSameReceipt)
+                    cancellationById[id]?.let(::requireSameReceipt)
+                    cancellationByInput[entry.intent.marketId to sequence]?.let(::requireSameReceipt)
+                    if (sequence > restoredResults.through(entry.intent.marketId)) {
+                        val pending =
+                            requireNotNull(
+                                saved.cancellations.singleOrNull {
+                                    it.input.order.marketId == entry.intent.marketId && it.input.order.orderId == entry.intent.targetOrderId
+                                },
+                            ) { "accepted cancellation receipt has no unfinished obligation" }
+                        require(
+                            pending.input.dispatchSequence == sequence &&
+                                pending.input.cancel?.requestToken ==
+                                RequestToken(channel.userId, channel.channel, channel.epoch, entry.sequence),
+                        )
+                    }
+                }
+            }
         }
     }
 
