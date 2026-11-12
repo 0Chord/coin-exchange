@@ -137,7 +137,7 @@ internal class FundsOrderDeliveryAgent(
         val frame: Frame,
     )
 
-    private val codec = SplitOrderDeliveryCodec()
+    private val codec = SplitOrderDeliveryCodec(configuration.inputContractVersion)
     private val funds = Peer(fundsEndpoint, TradingServiceRole.FUNDS, configuration.fundsLineage)
     private val matching = Peer(matchingEndpoint, TradingServiceRole.MATCHING, configuration.matchingLineage)
     private val streams =

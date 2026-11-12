@@ -55,8 +55,8 @@ internal class SplitTradingClusterAdapter(
     // 시험의 callback 관찰 wrapper도 이 실제 소유자를 관찰한다. 운영 전체 상태 조회 입구는 두지 않는다.
     private val funds: BoundedFundingState? = if (role == TradingServiceRole.FUNDS) configuration.funds() else null
     private val matching: ReservedMatchingState? = if (role == TradingServiceRole.MATCHING) configuration.matching() else null
-    private val codec = SplitOrderDeliveryCodec()
-    private val resultCodec = SplitResultDeliveryCodec()
+    private val codec = SplitOrderDeliveryCodec(configuration.inputContractVersion)
+    private val resultCodec = SplitResultDeliveryCodec(configuration.inputContractVersion)
     private val settlementCalculator = configuration.settlementCalculator()
     private lateinit var cluster: Cluster
     private lateinit var serviceThread: Thread
@@ -221,6 +221,34 @@ internal class SplitTradingClusterAdapter(
                         } else {
                             val control = control(envelope.correlationId, command.command, timestamp)
                             response(envelope.correlationId, control.code).copy(control = control)
+                        }
+                    }
+
+                    is SplitOrderDeliveryCommand.Cancel -> {
+                        when {
+                            role != TradingServiceRole.FUNDS -> {
+                                response(envelope.correlationId, "WRONG_ROLE")
+                            }
+
+                            !tradingReady -> {
+                                response(envelope.correlationId, "NOT_READY")
+                            }
+
+                            !resultDeliveryEnabled -> {
+                                response(envelope.correlationId, "UNSUPPORTED_COMMAND")
+                            }
+
+                            else -> {
+                                when (val recorded = checkNotNull(funds).admitCancel(command.token, command.intent)) {
+                                    is com.exchange.core.trading.CancelReply.Refused -> {
+                                        response(envelope.correlationId, recorded.reason)
+                                    }
+
+                                    is com.exchange.core.trading.CancelReply.Recorded -> {
+                                        response(envelope.correlationId, recorded.receipt.code.name).copy(cancellation = recorded.receipt)
+                                    }
+                                }
+                            }
                         }
                     }
 

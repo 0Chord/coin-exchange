@@ -1,6 +1,9 @@
 package com.exchange.core.api.trading.infrastructure.codec
 
+import com.exchange.core.api.trading.infrastructure.codec.generated.SplitMatchingEffect
 import com.exchange.core.api.trading.infrastructure.codec.generated.SplitMatchingEvent
+import com.exchange.core.api.trading.infrastructure.codec.generated.SplitMatchingOutcome
+import com.exchange.core.api.trading.infrastructure.codec.generated.SplitOrderDisposition
 import com.exchange.core.api.trading.infrastructure.codec.generated.SplitResultCommand
 import com.exchange.core.api.trading.infrastructure.codec.generated.SplitResultReply
 import com.exchange.core.api.trading.infrastructure.codec.generated.SplitRole
@@ -15,6 +18,8 @@ import com.exchange.core.fee.FeeTier
 import com.exchange.core.fee.MakerTakerFeeRates
 import com.exchange.core.fee.TradingFeePolicySnapshot
 import com.exchange.core.fee.TradingFeeReserveCalculator
+import com.exchange.core.matching.OrderCancelRejected
+import com.exchange.core.matching.OrderCancelled
 import com.exchange.core.matching.OrderEnteredBook
 import com.exchange.core.matching.TradeExecuted
 import com.exchange.core.order.BuyOrderFundingQuoteCalculator
@@ -25,6 +30,7 @@ import com.exchange.core.order.OrderType
 import com.exchange.core.order.Side
 import com.exchange.core.order.TimeInForce
 import com.exchange.core.trading.ClusterLineage
+import com.exchange.core.trading.FundsCancelDispatch
 import com.exchange.core.trading.FundsDispatchStream
 import com.exchange.core.trading.FundsOrderDispatch
 import com.exchange.core.trading.MatchingFundsSettledAck
@@ -37,6 +43,7 @@ import com.exchange.core.trading.MatchingOutcome
 import com.exchange.core.trading.MatchingResultEnvelope
 import com.exchange.core.trading.MatchingResultStream
 import com.exchange.core.trading.OrderAdmissionInput
+import com.exchange.core.trading.RequestToken
 import com.exchange.core.trading.ReservedMatchingState
 import com.exchange.core.trading.TradingClusterManifest
 import com.exchange.core.trading.TradingIdentifiers
@@ -61,6 +68,7 @@ import kotlin.test.assertTrue
 
 class SplitResultDeliveryCodecTest {
     private val codec = SplitResultDeliveryCodec()
+    private val cancellationCodec = SplitResultDeliveryCodec(inputContractVersion = 2)
     private val funds = ClusterLineage(1, 2)
     private val matching = ClusterLineage(3, 4)
     private val policy =
@@ -68,6 +76,277 @@ class SplitResultDeliveryCodecTest {
     private val context = TradingMarketContext(MarketDefinition(MarketId("X-Q"), AssetId("X"), AssetId("Q"), 0), policy, 7)
     private val stream = MatchingResultStream(matching, funds, context.market.marketId, 13, 19)
     private val reservations = OrderReservationCalculator(BuyOrderFundingQuoteCalculator(TradingFeeReserveCalculator()))
+
+    @Test
+    fun `명시한 취소 결과는 취소 원문 대상 최초 원본과 빈 효과 거절을 보존한다`() {
+        for (rejected in listOf(false, true)) {
+            val value = cancellationResult(rejected)
+            val bytes = cancellationCodec.encode(91, SplitResultDeliveryCommand.Apply(value))
+            assertEquals(
+                2,
+                ByteBuffer
+                    .wrap(bytes)
+                    .order(ByteOrder.LITTLE_ENDIAN)
+                    .getShort(2)
+                    .toInt(),
+            )
+            val restored = (cancellationCodec.decode(bytes).command as SplitResultDeliveryCommand.Apply).result
+            assertEquals(value, restored)
+            assertEquals(value.input.cancel, restored.input.cancel)
+            assertEquals(if (rejected) emptyList() else listOf(input(1).copy(inputContractVersion = 2)), restored.effects.map { it.origin })
+            assertContentEquals(bytes, cancellationCodec.encode(91, SplitResultDeliveryCommand.Apply(restored)))
+        }
+    }
+
+    @Test
+    fun `v1 고정 최소 bytes와 enum 번호를 유지하고 두 profile의 원문과 확인을 섞지 않는다`() {
+        val legacy = byteArrayOf(89, 0, 1, 0, 1, 0, 0, 0, 4, 0, 0, 0, 8, 1, 80, 1)
+        assertContentEquals(legacy, codec.encode(1, SplitResultDeliveryCommand.DescribePeer))
+        assertContentEquals(legacy.copyOf().also { it[2] = 2 }, cancellationCodec.encode(1, SplitResultDeliveryCommand.DescribePeer))
+        assertEquals(1, SplitMatchingOutcome.SPLIT_MATCHED.number)
+        assertEquals(2, SplitMatchingOutcome.SPLIT_NOT_EXECUTED.number)
+        assertEquals(3, SplitOrderDisposition.SPLIT_ORDER_NOT_EXECUTED.number)
+        assertFailsWith<IllegalArgumentException> { SplitResultDeliveryCodec(0) }
+        assertFailsWith<IllegalArgumentException> { SplitResultDeliveryCodec(3) }
+        val ack = MatchingFundsSettledAck(stream, Long.MAX_VALUE, context)
+        val commands =
+            listOf(
+                SplitResultDeliveryCommand.DescribePeer,
+                SplitResultDeliveryCommand.Progress(stream, context),
+                SplitResultDeliveryCommand.RecordAck(ack),
+            )
+        for (command in commands) {
+            val old = codec.encode(91, command)
+            val current = cancellationCodec.encode(91, command)
+            assertEquals(SplitResultDeliveryEnvelope(91, command), cancellationCodec.decode(current))
+            assertFailsWith<AdmissionMessageException> { codec.decode(current) }
+            assertFailsWith<AdmissionMessageException> { cancellationCodec.decode(old) }
+        }
+        val reply = reply().copy(ack = ack, expectedSequence = Long.MAX_VALUE, resultIssued = Long.MAX_VALUE)
+        val oldReply = codec.encodeReply(reply)
+        val currentReply = cancellationCodec.encodeReply(reply)
+        assertEquals(reply, cancellationCodec.decodeReply(currentReply))
+        assertFailsWith<AdmissionMessageException> { codec.decodeReply(currentReply) }
+        assertFailsWith<AdmissionMessageException> { cancellationCodec.decodeReply(oldReply) }
+    }
+
+    @Test
+    fun `v2 신규와 취소 전체 결과는 같은 profile의 입력과 효과 원본만 운반한다`() {
+        val old = result(2)
+        val current = versionTwo(old)
+        assertEquals(
+            current,
+            (
+                cancellationCodec.decode(cancellationCodec.encode(1, SplitResultDeliveryCommand.Apply(current))).command as
+                    SplitResultDeliveryCommand.Apply
+            ).result,
+        )
+        assertFailsWith<IllegalArgumentException> { codec.encode(1, SplitResultDeliveryCommand.Apply(current)) }
+        assertFailsWith<IllegalArgumentException> { codec.encode(1, SplitResultDeliveryCommand.Apply(cancellationResult())) }
+        assertFailsWith<IllegalArgumentException> { cancellationCodec.encode(1, SplitResultDeliveryCommand.Apply(old)) }
+        val wire = command(cancellationCodec.encode(1, SplitResultDeliveryCommand.Apply(current)))
+        for (bad in listOf(
+            wire.apply.toBuilder().setFormatVersion(1),
+            wire.apply.toBuilder().setInput(
+                wire.apply.input
+                    .toBuilder()
+                    .setFormatVersion(1),
+            ),
+            wire.apply.toBuilder().setEffects(
+                0,
+                wire.apply
+                    .getEffects(0)
+                    .toBuilder()
+                    .setOrigin(
+                        wire.apply
+                            .getEffects(0)
+                            .origin
+                            .toBuilder()
+                            .setFormatVersion(1),
+                    ),
+            ),
+        )) {
+            assertFailsWith<AdmissionMessageException> { cancellationCodec.decode(frame(1, wire.toBuilder().setApply(bad).build(), 2)) }
+        }
+    }
+
+    @Test
+    fun `취소 사건과 최초 원본의 누락 중첩 unknown 변조를 wire 경계에서 거절한다`() {
+        for (rejected in listOf(false, true)) {
+            val wire = command(cancellationCodec.encode(1, SplitResultDeliveryCommand.Apply(cancellationResult(rejected))))
+            for (unknown in listOf(false, true)) {
+                for ((path, invalid) in mutations(wire, unknown)) {
+                    assertFailsWith<AdmissionMessageException>(path) { cancellationCodec.decode(frame(1, invalid, 2)) }
+                }
+            }
+            val value = wire.apply
+            val invalid =
+                listOf(
+                    value.toBuilder().setOutcome(SplitMatchingOutcome.SPLIT_MATCHED),
+                    value.toBuilder().setEngineSequenceBefore(Long.MAX_VALUE).setEngineSequenceAfter(Long.MAX_VALUE),
+                    value.toBuilder().setEventCount(2),
+                    value.toBuilder().clearEvents(),
+                    value.toBuilder().setInput(value.input.toBuilder().clearCancellation()),
+                )
+            for (bad in invalid) {
+                assertFailsWith<AdmissionMessageException> { cancellationCodec.decode(frame(1, wire.toBuilder().setApply(bad).build(), 2)) }
+            }
+        }
+        val success = command(cancellationCodec.encode(1, SplitResultDeliveryCommand.Apply(cancellationResult())))
+        val value = success.apply
+        val overflowOutcome =
+            UnknownFieldSet
+                .newBuilder()
+                .addField(
+                    5,
+                    UnknownFieldSet.Field
+                        .newBuilder()
+                        .addVarint((1L shl 32) + SplitMatchingOutcome.SPLIT_CANCELLED.number)
+                        .build(),
+                ).build()
+        val overflow = value.toBuilder().clearOutcome().setUnknownFields(overflowOutcome)
+        val overflowError =
+            assertFailsWith<AdmissionMessageException> {
+                cancellationCodec.decode(frame(1, success.toBuilder().setApply(overflow).build(), 2))
+            }
+        assertEquals("result enum exceeds int32", overflowError.cause?.message)
+        for (bad in listOf(
+            value.toBuilder().clearEffects(),
+            value.toBuilder().setEffects(0, value.getEffects(0).toBuilder().setAfterQuantity(1)),
+            value.toBuilder().setEffects(0, value.getEffects(0).toBuilder().setDisposition(SplitOrderDisposition.SPLIT_TERMINAL)),
+            value.toBuilder().setEvents(
+                0,
+                value.getEvents(0).toBuilder().setCancelled(
+                    value
+                        .getEvents(0)
+                        .cancelled
+                        .toBuilder()
+                        .setRemainingQuantity(1),
+                ),
+            ),
+            value.toBuilder().setEvents(
+                0,
+                value.getEvents(0).toBuilder().setCancelled(
+                    value
+                        .getEvents(0)
+                        .cancelled
+                        .toBuilder()
+                        .setOrderId("other"),
+                ),
+            ),
+        )) {
+            assertFailsWith<AdmissionMessageException> { cancellationCodec.decode(frame(1, success.toBuilder().setApply(bad).build(), 2)) }
+        }
+        val exactEngineEnd =
+            value
+                .toBuilder()
+                .setEngineSequenceBefore(Long.MAX_VALUE - 1)
+                .setEngineSequenceAfter(Long.MAX_VALUE)
+                .setEvents(
+                    0,
+                    value.getEvents(0).toBuilder().setCancelled(
+                        value
+                            .getEvents(0)
+                            .cancelled
+                            .toBuilder()
+                            .setEngineSequence(Long.MAX_VALUE),
+                    ),
+                )
+        val exactBytes = frame(1, success.toBuilder().setApply(exactEngineEnd).build(), 2)
+        val exact = (cancellationCodec.decode(exactBytes).command as SplitResultDeliveryCommand.Apply).result
+        assertEquals(Long.MAX_VALUE, exact.engineSequenceAfter)
+        assertContentEquals(exactBytes, cancellationCodec.encode(1, SplitResultDeliveryCommand.Apply(exact)))
+        val rejection = command(cancellationCodec.encode(1, SplitResultDeliveryCommand.Apply(cancellationResult(true))))
+        val event = rejection.apply.getEvents(0)
+        val missingReason = event.toBuilder().setCancelRejected(event.cancelRejected.toBuilder().clearReason())
+        assertFailsWith<AdmissionMessageException> {
+            cancellationCodec.decode(
+                frame(1, rejection.toBuilder().setApply(rejection.apply.toBuilder().setEvents(0, missingReason)).build(), 2),
+            )
+        }
+        assertFailsWith<AdmissionMessageException> {
+            cancellationCodec.decode(
+                frame(
+                    1,
+                    rejection
+                        .toBuilder()
+                        .setApply(
+                            rejection.apply.toBuilder().setEvents(
+                                0,
+                                event.toBuilder().setCancelRejected(event.cancelRejected.toBuilder().setReason("order owner mismatch")),
+                            ),
+                        ).build(),
+                    2,
+                ),
+            )
+        }
+    }
+
+    @Test
+    fun `v2 잘림 길이 예약 비트와 포화 사건 효과를 생성 parser 전에 거절한다`() {
+        val bytes = cancellationCodec.encode(1, SplitResultDeliveryCommand.Apply(cancellationResult()))
+        for (length in listOf(0, 11, bytes.size - 1)) {
+            assertFailsWith<AdmissionMessageException> { cancellationCodec.decode(bytes.copyOf(length)) }
+        }
+        for (index in listOf(0, 2, 4, 6, 8)) {
+            val damaged = bytes.copyOf().also { it[index] = (it[index].toInt() xor 1).toByte() }
+            assertFailsWith<AdmissionMessageException> { cancellationCodec.decode(damaged) }
+        }
+        assertFailsWith<AdmissionMessageException> { cancellationCodec.decode(bytes + 0) }
+        val wire = command(bytes)
+        val incompleteEffect = SplitMatchingEffect.newBuilder().setBeforeQuantity(1).build()
+        for (bad in listOf(
+            wire.apply.toBuilder().clearEvents().addAllEvents(
+                List(SplitResultDeliveryCodec.MAX_RESULT_EVENTS + 1) { wire.apply.getEvents(0) },
+            ),
+            wire.apply
+                .toBuilder()
+                .clearEffects()
+                .addAllEffects(List(SplitResultDeliveryCodec.MAX_RESULT_EVENTS + 2) { incompleteEffect }),
+        )) {
+            val overflowing = frame(1, wire.toBuilder().setApply(bad).build(), 2)
+            assertTrue(overflowing.size <= SplitResultDeliveryCodec.MAX_MESSAGE_BYTES)
+            val error = assertFailsWith<AdmissionMessageException> { cancellationCodec.decode(overflowing) }
+            assertEquals("result repeated field exceeds bound", error.cause?.message)
+        }
+        val padded = ByteArray(bytes.size + 8).also { bytes.copyInto(it, 4) }
+        assertEquals(cancellationCodec.decode(bytes), cancellationCodec.decode(padded, 4, bytes.size))
+    }
+
+    @Test
+    fun `v2 descriptor 상계가 신규 취소성공과 빈 효과 거절의 실제 charge를 수용한다`() {
+        SplitResultDeliveryCodec.verifySizingContract(inputContractVersion = 2)
+        val bound = SplitResultDeliveryCodec.maximumResultFrameBytes(1_048_576, 1_024, inputContractVersion = 2)
+        assertEquals(1_377_824L, bound)
+        assertTrue(bound < SplitResultDeliveryCodec.MAX_MESSAGE_BYTES)
+        assertEquals(bound, SplitResultDeliveryCodec.upperBound(1_048_576, 1_024, inputContractVersion = 2))
+        assertFailsWith<ArithmeticException> { SplitResultDeliveryCodec.maximumResultFrameBytes(Long.MAX_VALUE, 1_024, 2) }
+        assertFailsWith<IllegalArgumentException> { SplitResultDeliveryCodec.maximumResultFrameBytes(1_048_576, 1_024, 3) }
+        for (value in listOf(versionTwo(result(50)), cancellationResult(), cancellationResult(true))) {
+            assertTrue(
+                cancellationCodec.encode(1, SplitResultDeliveryCommand.Apply(value)).size <=
+                    SplitResultDeliveryCodec.maximumResultFrameBytes(value.canonicalBytes, maxOf(1, value.eventCount), 2),
+            )
+        }
+    }
+
+    @Test
+    fun `v2 정확한 최대 frame을 수용하고 한바이트 초과의 송수신을 거절한다`() {
+        val maximum = SplitResultDeliveryBoundaryFixture.frame(SplitResultDeliveryCodec.MAX_MESSAGE_BYTES, inputContractVersion = 2)
+        assertEquals(SplitResultDeliveryCodec.MAX_MESSAGE_BYTES, maximum.bytes.size)
+        val restored = cancellationCodec.decode(maximum.bytes)
+        assertEquals(maximum.result, (restored.command as SplitResultDeliveryCommand.Apply).result)
+        assertContentEquals(
+            maximum.bytes,
+            cancellationCodec.encode(maximum.correlationId, SplitResultDeliveryCommand.Apply(maximum.result)),
+        )
+        val oversized = SplitResultDeliveryBoundaryFixture.frame(SplitResultDeliveryCodec.MAX_MESSAGE_BYTES + 1, inputContractVersion = 2)
+        assertEquals(SplitResultDeliveryCodec.MAX_MESSAGE_BYTES + 1, oversized.bytes.size)
+        assertFailsWith<AdmissionMessageException> { cancellationCodec.decode(oversized.bytes) }
+        assertFailsWith<IllegalArgumentException> {
+            cancellationCodec.encode(oversized.correlationId, SplitResultDeliveryCommand.Apply(oversized.result))
+        }
+    }
 
     @Test
     fun `전체 체결 대기 사건과 각 maker 최초 원본을 보존한다`() {
@@ -444,6 +723,51 @@ class SplitResultDeliveryCodecTest {
         )
     }
 
+    private fun cancellationResult(rejected: Boolean = false): MatchingResultEnvelope {
+        val origin = input(1).copy(inputContractVersion = 2)
+        val cancellation =
+            origin.copy(
+                dispatchSequence = 2,
+                cancel = FundsCancelDispatch(TradingIdentifiers.cancel(funds, 7), RequestToken(origin.order.userId, 3, 11, 5), 7, 1),
+            )
+        return MatchingResultEnvelope(
+            stream,
+            2,
+            cancellation,
+            if (rejected) MatchingOutcome.CANCEL_REJECTED else MatchingOutcome.CANCELLED,
+            null,
+            1,
+            2,
+            listOf(
+                if (rejected) {
+                    OrderCancelRejected(context.market.marketId, 2, origin.order.orderId, origin.order.userId, "order not found")
+                } else {
+                    OrderCancelled(context.market.marketId, 2, origin.order.orderId, origin.order.userId, Quantity(2))
+                },
+            ),
+            if (rejected) {
+                emptyList()
+            } else {
+                listOf(
+                    MatchingOrderEffect(origin, Quantity(2), Quantity.ZERO, MatchingOrderDisposition.CANCELLED),
+                )
+            },
+        )
+    }
+
+    private fun versionTwo(value: MatchingResultEnvelope): MatchingResultEnvelope =
+        MatchingResultEnvelope(
+            value.stream,
+            value.resultSequence,
+            value.input.copy(inputContractVersion = 2),
+            value.outcome,
+            value.reason,
+            value.engineSequenceBefore,
+            value.engineSequenceAfter,
+            value.events,
+            value.effects.map { it.copy(origin = it.origin.copy(inputContractVersion = 2)) },
+        )
+
     private fun input(
         sequence: Long,
         side: Side = Side.BUY,
@@ -504,18 +828,20 @@ class SplitResultDeliveryCodecTest {
     private fun frame(
         kind: Int,
         message: Message,
-    ): ByteArray = frameBody(kind, message.toByteArray())
+        version: Int = 1,
+    ): ByteArray = frameBody(kind, message.toByteArray(), version)
 
     private fun frameBody(
         kind: Int,
         body: ByteArray,
+        version: Int = 1,
     ): ByteArray =
         ByteArray(12 + body.size).also {
             ByteBuffer
                 .wrap(it)
                 .order(ByteOrder.LITTLE_ENDIAN)
                 .putShort(89)
-                .putShort(1)
+                .putShort(version.toShort())
                 .putShort(kind.toShort())
                 .putShort(0)
                 .putInt(body.size)

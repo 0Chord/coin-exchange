@@ -47,7 +47,7 @@ internal data class SplitTradingNodeSettings(
     val clusterId: Int get() = if (role == TradingServiceRole.FUNDS) FUNDS_CLUSTER_ID else MATCHING_CLUSTER_ID
 
     init {
-        configuration.requireTransportCompatible()
+        configuration.requireTransportCompatible(resultDeliveryEnabled)
         require(mode == "ORDER_DELIVERY_DEV" || resultDeliveryEnabled) { "분리 역할은 명시한 개발 모드에서만 실행합니다" }
         if (resultDeliveryEnabled) configuration.requireResultDeliveryCompatible()
         require(role == TradingServiceRole.FUNDS || role == TradingServiceRole.MATCHING)
@@ -86,6 +86,7 @@ internal data class SplitTradingNodeSettings(
             if (matching) matchingIngressEndpoints else fundsIngressEndpoints,
             transport.endpoint(if (matching) 8 else 7),
             if (matching) MATCHING_CLUSTER_ID else FUNDS_CLUSTER_ID,
+            configuration.inputContractVersion,
         )
 
     fun identityBytes(): ByteArray =

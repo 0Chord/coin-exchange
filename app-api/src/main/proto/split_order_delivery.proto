@@ -7,7 +7,7 @@ import "order_admission.proto";
 option java_package = "com.exchange.core.api.trading.infrastructure.codec.generated";
 option java_multiple_files = true;
 
-// A separate schema88/version1 frame carries these typed bodies. No snapshot blobs.
+// Separate schema88/version1 and version2 frames carry typed bodies, never snapshots.
 message SplitDeliveryCommand {
   optional int64 correlation_id = 1;
   oneof body {
@@ -16,6 +16,7 @@ message SplitDeliveryCommand {
     exchange.admission.BoundedTradingCommand control = 12;
     SplitDispatch apply = 13;
     SplitAppliedAck record_ack = 14;
+    SplitCancelCommand cancel = 15;
   }
 }
 
@@ -30,6 +31,7 @@ message SplitDeliveryReply {
   optional int64 expected_sequence = 8;
   optional exchange.admission.BoundedTradingReply control = 9;
   optional string lifecycle = 10;
+  optional SplitCancelReceipt cancellation = 11;
 }
 
 enum SplitRole {
@@ -66,6 +68,53 @@ message SplitDispatch {
   optional SplitOrderInput order = 6;
   optional SplitReservation reservation = 7;
   optional SplitMarketContext context = 8;
+  SplitInputKind input_kind = 9;
+  optional SplitCancellation cancellation = 10;
+}
+
+enum SplitInputKind {
+  SPLIT_INPUT_UNSPECIFIED = 0;
+  SPLIT_NEW = 1;
+  SPLIT_CANCEL = 2;
+}
+
+message SplitRequestToken {
+  optional string user_id = 1;
+  optional int32 channel = 2;
+  optional int64 epoch = 3;
+  optional int64 sequence = 4;
+}
+
+message SplitCancellation {
+  optional string cancel_id = 1;
+  optional SplitRequestToken request_token = 2;
+  optional int64 cancel_sequence = 3;
+  optional int64 target_input_sequence = 4;
+}
+
+message SplitCancelCommand {
+  optional SplitRequestToken token = 1;
+  optional SplitCancelIntent intent = 2;
+}
+
+message SplitCancelIntent {
+  optional string market_id = 1;
+  optional string target_order_id = 2;
+  optional int64 expected_configuration_version = 3;
+}
+
+enum SplitCancelCode {
+  SPLIT_CANCEL_CODE_UNSPECIFIED = 0;
+  SPLIT_CANCEL_ACCEPTED = 1;
+  SPLIT_CANCEL_REJECTED = 2;
+}
+
+message SplitCancelReceipt {
+  optional SplitCancelCode code = 1;
+  optional string cancel_id = 2;
+  optional string target_order_id = 3;
+  optional int64 input_sequence = 4;
+  optional string reason = 5;
 }
 
 message SplitOrderInput {
