@@ -28,12 +28,13 @@ internal fun observedApplicationPosition(event: JsonNode): Long? {
     return value.longValue().takeIf { it > 0 }
 }
 
-/** stdout의 개발 이벤트를 읽을 뿐, State나 자금 준비 함수를 다시 실행하지 않는다. */
+/** 실행 중에는 개행으로 끝난 이벤트만 읽고, 종료 후에는 마지막 줄까지 엄격히 검사한다. */
 internal fun readFundingEvents(
     output: String,
     problems: MutableList<FundingVerificationIssue>,
+    completeOutput: Boolean = true,
 ): List<JsonNode> =
-    output
+    (if (completeOutput) output else output.substringBeforeLast('\n', ""))
         .lineSequence()
         .filter { it.startsWith(FUNDING_EVENT_PREFIX) }
         .mapNotNull { line ->

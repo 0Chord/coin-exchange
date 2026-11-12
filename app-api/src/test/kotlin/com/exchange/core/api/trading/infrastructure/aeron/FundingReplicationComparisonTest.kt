@@ -4,6 +4,7 @@ import tools.jackson.databind.JsonNode
 import tools.jackson.databind.node.ObjectNode
 import tools.jackson.module.kotlin.jacksonObjectMapper
 import kotlin.test.Test
+import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
@@ -280,6 +281,42 @@ class FundingReplicationComparisonTest {
         val issues = mutableListOf<FundingVerificationIssue>()
         assertTrue(readFundingEvents("일반 로그\n${FUNDING_EVENT_PREFIX}{bad", issues).isEmpty())
         assertTrue(issues.single().category == "UNVERIFIABLE")
+    }
+
+    @Test
+    fun `실행 중 마지막 이벤트가 분할돼도 완성된 앞 이벤트를 읽고 다음 수집에서 이어 읽는다`() {
+        val ready = "${FUNDING_EVENT_PREFIX}{\"kind\":\"READY\"}\n"
+        val applied = "${FUNDING_EVENT_PREFIX}{\"kind\":\"APPLIED\",\"details\":\"${"x".repeat(20_000)}\"}\n"
+        val issues = mutableListOf<FundingVerificationIssue>()
+
+        val first = readFundingEvents(ready + applied.take(16_384), issues, completeOutput = false)
+
+        assertEquals(listOf("READY"), first.map { it.path("kind").asString() })
+        assertTrue(issues.isEmpty(), issues.toString())
+        val following = readFundingEvents(ready + applied, issues, completeOutput = false)
+        assertEquals(listOf("READY", "APPLIED"), mergeFundingObservations(first, following).map { it.path("kind").asString() })
+        assertTrue(issues.isEmpty(), issues.toString())
+    }
+
+    @Test
+    fun `실행 중에도 개행이 끝난 손상 이벤트는 해석 실패로 남는다`() {
+        val issues = mutableListOf<FundingVerificationIssue>()
+
+        assertTrue(readFundingEvents("${FUNDING_EVENT_PREFIX}{bad}\n", issues, completeOutput = false).isEmpty())
+
+        assertEquals("UNVERIFIABLE", issues.single().category)
+    }
+
+    @Test
+    fun `최종 수집은 개행 없는 정상 이벤트도 읽으며 미완성 이벤트는 거절한다`() {
+        val complete = "${FUNDING_EVENT_PREFIX}{\"kind\":\"STOPPED\"}"
+        val issues = mutableListOf<FundingVerificationIssue>()
+
+        assertTrue(readFundingEvents(complete, issues, completeOutput = false).isEmpty())
+        assertTrue(issues.isEmpty())
+        assertEquals("STOPPED", readFundingEvents(complete, issues).single().path("kind").asString())
+        assertTrue(readFundingEvents(complete.dropLast(1), issues).isEmpty())
+        assertEquals("UNVERIFIABLE", issues.single().category)
     }
 
     @Test
