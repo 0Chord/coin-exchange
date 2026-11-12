@@ -39,7 +39,7 @@ internal class MatchingRoleSnapshotCodec {
         val checked = DigestOutputStream(LimitedOutput(target, snapshotLimit(state.configuration)), digest)
         val output = DataOutputStream(checked)
         output.writeInt(MAGIC)
-        output.writeInt(VERSION)
+        output.writeInt(snapshotVersion(state.configuration))
         output.writeLong(position)
         output.blob(configurationBytes(state.configuration), MAX_CONFIGURATION_BYTES)
         output.writeInt(state.lifecycle.ordinal)
@@ -62,12 +62,13 @@ internal class MatchingRoleSnapshotCodec {
             }
         }
         output.writeInt(state.active.size)
-        for (entry in state.active) results.writeDispatch(output, entry)
+        for (entry in state.active) results.writeDispatch(output, entry, state.configuration.inputContractVersion)
         output.writeInt(state.streams.size)
         for (stream in state.streams) {
             output.text(stream.stream.marketId.value)
             output.writeLong(stream.appliedThrough)
             output.writeLong(stream.lastSourceAdmissionSequence)
+            if (state.configuration.inputContractVersion == 2) output.writeLong(stream.lastSourceMarketAdmissionSequence)
             output.writeLong(stream.resultIssued)
             output.writeLong(stream.fundsSettledThrough)
             output.writeLong(stream.settledEngineSequence)
@@ -75,7 +76,7 @@ internal class MatchingRoleSnapshotCodec {
             output.writeInt(stream.activeOrders)
             output.writeLong(stream.activeBytes)
             output.writeInt(stream.outstanding.size)
-            for (result in stream.outstanding) results.writeResult(output, result)
+            for (result in stream.outstanding) results.writeResult(output, result, state.configuration.inputContractVersion)
         }
         output.flush()
         checked.on(false)
@@ -93,7 +94,7 @@ internal class MatchingRoleSnapshotCodec {
         val digest = MessageDigest.getInstance("SHA-256")
         val checked = DigestInputStream(LimitedInput(source, snapshotLimit(expected)), digest)
         val input = DataInputStream(checked)
-        require(input.readInt() == MAGIC && input.readInt() == VERSION) { "unsupported matching snapshot" }
+        require(input.readInt() == MAGIC && input.readInt() == snapshotVersion(expected)) { "unsupported matching snapshot" }
         require(input.readLong() == expectedPosition) { "matching snapshot framework position differs" }
         require(input.blob(MAX_CONFIGURATION_BYTES).contentEquals(configurationBytes(expected))) {
             "matching snapshot configuration differs"
@@ -137,7 +138,10 @@ internal class MatchingRoleSnapshotCodec {
                     )
                 },
             )
-        val active = List(input.count(expected.limits.maxActiveOrders)) { results.readDispatch(input, expected::stream, expected::context) }
+        val active =
+            List(input.count(expected.limits.maxActiveOrders)) {
+                results.readDispatch(input, expected::stream, expected::context, expected.inputContractVersion)
+            }
         var resultsRead = 0
         val streams =
             List(input.count(owned.size)) {
@@ -145,6 +149,7 @@ internal class MatchingRoleSnapshotCodec {
                 require(market in owned) { "unassigned matching stream" }
                 val applied = input.readLong()
                 val source = input.readLong()
+                val sourceMarket = if (expected.inputContractVersion == 2) input.readLong() else applied
                 val issued = input.readLong()
                 val settled = input.readLong()
                 val engine = input.readLong()
@@ -170,10 +175,19 @@ internal class MatchingRoleSnapshotCodec {
                     engine,
                     List(
                         count,
-                    ) { results.readResult(input, expected.stream(market), expected.context(market), expected.limits.maxResultEvents) },
+                    ) {
+                        results.readResult(
+                            input,
+                            expected.stream(market),
+                            expected.context(market),
+                            expected.limits.maxResultEvents,
+                            expected.inputContractVersion,
+                        )
+                    },
                     bytes,
                     localActive,
                     localActiveBytes,
+                    sourceMarket,
                 )
             }
         checked.on(false)
@@ -234,6 +248,8 @@ internal class MatchingRoleSnapshotCodec {
                     output.writeInt(limit.maxActiveOrders)
                     output.writeLong(limit.maxActiveBytes)
                 }
+                // 신규 전용 지문은 그대로 두고 새 계약만 입력 버전에 결속한다.
+                if (configuration.inputContractVersion == 2) output.writeInt(configuration.inputContractVersion)
             }
             bytes.toByteArray()
         }
@@ -273,6 +289,9 @@ internal class MatchingRoleSnapshotCodec {
         configuration.snapshotByteUpperBound.also {
             require(it in 1..MAX_SNAPSHOT_BYTES)
         }
+
+    private fun snapshotVersion(configuration: MatchingIntakeConfiguration): Int =
+        if (configuration.inputContractVersion == 2) CANCELLATION_VERSION else VERSION
 
     private class LimitedInput(
         source: InputStream,
@@ -330,6 +349,7 @@ internal class MatchingRoleSnapshotCodec {
     companion object {
         private const val MAGIC = 0x4D525350
         private const val VERSION = 1
+        private const val CANCELLATION_VERSION = 2
         private const val END = 0x4D524531
         private const val MAX_TEXT_BYTES = 1_024
         private const val MAX_CONFIGURATION_BYTES = 256 * 1_024

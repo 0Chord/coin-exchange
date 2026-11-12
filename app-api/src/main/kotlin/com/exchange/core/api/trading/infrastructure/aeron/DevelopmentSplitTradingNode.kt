@@ -47,6 +47,7 @@ internal data class SplitTradingNodeSettings(
     val clusterId: Int get() = if (role == TradingServiceRole.FUNDS) FUNDS_CLUSTER_ID else MATCHING_CLUSTER_ID
 
     init {
+        configuration.requireTransportCompatible()
         require(mode == "ORDER_DELIVERY_DEV" || resultDeliveryEnabled) { "분리 역할은 명시한 개발 모드에서만 실행합니다" }
         if (resultDeliveryEnabled) configuration.requireResultDeliveryCompatible()
         require(role == TradingServiceRole.FUNDS || role == TradingServiceRole.MATCHING)

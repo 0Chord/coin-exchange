@@ -370,8 +370,14 @@ internal class SplitResultDeliveryCodec {
             .setDisposition(
                 when (value.disposition) {
                     MatchingOrderDisposition.RESTING -> SplitOrderDisposition.SPLIT_RESTING
+
                     MatchingOrderDisposition.TERMINAL -> SplitOrderDisposition.SPLIT_TERMINAL
+
                     MatchingOrderDisposition.NOT_EXECUTED -> SplitOrderDisposition.SPLIT_ORDER_NOT_EXECUTED
+
+                    MatchingOrderDisposition.CANCELLED -> throw IllegalArgumentException(
+                        "cancellation effects require a newer wire contract",
+                    )
                 },
             ).build()
 
@@ -432,6 +438,10 @@ internal class SplitResultDeliveryCodec {
             }
         }
         when (value.outcome) {
+            MatchingOutcome.CANCELLED, MatchingOutcome.CANCEL_REJECTED -> {
+                throw IllegalArgumentException("cancellation results require a newer wire contract")
+            }
+
             MatchingOutcome.NOT_EXECUTED -> {
                 require(value.reason != null && value.events.isEmpty() && value.effects.size == 1)
                 require(value.engineSequenceAfter == value.engineSequenceBefore)

@@ -101,12 +101,13 @@ object TradingRoleAssembly {
         admissionCalculator: OrderAdmissionCalculator,
         dispatchLimits: FundsDispatchLimits = FundsDispatchLimits.defaults(topology.fundsManifest),
         resultLimits: FundsResultLimits = FundsResultLimits(),
+        inputContractVersion: Int = 1,
     ): BoundedFundingState {
         topology.validate(declaration, TradingServiceRole.FUNDS)
         return BoundedFundingState(
             admissionCalculator,
             expectedManifest = topology.fundsManifest,
-            dispatchConfiguration = FundsDispatchConfiguration(topology, dispatchLimits),
+            dispatchConfiguration = FundsDispatchConfiguration(topology, dispatchLimits, inputContractVersion),
             resultLimits = resultLimits,
         )
     }
@@ -124,7 +125,8 @@ object TradingRoleAssembly {
         topology: TradingRoleTopology,
         declaration: TradingRoleDeclaration,
         limits: MatchingIntakeLimits = MatchingIntakeLimits.defaults(topology, declaration),
-    ): ReservedMatchingState = ReservedMatchingState(MatchingIntakeConfiguration(topology, declaration, limits))
+        inputContractVersion: Int = 1,
+    ): ReservedMatchingState = ReservedMatchingState(MatchingIntakeConfiguration(topology, declaration, limits, inputContractVersion))
 
     fun integrated(
         admissionCalculator: OrderAdmissionCalculator,
