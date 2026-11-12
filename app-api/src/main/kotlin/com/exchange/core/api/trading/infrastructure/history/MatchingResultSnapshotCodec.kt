@@ -5,8 +5,11 @@ import com.exchange.core.common.OrderId
 import com.exchange.core.common.Price
 import com.exchange.core.common.Quantity
 import com.exchange.core.common.UserId
+import com.exchange.core.matching.OrderCancelRejected
+import com.exchange.core.matching.OrderCancelled
 import com.exchange.core.matching.OrderEnteredBook
 import com.exchange.core.matching.TradeExecuted
+import com.exchange.core.trading.FundsCancelDispatch
 import com.exchange.core.trading.FundsDispatchStream
 import com.exchange.core.trading.FundsOrderDispatch
 import com.exchange.core.trading.MatchingNotExecutedReason
@@ -15,40 +18,50 @@ import com.exchange.core.trading.MatchingOutcome
 import com.exchange.core.trading.MatchingResultEnvelope
 import com.exchange.core.trading.MatchingResultStream
 import com.exchange.core.trading.OrderAdmissionInput
+import com.exchange.core.trading.RequestToken
 import com.exchange.core.trading.TradingMarketContext
 import java.io.DataInputStream
 import java.io.DataOutputStream
 
-/** 매칭 v1의 승인·전체 결과 바이트를 두 역할의 snapshot에서 같은 순서로 사용한다. */
+/** 신규 전용 v1 바이트를 유지하고 취소 계약의 v2 종류를 명시한다. */
 internal class MatchingResultSnapshotCodec {
     private val reservations = TradingHistoryCodec(MAX_RESERVATION_BYTES)
 
     fun writeResult(
         output: DataOutputStream,
         value: MatchingResultEnvelope,
-    ) = output.result(value)
+        version: Int = 1,
+    ) = output.result(value, version)
 
     fun readResult(
         input: DataInputStream,
         stream: FundsDispatchStream,
         context: TradingMarketContext,
         maximumEvents: Int,
-    ): MatchingResultEnvelope = input.result(stream, context, maximumEvents)
+        version: Int = 1,
+    ): MatchingResultEnvelope = input.result(stream, context, maximumEvents, version)
 
     fun writeDispatch(
         output: DataOutputStream,
         value: FundsOrderDispatch,
-    ) = output.dispatch(value)
+        version: Int = 1,
+    ) = output.dispatch(value, version)
 
     fun readDispatch(
         input: DataInputStream,
         streamFor: (MarketId) -> FundsDispatchStream,
         contextFor: (MarketId) -> TradingMarketContext,
-    ): FundsOrderDispatch = input.dispatch(streamFor, contextFor)
+        version: Int = 1,
+    ): FundsOrderDispatch = input.dispatch(streamFor, contextFor, version)
 
-    private fun DataOutputStream.result(value: MatchingResultEnvelope) {
+    private fun DataOutputStream.result(
+        value: MatchingResultEnvelope,
+        version: Int,
+    ) {
+        require(version in 1..2 && value.formatVersion == version) { "matching result contract differs" }
+        if (version == 2) writeInt(version)
         writeLong(value.resultSequence)
-        dispatch(value.input)
+        dispatch(value.input, version)
         writeInt(value.outcome.ordinal)
         writeInt(value.reason?.ordinal ?: -1)
         writeLong(value.engineSequenceBefore)
@@ -78,14 +91,28 @@ internal class MatchingResultSnapshotCodec {
                     writeLong(event.remainingQuantity.value)
                 }
 
-                else -> {
-                    throw IllegalArgumentException("matching intake cannot snapshot cancellation events")
+                is OrderCancelled -> {
+                    require(version == 2) { "legacy result cannot contain a cancellation" }
+                    writeInt(3)
+                    writeLong(event.engineSequence)
+                    text(event.orderId.value)
+                    text(event.userId.value)
+                    writeLong(event.remainingQuantity.value)
+                }
+
+                is OrderCancelRejected -> {
+                    require(version == 2) { "legacy result cannot contain a cancellation" }
+                    writeInt(4)
+                    writeLong(event.engineSequence)
+                    text(event.orderId.value)
+                    text(event.userId.value)
+                    text(event.reason)
                 }
             }
         }
         writeInt(value.effects.size)
         for (effect in value.effects) {
-            dispatch(effect.origin)
+            dispatch(effect.origin, version)
             writeLong(effect.beforeQuantity.value)
             writeLong(effect.afterQuantity.value)
             writeInt(effect.disposition.ordinal)
@@ -96,7 +123,10 @@ internal class MatchingResultSnapshotCodec {
         stream: FundsDispatchStream,
         context: TradingMarketContext,
         maximumEvents: Int,
+        version: Int,
     ): MatchingResultEnvelope {
+        require(version in 1..2) { "unsupported matching result contract" }
+        if (version == 2) require(readInt() == version) { "matching result version differs" }
         val market = stream.marketId
 
         fun expectedStream(actual: MarketId): FundsDispatchStream {
@@ -104,7 +134,7 @@ internal class MatchingResultSnapshotCodec {
             return stream
         }
         val sequence = readLong()
-        val original = dispatch(::expectedStream) { context }
+        val original = dispatch(::expectedStream, { context }, version)
         val outcome = enum<MatchingOutcome>()
         val reasonCode = readInt()
         val reason =
@@ -146,6 +176,16 @@ internal class MatchingResultSnapshotCodec {
                         )
                     }
 
+                    3 -> {
+                        require(version == 2) { "legacy result cannot contain a cancellation" }
+                        OrderCancelled(market, readLong(), OrderId(text()), UserId(text()), Quantity(readLong()))
+                    }
+
+                    4 -> {
+                        require(version == 2) { "legacy result cannot contain a cancellation" }
+                        OrderCancelRejected(market, readLong(), OrderId(text()), UserId(text()), text())
+                    }
+
                     else -> {
                         throw IllegalArgumentException("invalid matching event type")
                     }
@@ -153,7 +193,7 @@ internal class MatchingResultSnapshotCodec {
             }
         val effects =
             List(count(Math.addExact(maximumEvents, 1))) {
-                MatchingOrderEffect(dispatch(::expectedStream) { context }, Quantity(readLong()), Quantity(readLong()), enum())
+                MatchingOrderEffect(dispatch(::expectedStream, { context }, version), Quantity(readLong()), Quantity(readLong()), enum())
             }
         return MatchingResultEnvelope(
             MatchingResultStream(stream.matchingLineage, stream.fundsLineage, market, stream.ownershipEpoch, stream.configurationVersion),
@@ -168,7 +208,16 @@ internal class MatchingResultSnapshotCodec {
         )
     }
 
-    private fun DataOutputStream.dispatch(value: FundsOrderDispatch) {
+    private fun DataOutputStream.dispatch(
+        value: FundsOrderDispatch,
+        version: Int,
+    ) {
+        require(version in 1..2 && value.inputContractVersion == version) { "matching input contract differs" }
+        require(version == 2 || !value.isCancellation) { "legacy input cannot contain a cancellation" }
+        if (version == 2) {
+            writeInt(version)
+            writeInt(if (value.isCancellation) CANCEL_INPUT else NEW_INPUT)
+        }
         text(value.stream.marketId.value)
         writeLong(value.dispatchSequence)
         writeLong(value.admissionSequence)
@@ -183,12 +232,32 @@ internal class MatchingResultSnapshotCodec {
         writeLong(order.price.value)
         writeLong(order.quantity.value)
         blob(reservations.encodeReservation(value.reservation), MAX_RESERVATION_BYTES)
+        if (version == 2) {
+            value.cancel?.let {
+                text(it.cancelId)
+                text(it.requestToken.userId.value)
+                writeInt(it.requestToken.channel)
+                writeLong(it.requestToken.epoch)
+                writeLong(it.requestToken.sequence)
+                writeLong(it.cancelSequence)
+                writeLong(it.targetInputSequence)
+            }
+        }
     }
 
     private fun DataInputStream.dispatch(
         streamFor: (MarketId) -> FundsDispatchStream,
         contextFor: (MarketId) -> TradingMarketContext,
+        version: Int,
     ): FundsOrderDispatch {
+        require(version in 1..2) { "unsupported matching input contract" }
+        val kind =
+            if (version == 2) {
+                require(readInt() == version) { "matching input version differs" }
+                readInt().also { require(it == NEW_INPUT || it == CANCEL_INPUT) { "invalid matching input kind" } }
+            } else {
+                NEW_INPUT
+            }
         val market = MarketId(text())
         val stream = streamFor(market)
         val dispatch = readLong()
@@ -206,7 +275,18 @@ internal class MatchingResultSnapshotCodec {
                 Quantity(readLong()),
             )
         val reservation = reservations.decodeReservation(blob(MAX_RESERVATION_BYTES))
-        return FundsOrderDispatch(stream, dispatch, admission, marketAdmission, order, reservation, contextFor(market))
+        val cancel =
+            if (kind == CANCEL_INPUT) {
+                FundsCancelDispatch(
+                    text(),
+                    RequestToken(UserId(text()), readInt(), readLong(), readLong()),
+                    readLong(),
+                    readLong(),
+                )
+            } else {
+                null
+            }
+        return FundsOrderDispatch(stream, dispatch, admission, marketAdmission, order, reservation, contextFor(market), cancel, version)
     }
 
     private inline fun <reified E : Enum<E>> DataInputStream.enum(): E =
@@ -244,5 +324,7 @@ internal class MatchingResultSnapshotCodec {
         private const val MAX_TEXT_BYTES = 1_024
         private const val MAX_RESERVATION_BYTES = 64 * 1_024
         private const val MAX_ROWS = 1_000_000
+        private const val NEW_INPUT = 1
+        private const val CANCEL_INPUT = 2
     }
 }

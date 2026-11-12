@@ -37,11 +37,12 @@ internal class SplitTradingConfiguration(
     val resultLimits: FundsResultLimits = FundsResultLimits(),
     val deliveryLimits: FundsOrderDeliveryLimits = FundsOrderDeliveryLimits(),
     val resultDeliveryLimits: MatchingResultDeliveryLimits = MatchingResultDeliveryLimits(),
+    val inputContractVersion: Int = 1,
 ) {
     val fundsLineage get() = topology.fundsManifest.lineage
     val matchingLineage get() = matchingDeclaration.lineage
-    val dispatchConfiguration = FundsDispatchConfiguration(topology, dispatchLimits)
-    val matchingConfiguration = MatchingIntakeConfiguration(topology, matchingDeclaration, matchingLimits)
+    val dispatchConfiguration = FundsDispatchConfiguration(topology, dispatchLimits, inputContractVersion)
+    val matchingConfiguration = MatchingIntakeConfiguration(topology, matchingDeclaration, matchingLimits, inputContractVersion)
     val topologySha256: String
     val resultTopologySha256: String
 
@@ -49,6 +50,11 @@ internal class SplitTradingConfiguration(
         validateRoleAssembly()
         topologySha256 = sha256(orderDeliveryConfigurationBytes())
         resultTopologySha256 = sha256(resultDeliveryConfigurationBytes())
+    }
+
+    /** 실제 전송 계약이 준비되기 전에는 새 코어 계약으로 실행 자원을 열지 않는다. */
+    fun requireTransportCompatible() {
+        require(inputContractVersion == 1) { "기존 분리 전송은 신규 전용 입력 계약만 지원합니다" }
     }
 
     /** 기존 한 방향 실행의 한도를 바꾸지 않고 새 양방향 모드만 자원 생성 전에 검사한다. */
@@ -63,9 +69,17 @@ internal class SplitTradingConfiguration(
     }
 
     fun funds(): BoundedFundingState =
-        TradingRoleAssembly.funds(topology, fundsDeclaration, OrderAdmissionCalculator(reservations()), dispatchLimits, resultLimits)
+        TradingRoleAssembly.funds(
+            topology,
+            fundsDeclaration,
+            OrderAdmissionCalculator(reservations()),
+            dispatchLimits,
+            resultLimits,
+            inputContractVersion,
+        )
 
-    fun matching(): ReservedMatchingState = TradingRoleAssembly.reservedMatching(topology, matchingDeclaration, matchingLimits)
+    fun matching(): ReservedMatchingState =
+        TradingRoleAssembly.reservedMatching(topology, matchingDeclaration, matchingLimits, inputContractVersion)
 
     fun settlementCalculator(): OrderSettlementCalculator {
         val fees = TradingFeeReserveCalculator()

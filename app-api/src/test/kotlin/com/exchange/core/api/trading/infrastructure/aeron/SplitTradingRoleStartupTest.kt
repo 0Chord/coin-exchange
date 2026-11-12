@@ -35,6 +35,38 @@ import kotlin.test.assertTrue
 /** 잘못된 설정·복구 기록은 Driver·Archive를 열기 전에 거절한다. 기존 일반 진입 차단도 별도로 회귀한다. */
 class SplitTradingRoleStartupTest {
     @Test
+    fun `취소 가능한 코어 구성은 기존 전송 기동에서 디렉터리를 열기 전에 거절한다`() {
+        val original = configuration().dispatchLimits
+        val bounded =
+            FundsDispatchLimits(
+                original.marketLimits.mapValues { (_, limits) -> limits.copy(maxDispatchBytes = 65_536, maxActiveBytes = 65_536) },
+                maxDispatchBytes = 65_536,
+                maxActiveBytes = 65_536,
+            )
+        val legacy = configuration(dispatchLimits = bounded)
+        val fresh = configuration(dispatchLimits = bounded, inputContractVersion = 2)
+        assertNotEquals(legacy.topologySha256, fresh.topologySha256)
+        assertNotEquals(legacy.resultTopologySha256, fresh.resultTopologySha256)
+        for (role in listOf(TradingServiceRole.FUNDS, TradingServiceRole.MATCHING)) {
+            for (mode in listOf("ORDER_DELIVERY_DEV", "RESULT_SETTLEMENT_DEV")) {
+                val root = directory.resolve("unsupported-cancellation-${role.name}-$mode")
+                val failure = assertFailsWith<IllegalArgumentException> { settings(root, fresh, role, mode) }
+                assertTrue(failure.message.orEmpty().contains("신규 전용 입력 계약"))
+                assertFalse(Files.exists(root))
+                val existing = Files.createDirectory(root)
+                val sentinel = existing.resolve("sentinel.bin")
+                val bytes = byteArrayOf(2, 7, 1, 8)
+                Files.write(sentinel, bytes)
+                assertFailsWith<IllegalArgumentException> {
+                    settings(root, fresh, role, mode, transport(root, fresh, role).copy(recoverExisting = true))
+                }
+                assertEquals(setOf(sentinel), Files.list(root).use { it.toList().toSet() })
+                assertContentEquals(bytes, Files.readAllBytes(sentinel))
+            }
+        }
+    }
+
+    @Test
     fun `일시적 peer DNS 단절과 실제 채널 설정 업무 오류를 구분한다`() {
         assertFalse(isSplitNodeFatalError(InvalidChannelException("remote endpoint unavailable", UnknownHostException("matching0"))))
         assertTrue(isSplitNodeFatalError(InvalidChannelException("malformed channel", IllegalArgumentException("bad port"))))
@@ -400,6 +432,7 @@ class SplitTradingRoleStartupTest {
         resultLimits: FundsResultLimits = FundsResultLimits(),
         deliveryLimits: FundsOrderDeliveryLimits = FundsOrderDeliveryLimits(),
         resultDeliveryLimits: MatchingResultDeliveryLimits = MatchingResultDeliveryLimits(),
+        inputContractVersion: Int = 1,
     ): SplitTradingConfiguration {
         val context =
             TradingMarketContext(
@@ -434,6 +467,7 @@ class SplitTradingRoleStartupTest {
             resultLimits,
             deliveryLimits,
             resultDeliveryLimits,
+            inputContractVersion,
         )
     }
 

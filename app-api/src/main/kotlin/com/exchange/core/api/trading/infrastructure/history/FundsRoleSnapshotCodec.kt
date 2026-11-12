@@ -17,6 +17,7 @@ import com.exchange.core.order.Side
 import com.exchange.core.order.TimeInForce
 import com.exchange.core.trading.BoundedFundingRecoveryState
 import com.exchange.core.trading.BoundedFundingState
+import com.exchange.core.trading.FundsCancellationSnapshot
 import com.exchange.core.trading.FundsDispatchConfiguration
 import com.exchange.core.trading.FundsDispatchSnapshot
 import com.exchange.core.trading.FundsDispatchStreamSnapshot
@@ -74,7 +75,7 @@ internal class FundsRoleSnapshotCodec {
             DigestOutputStream(LimitedOutput(target, snapshotLimit(saved.configuration, checkNotNull(saved.results).limits)), digest)
         val output = DataOutputStream(checked)
         output.writeInt(MAGIC)
-        output.writeInt(VERSION)
+        output.writeInt(snapshotVersion(saved.configuration))
         output.writeLong(position)
         output.blob(configuration, MAX_CONFIGURATION_BYTES)
         output.blob(base, MAX_SNAPSHOT_BYTES.toInt())
@@ -90,6 +91,7 @@ internal class FundsRoleSnapshotCodec {
         }
         writeDispatch(output, saved.configuration, saved.dispatch)
         writeResults(output, saved.configuration, checkNotNull(saved.results))
+        if (saved.configuration.inputContractVersion == 2) writeCancellations(output, saved)
         output.flush()
         checked.on(false)
         output.write(digest.digest())
@@ -110,7 +112,9 @@ internal class FundsRoleSnapshotCodec {
         val input = DataInputStream(checked)
         require(input.readInt() == MAGIC) { "unsupported funds snapshot" }
         val version = input.readInt()
-        require(version == LEGACY_VERSION || version == VERSION) { "unsupported funds snapshot" }
+        require(
+            if (expected.inputContractVersion == 2) version == CANCELLATION_VERSION else version == LEGACY_VERSION || version == VERSION,
+        ) { "unsupported funds snapshot" }
         require(input.readLong() == expectedPosition) { "funds snapshot framework position differs" }
         require(input.blob(MAX_CONFIGURATION_BYTES).contentEquals(configurationBytes(expected))) {
             "funds snapshot configuration differs"
@@ -129,15 +133,83 @@ internal class FundsRoleSnapshotCodec {
             require(asset in assets && total >= 0 && totals.put(asset, total) == null) { "invalid funds snapshot asset total" }
         }
         val dispatch = readDispatch(input, expected)
-        val resultState = if (version == VERSION) readResults(input, expected, expectedResultLimits) { limited.remaining } else null
+        val resultState = if (version != LEGACY_VERSION) readResults(input, expected, expectedResultLimits) { limited.remaining } else null
+        val lastCancellationSequence = if (version == CANCELLATION_VERSION) input.readLong() else 0L
+        val approvalInputs =
+            if (version == CANCELLATION_VERSION) {
+                List(input.count(expected.limits.maxActiveOrders)) {
+                    results.readDispatch(
+                        input,
+                        expected::stream,
+                        { market -> expected.manifest.markets.single { it.market.marketId == market } },
+                        2,
+                    )
+                }
+            } else {
+                emptyList()
+            }
+        val cancellations =
+            if (version == CANCELLATION_VERSION) {
+                List(input.count(expected.limits.maxDispatchEntries)) {
+                    val original =
+                        results.readDispatch(
+                            input,
+                            expected::stream,
+                            { market -> expected.manifest.markets.single { it.market.marketId == market } },
+                            2,
+                        )
+                    if (input.readBoolean()) {
+                        FundsCancellationSnapshot(
+                            original,
+                            reservations.decodeReservation(input.blob(MAX_RESERVATION_BYTES)),
+                            input.readLong(),
+                            input.readLong(),
+                        )
+                    } else {
+                        FundsCancellationSnapshot(original)
+                    }
+                }
+            } else {
+                emptyList()
+            }
         checked.on(false)
         val expectedDigest = ByteArray(32).also(input::readFully)
         require(MessageDigest.isEqual(digest.digest(), expectedDigest)) { "funds snapshot checksum differs" }
         require(input.readInt() == END && input.read() == -1) { "funds snapshot footer differs" }
-        val state = FundsRoleRecoveryState(expected, fundingProjection(saved), dispatch, totals, resultState)
+        val state =
+            FundsRoleRecoveryState(
+                expected,
+                fundingProjection(saved),
+                dispatch,
+                totals,
+                resultState,
+                approvalInputs,
+                cancellations,
+                lastCancellationSequence,
+            )
         // 체크섬 뒤에도 금융·전달·정산 경계의 관계를 빈 소유자에서 검사한다.
         validatedState(state, expectedResultLimits)
         return state
+    }
+
+    private fun writeCancellations(
+        output: DataOutputStream,
+        state: FundsRoleRecoveryState,
+    ) {
+        output.writeLong(state.lastCancellationSequence)
+        output.writeInt(state.approvalInputs.size)
+        for (original in state.approvalInputs) results.writeDispatch(output, original, 2)
+        output.writeInt(state.cancellations.size)
+        for (cancellation in state.cancellations) {
+            results.writeDispatch(output, cancellation.input, 2)
+            val terminal = cancellation.terminalReservation
+            output.writeBoolean(terminal != null)
+            if (terminal != null) {
+                output.blob(reservations.encodeReservation(terminal), MAX_RESERVATION_BYTES)
+                output.writeLong(checkNotNull(cancellation.terminalResultSequence))
+                output.writeLong(checkNotNull(cancellation.terminalEngineSequence))
+            }
+        }
     }
 
     private fun writeResults(
@@ -159,6 +231,10 @@ internal class FundsRoleSnapshotCodec {
             output.writeLong(saved.settledEngineSequence)
             output.writeLong(saved.retiredThrough)
             output.writeLong(saved.retiredEngineSequence)
+            if (configuration.inputContractVersion == 2) {
+                output.writeLong(saved.settledMarketAdmissionSequence)
+                output.writeLong(saved.retiredMarketAdmissionSequence)
+            }
             output.writeInt(saved.receiptEntries)
             output.writeLong(saved.receiptBytes)
         }
@@ -173,7 +249,7 @@ internal class FundsRoleSnapshotCodec {
             val frame =
                 ByteArrayOutputStream().use { bytes ->
                     DataOutputStream(LimitedOutput(bytes, frameLimit.toLong())).use { framed ->
-                        results.writeResult(framed, receipt.result)
+                        results.writeResult(framed, receipt.result, configuration.inputContractVersion)
                     }
                     bytes.toByteArray()
                 }
@@ -203,6 +279,12 @@ internal class FundsRoleSnapshotCodec {
             markets.map { market ->
                 require(MarketId(input.text()) == market) { "funds result snapshot stream order differs" }
                 val dispatch = configuration.stream(market)
+                val through = input.readLong()
+                val engine = input.readLong()
+                val retired = input.readLong()
+                val retiredEngine = input.readLong()
+                val settledAdmission = if (configuration.inputContractVersion == 2) input.readLong() else through
+                val retiredAdmission = if (configuration.inputContractVersion == 2) input.readLong() else retired
                 FundsResultStreamRecovery(
                     MatchingResultStream(
                         dispatch.matchingLineage,
@@ -211,12 +293,14 @@ internal class FundsRoleSnapshotCodec {
                         dispatch.ownershipEpoch,
                         dispatch.configurationVersion,
                     ),
-                    input.readLong(),
-                    input.readLong(),
-                    input.readLong(),
-                    input.readLong(),
+                    through,
+                    engine,
+                    retired,
+                    retiredEngine,
                     input.readInt(),
                     input.readLong(),
+                    settledAdmission,
+                    retiredAdmission,
                 )
             }
         val bytes = input.readLong()
@@ -273,6 +357,7 @@ internal class FundsRoleSnapshotCodec {
                         configuration.stream(market),
                         configuration.manifest.markets.single { it.market.marketId == market },
                         limits.maxResultEvents,
+                        configuration.inputContractVersion,
                     )
                 require(frame.available() == 0) { "funds result frame has trailing bytes" }
                 val charge = result.canonicalBytes
@@ -361,11 +446,15 @@ internal class FundsRoleSnapshotCodec {
             output.writeInt(saved.outstanding.size)
             for (entry in saved.outstanding) {
                 require(entry.stream == saved.stream && entry.context == context) { "funds snapshot envelope configuration differs" }
-                output.writeLong(entry.dispatchSequence)
-                output.writeLong(entry.admissionSequence)
-                output.writeLong(entry.marketAdmissionSequence)
-                output.order(entry.order)
-                output.blob(reservations.encodeReservation(entry.reservation), MAX_RESERVATION_BYTES)
+                if (configuration.inputContractVersion == 2) {
+                    results.writeDispatch(output, entry, 2)
+                } else {
+                    output.writeLong(entry.dispatchSequence)
+                    output.writeLong(entry.admissionSequence)
+                    output.writeLong(entry.marketAdmissionSequence)
+                    output.order(entry.order)
+                    output.blob(reservations.encodeReservation(entry.reservation), MAX_RESERVATION_BYTES)
+                }
             }
         }
     }
@@ -405,15 +494,30 @@ internal class FundsRoleSnapshotCodec {
                 entryCount = Math.addExact(entryCount, count)
                 val outstanding =
                     List(count) {
-                        FundsOrderDispatch(
-                            stream,
-                            input.readLong(),
-                            input.readLong(),
-                            input.readLong(),
-                            input.order(),
-                            reservations.decodeReservation(input.blob(MAX_RESERVATION_BYTES)),
-                            context,
-                        )
+                        if (configuration.inputContractVersion == 2) {
+                            results.readDispatch(
+                                input,
+                                { actual ->
+                                    require(actual == market) { "funds dispatch market differs" }
+                                    stream
+                                },
+                                { actual ->
+                                    require(actual == market) { "funds dispatch context differs" }
+                                    context
+                                },
+                                2,
+                            )
+                        } else {
+                            FundsOrderDispatch(
+                                stream,
+                                input.readLong(),
+                                input.readLong(),
+                                input.readLong(),
+                                input.order(),
+                                reservations.decodeReservation(input.blob(MAX_RESERVATION_BYTES)),
+                                context,
+                            )
+                        }
                     }
                 FundsDispatchStreamSnapshot(stream, issued, applied, outstanding, bytes, active, activeCharge)
             }
@@ -479,6 +583,8 @@ internal class FundsRoleSnapshotCodec {
                     output.text(market.value)
                     output.limits(limit)
                 }
+                // 기존 설정의 바이트는 보존하고 새 계약만 버전을 추가한다.
+                if (configuration.inputContractVersion == 2) output.writeInt(configuration.inputContractVersion)
             }
             bytes.toByteArray()
         }
@@ -542,6 +648,9 @@ internal class FundsRoleSnapshotCodec {
         limits: FundsResultLimits,
     ): Long = limits.snapshotByteUpperBound(configuration).also { require(it in 1..MAX_SNAPSHOT_BYTES) }
 
+    private fun snapshotVersion(configuration: FundsDispatchConfiguration): Int =
+        if (configuration.inputContractVersion == 2) CANCELLATION_VERSION else VERSION
+
     private class LimitedInput(
         source: InputStream,
         private val maximum: Long,
@@ -599,6 +708,7 @@ internal class FundsRoleSnapshotCodec {
         private const val MAGIC = 0x46525350
         private const val VERSION = 2
         private const val LEGACY_VERSION = 1
+        private const val CANCELLATION_VERSION = 3
         private const val FOOTER_BYTES = 36L
         private const val END = 0x46524531
         private const val MAX_TEXT_BYTES = 1_024
