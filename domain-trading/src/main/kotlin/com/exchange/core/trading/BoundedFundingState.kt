@@ -383,6 +383,7 @@ class BoundedFundingState(
                         MatchingOrderDisposition.RESTING -> require(after.status == OrderReservationStatus.ACTIVE)
                         MatchingOrderDisposition.TERMINAL -> require(after.status == OrderReservationStatus.SETTLED)
                         MatchingOrderDisposition.NOT_EXECUTED -> require(after.status == OrderReservationStatus.RELEASED)
+                        MatchingOrderDisposition.CANCELLED -> error("cancellation effect in a submit result")
                     }
                 }
                 validateSettlementCurrent(settlement)

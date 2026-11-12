@@ -6,6 +6,8 @@ import com.exchange.core.common.Quantity
 import com.exchange.core.common.UserId
 import com.exchange.core.matching.MatchingCheckpoint
 import com.exchange.core.matching.MatchingEvent
+import com.exchange.core.matching.OrderCancelRejected
+import com.exchange.core.matching.OrderCancelled
 import com.exchange.core.matching.OrderEnteredBook
 import com.exchange.core.matching.TradeExecuted
 import java.util.Collections
@@ -77,6 +79,7 @@ class MatchingIntakeConfiguration(
     topology: TradingRoleTopology,
     val declaration: TradingRoleDeclaration,
     val limits: MatchingIntakeLimits = MatchingIntakeLimits.defaults(topology, declaration),
+    val inputContractVersion: Int = 1,
 ) {
     val manifest: TradingClusterManifest = topology.fundsManifest
     val assignments: List<TradingMarketAssignment> =
@@ -112,6 +115,7 @@ class MatchingIntakeConfiguration(
     val snapshotByteUpperBound: Long
 
     init {
+        require(inputContractVersion in 1..2) { "unsupported matching input contract" }
         topology.validate(declaration, TradingServiceRole.MATCHING)
         require(limits.marketLimits.keys == streams.keys) { "matching limits must cover exactly the owned markets" }
         require(manifest.markets.size <= 128 && manifest.limits.maxIdentifierBytes >= 34)
@@ -170,6 +174,43 @@ class MatchingIntakeConfiguration(
                 require(
                     rejected.canonicalBytes <= limits.maxSingleResultBytes,
                 ) { "matching result budget cannot retain the largest input rejection" }
+                if (inputContractVersion == 2) {
+                    val target = maximal.copy(dispatchSequence = Long.MAX_VALUE - 1, marketAdmissionSequence = Long.MAX_VALUE - 1)
+                    val cancellation =
+                        target.copy(
+                            dispatchSequence = Long.MAX_VALUE,
+                            cancel =
+                                FundsCancelDispatch(
+                                    TradingIdentifiers.cancel(manifest.lineage, Long.MAX_VALUE),
+                                    RequestToken(target.order.userId, Int.MAX_VALUE, Long.MAX_VALUE, Long.MAX_VALUE),
+                                    Long.MAX_VALUE,
+                                    target.dispatchSequence,
+                                ),
+                        )
+                    val cancelled =
+                        MatchingResultEnvelope(
+                            resultStream(context.market.marketId),
+                            Long.MAX_VALUE,
+                            cancellation,
+                            MatchingOutcome.CANCELLED,
+                            null,
+                            Long.MAX_VALUE - 1,
+                            Long.MAX_VALUE,
+                            listOf(
+                                OrderCancelled(
+                                    target.order.marketId,
+                                    Long.MAX_VALUE,
+                                    target.order.orderId,
+                                    target.order.userId,
+                                    target.order.quantity,
+                                ),
+                            ),
+                            listOf(MatchingOrderEffect(target, target.order.quantity, Quantity.ZERO, MatchingOrderDisposition.CANCELLED)),
+                        )
+                    require(cancelled.canonicalBytes <= limits.maxSingleResultBytes) {
+                        "matching result budget cannot retain the largest cancellation"
+                    }
+                }
             }
         }
         snapshotByteUpperBound =
@@ -228,7 +269,16 @@ class MatchingIntakeConfiguration(
                 requirement,
                 context.feePolicySnapshot,
             )
-        return FundsOrderDispatch(stream(order.marketId), Long.MAX_VALUE, Long.MAX_VALUE, Long.MAX_VALUE, order, reservation, context)
+        return FundsOrderDispatch(
+            stream(order.marketId),
+            Long.MAX_VALUE,
+            Long.MAX_VALUE,
+            Long.MAX_VALUE,
+            order,
+            reservation,
+            context,
+            inputContractVersion = inputContractVersion,
+        )
     }
 
     override fun equals(other: Any?): Boolean =
@@ -236,10 +286,18 @@ class MatchingIntakeConfiguration(
             declaration.serviceRole == other.declaration.serviceRole && declaration.lineage == other.declaration.lineage &&
             declaration.configurationVersion == other.declaration.configurationVersion &&
             declaration.markets == other.declaration.markets &&
-            declaration.ownershipEpochs == other.declaration.ownershipEpochs
+            declaration.ownershipEpochs == other.declaration.ownershipEpochs && inputContractVersion == other.inputContractVersion
 
     override fun hashCode(): Int =
-        listOf(manifest, assignments, limits, declaration.lineage, declaration.markets, declaration.ownershipEpochs).hashCode()
+        listOf(
+            manifest,
+            assignments,
+            limits,
+            declaration.lineage,
+            declaration.markets,
+            declaration.ownershipEpochs,
+            inputContractVersion,
+        ).hashCode()
 
     companion object {
         const val MAX_SNAPSHOT_BYTES: Long = 128L * 1_024 * 1_024
@@ -262,11 +320,11 @@ data class MatchingResultStream(
     }
 }
 
-enum class MatchingOutcome { MATCHED, NOT_EXECUTED }
+enum class MatchingOutcome { MATCHED, NOT_EXECUTED, CANCELLED, CANCEL_REJECTED }
 
 enum class MatchingNotExecutedReason { ACTIVE_ORDER_LIMIT, RESULT_TOO_LARGE }
 
-enum class MatchingOrderDisposition { RESTING, TERMINAL, NOT_EXECUTED }
+enum class MatchingOrderDisposition { RESTING, TERMINAL, NOT_EXECUTED, CANCELLED }
 
 data class MatchingOrderEffect(
     val origin: FundsOrderDispatch,
@@ -279,7 +337,7 @@ data class MatchingOrderEffect(
     val side: com.exchange.core.order.Side get() = origin.order.side
 }
 
-/** 체결이 없는 대기와 실행 전 최종 거절도 모두 완결된 전달 결과다. */
+/** 신규의 대기·최종 거절과 취소의 성공·거절도 모두 완결된 전달 결과다. */
 class MatchingResultEnvelope(
     val stream: MatchingResultStream,
     val resultSequence: Long,
@@ -293,10 +351,10 @@ class MatchingResultEnvelope(
 ) {
     val events: List<MatchingEvent> = Collections.unmodifiableList(events.toList())
     val effects: List<MatchingOrderEffect> = Collections.unmodifiableList(effects.toList())
-    val formatVersion: Int get() = 1
+    val formatVersion: Int get() = input.inputContractVersion
     val eventCount: Int get() = events.size
     val resultId: String get() =
-        "M1:${stream.matchingLineage.high}:${stream.matchingLineage.low}:" +
+        "M$formatVersion:${stream.matchingLineage.high}:${stream.matchingLineage.low}:" +
             "${stream.fundsLineage.high}:${stream.fundsLineage.low}:${stream.marketId.value}:" +
             "${stream.ownershipEpoch}:${stream.configurationVersion}:$resultSequence"
     val canonicalBytes: Long get() = MatchingResultCharge.result(this)
@@ -311,7 +369,7 @@ class MatchingResultEnvelope(
         listOf(stream, resultSequence, input, outcome, reason, engineSequenceBefore, engineSequenceAfter, events, effects).hashCode()
 }
 
-/** v1 논리 charge. 원본을 참조로 공유해도 각 보존 의무에서 독립 계산한다. */
+/** 원본을 참조로 공유해도 각 보존 의무에서 독립 계산한다. 기존 v1 charge는 유지한다. */
 object MatchingResultCharge {
     fun active(input: FundsOrderDispatch): Long = input.dispatchCanonicalBytes
 
@@ -337,8 +395,12 @@ object MatchingResultCharge {
                 32L + text(event.marketId.value) + text(event.orderId.value) + text(event.userId.value)
             }
 
-            else -> {
-                throw IllegalArgumentException("submit result contains unsupported event")
+            is OrderCancelled -> {
+                20L + text(event.marketId.value) + text(event.orderId.value) + text(event.userId.value)
+            }
+
+            is OrderCancelRejected -> {
+                12L + text(event.marketId.value) + text(event.orderId.value) + text(event.userId.value) + text(event.reason)
             }
         }
 
@@ -401,6 +463,7 @@ class MatchingStreamRecovery(
     val resultBytes: Long,
     val activeOrders: Int,
     val activeBytes: Long,
+    val lastSourceMarketAdmissionSequence: Long = appliedThrough,
 ) {
     val outstanding: List<MatchingResultEnvelope> = Collections.unmodifiableList(outstanding.toList())
 }

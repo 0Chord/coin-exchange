@@ -1,7 +1,10 @@
 package com.exchange.core.trading
 
 import com.exchange.core.fee.TradingFeeReserveCalculator
+import com.exchange.core.matching.CancelOrderCommand
 import com.exchange.core.matching.MatchingResultState
+import com.exchange.core.matching.OrderCancelRejected
+import com.exchange.core.matching.OrderCancelled
 import com.exchange.core.matching.OrderEnteredBook
 import com.exchange.core.matching.SubmitOrderCommand
 import com.exchange.core.matching.TradeExecuted
@@ -22,20 +25,33 @@ internal object MatchingInputValidation {
         input: FundsOrderDispatch,
     ) {
         require(configuration.matches(input.stream)) { "matching input stream differs" }
-        requireValid(configuration.manifest, configuration.context(input.stream.marketId), input.stream, input)
+        requireValid(
+            configuration.manifest,
+            configuration.context(input.stream.marketId),
+            input.stream,
+            input,
+            configuration.inputContractVersion,
+        )
     }
 
-    private fun requireValid(
+    fun requireValid(
         manifest: TradingClusterManifest,
         context: TradingMarketContext,
         expectedStream: FundsDispatchStream,
         input: FundsOrderDispatch,
+        inputContractVersion: Int = 1,
     ) {
-        require(input.formatVersion == 1 && input.stream == expectedStream) { "matching input stream differs" }
+        require(inputContractVersion in 1..2 && input.formatVersion == inputContractVersion && input.stream == expectedStream) {
+            "matching input stream differs"
+        }
         require(
-            input.dispatchSequence > 0 && input.admissionSequence >= input.dispatchSequence &&
-                input.marketAdmissionSequence == input.dispatchSequence,
+            input.dispatchSequence > 0 && input.admissionSequence > 0 &&
+                input.marketAdmissionSequence in 1..input.dispatchSequence && input.marketAdmissionSequence <= input.admissionSequence,
         )
+        if (inputContractVersion == 1) {
+            require(!input.isCancellation && input.admissionSequence >= input.dispatchSequence)
+            require(input.marketAdmissionSequence == input.dispatchSequence)
+        }
         val order = input.order
         require(input.context == context && order.marketId == input.stream.marketId)
         require(order.orderId == TradingIdentifiers.order(manifest.lineage, input.admissionSequence)) {
@@ -45,6 +61,16 @@ internal object MatchingInputValidation {
             require(tradingTextBytes(text) <= manifest.limits.maxIdentifierBytes) { "matching identifier exceeds limit" }
         }
         require(':' !in order.userId.value) { "matching user identifier differs from admission contract" }
+        input.cancel?.let { cancel ->
+            require(cancel.requestToken.userId == order.userId) { "matching cancellation requester differs" }
+            require(inputContractVersion == 2 && cancel.cancelSequence > 0)
+            require(cancel.cancelId == TradingIdentifiers.cancel(manifest.lineage, cancel.cancelSequence)) {
+                "matching cancellation identity differs"
+            }
+            require(cancel.targetInputSequence in input.marketAdmissionSequence until input.dispatchSequence) {
+                "matching cancellation must follow its target input"
+            }
+        }
         require(order.orderType == OrderType.LIMIT && order.timeInForce == TimeInForce.GTC)
         val requirement =
             reservationCalculator().calculate(
@@ -70,8 +96,28 @@ internal object MatchingInputValidation {
 
     fun command(input: FundsOrderDispatch): SubmitOrderCommand =
         input.order.let {
+            require(!input.isCancellation) { "cancellation is not a submit command" }
             SubmitOrderCommand(it.marketId, it.orderId, it.userId, it.side, it.orderType, it.timeInForce, it.price, it.quantity)
         }
+
+    fun cancelCommand(input: FundsOrderDispatch): CancelOrderCommand {
+        require(input.isCancellation)
+        return CancelOrderCommand(input.order.marketId, input.order.orderId, requireNotNull(input.cancel).requestToken.userId)
+    }
+
+    fun requireCancellationOrigin(
+        input: FundsOrderDispatch,
+        origin: FundsOrderDispatch,
+    ) {
+        require(input.isCancellation && !origin.isCancellation && origin.dispatchSequence < input.dispatchSequence)
+        require(requireNotNull(input.cancel).targetInputSequence == origin.dispatchSequence)
+        require(input.inputContractVersion == origin.inputContractVersion)
+        require(
+            input.stream == origin.stream && input.admissionSequence == origin.admissionSequence &&
+                input.marketAdmissionSequence == origin.marketAdmissionSequence && input.order == origin.order &&
+                input.reservation == origin.reservation && input.context == origin.context,
+        ) { "matching cancellation target origin differs" }
+    }
 
     fun requireResult(
         configuration: MatchingIntakeConfiguration,
@@ -85,6 +131,7 @@ internal object MatchingInputValidation {
             configuration.limits.maxResultEvents,
             configuration.limits.maxSingleResultBytes,
             result,
+            configuration.inputContractVersion,
         )
     }
 
@@ -96,7 +143,9 @@ internal object MatchingInputValidation {
         maxResultEvents: Int,
         maxSingleResultBytes: Long,
         result: MatchingResultEnvelope,
+        inputContractVersion: Int = 1,
     ) {
+        require(result.formatVersion == inputContractVersion)
         require(result.stream == expectedStream)
         val inputStream =
             FundsDispatchStream(
@@ -107,12 +156,17 @@ internal object MatchingInputValidation {
                 expectedStream.configurationVersion,
             )
         require(result.eventCount <= maxResultEvents && result.effects.size <= maxResultEvents.toLong() + 1L)
-        requireValid(manifest, context, inputStream, result.input)
+        requireValid(manifest, context, inputStream, result.input, inputContractVersion)
         require(result.resultSequence > 0 && result.resultSequence == result.input.dispatchSequence)
         require(result.engineSequenceBefore in 0 until Long.MAX_VALUE && result.engineSequenceAfter >= result.engineSequenceBefore)
         require(
             result.eventCount <= maxResultEvents && result.canonicalBytes <= maxSingleResultBytes,
         )
+        if (result.input.isCancellation) {
+            requireCancellationResult(manifest, context, inputStream, result, inputContractVersion)
+            return
+        }
+        require(result.outcome == MatchingOutcome.MATCHED || result.outcome == MatchingOutcome.NOT_EXECUTED)
         require(result.effects.isNotEmpty() && result.effects.first().origin == result.input) { "result taker effect differs" }
         require(
             result.effects
@@ -121,7 +175,8 @@ internal object MatchingInputValidation {
                 .size == result.effects.size,
         ) { "duplicate result effect" }
         for (effect in result.effects) {
-            if (effect.origin != result.input) requireValid(manifest, context, inputStream, effect.origin)
+            require(!effect.origin.isCancellation) { "submit effect must contain an admission origin" }
+            if (effect.origin != result.input) requireValid(manifest, context, inputStream, effect.origin, inputContractVersion)
             require(effect.origin.stream == result.input.stream)
             require(effect.beforeQuantity.value > 0 && effect.beforeQuantity <= effect.origin.order.quantity)
             require(effect.afterQuantity.value >= 0 && effect.afterQuantity <= effect.beforeQuantity)
@@ -189,6 +244,49 @@ internal object MatchingInputValidation {
                 )
                 val entered = result.events.filterIsInstance<OrderEnteredBook>()
                 require((entered.size == 1) == (takerRemaining > 0))
+            }
+        }
+    }
+
+    private fun requireCancellationResult(
+        manifest: TradingClusterManifest,
+        context: TradingMarketContext,
+        inputStream: FundsDispatchStream,
+        result: MatchingResultEnvelope,
+        inputContractVersion: Int,
+    ) {
+        require(result.reason == null && result.eventCount == 1)
+        require(result.engineSequenceAfter == Math.addExact(result.engineSequenceBefore, 1))
+        MatchingResultState.validateCompleteResult(
+            result.resultId,
+            cancelCommand(result.input),
+            1,
+            result.engineSequenceAfter,
+            result.engineSequenceAfter,
+            result.events,
+        )
+        when (result.outcome) {
+            MatchingOutcome.CANCELLED -> {
+                val event = result.events.single() as? OrderCancelled ?: throw IllegalArgumentException("missing cancellation event")
+                require(result.effects.size == 1)
+                val effect = result.effects.single()
+                requireValid(manifest, context, inputStream, effect.origin, inputContractVersion)
+                requireCancellationOrigin(result.input, effect.origin)
+                require(effect.beforeQuantity == event.remainingQuantity && effect.beforeQuantity.value > 0)
+                require(effect.beforeQuantity <= effect.origin.order.quantity && effect.afterQuantity.value == 0L)
+                require(effect.disposition == MatchingOrderDisposition.CANCELLED)
+                context.market.requireOrderUnits(effect.origin.order.price, effect.beforeQuantity)
+            }
+
+            MatchingOutcome.CANCEL_REJECTED -> {
+                val event =
+                    result.events.single() as? OrderCancelRejected ?: throw IllegalArgumentException("missing cancellation rejection")
+                require(event.reason == "order not found") { "invalid cancellation rejection reason" }
+                require(result.effects.isEmpty())
+            }
+
+            else -> {
+                throw IllegalArgumentException("cancellation result contains submit outcome")
             }
         }
     }

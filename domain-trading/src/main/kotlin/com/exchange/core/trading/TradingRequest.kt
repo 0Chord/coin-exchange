@@ -83,6 +83,46 @@ class AdmissionIdentifiers internal constructor(
 
 /** 고정 길이 숫자를 그대로 encode한다. 시장 문자열 hash나 로컬 시각에 의존하지 않는다. */
 object TradingIdentifiers {
+    /** source lineage와 전역 취소 순번의 192-bit 고정폭 표현이다. */
+    fun cancel(
+        lineage: ClusterLineage,
+        cancelSequence: Long,
+    ): String {
+        require(cancelSequence > 0)
+        val bytes = ByteArray(24)
+        writeLong(bytes, 0, lineage.high)
+        writeLong(bytes, 8, lineage.low)
+        writeLong(bytes, 16, cancelSequence)
+        return "C2" +
+            java.math
+                .BigInteger(1, bytes)
+                .toString(36)
+                .padStart(38, '0')
+    }
+
+    internal fun cancelSequence(
+        lineage: ClusterLineage,
+        cancelId: String,
+    ): Long {
+        require(cancelId.length == 40 && cancelId.startsWith("C2"))
+        val body = cancelId.substring(2)
+        require(body.all { it in '0'..'9' || it in 'a'..'z' })
+        val number = java.math.BigInteger(body, 36)
+        val source = ByteArray(16)
+        writeLong(source, 0, lineage.high)
+        writeLong(source, 8, lineage.low)
+        require(number.shiftRight(64) == java.math.BigInteger(1, source))
+        val sequence =
+            number
+                .and(
+                    java.math.BigInteger.ONE
+                        .shiftLeft(64)
+                        .subtract(java.math.BigInteger.ONE),
+                ).longValueExact()
+        require(sequence > 0 && cancel(lineage, sequence) == cancelId)
+        return sequence
+    }
+
     fun order(
         lineage: ClusterLineage,
         sequence: Long,

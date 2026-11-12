@@ -75,6 +75,7 @@ data class FundsDispatchStream(
 class FundsDispatchConfiguration(
     topology: TradingRoleTopology,
     val limits: FundsDispatchLimits = FundsDispatchLimits.defaults(topology.fundsManifest),
+    val inputContractVersion: Int = 1,
 ) {
     val manifest: TradingClusterManifest = topology.fundsManifest
     val assignments: List<TradingMarketAssignment> =
@@ -92,6 +93,7 @@ class FundsDispatchConfiguration(
     val snapshotByteUpperBound: Long
 
     init {
+        require(inputContractVersion in 1..2) { "unsupported funds input contract" }
         require(limits.marketLimits.keys == contexts.keys) { "dispatch limits must cover exactly the registered markets" }
         for (context in manifest.markets) {
             val minimum =
@@ -126,7 +128,7 @@ class FundsDispatchConfiguration(
         }
         snapshotByteUpperBound =
             try {
-                snapshotBound(manifest.limits, limits)
+                snapshotBound(manifest.limits, limits, inputContractVersion)
             } catch (failure: ArithmeticException) {
                 throw IllegalArgumentException("funds limits overflow the snapshot size bound", failure)
             }
@@ -140,9 +142,10 @@ class FundsDispatchConfiguration(
     internal fun matches(stream: FundsDispatchStream): Boolean = streams[stream.marketId] == stream
 
     override fun equals(other: Any?): Boolean =
-        other is FundsDispatchConfiguration && manifest == other.manifest && assignments == other.assignments && limits == other.limits
+        other is FundsDispatchConfiguration && manifest == other.manifest && assignments == other.assignments && limits == other.limits &&
+            inputContractVersion == other.inputContractVersion
 
-    override fun hashCode(): Int = listOf(manifest, assignments, limits).hashCode()
+    override fun hashCode(): Int = listOf(manifest, assignments, limits, inputContractVersion).hashCode()
 
     companion object {
         const val MAX_SNAPSHOT_BYTES: Long = 128L * 1_024 * 1_024
@@ -168,6 +171,7 @@ class FundsDispatchConfiguration(
         private fun snapshotBound(
             base: TradingResourceLimits,
             dispatch: FundsDispatchLimits,
+            inputContractVersion: Int,
         ): Long {
             fun product(
                 count: Int,
@@ -182,6 +186,11 @@ class FundsDispatchConfiguration(
             // 네 배의 여유로 enum 문자열·예약 blob·목록 구분 비용을 포함한다.
             bound = Math.addExact(bound, Math.multiplyExact(dispatch.maxActiveBytes, 4L))
             bound = Math.addExact(bound, Math.multiplyExact(dispatch.maxDispatchBytes, 4L))
+            if (inputContractVersion == 2) {
+                // 활성 최초 원본과 미완료 취소의 종료 근거는 기존 전달/금융 예산과 별도로 보존한다.
+                bound = Math.addExact(bound, Math.multiplyExact(dispatch.maxActiveBytes, 2L))
+                bound = Math.addExact(bound, Math.multiplyExact(dispatch.maxDispatchBytes, 2L))
+            }
             bound = Math.addExact(bound, product(base.maxBalanceKeys, 4L * base.maxIdentifierBytes + 128))
             bound = Math.addExact(bound, product(base.maxAccounts, base.maxIdentifierBytes + 32L))
             bound = Math.addExact(bound, product(base.maxChannels, base.maxIdentifierBytes + 128L))
@@ -200,10 +209,17 @@ data class FundsOrderDispatch(
     val order: OrderAdmissionInput,
     val reservation: OrderReservation,
     val context: TradingMarketContext,
+    val cancel: FundsCancelDispatch? = null,
+    val inputContractVersion: Int = 1,
 ) {
-    val formatVersion: Int get() = 1
+    val formatVersion: Int get() = inputContractVersion
+    val isCancellation: Boolean get() = cancel != null
     val reservationId: String get() = TradingIdentifiers.reserve(stream.fundsLineage, admissionSequence)
-    val dispatchCanonicalBytes: Long get() = FundsDispatchCharge.dispatch(order, context)
+    val dispatchCanonicalBytes: Long get() =
+        Math.addExact(
+            FundsDispatchCharge.dispatch(order, context),
+            cancel?.let { 96L + tradingTextBytes(it.requestToken.userId.value) } ?: 0L,
+        )
     val activeCanonicalBytes: Long get() = FundsDispatchCharge.active(order, context)
 }
 
@@ -346,7 +362,11 @@ internal class FundsDispatchData(
         require(canAdmit(live.order)) { "dispatch capacity exceeded" }
         val progress = markets.getValue(live.order.marketId)
         val next = Math.addExact(progress.issued, 1L)
-        require(live.marketAdmissionSequence == next) { "dispatch and market admission sequence differ" }
+        if (configuration.inputContractVersion ==
+            1
+        ) {
+            require(live.marketAdmissionSequence == next) { "dispatch and market admission sequence differ" }
+        }
         return FundsOrderDispatch(
             configuration.stream(live.order.marketId),
             next,
@@ -355,6 +375,7 @@ internal class FundsDispatchData(
             live.order,
             live.reservation,
             configuration.context(live.order.marketId),
+            inputContractVersion = configuration.inputContractVersion,
         )
     }
 
@@ -362,7 +383,8 @@ internal class FundsDispatchData(
         val progress = markets.getValue(prepared.order.marketId)
         check(configuration.matches(prepared.stream) && prepared.context == configuration.context(prepared.order.marketId))
         check(prepared.dispatchSequence == Math.addExact(progress.issued, 1L))
-        check(prepared.marketAdmissionSequence == prepared.dispatchSequence)
+        check(!prepared.isCancellation && prepared.formatVersion == configuration.inputContractVersion)
+        if (configuration.inputContractVersion == 1) check(prepared.marketAdmissionSequence == prepared.dispatchSequence)
         check(canAdmit(prepared.order)) { "prepared dispatch capacity changed" }
         check(progress.outstanding.put(prepared.dispatchSequence, prepared) == null)
         progress.issued = prepared.dispatchSequence
@@ -373,6 +395,29 @@ internal class FundsDispatchData(
         dispatchBytes = Math.addExact(dispatchBytes, prepared.dispatchCanonicalBytes)
         activeBytes = Math.addExact(activeBytes, prepared.activeCanonicalBytes)
         activeOrders = Math.addExact(activeOrders, 1)
+    }
+
+    fun nextSequence(market: MarketId): Long = Math.addExact(markets.getValue(market).issued, 1L)
+
+    fun canCancel(input: FundsOrderDispatch): Boolean {
+        require(configuration.inputContractVersion == 2 && input.isCancellation && input.formatVersion == 2)
+        val progress = markets.getValue(input.stream.marketId)
+        val local = configuration.limits.marketLimits.getValue(input.stream.marketId)
+        return dispatchEntries < configuration.limits.maxDispatchEntries && progress.outstanding.size < local.maxDispatchEntries &&
+            input.dispatchCanonicalBytes <= configuration.limits.maxDispatchBytes - dispatchBytes &&
+            input.dispatchCanonicalBytes <= local.maxDispatchBytes - progress.dispatchBytes
+    }
+
+    fun recordCancellation(input: FundsOrderDispatch) {
+        val progress = markets.getValue(input.stream.marketId)
+        check(configuration.inputContractVersion == 2 && input.isCancellation && input.formatVersion == 2)
+        check(configuration.matches(input.stream) && input.context == configuration.context(input.stream.marketId))
+        check(input.dispatchSequence == nextSequence(input.stream.marketId) && canCancel(input))
+        check(progress.outstanding.put(input.dispatchSequence, input) == null)
+        progress.issued = input.dispatchSequence
+        progress.dispatchBytes = Math.addExact(progress.dispatchBytes, input.dispatchCanonicalBytes)
+        dispatchEntries = Math.addExact(dispatchEntries, 1)
+        dispatchBytes = Math.addExact(dispatchBytes, input.dispatchCanonicalBytes)
     }
 
     fun read(
@@ -508,10 +553,14 @@ internal class FundsDispatchData(
         saved: FundsDispatchSnapshot,
         liveOrders: List<TradingLiveOrderSnapshot>,
         financialMarkets: List<TradingMarketProgressSnapshot>,
+        approvalInputs: List<FundsOrderDispatch> = emptyList(),
+        cancellations: List<FundsCancellationSnapshot> = emptyList(),
     ) {
         check(dispatchEntries == 0 && activeOrders == 0 && markets.values.all { it.issued == 0L })
         val candidate = FundsDispatchData(configuration)
         val liveByAdmission = liveOrders.associateBy { it.admissionSequence }
+        val originals = approvalInputs.associateBy { it.admissionSequence }
+        val cancelBySequence = cancellations.associateBy { it.input.stream.marketId to it.input.dispatchSequence }
         require(liveByAdmission.size == liveOrders.size) { "duplicate financial admission" }
         for (live in liveOrders) {
             if (live.phase == LiveOrderPhase.PENDING) candidate.requireInitial(live)
@@ -531,8 +580,9 @@ internal class FundsDispatchData(
             require(configuration.matches(stream.stream)) { "restored stream differs from fixed assignment" }
             val financial = finances.getValue(stream.stream.marketId)
             require(stream.issued >= 0 && stream.matchingAppliedThrough in 0..stream.issued)
-            require(financial.lastAssigned == stream.issued && financial.executedThrough in 0..stream.matchingAppliedThrough)
-            require(financial.pendingAdmissionSequences.size.toLong() == stream.issued - financial.executedThrough)
+            require(financial.lastAssigned <= stream.issued && financial.executedThrough in 0..stream.matchingAppliedThrough)
+            if (configuration.inputContractVersion == 1) require(financial.lastAssigned == stream.issued)
+            require(financial.pendingAdmissionSequences.size.toLong() == financial.lastAssigned - financial.executedThrough)
             val financialOrders =
                 liveOrders
                     .filter {
@@ -550,13 +600,24 @@ internal class FundsDispatchData(
             var previous = stream.matchingAppliedThrough
             for (entry in stream.outstanding) {
                 require(previous < Long.MAX_VALUE && entry.dispatchSequence == previous + 1)
-                require(entry.stream == stream.stream && entry.marketAdmissionSequence == entry.dispatchSequence)
+                require(entry.stream == stream.stream && entry.marketAdmissionSequence in 1..entry.dispatchSequence)
+                require(entry.formatVersion == configuration.inputContractVersion)
+                if (configuration.inputContractVersion ==
+                    1
+                ) {
+                    require(!entry.isCancellation && entry.marketAdmissionSequence == entry.dispatchSequence)
+                }
                 require(entry.context == configuration.context(entry.order.marketId) && entry.order.marketId == stream.stream.marketId)
-                val live = requireNotNull(liveByAdmission[entry.admissionSequence]) { "orphan dispatch envelope" }
-                require(
-                    live.order == entry.order && live.reservation == entry.reservation &&
-                        live.marketAdmissionSequence == entry.marketAdmissionSequence && seenAdmissions.add(entry.admissionSequence),
-                ) { "dispatch differs from initial financial order" }
+                if (entry.isCancellation) {
+                    require(cancelBySequence[entry.stream.marketId to entry.dispatchSequence]?.input == entry) { "orphan cancel dispatch" }
+                } else {
+                    val live = requireNotNull(liveByAdmission[entry.admissionSequence]) { "orphan dispatch envelope" }
+                    require(
+                        live.order == entry.order && live.reservation == entry.reservation &&
+                            live.marketAdmissionSequence == entry.marketAdmissionSequence && seenAdmissions.add(entry.admissionSequence),
+                    ) { "dispatch differs from initial financial order" }
+                    originals[entry.admissionSequence]?.let { require(it == entry) { "dispatch approval differs" } }
+                }
                 progress.outstanding[entry.dispatchSequence] = entry
                 progress.dispatchBytes = Math.addExact(progress.dispatchBytes, entry.dispatchCanonicalBytes)
                 candidate.dispatchEntries = Math.addExact(candidate.dispatchEntries, 1)
