@@ -2,6 +2,7 @@ package com.exchange.core.api.trading.infrastructure.aeron
 
 import com.exchange.core.api.trading.infrastructure.history.BoundedTradingStateCodec
 import com.exchange.core.trading.ClusterLineage
+import com.exchange.core.trading.FundsDispatchLimits
 import com.exchange.core.trading.MarketMatchingIntakeLimits
 import com.exchange.core.trading.MatchingIntakeLimits
 import com.exchange.core.trading.TradingClusterManifest
@@ -38,10 +39,33 @@ internal fun splitTradingConfiguration(
     val matchingDeclaration = declaration(TradingServiceRole.MATCHING, matching)
     val resultEntries = environment["SPLIT_MAX_RESULT_ENTRIES"]?.toInt() ?: 4_096
     val activeOrders = environment["SPLIT_MAX_MATCHING_ACTIVE"]?.toInt() ?: 8_192
+    val inputContractVersion = environment["SPLIT_INPUT_CONTRACT_VERSION"]?.takeIf { it.isNotBlank() }?.toInt() ?: 1
+    val dispatchBytes = environment["SPLIT_MAX_FUNDS_DISPATCH_BYTES"]?.takeIf { it.isNotBlank() }?.toLong()
+    val activeBytes = environment["SPLIT_MAX_FUNDS_ACTIVE_BYTES"]?.takeIf { it.isNotBlank() }?.toLong()
+    val defaults = FundsDispatchLimits.defaults(manifest)
+    val dispatchLimits =
+        if (dispatchBytes == null && activeBytes == null) {
+            defaults
+        } else {
+            FundsDispatchLimits(
+                defaults.marketLimits.mapValues { (_, limits) ->
+                    limits.copy(
+                        maxDispatchBytes = dispatchBytes ?: limits.maxDispatchBytes,
+                        maxActiveBytes =
+                            activeBytes ?: limits.maxActiveBytes,
+                    )
+                },
+                defaults.maxDispatchEntries,
+                dispatchBytes ?: defaults.maxDispatchBytes,
+                defaults.maxActiveOrders,
+                activeBytes ?: defaults.maxActiveBytes,
+            )
+        }
     return SplitTradingConfiguration(
         topology,
         declaration(TradingServiceRole.FUNDS, manifest.lineage),
         matchingDeclaration,
+        dispatchLimits = dispatchLimits,
         matchingLimits =
             MatchingIntakeLimits(
                 manifest.markets.associate {
@@ -50,6 +74,7 @@ internal fun splitTradingConfiguration(
                 maxResultEntries = resultEntries,
                 maxActiveOrders = activeOrders,
             ),
+        inputContractVersion = inputContractVersion,
     )
 }
 

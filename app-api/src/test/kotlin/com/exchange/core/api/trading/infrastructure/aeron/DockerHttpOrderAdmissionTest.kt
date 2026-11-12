@@ -614,13 +614,14 @@ private class DockerHttpOrderVerification : AutoCloseable {
 
     private fun applied(member: Int) = observations[member].orEmpty().filter { it.path("kind").asString() == "APPLIED" }
 
-    private fun collectNodes() {
+    private fun collectNodes(completeOutput: Boolean = false) {
         for ((member, id) in nodes) {
             val logs = command(listOf("docker", "logs", id), 10_000)
             must(logs, "node$member 관찰 수집")
             Files.writeString(reports.resolve("node$member.stdout.log"), logs.stdout)
             Files.writeString(reports.resolve("node$member.stderr.log"), logs.stderr)
-            observations[member] = mergeFundingObservations(observations[member].orEmpty(), readFundingEvents(logs.stdout, issues))
+            observations[member] =
+                mergeFundingObservations(observations[member].orEmpty(), readFundingEvents(logs.stdout, issues, completeOutput))
         }
         check(issues.isEmpty()) { issues.toString() }
     }
@@ -760,7 +761,7 @@ private class DockerHttpOrderVerification : AutoCloseable {
         if (composeAttempted) {
             safely("gateway 종료") { must(compose(listOf("stop", "--timeout", "15", "gateway"), 20_000), "gateway 종료") }
             safely("노드 종료") { must(compose(listOf("stop", "--timeout", "15", "node0", "node1", "node2"), 20_000), "세 노드 종료") }
-            safely("최종 관찰") { collectNodes() }
+            safely("최종 관찰") { collectNodes(completeOutput = true) }
             gatewayId?.let { id ->
                 safely("gateway 로그") {
                     val logs = command(listOf("docker", "logs", id), 10_000)

@@ -7,6 +7,8 @@ import com.exchange.core.api.trading.infrastructure.codec.generated.SplitMatchin
 import com.exchange.core.api.trading.infrastructure.codec.generated.SplitMatchingOutcome
 import com.exchange.core.api.trading.infrastructure.codec.generated.SplitMatchingResult
 import com.exchange.core.api.trading.infrastructure.codec.generated.SplitNotExecutedReason
+import com.exchange.core.api.trading.infrastructure.codec.generated.SplitOrderCancelRejected
+import com.exchange.core.api.trading.infrastructure.codec.generated.SplitOrderCancelled
 import com.exchange.core.api.trading.infrastructure.codec.generated.SplitOrderDisposition
 import com.exchange.core.api.trading.infrastructure.codec.generated.SplitOrderEnteredBook
 import com.exchange.core.api.trading.infrastructure.codec.generated.SplitResultCommand
@@ -21,6 +23,8 @@ import com.exchange.core.common.Price
 import com.exchange.core.common.Quantity
 import com.exchange.core.common.UserId
 import com.exchange.core.matching.MatchingEvent
+import com.exchange.core.matching.OrderCancelRejected
+import com.exchange.core.matching.OrderCancelled
 import com.exchange.core.matching.OrderEnteredBook
 import com.exchange.core.matching.TradeExecuted
 import com.exchange.core.order.Side
@@ -84,8 +88,14 @@ internal data class SplitResultDeliveryReply(
 )
 
 /** 결과는 schema89의 독립 프레임 하나로 보내며 ID·원본·정책을 외부 설정에서 보충하지 않는다. */
-internal class SplitResultDeliveryCodec {
-    private val fields = SplitOrderDeliveryCodec()
+internal class SplitResultDeliveryCodec(
+    private val inputContractVersion: Int = 1,
+) {
+    private val fields = SplitOrderDeliveryCodec(inputContractVersion)
+
+    init {
+        require(inputContractVersion in 1..2) { "unsupported result input contract" }
+    }
 
     fun encode(
         correlationId: Long,
@@ -222,7 +232,7 @@ internal class SplitResultDeliveryCodec {
 
     private fun result(wire: SplitMatchingResult): MatchingResultEnvelope {
         complete(wire, setOf("reason", "events", "effects"))
-        require(wire.formatVersion == 1 && wire.eventCount == wire.eventsCount)
+        require(wire.formatVersion == inputContractVersion && wire.eventCount == wire.eventsCount)
         val result =
             MatchingResultEnvelope(
                 stream(wire.stream),
@@ -314,8 +324,30 @@ internal class SplitResultDeliveryCodec {
                         .build()
             }
 
-            else -> {
-                throw IllegalArgumentException("unsupported result event")
+            is OrderCancelled -> {
+                require(inputContractVersion == 2)
+                builder.cancelled =
+                    SplitOrderCancelled
+                        .newBuilder()
+                        .setMarketId(text(value.marketId.value))
+                        .setEngineSequence(value.engineSequence)
+                        .setOrderId(text(value.orderId.value))
+                        .setUserId(text(value.userId.value))
+                        .setRemainingQuantity(value.remainingQuantity.value)
+                        .build()
+            }
+
+            is OrderCancelRejected -> {
+                require(inputContractVersion == 2)
+                builder.cancelRejected =
+                    SplitOrderCancelRejected
+                        .newBuilder()
+                        .setMarketId(text(value.marketId.value))
+                        .setEngineSequence(value.engineSequence)
+                        .setOrderId(text(value.orderId.value))
+                        .setUserId(text(value.userId.value))
+                        .setReason(text(value.reason))
+                        .build()
             }
         }
         return builder.build()
@@ -355,6 +387,34 @@ internal class SplitResultDeliveryCodec {
                 }
             }
 
+            SplitMatchingEvent.BodyCase.CANCELLED -> {
+                require(inputContractVersion == 2)
+                wire.cancelled.let {
+                    complete(it)
+                    OrderCancelled(
+                        MarketId(text(it.marketId)),
+                        it.engineSequence,
+                        OrderId(text(it.orderId)),
+                        UserId(text(it.userId)),
+                        Quantity(it.remainingQuantity),
+                    )
+                }
+            }
+
+            SplitMatchingEvent.BodyCase.CANCEL_REJECTED -> {
+                require(inputContractVersion == 2)
+                wire.cancelRejected.let {
+                    complete(it)
+                    OrderCancelRejected(
+                        MarketId(text(it.marketId)),
+                        it.engineSequence,
+                        OrderId(text(it.orderId)),
+                        UserId(text(it.userId)),
+                        text(it.reason),
+                    )
+                }
+            }
+
             else -> {
                 throw IllegalArgumentException("missing result event body")
             }
@@ -369,15 +429,22 @@ internal class SplitResultDeliveryCodec {
             .setAfterQuantity(value.afterQuantity.value)
             .setDisposition(
                 when (value.disposition) {
-                    MatchingOrderDisposition.RESTING -> SplitOrderDisposition.SPLIT_RESTING
+                    MatchingOrderDisposition.RESTING -> {
+                        SplitOrderDisposition.SPLIT_RESTING
+                    }
 
-                    MatchingOrderDisposition.TERMINAL -> SplitOrderDisposition.SPLIT_TERMINAL
+                    MatchingOrderDisposition.TERMINAL -> {
+                        SplitOrderDisposition.SPLIT_TERMINAL
+                    }
 
-                    MatchingOrderDisposition.NOT_EXECUTED -> SplitOrderDisposition.SPLIT_ORDER_NOT_EXECUTED
+                    MatchingOrderDisposition.NOT_EXECUTED -> {
+                        SplitOrderDisposition.SPLIT_ORDER_NOT_EXECUTED
+                    }
 
-                    MatchingOrderDisposition.CANCELLED -> throw IllegalArgumentException(
-                        "cancellation effects require a newer wire contract",
-                    )
+                    MatchingOrderDisposition.CANCELLED -> {
+                        require(inputContractVersion == 2)
+                        SplitOrderDisposition.SPLIT_ORDER_CANCELLED
+                    }
                 },
             ).build()
 
@@ -388,17 +455,34 @@ internal class SplitResultDeliveryCodec {
             Quantity(wire.beforeQuantity),
             Quantity(wire.afterQuantity),
             when (wire.disposition) {
-                SplitOrderDisposition.SPLIT_RESTING -> MatchingOrderDisposition.RESTING
-                SplitOrderDisposition.SPLIT_TERMINAL -> MatchingOrderDisposition.TERMINAL
-                SplitOrderDisposition.SPLIT_ORDER_NOT_EXECUTED -> MatchingOrderDisposition.NOT_EXECUTED
-                else -> throw IllegalArgumentException("unknown result disposition")
+                SplitOrderDisposition.SPLIT_RESTING -> {
+                    MatchingOrderDisposition.RESTING
+                }
+
+                SplitOrderDisposition.SPLIT_TERMINAL -> {
+                    MatchingOrderDisposition.TERMINAL
+                }
+
+                SplitOrderDisposition.SPLIT_ORDER_NOT_EXECUTED -> {
+                    MatchingOrderDisposition.NOT_EXECUTED
+                }
+
+                SplitOrderDisposition.SPLIT_ORDER_CANCELLED -> {
+                    require(inputContractVersion == 2)
+                    MatchingOrderDisposition.CANCELLED
+                }
+
+                else -> {
+                    throw IllegalArgumentException("unknown result disposition")
+                }
             },
         )
     }
 
     private fun requireResult(value: MatchingResultEnvelope) {
+        require(value.formatVersion == inputContractVersion)
         require(value.resultSequence > 0 && value.resultSequence == value.input.dispatchSequence)
-        require(value.eventCount <= MAX_RESULT_EVENTS && value.effects.size in 1..MAX_RESULT_EVENTS + 1)
+        require(value.eventCount <= MAX_RESULT_EVENTS && value.effects.size <= MAX_RESULT_EVENTS + 1)
         require(value.engineSequenceBefore >= 0 && value.engineSequenceAfter >= value.engineSequenceBefore)
         requireContext(value.stream, value.input.context)
         val dispatchStream =
@@ -411,26 +495,35 @@ internal class SplitResultDeliveryCodec {
             )
 
         fun original(input: FundsOrderDispatch) {
+            require(input.inputContractVersion == inputContractVersion)
             require(input.stream == dispatchStream && input.context == value.input.context) { "result original stream or context differs" }
             require(input.order.marketId == dispatchStream.marketId && input.reservation.marketId == dispatchStream.marketId)
             require(input.order.orderId == input.reservation.orderId && input.order.userId == input.reservation.userId)
             require(input.order.side == input.reservation.side && input.context.feePolicySnapshot == input.reservation.feePolicySnapshot)
         }
         original(value.input)
-        require(value.effects.first().origin == value.input) { "result taker origin differs" }
+        value.effects.forEach {
+            original(it.origin)
+            require(!it.origin.isCancellation) { "result effect must contain an admission origin" }
+            require(it.beforeQuantity.value > 0 && it.beforeQuantity <= it.origin.order.quantity)
+            require(it.afterQuantity.value >= 0 && it.afterQuantity <= it.beforeQuantity)
+        }
+        value.events.forEach {
+            require(it.marketId == value.stream.marketId && it.engineSequence > 0)
+        }
+        if (value.input.isCancellation) {
+            require(inputContractVersion == 2)
+            requireCancellationResult(value)
+            return
+        }
+        require(value.effects.isNotEmpty() && value.effects.first().origin == value.input) { "result taker origin differs" }
         require(
             value.effects
                 .map { it.orderId }
                 .distinct()
                 .size == value.effects.size,
         )
-        value.effects.forEach {
-            original(it.origin)
-            require(it.beforeQuantity.value > 0 && it.beforeQuantity <= it.origin.order.quantity)
-            require(it.afterQuantity.value >= 0 && it.afterQuantity <= it.beforeQuantity)
-        }
         value.events.forEach {
-            require(it.marketId == value.stream.marketId && it.engineSequence > 0)
             when (it) {
                 is TradeExecuted -> require(it.quantity.value > 0)
                 is OrderEnteredBook -> require(it.remainingQuantity.value > 0)
@@ -439,7 +532,7 @@ internal class SplitResultDeliveryCodec {
         }
         when (value.outcome) {
             MatchingOutcome.CANCELLED, MatchingOutcome.CANCEL_REJECTED -> {
-                throw IllegalArgumentException("cancellation results require a newer wire contract")
+                throw IllegalArgumentException("submit input contains a cancellation result")
             }
 
             MatchingOutcome.NOT_EXECUTED -> {
@@ -458,6 +551,38 @@ internal class SplitResultDeliveryCodec {
                     // index+1은 위에서 검증한 eventCount 이하여서 같은 범위 안에 있다.
                     require(event.engineSequence == value.engineSequenceBefore + index.toLong() + 1)
                 }
+            }
+        }
+    }
+
+    /** 취소 사건과 대상 원본의 전송 구조만 대조한다. 금융·매칭 계산은 각 소유자가 검사한다. */
+    private fun requireCancellationResult(value: MatchingResultEnvelope) {
+        require(value.reason == null && value.eventCount == 1)
+        require(value.engineSequenceBefore < Long.MAX_VALUE && value.engineSequenceAfter == value.engineSequenceBefore + 1)
+        val event = value.events.single()
+        require(event.engineSequence == value.engineSequenceAfter)
+        when (value.outcome) {
+            MatchingOutcome.CANCELLED -> {
+                require(event is OrderCancelled && value.effects.size == 1)
+                require(event.orderId == value.input.order.orderId && event.userId == value.input.order.userId)
+                val effect = value.effects.single()
+                val cancel = requireNotNull(value.input.cancel)
+                require(cancel.targetInputSequence == effect.origin.dispatchSequence)
+                require(effect.origin.copy(dispatchSequence = value.input.dispatchSequence, cancel = cancel) == value.input) {
+                    "result cancellation target origin differs"
+                }
+                require(effect.disposition == MatchingOrderDisposition.CANCELLED)
+                require(effect.beforeQuantity == event.remainingQuantity && effect.afterQuantity == Quantity.ZERO)
+            }
+
+            MatchingOutcome.CANCEL_REJECTED -> {
+                require(event is OrderCancelRejected && value.effects.isEmpty())
+                require(event.orderId == value.input.order.orderId && event.userId == value.input.order.userId)
+                require(event.reason == "order not found")
+            }
+
+            else -> {
+                throw IllegalArgumentException("cancellation input contains a submit result")
             }
         }
     }
@@ -493,7 +618,7 @@ internal class SplitResultDeliveryCodec {
             .wrap(bytes)
             .order(ByteOrder.LITTLE_ENDIAN)
             .putShort(SCHEMA.toShort())
-            .putShort(VERSION.toShort())
+            .putShort(inputContractVersion.toShort())
             .putShort(kind.toShort())
             .putShort(0)
             .putInt(size)
@@ -515,7 +640,7 @@ internal class SplitResultDeliveryCodec {
         require(offset >= 0 && length in HEADER_BYTES + 1..MAX_MESSAGE_BYTES && offset <= bytes.size - length)
         val header = ByteBuffer.wrap(bytes, offset, length).order(ByteOrder.LITTLE_ENDIAN)
         require(
-            (header.short.toInt() and 65535) == SCHEMA && (header.short.toInt() and 65535) == VERSION &&
+            (header.short.toInt() and 65535) == SCHEMA && (header.short.toInt() and 65535) == inputContractVersion &&
                 (header.short.toInt() and 65535) == kind && header.short.toInt() == 0 && header.int == length - HEADER_BYTES,
         ) { "unsupported result header" }
         scan(bytes, offset + HEADER_BYTES, length - HEADER_BYTES, descriptor)
@@ -574,7 +699,14 @@ internal class SplitResultDeliveryCodec {
 
                     JavaType.ENUM -> {
                         require(wireType == WireFormat.WIRETYPE_VARINT)
-                        val value = input.readEnum()
+                        val value =
+                            if (inputContractVersion == 1) {
+                                input.readEnum()
+                            } else {
+                                val raw = input.readInt64()
+                                require(raw in 1..Int.MAX_VALUE.toLong()) { "result enum exceeds int32" }
+                                raw.toInt()
+                            }
                         require(value != 0 && field.enumType.findValueByNumber(value) != null) { "unknown result enum" }
                     }
 
@@ -613,7 +745,6 @@ internal class SplitResultDeliveryCodec {
         const val MAX_BODY_BYTES = MAX_MESSAGE_BYTES - HEADER_BYTES
         const val MAX_RESULT_EVENTS = 16_384
         private const val SCHEMA = 89
-        private const val VERSION = 1
         private const val COMMAND_KIND = 1
         private const val REPLY_KIND = 2
         private val SHA256 = Regex("[0-9a-f]{64}")
@@ -626,9 +757,10 @@ internal class SplitResultDeliveryCodec {
         fun maximumResultFrameBytes(
             maxLogicalBytes: Long,
             maxEvents: Int,
+            inputContractVersion: Int = 1,
         ): Long {
             require(maxLogicalBytes > 0 && maxEvents in 1..MAX_RESULT_EVENTS)
-            verifySizingContract()
+            verifySizingContract(inputContractVersion)
             val effects = Math.addExact(maxEvents.toLong(), 1)
             var bytes = Math.addExact(maxLogicalBytes, Math.multiplyExact(256L, Math.addExact(1, effects)))
             bytes = Math.addExact(bytes, Math.multiplyExact(32L, effects))
@@ -639,22 +771,47 @@ internal class SplitResultDeliveryCodec {
         fun upperBound(
             maxLogicalBytes: Long,
             maxEvents: Int,
-        ): Long = maximumResultFrameBytes(maxLogicalBytes, maxEvents)
+            inputContractVersion: Int = 1,
+        ): Long = maximumResultFrameBytes(maxLogicalBytes, maxEvents, inputContractVersion)
 
         /** descriptor가 바뀌면 기존 charge와의 상계 증명을 조용히 재사용하지 않는다. */
-        fun verifySizingContract() {
+        fun verifySizingContract(inputContractVersion: Int = 1) {
+            require(inputContractVersion in 1..2)
+
+            fun included(field: FieldDescriptor): Boolean =
+                inputContractVersion == 2 || field.containingType != SplitDispatch.getDescriptor() || field.number < 9
+
             fun maximum(message: Message): Message {
                 val builder = message.toBuilder()
-                for (field in message.descriptorForType.fields) {
+                for (field in message.descriptorForType.fields.filter(::included)) {
                     check(!field.isRepeated)
                     val value: Any =
                         when (field.javaType) {
-                            JavaType.INT -> -1
-                            JavaType.LONG -> -1L
-                            JavaType.STRING -> "x".repeat(AdmissionMessageFormat.MAX_IDENTIFIER_LENGTH)
-                            JavaType.ENUM -> field.enumType.values.maxBy { it.number }
-                            JavaType.MESSAGE -> maximum(builder.newBuilderForField(field).build())
-                            else -> error("unsupported result sizing field ${field.name}")
+                            JavaType.INT -> {
+                                -1
+                            }
+
+                            JavaType.LONG -> {
+                                -1L
+                            }
+
+                            JavaType.STRING -> {
+                                // 취소 ID는 writer/reader가 lineage·순번으로 대조하는 고정40자 파생값이다.
+                                val size = if (field.containingType.name == "SplitCancellation" && field.name == "cancel_id") 40 else 256
+                                "x".repeat(size)
+                            }
+
+                            JavaType.ENUM -> {
+                                field.enumType.values.maxBy { it.number }
+                            }
+
+                            JavaType.MESSAGE -> {
+                                maximum(builder.newBuilderForField(field).build())
+                            }
+
+                            else -> {
+                                error("unsupported result sizing field ${field.name}")
+                            }
                         }
                     builder.setField(field, value)
                 }
@@ -662,7 +819,7 @@ internal class SplitResultDeliveryCodec {
             }
 
             fun strings(type: Descriptor): Int =
-                type.fields.sumOf {
+                type.fields.filter(::included).sumOf {
                     when (it.javaType) {
                         JavaType.STRING -> 1
                         JavaType.MESSAGE -> strings(it.messageType)
@@ -671,14 +828,27 @@ internal class SplitResultDeliveryCodec {
                 }
             val dispatch = maximum(SplitDispatch.getDefaultInstance())
             // FundsDispatchCharge의 고정245 + 길이12×4. wire에는 문자열11개, charge에는 원본ID 한 번이 더 있다.
-            check(strings(dispatch.descriptorForType) == 11)
-            check(dispatch.serializedSize - 11 * 256 - 293 <= 256)
+            if (inputContractVersion == 1) {
+                check(strings(dispatch.descriptorForType) == 11)
+                check(dispatch.serializedSize - 11 * 256 - 293 <= 256)
+            } else {
+                // v2의 추가96바이트가 취소 ID·요청·대상 순번을, 별도 문자열이 요청 사용자를 센다.
+                check(strings(dispatch.descriptorForType) == 13)
+                check(dispatch.serializedSize - 12 * 256 - (293 + 96) <= 256)
+            }
             val trade = maximum(SplitTradeExecuted.getDefaultInstance()) as SplitTradeExecuted
             val entered = maximum(SplitOrderEnteredBook.getDefaultInstance()) as SplitOrderEnteredBook
             check(strings(trade.descriptorForType) == 5 && strings(entered.descriptorForType) == 3)
             // 사건의 oneof와 반복 wrapper는 최대 각각4바이트로 함께 센다.
             check(trade.serializedSize - 5 * 256 + 8 - (36 + 5 * 4) <= 32)
             check(entered.serializedSize - 3 * 256 + 8 - (32 + 3 * 4) <= 32)
+            if (inputContractVersion == 2) {
+                val cancelled = maximum(SplitOrderCancelled.getDefaultInstance())
+                val rejected = maximum(SplitOrderCancelRejected.getDefaultInstance())
+                check(strings(cancelled.descriptorForType) == 3 && strings(rejected.descriptorForType) == 4)
+                check(cancelled.serializedSize - 3 * 256 + 8 - (20 + 3 * 4) <= 32)
+                check(rejected.serializedSize - 4 * 256 + 8 - (12 + 4 * 4) <= 32)
+            }
             val effect = maximum(SplitMatchingEffect.getDefaultInstance())
             check(effect.serializedSize - dispatch.serializedSize + 4 - 20 <= 32)
             val rootFields = SplitMatchingResult.getDescriptor().fields

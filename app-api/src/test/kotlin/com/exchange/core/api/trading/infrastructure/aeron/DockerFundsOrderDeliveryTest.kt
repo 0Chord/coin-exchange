@@ -51,6 +51,9 @@ internal class DockerFundsOrderDeliveryVerification(
             "SPLIT_RESULT_FIXTURE" to (resultFixture ?: "baseline"),
             "SPLIT_MAX_RESULT_ENTRIES" to (if (resultFixture == "cap") "1" else "4096"),
             "SPLIT_MAX_MATCHING_ACTIVE" to (if (resultFixture == "active") "1" else "8192"),
+            "SPLIT_INPUT_CONTRACT_VERSION" to (if (resultFixture == "cancellation") "2" else "1"),
+            "SPLIT_MAX_FUNDS_DISPATCH_BYTES" to (if (resultFixture == "cancellation") "1048576" else ""),
+            "SPLIT_MAX_FUNDS_ACTIVE_BYTES" to (if (resultFixture == "cancellation") "1048576" else ""),
         )
     private val commands = VerificationCommands(project, reports, environment)
     val failures = mutableListOf<String>()

@@ -35,7 +35,7 @@ import kotlin.test.assertTrue
 /** 잘못된 설정·복구 기록은 Driver·Archive를 열기 전에 거절한다. 기존 일반 진입 차단도 별도로 회귀한다. */
 class SplitTradingRoleStartupTest {
     @Test
-    fun `취소 가능한 코어 구성은 기존 전송 기동에서 디렉터리를 열기 전에 거절한다`() {
+    fun `취소 계약은 양방향 정산 모드에서만 선택하며 기존 root를 자동 승격하지 않는다`() {
         val original = configuration().dispatchLimits
         val bounded =
             FundsDispatchLimits(
@@ -48,10 +48,16 @@ class SplitTradingRoleStartupTest {
         assertNotEquals(legacy.topologySha256, fresh.topologySha256)
         assertNotEquals(legacy.resultTopologySha256, fresh.resultTopologySha256)
         for (role in listOf(TradingServiceRole.FUNDS, TradingServiceRole.MATCHING)) {
-            for (mode in listOf("ORDER_DELIVERY_DEV", "RESULT_SETTLEMENT_DEV")) {
+            val freshRoot = directory.resolve("cancellation-result-${role.name}")
+            val enabled = settings(freshRoot, fresh, role, "RESULT_SETTLEMENT_DEV")
+            assertEquals(2, enabled.endpoint(false).inputContractVersion)
+            assertEquals(2, enabled.endpoint(true).inputContractVersion)
+            assertTrue(enabled.resultDeliveryEnabled)
+            assertFalse(Files.exists(freshRoot))
+            for (mode in listOf("ORDER_DELIVERY_DEV")) {
                 val root = directory.resolve("unsupported-cancellation-${role.name}-$mode")
                 val failure = assertFailsWith<IllegalArgumentException> { settings(root, fresh, role, mode) }
-                assertTrue(failure.message.orEmpty().contains("신규 전용 입력 계약"))
+                assertTrue(failure.message.orEmpty().contains("양방향 정산 개발 모드"))
                 assertFalse(Files.exists(root))
                 val existing = Files.createDirectory(root)
                 val sentinel = existing.resolve("sentinel.bin")
@@ -63,6 +69,41 @@ class SplitTradingRoleStartupTest {
                 assertEquals(setOf(sentinel), Files.list(root).use { it.toList().toSet() })
                 assertContentEquals(bytes, Files.readAllBytes(sentinel))
             }
+        }
+    }
+
+    @Test
+    fun `입력 계약과 자금 예산은 명시한 개발 설정으로 선택하고 모르는 버전은 거절한다`() {
+        val manifest = configuration().topology.fundsManifest
+        val environment =
+            mapOf(
+                "SPLIT_MATCHING_LINEAGE_HIGH" to matchingLineage.high.toString(),
+                "SPLIT_MATCHING_LINEAGE_LOW" to matchingLineage.low.toString(),
+                "SPLIT_OWNERSHIP_EPOCH" to "1",
+            )
+        assertEquals(1, splitTradingConfiguration(manifest, environment).inputContractVersion)
+        val explicit =
+            environment +
+                mapOf(
+                    "SPLIT_INPUT_CONTRACT_VERSION" to "2",
+                    "SPLIT_MAX_FUNDS_DISPATCH_BYTES" to "65536",
+                    "SPLIT_MAX_FUNDS_ACTIVE_BYTES" to "65536",
+                )
+        val mixed = splitTradingConfiguration(manifest, explicit)
+        assertEquals(2, mixed.inputContractVersion)
+        assertEquals(65_536L, mixed.dispatchLimits.maxDispatchBytes)
+        assertEquals(65_536L, mixed.dispatchLimits.maxActiveBytes)
+        assertFailsWith<IllegalArgumentException> {
+            splitTradingConfiguration(
+                manifest,
+                explicit + ("SPLIT_INPUT_CONTRACT_VERSION" to "3"),
+            )
+        }
+        assertFailsWith<IllegalArgumentException> {
+            splitTradingConfiguration(
+                manifest,
+                explicit + ("SPLIT_MAX_FUNDS_DISPATCH_BYTES" to "0"),
+            )
         }
     }
 

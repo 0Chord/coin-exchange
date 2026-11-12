@@ -61,18 +61,22 @@ internal object SplitResultDeliveryBoundaryFixture {
     private val context = TradingMarketContext(MarketDefinition(MarketId("boundary-X-Q"), AssetId("X"), AssetId("Q"), 0), fees, 0)
     private val stream = MatchingResultStream(matching, funds, context.market.marketId, 1, 1)
     private val reservations = OrderReservationCalculator(BuyOrderFundingQuoteCalculator(TradingFeeReserveCalculator()))
-    private val fields = SplitOrderDeliveryCodec()
+    private val fieldsByVersion = mapOf(1 to SplitOrderDeliveryCodec(), 2 to SplitOrderDeliveryCodec(inputContractVersion = 2))
 
-    fun frame(targetFrameBytes: Int): Frame {
+    fun frame(
+        targetFrameBytes: Int,
+        inputContractVersion: Int = 1,
+    ): Frame {
+        require(inputContractVersion in 1..2)
         require(targetFrameBytes in 1_000_000..SplitResultDeliveryCodec.MAX_MESSAGE_BYTES + 1)
         var low = 2
         var high = SplitResultDeliveryCodec.MAX_RESULT_EVENTS - 1
         while (low < high) {
             val middle = (low + high) / 2
-            val size = command(1, wire(result(middle))).serializedSize + SplitResultDeliveryCodec.HEADER_BYTES
+            val size = command(1, wire(result(middle, inputContractVersion))).serializedSize + SplitResultDeliveryCodec.HEADER_BYTES
             if (size < targetFrameBytes) low = middle + 1 else high = middle
         }
-        val original = result(low)
+        val original = result(low, inputContractVersion)
         val wire = wire(original)
         val firstChoices = choices(original, wire, 0)
         val secondChoices = choices(original, wire, 1).associateBy { it.removedBytes }
@@ -124,7 +128,7 @@ internal object SplitResultDeliveryBoundaryFixture {
                         .wrap(bytes)
                         .order(ByteOrder.LITTLE_ENDIAN)
                         .putShort(89)
-                        .putShort(1)
+                        .putShort(inputContractVersion.toShort())
                         .putShort(1)
                         .putShort(0)
                         .putInt(root.serializedSize)
@@ -179,9 +183,12 @@ internal object SplitResultDeliveryBoundaryFixture {
             .setApply(result)
             .build()
 
-    private fun result(makers: Int): MatchingResultEnvelope {
-        val taker = input(makers + 1L, Side.BUY, makers + 1L)
-        val origins = (1..makers).map { input(it.toLong(), Side.SELL, 1) }
+    private fun result(
+        makers: Int,
+        inputContractVersion: Int,
+    ): MatchingResultEnvelope {
+        val taker = input(makers + 1L, Side.BUY, makers + 1L, inputContractVersion)
+        val origins = (1..makers).map { input(it.toLong(), Side.SELL, 1, inputContractVersion) }
         val events =
             origins.mapIndexed { index, maker ->
                 TradeExecuted(
@@ -225,6 +232,7 @@ internal object SplitResultDeliveryBoundaryFixture {
         sequence: Long,
         side: Side,
         quantity: Long,
+        inputContractVersion: Int,
     ): FundsOrderDispatch {
         val order =
             OrderAdmissionInput(
@@ -256,14 +264,16 @@ internal object SplitResultDeliveryBoundaryFixture {
             order,
             reservation,
             context,
+            inputContractVersion = inputContractVersion,
         )
     }
 
     private fun wire(result: MatchingResultEnvelope): SplitMatchingResult {
+        val fields = fieldsByVersion.getValue(result.formatVersion)
         val builder =
             SplitMatchingResult
                 .newBuilder()
-                .setFormatVersion(1)
+                .setFormatVersion(result.formatVersion)
                 .setStream(
                     SplitResultStream
                         .newBuilder()
@@ -333,7 +343,7 @@ internal object SplitResultDeliveryBoundaryFixture {
         SplitMatchingEffect
             .newBuilder()
             .setOrigin(
-                fields.dispatch(effect.origin),
+                fieldsByVersion.getValue(effect.origin.inputContractVersion).dispatch(effect.origin),
             ).setBeforeQuantity(effect.beforeQuantity.value)
             .setAfterQuantity(effect.afterQuantity.value)
             .setDisposition(

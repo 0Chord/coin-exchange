@@ -1,15 +1,22 @@
 package com.exchange.core.api.trading.infrastructure.codec
 
 import com.exchange.core.api.trading.infrastructure.codec.generated.SplitAppliedAck
+import com.exchange.core.api.trading.infrastructure.codec.generated.SplitCancelCode
+import com.exchange.core.api.trading.infrastructure.codec.generated.SplitCancelCommand
+import com.exchange.core.api.trading.infrastructure.codec.generated.SplitCancelIntent
+import com.exchange.core.api.trading.infrastructure.codec.generated.SplitCancelReceipt
+import com.exchange.core.api.trading.infrastructure.codec.generated.SplitCancellation
 import com.exchange.core.api.trading.infrastructure.codec.generated.SplitDeliveryCommand
 import com.exchange.core.api.trading.infrastructure.codec.generated.SplitDeliveryReply
 import com.exchange.core.api.trading.infrastructure.codec.generated.SplitDirection
 import com.exchange.core.api.trading.infrastructure.codec.generated.SplitDispatch
 import com.exchange.core.api.trading.infrastructure.codec.generated.SplitDispatchStream
 import com.exchange.core.api.trading.infrastructure.codec.generated.SplitFeePolicy
+import com.exchange.core.api.trading.infrastructure.codec.generated.SplitInputKind
 import com.exchange.core.api.trading.infrastructure.codec.generated.SplitLineage
 import com.exchange.core.api.trading.infrastructure.codec.generated.SplitMarketContext
 import com.exchange.core.api.trading.infrastructure.codec.generated.SplitOrderInput
+import com.exchange.core.api.trading.infrastructure.codec.generated.SplitRequestToken
 import com.exchange.core.api.trading.infrastructure.codec.generated.SplitReservation
 import com.exchange.core.api.trading.infrastructure.codec.generated.SplitReservationStatus
 import com.exchange.core.api.trading.infrastructure.codec.generated.SplitRole
@@ -32,18 +39,27 @@ import com.exchange.core.order.OrderReservationStatus
 import com.exchange.core.order.OrderType
 import com.exchange.core.order.Side
 import com.exchange.core.order.TimeInForce
+import com.exchange.core.trading.CancelCode
+import com.exchange.core.trading.CancelIntent
+import com.exchange.core.trading.CancelReceipt
 import com.exchange.core.trading.ClusterLineage
+import com.exchange.core.trading.FundsCancelDispatch
 import com.exchange.core.trading.FundsDispatchStream
 import com.exchange.core.trading.FundsMatchingAppliedAck
 import com.exchange.core.trading.FundsOrderDispatch
 import com.exchange.core.trading.OrderAdmissionInput
+import com.exchange.core.trading.RequestToken
+import com.exchange.core.trading.TradingIdentifiers
 import com.exchange.core.trading.TradingLifecycle
 import com.exchange.core.trading.TradingMarketContext
 import com.exchange.core.trading.TradingServiceRole
+import com.google.protobuf.CodedInputStream
 import com.google.protobuf.CodedOutputStream
+import com.google.protobuf.Descriptors.Descriptor
 import com.google.protobuf.Descriptors.EnumValueDescriptor
 import com.google.protobuf.Descriptors.FieldDescriptor.JavaType
 import com.google.protobuf.Message
+import com.google.protobuf.WireFormat
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import com.exchange.core.api.trading.infrastructure.codec.generated.BoundedTradingCommand as WireControl
@@ -69,6 +85,11 @@ internal sealed interface SplitOrderDeliveryCommand {
         val input: FundsOrderDispatch,
     ) : SplitOrderDeliveryCommand
 
+    data class Cancel(
+        val token: RequestToken,
+        val intent: CancelIntent,
+    ) : SplitOrderDeliveryCommand
+
     data class RecordAck(
         val ack: FundsMatchingAppliedAck,
     ) : SplitOrderDeliveryCommand
@@ -90,11 +111,18 @@ internal data class SplitOrderDeliveryReply(
     val expectedSequence: Long? = null,
     val control: BoundedTradingReply? = null,
     val lifecycle: String? = null,
+    val cancellation: CancelReceipt? = null,
 )
 
-/** schema88/version1은 별도 프레임을 사용하며 기존 통합 v2/v3 계약을 바꾸지 않는다. */
-internal class SplitOrderDeliveryCodec {
+/** 고정한 입력 계약에 맞는 schema88 프레임만 읽고 쓴다. 기존 통합 v2/v3 계약은 유지한다. */
+internal class SplitOrderDeliveryCodec(
+    private val inputContractVersion: Int = 1,
+) {
     private val bounded = BoundedTradingCodec()
+
+    init {
+        require(inputContractVersion in 1..2) { "unsupported split input contract" }
+    }
 
     fun encode(
         correlationId: Long,
@@ -126,6 +154,21 @@ internal class SplitOrderDeliveryCodec {
             is SplitOrderDeliveryCommand.RecordAck -> {
                 builder.recordAck = ack(command.ack)
             }
+
+            is SplitOrderDeliveryCommand.Cancel -> {
+                require(inputContractVersion == 2) { "cancellation requires wire contract 2" }
+                builder.cancel =
+                    SplitCancelCommand
+                        .newBuilder()
+                        .setToken(token(command.token))
+                        .setIntent(
+                            SplitCancelIntent
+                                .newBuilder()
+                                .setMarketId(text(command.intent.marketId.value))
+                                .setTargetOrderId(text(command.intent.targetOrderId.value))
+                                .setExpectedConfigurationVersion(command.intent.expectedConfigurationVersion),
+                        ).build()
+            }
         }
         return frame(COMMAND_KIND, builder.build())
     }
@@ -137,6 +180,7 @@ internal class SplitOrderDeliveryCodec {
     ): SplitOrderDeliveryEnvelope =
         AdmissionMessageFormat.readValues {
             validate(bytes, offset, length, COMMAND_KIND)
+            scanContractFields(bytes, offset + HEADER_BYTES, length - HEADER_BYTES, SplitDeliveryCommand.getDescriptor())
             val wire = SplitDeliveryCommand.parser().parseFrom(bytes, offset + HEADER_BYTES, length - HEADER_BYTES)
             known(wire)
             require(wire.hasCorrelationId() && wire.correlationId >= 0) { "missing or negative split correlation" }
@@ -164,6 +208,20 @@ internal class SplitOrderDeliveryCodec {
 
                     SplitDeliveryCommand.BodyCase.RECORD_ACK -> {
                         SplitOrderDeliveryCommand.RecordAck(ack(wire.recordAck))
+                    }
+
+                    SplitDeliveryCommand.BodyCase.CANCEL -> {
+                        require(inputContractVersion == 2)
+                        complete(wire.cancel)
+                        complete(wire.cancel.intent)
+                        SplitOrderDeliveryCommand.Cancel(
+                            token(wire.cancel.token),
+                            CancelIntent(
+                                MarketId(text(wire.cancel.intent.marketId)),
+                                OrderId(text(wire.cancel.intent.targetOrderId)),
+                                wire.cancel.intent.expectedConfigurationVersion,
+                            ),
+                        )
                     }
 
                     else -> {
@@ -197,6 +255,10 @@ internal class SplitOrderDeliveryCodec {
             builder.control = WireControlReply.parser().parseFrom(bytes, HEADER_BYTES, bytes.size - HEADER_BYTES).also(::known)
         }
         reply.lifecycle?.let { builder.lifecycle = TradingLifecycle.valueOf(it).name }
+        reply.cancellation?.let {
+            require(inputContractVersion == 2) { "cancellation receipt requires wire contract 2" }
+            builder.cancellation = receipt(it)
+        }
         return frame(REPLY_KIND, builder.build())
     }
 
@@ -207,9 +269,10 @@ internal class SplitOrderDeliveryCodec {
     ): SplitOrderDeliveryReply =
         AdmissionMessageFormat.readValues {
             validate(bytes, offset, length, REPLY_KIND)
+            scanContractFields(bytes, offset + HEADER_BYTES, length - HEADER_BYTES, SplitDeliveryReply.getDescriptor())
             val wire = SplitDeliveryReply.parser().parseFrom(bytes, offset + HEADER_BYTES, length - HEADER_BYTES)
             known(wire)
-            complete(wire, setOf("ack", "expected_sequence", "control", "lifecycle"))
+            complete(wire, setOf("ack", "expected_sequence", "control", "lifecycle", "cancellation"))
             require(wire.correlationId >= 0 && wire.appliedLogPosition >= 0)
             val control =
                 if (wire.hasControl()) {
@@ -231,28 +294,67 @@ internal class SplitOrderDeliveryCodec {
                 if (wire.hasExpectedSequence()) wire.expectedSequence.also { require(it > 0) } else null,
                 control,
                 if (wire.hasLifecycle()) TradingLifecycle.valueOf(wire.lifecycle).name else null,
+                if (wire.hasCancellation()) receipt(wire.cancellation) else null,
             )
         }
 
     internal fun dispatch(input: FundsOrderDispatch): SplitDispatch {
+        require(input.formatVersion == inputContractVersion) { "split input contract differs" }
         require(input.dispatchSequence > 0 && input.admissionSequence > 0 && input.marketAdmissionSequence > 0)
-        return SplitDispatch
-            .newBuilder()
-            .setFormatVersion(input.formatVersion)
-            .setStream(stream(input.stream))
-            .setDispatchSequence(input.dispatchSequence)
-            .setAdmissionSequence(input.admissionSequence)
-            .setMarketAdmissionSequence(input.marketAdmissionSequence)
-            .setOrder(order(input.order))
-            .setReservation(reservation(input.reservation))
-            .setContext(context(input.context))
-            .build()
+        val builder =
+            SplitDispatch
+                .newBuilder()
+                .setFormatVersion(input.formatVersion)
+                .setStream(stream(input.stream))
+                .setDispatchSequence(input.dispatchSequence)
+                .setAdmissionSequence(input.admissionSequence)
+                .setMarketAdmissionSequence(input.marketAdmissionSequence)
+                .setOrder(order(input.order))
+                .setReservation(reservation(input.reservation))
+                .setContext(context(input.context))
+        if (inputContractVersion == 1) {
+            require(!input.isCancellation) { "cancellation requires wire contract 2" }
+        } else {
+            requireCancellation(input)
+            builder.inputKind = if (input.isCancellation) SplitInputKind.SPLIT_CANCEL else SplitInputKind.SPLIT_NEW
+            input.cancel?.let { cancel ->
+                builder.cancellation =
+                    SplitCancellation
+                        .newBuilder()
+                        .setCancelId(text(cancel.cancelId))
+                        .setRequestToken(token(cancel.requestToken))
+                        .setCancelSequence(cancel.cancelSequence)
+                        .setTargetInputSequence(cancel.targetInputSequence)
+                        .build()
+            }
+        }
+        return builder.build()
     }
 
     internal fun dispatch(wire: SplitDispatch): FundsOrderDispatch {
-        complete(wire)
-        require(wire.formatVersion == 1)
+        complete(wire, setOf("input_kind", "cancellation"))
+        require(wire.formatVersion == inputContractVersion) { "split input contract differs" }
         require(wire.dispatchSequence > 0 && wire.admissionSequence > 0 && wire.marketAdmissionSequence > 0)
+        if (inputContractVersion == 1) {
+            require(wire.inputKindValue == 0 && !wire.hasCancellation()) { "new input fields require wire contract 2" }
+        } else {
+            require(wire.inputKind == SplitInputKind.SPLIT_NEW || wire.inputKind == SplitInputKind.SPLIT_CANCEL)
+            require(wire.hasCancellation() == (wire.inputKind == SplitInputKind.SPLIT_CANCEL)) { "split input kind differs" }
+        }
+        val cancel =
+            if (wire.hasCancellation()) {
+                complete(wire.cancellation)
+                wire.cancellation.let {
+                    FundsCancelDispatch(
+                        text(it.cancelId),
+                        token(it.requestToken),
+                        it.cancelSequence,
+                        it.targetInputSequence,
+                    )
+                }
+            } else {
+                null
+            }
         return FundsOrderDispatch(
             stream(wire.stream),
             wire.dispatchSequence,
@@ -261,6 +363,73 @@ internal class SplitOrderDeliveryCodec {
             order(wire.order),
             reservation(wire.reservation),
             context(wire.context),
+            cancel,
+            inputContractVersion,
+        ).also { if (inputContractVersion == 2) requireCancellation(it) }
+    }
+
+    private fun requireCancellation(input: FundsOrderDispatch) {
+        require(input.marketAdmissionSequence <= input.dispatchSequence && input.marketAdmissionSequence <= input.admissionSequence)
+        input.cancel?.let {
+            require(it.cancelSequence > 0 && it.cancelId == TradingIdentifiers.cancel(input.stream.fundsLineage, it.cancelSequence)) {
+                "split cancellation identity differs"
+            }
+            require(it.requestToken.userId == input.order.userId) { "split cancellation requester differs" }
+            require(it.targetInputSequence >= input.marketAdmissionSequence && it.targetInputSequence < input.dispatchSequence) {
+                "split cancellation must follow its target input"
+            }
+        }
+    }
+
+    private fun token(value: RequestToken): SplitRequestToken =
+        SplitRequestToken
+            .newBuilder()
+            .setUserId(text(value.userId.value))
+            .setChannel(value.channel)
+            .setEpoch(value.epoch)
+            .setSequence(value.sequence)
+            .build()
+
+    private fun token(wire: SplitRequestToken): RequestToken {
+        complete(wire)
+        return RequestToken(UserId(text(wire.userId)), wire.channel, wire.epoch, wire.sequence)
+    }
+
+    private fun receipt(value: CancelReceipt): SplitCancelReceipt {
+        val builder =
+            SplitCancelReceipt
+                .newBuilder()
+                .setCode(
+                    if (value.code ==
+                        CancelCode.ACCEPTED
+                    ) {
+                        SplitCancelCode.SPLIT_CANCEL_ACCEPTED
+                    } else {
+                        SplitCancelCode.SPLIT_CANCEL_REJECTED
+                    },
+                )
+        value.cancelId?.let { builder.cancelId = text(it) }
+        value.targetOrderId?.let { builder.targetOrderId = text(it.value) }
+        value.inputSequence?.let { builder.inputSequence = it }
+        value.reason?.let { builder.reason = text(it) }
+        return builder.build()
+    }
+
+    private fun receipt(wire: SplitCancelReceipt): CancelReceipt {
+        require(inputContractVersion == 2)
+        complete(wire, setOf("cancel_id", "target_order_id", "input_sequence", "reason"))
+        val code =
+            when (wire.code) {
+                SplitCancelCode.SPLIT_CANCEL_ACCEPTED -> CancelCode.ACCEPTED
+                SplitCancelCode.SPLIT_CANCEL_REJECTED -> CancelCode.REJECTED
+                else -> throw IllegalArgumentException("unknown cancellation receipt code")
+            }
+        return CancelReceipt(
+            code,
+            if (wire.hasCancelId()) text(wire.cancelId) else null,
+            if (wire.hasTargetOrderId()) OrderId(text(wire.targetOrderId)) else null,
+            if (wire.hasInputSequence()) wire.inputSequence else null,
+            if (wire.hasReason()) text(wire.reason) else null,
         )
     }
 
@@ -512,7 +681,7 @@ internal class SplitOrderDeliveryCodec {
         kind: Int,
         message: Message,
         schema: Int = SCHEMA,
-        version: Int = VERSION,
+        version: Int = inputContractVersion,
         maxBytes: Int = MAX_MESSAGE_BYTES,
     ): ByteArray {
         val size = message.serializedSize
@@ -548,8 +717,70 @@ internal class SplitOrderDeliveryCodec {
         val header = ByteBuffer.wrap(bytes, offset, length).order(ByteOrder.LITTLE_ENDIAN)
         require(
             (header.short.toInt() and 65535) == length - HEADER_BYTES && (header.short.toInt() and 65535) == kind &&
-                (header.short.toInt() and 65535) == SCHEMA && (header.short.toInt() and 65535) == VERSION,
+                (header.short.toInt() and 65535) == SCHEMA && (header.short.toInt() and 65535) == inputContractVersion,
         ) { "unsupported split header" }
+    }
+
+    /** v1에 추가 필드를 숨기거나 v2의 int32·oneof를 parser가 잘라 읽기 전에 거절한다. */
+    private fun scanContractFields(
+        bytes: ByteArray,
+        offset: Int,
+        length: Int,
+        descriptor: Descriptor,
+    ) {
+        val input = CodedInputStream.newInstance(bytes, offset, length)
+
+        fun visit(type: Descriptor) {
+            val seen = BooleanArray(type.fields.size)
+            val oneofs = BooleanArray(type.oneofs.size)
+            while (!input.isAtEnd) {
+                val tag = input.readTag()
+                require(tag != 0)
+                val field = requireNotNull(type.findFieldByNumber(WireFormat.getTagFieldNumber(tag))) { "unknown split field" }
+                val newer =
+                    when (type.name) {
+                        "SplitDeliveryCommand" -> field.name == "cancel"
+                        "SplitDeliveryReply" -> field.name == "cancellation"
+                        "SplitDispatch" -> field.number >= 9
+                        else -> false
+                    }
+                require(inputContractVersion == 2 || !newer) { "new fields require split wire contract 2" }
+                if (inputContractVersion == 2 && !field.isRepeated) {
+                    require(!seen[field.index]) { "duplicate split field" }
+                    seen[field.index] = true
+                    field.containingOneof?.let {
+                        require(!oneofs[it.index]) { "duplicate split oneof" }
+                        oneofs[it.index] = true
+                    }
+                }
+                val wireType = WireFormat.getTagWireType(tag)
+                when {
+                    field.javaType == JavaType.MESSAGE && wireType == WireFormat.WIRETYPE_LENGTH_DELIMITED -> {
+                        val size = input.readRawVarint32()
+                        require(size in 0..MAX_MESSAGE_BYTES)
+                        val old = input.pushLimit(size)
+                        visit(field.messageType)
+                        require(input.bytesUntilLimit == 0)
+                        input.popLimit(old)
+                    }
+
+                    inputContractVersion == 2 && field.javaType in setOf(JavaType.INT, JavaType.ENUM, JavaType.BOOLEAN) -> {
+                        require(wireType == WireFormat.WIRETYPE_VARINT)
+                        val value = input.readInt64()
+                        if (field.javaType == JavaType.BOOLEAN) {
+                            require(value == 0L || value == 1L) { "invalid split boolean" }
+                        } else {
+                            require(value in Int.MIN_VALUE.toLong()..Int.MAX_VALUE.toLong()) { "split int32 overflows" }
+                        }
+                    }
+
+                    else -> {
+                        require(input.skipField(tag))
+                    }
+                }
+            }
+        }
+        visit(descriptor)
     }
 
     companion object {
@@ -559,7 +790,6 @@ internal class SplitOrderDeliveryCodec {
         private const val COMMAND_KIND = 1
         private const val REPLY_KIND = 2
         private const val SCHEMA = 88
-        private const val VERSION = 1
         private const val MAX_MARKETS = 128
         private val SHA256 = Regex("[0-9a-f]{64}")
 
@@ -568,10 +798,13 @@ internal class SplitOrderDeliveryCodec {
          * 정수는 가장 긴 인코딩으로 두고 선택적인 예약 반환 필드도 포함한다.
          * 이 합성 값은 디코딩이나 업무 상태에 넣지 않는다.
          */
-        fun maximumDispatchFrameBytes(): Int {
+        fun maximumDispatchFrameBytes(inputContractVersion: Int = 1): Int {
+            require(inputContractVersion in 1..2)
+
             fun maximum(message: Message): Message {
                 val builder = message.toBuilder()
                 for (field in message.descriptorForType.fields) {
+                    if (inputContractVersion == 1 && message is SplitDispatch && field.number >= 9) continue
                     check(!field.isRepeated)
                     val value: Any =
                         when (field.javaType) {

@@ -42,7 +42,7 @@ internal object AeronSplitResultDeliveryConnectionFactory : SplitResultDeliveryC
         onReply: (SplitResultDeliveryReply) -> Unit,
     ): SplitResultDeliveryConnectAttempt {
         val failure = AtomicReference<Throwable?>()
-        val codec = SplitResultDeliveryCodec()
+        val codec = SplitResultDeliveryCodec(endpoint.inputContractVersion)
         val context =
             AeronCluster
                 .Context()
@@ -143,7 +143,7 @@ internal class MatchingResultDeliveryTransport(
         var accepted: Boolean = false,
     )
 
-    private val codec = SplitResultDeliveryCodec()
+    private val codec = SplitResultDeliveryCodec(configuration.inputContractVersion)
     private val funds = Peer(fundsEndpoint, TradingServiceRole.FUNDS, configuration.fundsLineage)
     private val matching = Peer(matchingEndpoint, TradingServiceRole.MATCHING, configuration.matchingLineage)
     private var nextCorrelation = 1L
@@ -312,7 +312,7 @@ internal class DevelopmentSplitResultDeliveryClient(
     factory: SplitResultDeliveryConnectionFactory = AeronSplitResultDeliveryConnectionFactory,
     private val onReply: (SplitResultDeliveryReply) -> Unit = {},
 ) : AutoCloseable {
-    private val codec = SplitResultDeliveryCodec()
+    private val codec = SplitResultDeliveryCodec(endpoint.inputContractVersion)
     private val connection: SplitResultDeliveryConnection
     private var expected: Long? = null
     private var response: SplitResultDeliveryReply? = null

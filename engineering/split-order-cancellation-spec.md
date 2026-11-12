@@ -2,7 +2,7 @@
 
 **이번에 완성할 동작은 “주문 300을 예약하고 100을 체결한 뒤, 남은 200을 취소·반환한다”이다.** 취소 요청을 보냈다는 이유만으로 돈을 풀지 않고, 매칭이 실제로 취소한 잔량과 앞선 체결 정산을 근거로 반환한다.
 
-2026-11-12 상세 명세. 기준 통합은 `0147218feebe093da3ac523daae40fca9395fb6b`(#179 병합)이다. **합의한 첫 단위인 코어 취소·반환과 역할 바이트 복원을 구현했다.** 실제 두 클러스터 취소 통신은 다음 단위다. 실행 근거와 남은 경계는 아래 14절에서 구분한다.
+2026-11-12 상세 명세. 기준 통합은 `0147218feebe093da3ac523daae40fca9395fb6b`(#179 병합)이다. **첫 코어 단위는 `2550154`로 커밋했다.** 이어서 실제 두 클러스터 취소 통신과 기본 복구까지 연결·검증했다. 코어 검증은14절, 현재 연결 단위의 계약·검증은15절에서 구분한다.
 
 ## 먼저 한 주문을 따라가기
 
@@ -37,18 +37,18 @@ sequenceDiagram
 
 그림 전체는 하나의 트랜잭션이 아니다. 자금과 매칭은 각자 소유한 상태를 따로 확정하고, 확인되지 않은 작업을 보관해 이어 처리한다. 적용 확인과 전체 결과는 도착 순서가 바뀔 수 있다.
 
-## 이번 PR과 다음 PR의 끝
+## 구현 단위와 완료 경계
 
 사용자 선택: **“취소·반환 코어 완주와 복원 먼저, 실제 통신은 다음 PR”**.
 
 | 구분 | 완료할 결과 | 열지 않는 경로 |
 | --- | --- | --- |
-| **이번 구현 단위: 코어 완주·복원** | 실제 자금·매칭 소유자에서 접수 → 취소 적용 → 결과 정산 → 확인·자료 회수를 수행하고, 저장 바이트를 읽은 빈 소유자가 같은 후속 처리를 재현 | 실제 Aeron 취소 ingress, 두 클러스터 취소 송수신, HTTP·화면 |
-| 다음 구현 단위: 실제 연결 | 준비된 코어에 기존 리더 전송 작업과 실제 통신을 연결하고, 실제 Archive·기본 재시작과 두 클러스터 상태를 검증 | 인증·인가·운영 담당 이동·성능 시험 등 별도 범위 |
+| **1단위: 코어 완주·복원 (`2550154`)** | 실제 자금·매칭 소유자에서 접수 → 취소 적용 → 결과 정산 → 확인·자료 회수를 수행하고, 저장 바이트를 읽은 빈 소유자가 같은 후속 처리를 재현 | 실제 Aeron 취소 ingress, 두 클러스터 취소 송수신, HTTP·화면 |
+| **2단위: 실제 연결 (검증 완료)** | 준비된 코어에 기존 리더 전송 작업과 실제 통신을 연결하고, 실제 Archive·기본 재시작과 두 클러스터 상태를 검증 | 인증·인가·운영 담당 이동·성능 시험 등 별도 범위 |
 
-이번 코어 시험에서 전달 담당 역할은 **테스트 코드가 실제 소유자 API 사이에서 같은 원본·결과·확인을 전달**해 맡는다. 계산 결과를 가짜 성공 응답으로 대체하지 않는다. 이것은 실제 네트워크·클러스터 failover 검증과 구분한다.
+1단위 코어 시험에서 전달 담당 역할은 **테스트 코드가 실제 소유자 API 사이에서 같은 원본·결과·확인을 전달**해 맡는다. 계산 결과를 가짜 성공 응답으로 대체하지 않는다. 이것은 실제 네트워크·클러스터 failover 검증과 구분한다.
 
-현재 운영·개발 실행 경로는 기존 신규 주문 계약을 유지한다. 다음 PR이 준비되기 전에 새로운 취소 기능을 기존 전송 경로에 노출하지 않는다. 실행 가능한 취소인 것처럼 접수한 뒤, 뒤 신규 주문만 먼저 보내거나 취소를 영구 대기시키는 중간 활성화는 허용하지 않는다.
+기존 신규 전용 실행은 유지한다. 2단위에서는 새 계약을 명시한 양방향 개발 실행에만 취소를 활성화한다. 이전 기록을 자동 승격하거나 신규 전용 상대에 취소를 노출하지 않는다. 실행 가능한 취소인 것처럼 접수한 뒤, 뒤 신규 주문만 먼저 보내거나 취소를 영구 대기시키는 중간 활성화는 허용하지 않는다.
 
 ## 이미 준비된 것과 남은 것
 
@@ -185,7 +185,7 @@ sequenceDiagram
 - pending 작업의 최초 receipt가 ACK·세대 변경으로 없어지는 것은 허용한다. 다만 해당 정리 경계/세대 변화와 맞아야 하며, 같은 세대의 정리되지 않은 최초 receipt를 임의 누락한 후보는 거절한다. 발급 카운터·요청 세대와 전달·결과 순서를 혼용하지 않는다. 신규/취소 총합 대조는 overflow 없는 정확한 산술로 수행한다.
 - ACK 이전 작업은 복원 후 같은 원본으로 재개하고, ACK 뒤 회수한 payload는 되살리지 않는다. ACK한 상태를 잃은 과거 백업을 같은 lineage로 되돌리는 동작은 정상 복구로 약속하지 않는다.
 
-## 9. 저장·실행 호환성
+## 9. 저장·실행 호환성 — 1단위 코어 계약
 
 | 대상 | 이번 계약 |
 | --- | --- |
@@ -261,7 +261,7 @@ cd /Users/0chord/.codex/worktrees/issue148-http-aeron/exchange-core
 
 `--tests`는 app-api 선택 범위이며 도메인은 전체를 실행할 계획이다. 새 코어 통합·복원 클래스는 선택에 누락되지 않게 명시한다. 기존 actual Archive의 신규 회귀는 필요 시 기존 `BoundedTradingSnapshotPersistenceTest`·`BoundedTradingUninitializedSnapshotTest`를 추가한다. Docker·6노드·성능 실행은 첫 PR 근거에 포함하지 않는다.
 
-## 12. 다음 실제 통신 PR의 계약과 첫 PR 종료 조건
+## 12. 실제 통신 단위의 계약과 코어 단위 종료 조건
 
 - 다음은 준비된 혼합 원본/결과를 두 peer가 지원하는 명시적 wire 버전으로 운반하는 연결이다. 기존 worker의 단일 마켓 순서·bounded pipeline·재전송·리더 세대 무효화·상대 문맥 대조·두 ACK를 재사용한다. 전송 성공을 업무 완료로 승격하지 않는다.
 - 새 wire의 최대 실제 frame/단편화/결과 수신 상한, handshake의 계약 버전, source와matching snapshot+tail 재시작, 앞선 C01·C09·C10·C11의 실제3+3노드 대표 실행을 그 PR에서 검증한다. 제한된 run·타임아웃·디스크/진단물 상한·정리를 명세하며 부하 시험으로 확대하지 않는다.
@@ -275,6 +275,7 @@ cd /Users/0chord/.codex/worktrees/issue148-http-aeron/exchange-core
 | 앞선 흐름 합의 | 전달 전 취소 허용, 원래 주문 다음 같은 마켓 순서. 취소/반환 상태 구분 | 순서·단계별 완료·C03 |
 | 같은 대상의 진행 중 취소에 다른 새 요청 번호가 오면? | “기존 취소 진행 중 안내, 새 작업은 추가하지 않음 (추천)”. 별도 선택 이유는 제출하지 않음 | 대상당 pending1개, CANCEL_PENDING 최초 응답·C05 |
 | 코어 완주·복원 먼저인지 실제 두 클러스터 연결까지인지? | “취소·반환 코어 완주와 복원 먼저, 실제 통신은 다음 PR (추천)”. 별도 선택 이유는 제출하지 않음 | 이번/후속 범위·기동 이행·C18/C21 |
+| 코어 구현 후 다음 연결 진행 | “커밋하고 다음 구현도 같이 진행해봐” (2026-11-12) | 검증한 코어를2550154로 커밋하고 분리한 전송 브랜치에서2단위 진행. PR·게시·병합은 포함하지 않음 |
 | 기존 코드의 구조상 빈칸 | 입력/신규 승인/결과 번호 동치, 신규 pending 소비, terminal 원본 수명, submit-only codec | 이번에 함께 바꿔야 할 기술 계약. 이미 구현된 것으로 기록하지 않음 |
 
 - 명세 작성 시점에 확인한 것: 기준 통합·관련 이슈·실제 소유자/엔진/예약·codec·테스트 위치·기존 명세. 아래 14절의 구현 실행 근거와 별개다.
@@ -353,5 +354,86 @@ cd /Users/0chord/.codex/worktrees/issue148-http-aeron/exchange-core
 - 지적 수정: 완료 결과와 미완료 의무에 같은 발급 상한·ID·요청·마켓 입력 관계를 적용하고, 최초 응답이 같은 업무를 가리키며 다른 취소의 ID를 재사용하지 않는지 대조한다. 인접 검사에서 완료 후 응답 ACK로 최초 응답이 사라지면 미발급 세대·채널·요청도 수용하는 누락을 확인해, 기존 미완료 검사를 공통 검증으로 옮겼다. 정상 이전 세대와 실제 최초 응답이 남은 비연속 요청은 허용한다. 이 임시 복원 검사는 보관 중인 자료만 읽으며 전체 완료 이력 인덱스를 추가하지 않는다. root도 도메인 회귀2개가 수정 전 실패함을 확인했고 수정 후 거래 전체·관련 snapshot 회귀를 통과했다. ID 누락 수정본 v3에서 독립 반례3개가 통과했고, 인접 요청 발급3종도 root 행동 Red를 확인한 뒤 보완했다. 최종 고정본 `/tmp/cancel133-review-20261112-v4`에서 지적 해소와 정상 복원 대조를 재검토했다. manifest SHA-256은 `b98f4aace2d9bdf409444df6bddf7cdb7c56f0d5d7eede2c77e458e8034a157f`이며23파일과 독립 실행 복사의 제품16파일 일치를 확인했다. 독립 재실행29개(정상 코어·매칭19, 역할 bytes5, 독립 반례/정상 대조5)가 실패/skip0으로 통과했고, 검토 범위의 최종 미해결 결함은0건이다. 이후 변경은 이 실행·검토 기록뿐이다.
 - 독립 실행 로그: `/tmp/cancel133-independent-v4-20261112-test.log`. 독립 리뷰는 작성 대화·작성자 통과 주장을 판정 근거로 사용하지 않았고, 기존 golden은 root 실행과 리뷰어 정적 대조로 구분했다.
 - 새 취소의 실제 Archive snapshot+tail, 두 클러스터 송수신·재시작·장애 승계는 다음 실제 연결 PR의 검증이다. 이번 byte/owner 시험을 그 실행 근거로 확대하지 않는다. 기존 Archive 시험은 신규 전용 경로의 회귀 확인이다.
+
+
+## 15. 실제 취소 통신·복구 단위 — 2026-11-12
+
+기준은 코어 커밋 `2550154`, 작업 브랜치는 `feat/cancellation-transport/133`, 작업 폴더는14절과 같다. 이 단위는 새 wire를 두 역할의 확정 callback과 기존 전달 작업에 연결한다. 새로운 자금 계산·수수료 알고리즘·별도 전달 JVM을 만들지 않는다.
+
+### 업무 흐름과 완료의 뜻
+
+1. 개발 호출자가 자금 클러스터에 같은 요청 토큰과 대상 주문으로 취소를 보낸다. **자금 로그에서 접수와 미완료 취소가 확정된 뒤** 최초 응답을 돌려준다. 전송 성공이나 접수 응답만으로 예약을 반환하지 않는다.
+2. 자금 리더의 기존 주문 전달 작업이 원래 주문·체결 입력 뒤 같은 마켓 순서의 취소 원본을 매칭 클러스터에 보낸다. 팔로워는 계산·복구에 같은 원본을 보유하며 외부 송신은 하지 않는다.
+3. 매칭 로그에서 주문장 취소와 전체 결과가 함께 반영된다. 적용 ACK는 자금이 전달 payload를 정리할 근거이며 **돈 반환 완료가 아니다**.
+4. 매칭 리더의 기존 결과 전달 작업이 체결·취소의 전체 결과를 자금 클러스터에 보낸다. 앞 체결 결과가 빠지면 취소 결과는 GAP으로 거절되고 예약은 그대로다. 순서가 맞으면 앞 체결을 정산한 현재 잔여 예약만 한 번 반환한다.
+5. 자금 반영 ACK를 매칭 로그에 기록해야 매칭 결과 payload를 정리한다. 응답 유실·리더 변경·재시작 때는 원본을 다시 전송하며, 같은 토큰·입력·결과 경계가 금융 효과 중복을 막는다. 적용 ACK와 정산 ACK의 수명은 바꾸지 않는다.
+
+### 이번 연결의 기술 계약
+
+| 경계 | 선택과 유지할 보장 |
+| --- | --- |
+| 접수·주문 wire | schema88의 명시적 version2. `Cancel(token,intent)` 접수와 최초 취소 응답, NEW/CANCEL 입력 종류·원본·최초 대상 입력 순번을 보존 |
+| 전체 결과 wire | schema89의 명시적 version2. MATCHED/NOT_EXECUTED와 CANCELLED/CANCEL_REJECTED, 성공 사건·원본 효과 또는 거절 사건·빈 효과를 함께 보존 |
+| 이전 버전 | 기본 profile1의 writer bytes·typed control·상한·reader 의미 유지. enum 번호와 기존 필드 번호를 유지하고 새 필드만 추가. v1/v2 header·원본·ACK·reply 혼용과 v1의 새 필드 위장을 거절 |
+| 소유자 변경 | 모든 업무 변경은 기존 `onSessionMessage` 확정 callback에서 수행. 복제 로그 callback 밖의 전송 작업은 소유자 데이터를 임의로 바꾸지 않음 |
+| 전달 작업·client | 설정에서 선택한 profile을 codec·endpoint·factory·동기 제어 client·두 전송 작업에 일관되게 전달. 기존 단일 마켓 순서·bounded pipeline·세대 무효화·재연결·조회/ACK 제어 공간 재사용 |
+| 상대 확인 | profile과 역할 snapshot 설정·한도·프로토콜 지문을 결속. 기존 peer describe/상대 역할·lineage·지문 대조를 유지. 인증·인가·서명은 이번 범위에 추가하지 않음 |
+| 최대 전송 | 주문32,768bytes, 결과2,097,120bytes 상한 유지. 형식별 단일 최대 원본/결과의 실제 byte 상계, 잘림/초과/중복필드·범위 overflow를 검사. 실제 Aeron 최대 frame 전달·단편 조립과+1byte 거절도 검증 |
+| 실행 선택 | `SPLIT_INPUT_CONTRACT_VERSION=2`와 `RESULT_SETTLEMENT_DEV`로 명시 선택. 신규 전용 단방향 모드의 취소 계약은 자원 생성 전에 거절 |
+| 예산 선택 | `SPLIT_MAX_FUNDS_DISPATCH_BYTES`, `SPLIT_MAX_FUNDS_ACTIVE_BYTES`를 명시해 코어의128MiB 저장 상한을 만족. 누락/빈 값은 기존 기본값을 보존하며 잘못된/초과 구성은 계속 거절 |
+| 복구 | 새 계약으로 생성한 자기 기록·같은 실행물/배치/한도만 복구. 양쪽 실제 Archive snapshot+자기 log tail에서 미완료 취소·앞 결과 대기·반환 완료·ACK 회수를 재현. 과거 root 자동 변환이나 롤링 변경은 제공하지 않음 |
+
+### 수용 사례와 검증 범위
+
+| 검사 | Given — 준비 | When — 실행 | Then — 직접 관측 |
+| --- | --- | --- | --- |
+| 주문/결과 codec | 실제 신규·취소 원본, 성공/거절 결과, 최대 UTF-8/Long 입력 | 왕복·버전 혼용·필수/unknown/overflow/목록 포화·최대와+1byte | 정체성·공통 순서·전체 사건·효과 보존, 부적합 byte 거절, v1 정확한 조회 bytes와 기존 회귀 유지 |
+| `SplitCancellationFlowTest` C01 | 실제 Adapter와 프로토콜, 300 예약·100 체결 | 취소 접수→매칭→반환·같은 요청/결과 반복 | 접수/매칭 후700/200, 정산 후900/0·base1·입력3/신규승인2·추가 반환0 |
+| 같은 파일 C09 | 결과2의 체결이 아직 미반영 | 결과3의 취소를 먼저 전달한 뒤 올바른 순서로 재전달 | GAP과 금융/업무 상태 무변경. 앞 결과 뒤 정상 반환 |
+| 같은 파일 C10/C11 | 두 역할 callback snapshot 뒤 취소·결과 tail | 빈 Adapter 복원→같은 suffix→완료 snapshot·재전달 | 미완료 의무·최초 응답·순차 반환 보존. 정산 ACK 뒤 matching 재전달은 PRUNED |
+| 기동·한도 | profile1/2·양방향/단방향·명시 예산 | 구성·기동 설정 생성 | v2는 양방향만 허용, 디렉터리 생성 없이 잘못된 버전·한도 거절, v1 지문 회귀 |
+| `DockerSplitCancellationTest` | 실제 자금3+매칭3 JVM·Archive sync2, 1,000과base3 | 주문1 snapshot→체결2/취소3 tail, 결과 순서 뒤바뀜·ACK 유실·중복, snapshot+tail 반복 재시작3회 | 여섯 사본의 현재 잔고·예약·의무·공통 입력/결과·신규 승인·완료/회수 일치, 앞 체결100 뒤200만 반환 |
+| 같은 Docker 사례의 native 경계 | 같은 실제 연결·새 wire2 최대 frame | 전체 MAX frame offer→callback, MAX+1 offer | 조립된 완결 메시지 수신·초과 거절·여섯 사본 금융 불변. 일반 취소 frame이 반드시 MTU를 넘는다고 가정하지 않음 |
+
+Docker 사례는 기존8분 전체 기한·정리45초 여유·기록2GiB·진단16MiB 상한과 finally 정리를 재사용한다. 명령/관찰 wrapper와 보류 파일은 test 출력에만 있다. 제품에 시험용 gate·관찰 endpoint를 추가하지 않는다. 실제3+3노드 증거와 수동 callback/bytes 시험은 구분한다.
+
+### 현재 실행 상태
+
+- 최초 행동 Red: 주문 v2 header 부재, v1이 새 원본을 신규처럼 직렬화하던 경우, 취소 전체 결과의 기존 거절을 실제 실행에서 확인했다. 취소 ingress와 그 뒤 추가한 경계 테스트는 별도 Red 실행을 주장하지 않는다.
+- callback 시험의 첫 실패는 새 profile의 fixture 예산 부족과 복구 객체의 참조 비교, ACK 회수 뒤의 기대값 오류였다. 제품 상한·계약을 바꾸지 않고 fixture·검증문을 바로잡았다.
+- HTTP 취소 API·화면·사용자 인증/인가·Kafka/RDB 원장 전달·성능 시험·복합 장애 #134는 제외한다. 이번 결과를 과반 장애·운영 배포·무기한 부하 보장으로 확대하지 않는다.
+
+
+### 최종 실행 근거와 인계
+
+- 관련 앱169개(기존 회귀·새 wire/flow·실제 Docker1개)와 구조386개가 실패/오류/skip0으로 통과했다. 필수 P01~P09 보고서와 전체 `ktlintCheck`도 통과했다. 변경 없는 거래 코어444개는 Gradle UP-TO-DATE의 검증된 성공 결과를 재사용했다. 이번 단위에 추가한 테스트 메서드는21개다.
+- 필수 구조 검사는 처음에 생성 타입 `SplitCancelRequest`의 Request 접미사를 HTTP DTO로 판정했다. wire 명령의 의미에 맞게 `SplitCancelCommand`로 변경했고 필드 번호·전송 bytes를 유지했다. 규칙·허용 목록·검사 대상을 완화하지 않았다. 최종 생성 실행물로 실제 Docker 시험도 다시 통과했다.
+- 최종 Docker 실행은 `delivery17944645782009737f810`, 실제 시험 약94초, 여섯 사본25개 checkpoint, 기록 최대32,387,072bytes·진단 최대185,157bytes다. report의 `success=true`, `issues=[]`, `recordVolumesDeleted=true`, `runResourcesRemoved=true`를 확인했고 실행 소유 컨테이너·볼륨·네트워크·이미지를 정리했다. 마지막 전체 Gradle 실행은4분26초였다.
+- 보고서: `app-api/build/reports/aeron-funding/result-settlement/delivery17944645782009737f810/result.json`. 실행 HEAD는 `2550154f62d67b75c22cc532d5ff42d408e85437`이며, 미커밋 전송 변경은 보고서의 파일별 source SHA·동결 image ID와 아래 고정 검토본으로 구분한다.
+- 실제6노드 시험은 앞 결과 미수신 중 취소 결과의 GAP, 두 역할 snapshot 뒤 자기 tail 재생, 반환 후 유실 ACK·중복 재전달, 미완료·반환 완료·ACK 회수 뒤의 각 단계에서 총3회 재시작, MAX 실제 frame 수신·MAX+1 거절을 관측했다. 독립 장애 주입에 의한 과반/네트워크 분할·리더 전환은 이번 사례의 실행 주장이 아니다.
+- 독립 리뷰어는 작성 대화를 상속하지 않고 기준2550154 대비23파일의 실제 호출·단계·회수·호환·크기·복구 경계를 검토했다. 최종 제품 검토본 `/tmp/cancel133-transport-review-20261112-v2`의 manifest SHA-256은 `434265bb2cefdc650bf664c54485606ddad2ce5bb177764ef59ef113ac9b8481`이다. 별도 복사본에서 기존 선택101개와 독립 반례4개, 총105개가 실패/오류/skip0으로 통과했다. 검토 범위의 확인된 미해결 결함은0건이다.
+- 독립 반례는 정상 채널0, 과도한 varint 거절, 전량체결 후 빈 효과 취소 거절·앞 결과 GAP·응답 ACK/세대 변경 후 추가반환0, 사건과effect 수량을 같이 위조한 결과의 무변경 거절을 포함한다. 독립 로그는 `/tmp/cancel133-transport-independent-v2-tests-20261112.log`다. 실제 native/Archive·Docker·구조/형식 실행은 root의 결과와 구분했다. 이후 변경은 이 실행 기록뿐이다.
+
+실행 폴더를 포함한 최종 검증 명령은 다음과 같다. `--tests`는 앱 선택에 적용되며 구조 검사는 전체를 수행했다.
+
+```bash
+cd /Users/0chord/.codex/worktrees/issue148-http-aeron/exchange-core
+./gradlew :app-api:test \
+  --tests '*DockerSplitCancellationTest' \
+  --tests '*SplitCancellationFlowTest' \
+  --tests '*SplitOrderDeliveryCodecTest' --tests '*SplitResultDeliveryCodecTest' \
+  --tests '*SplitTradingRoleStartupTest' --tests '*SplitTradingClusterAdapterTest' \
+  --tests '*FundsOrderDeliveryAgentTest' --tests '*MatchingResultDeliveryAgentTest' \
+  --tests '*SplitOrderDeliveryClientTest' --tests '*SplitResultDeliveryClientTest' \
+  --tests '*SplitTradingArtifactTest' --tests '*CancellationRoleSnapshotTest' \
+  --tests '*FundsRoleSnapshotCodecTest' --tests '*FundsResultSnapshotCodecTest' \
+  --tests '*MatchingRoleSnapshotCodecTest' --tests '*BoundedTradingRoleGoldenTest' \
+  --tests '*BoundedTradingSnapshotContinuationTest' \
+  --tests '*BoundedTradingSnapshotPersistenceTest' --tests '*BoundedTradingUninitializedSnapshotTest' \
+  :architecture-tests:test :architecture-tests:verifyArchitectureReport ktlintCheck \
+  --no-daemon --max-workers=1 --console=plain
+```
+
+코어와 실제 전송은 별도 브랜치·커밋으로 분리한다. 이 기록은 로컬 구현·검증 근거이며 원격 PR·CI·병합·티켓/보드 상태를 변경한 기록이 아니다.
 
 </details>
