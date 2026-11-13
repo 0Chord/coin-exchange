@@ -3,6 +3,7 @@ package com.exchange.core.api.trading.infrastructure.codec
 import com.exchange.core.api.trading.infrastructure.codec.generated.SplitDeliveryCommand
 import com.exchange.core.api.trading.infrastructure.codec.generated.SplitDeliveryReply
 import com.exchange.core.api.trading.infrastructure.codec.generated.SplitDirection
+import com.exchange.core.api.trading.infrastructure.codec.generated.SplitInputKind
 import com.exchange.core.api.trading.infrastructure.codec.generated.SplitRole
 import com.exchange.core.common.Amount
 import com.exchange.core.common.AssetId
@@ -25,8 +26,12 @@ import com.exchange.core.order.OrderReservationCalculator
 import com.exchange.core.order.OrderType
 import com.exchange.core.order.Side
 import com.exchange.core.order.TimeInForce
+import com.exchange.core.trading.CancelCode
+import com.exchange.core.trading.CancelIntent
+import com.exchange.core.trading.CancelReceipt
 import com.exchange.core.trading.ClusterLineage
 import com.exchange.core.trading.ExecuteAdmission
+import com.exchange.core.trading.FundsCancelDispatch
 import com.exchange.core.trading.FundsDispatchStream
 import com.exchange.core.trading.FundsMatchingAppliedAck
 import com.exchange.core.trading.FundsOrderDispatch
@@ -59,6 +64,195 @@ class SplitOrderDeliveryCodecTest {
     private val context =
         TradingMarketContext(MarketDefinition(MarketId("BTC-USDT"), AssetId("BTC"), AssetId("USDT"), 0, 2, 3), policy, 7)
     private val calculator = OrderReservationCalculator(BuyOrderFundingQuoteCalculator(TradingFeeReserveCalculator()))
+
+    @Test
+    fun `새 계약은 신규와 취소의 공통 순서와 최초 대상 원본을 바이트로 보존한다`() {
+        val cancellationCodec = SplitOrderDeliveryCodec(inputContractVersion = 2)
+        val original = dispatch().copy(inputContractVersion = 2)
+        val cancellation = cancellation(original)
+        val following = original.copy(dispatchSequence = 5, marketAdmissionSequence = 4, admissionSequence = 6)
+        for (input in listOf(original, cancellation, following)) {
+            val bytes = cancellationCodec.encode(91, SplitOrderDeliveryCommand.Apply(input))
+            assertEquals(
+                2,
+                ByteBuffer
+                    .wrap(bytes)
+                    .order(ByteOrder.LITTLE_ENDIAN)
+                    .getShort(6)
+                    .toInt(),
+            )
+            assertEquals(
+                if (input.isCancellation) SplitInputKind.SPLIT_CANCEL else SplitInputKind.SPLIT_NEW,
+                command(bytes).apply.inputKind,
+            )
+            assertEquals(SplitOrderDeliveryEnvelope(91, SplitOrderDeliveryCommand.Apply(input)), cancellationCodec.decode(bytes))
+        }
+        assertEquals(3L, cancellation.cancel?.targetInputSequence)
+        assertEquals(3L, cancellation.marketAdmissionSequence)
+        assertEquals(4L, cancellation.dispatchSequence)
+        assertEquals(original.order, cancellation.order)
+        assertEquals(original.reservation, cancellation.reservation)
+    }
+
+    @Test
+    fun `기존 계약은 새 원본을 조용히 신규 주문으로 직렬화하지 않는다`() {
+        val original = dispatch().copy(inputContractVersion = 2)
+        for (input in listOf(original, cancellation(original))) {
+            assertFailsWith<IllegalArgumentException> { codec.encode(91, SplitOrderDeliveryCommand.Apply(input)) }
+        }
+    }
+
+    @Test
+    fun `기존 peer 조회 프레임 바이트는 새 계약을 추가해도 그대로다`() {
+        assertContentEquals(
+            byteArrayOf(4, 0, 1, 0, 88, 0, 1, 0, 8, 0, 80, 1),
+            codec.encode(0, SplitOrderDeliveryCommand.DescribePeer),
+        )
+    }
+
+    @Test
+    fun `새 계약의 취소 접수는 요청 토큰 대상과 최초 응답을 운반한다`() {
+        val cancellationCodec = SplitOrderDeliveryCodec(inputContractVersion = 2)
+        val input = cancellation(dispatch().copy(inputContractVersion = 2))
+        val cancel = requireNotNull(input.cancel)
+        val request =
+            SplitOrderDeliveryCommand.Cancel(
+                cancel.requestToken,
+                CancelIntent(input.stream.marketId, input.order.orderId, input.stream.configurationVersion),
+            )
+        assertEquals(SplitOrderDeliveryEnvelope(91, request), cancellationCodec.decode(cancellationCodec.encode(91, request)))
+        val accepted = CancelReceipt(CancelCode.ACCEPTED, cancel.cancelId, input.order.orderId, input.dispatchSequence)
+        val rejected = CancelReceipt(CancelCode.REJECTED, targetOrderId = input.order.orderId, reason = "CANCEL_PENDING")
+        for (receipt in listOf(accepted, rejected)) {
+            val response = reply(receipt.code.name).copy(cancellation = receipt)
+            assertEquals(response, cancellationCodec.decodeReply(cancellationCodec.encodeReply(response)))
+        }
+        assertFailsWith<IllegalArgumentException> { codec.encode(91, request) }
+        assertFailsWith<IllegalArgumentException> { codec.encodeReply(reply("ACCEPTED").copy(cancellation = accepted)) }
+    }
+
+    @Test
+    fun `계약 버전이 다른 명령과 응답은 헤더를 바꾸어도 섞을 수 없다`() {
+        val v2 = SplitOrderDeliveryCodec(2)
+        val input = cancellation(dispatch().copy(inputContractVersion = 2))
+        val bytes = v2.encode(91, SplitOrderDeliveryCommand.Apply(input))
+        val legacy = codec.encode(91, SplitOrderDeliveryCommand.Apply(dispatch()))
+        assertFailsWith<AdmissionMessageException> { codec.decode(bytes) }
+        assertFailsWith<AdmissionMessageException> { v2.decode(legacy) }
+        assertFailsWith<AdmissionMessageException> { codec.decode(frame(1, command(bytes), version = 1)) }
+        assertFailsWith<AdmissionMessageException> { v2.decode(frame(1, command(legacy), version = 2)) }
+        val reply = reply("ACCEPTED")
+        assertFailsWith<AdmissionMessageException> { codec.decodeReply(v2.encodeReply(reply)) }
+        assertFailsWith<AdmissionMessageException> { v2.decodeReply(codec.encodeReply(reply)) }
+        assertFailsWith<IllegalArgumentException> { v2.encode(91, SplitOrderDeliveryCommand.Apply(dispatch())) }
+        assertFailsWith<IllegalArgumentException> { SplitOrderDeliveryCodec(0) }
+        assertFailsWith<IllegalArgumentException> { SplitOrderDeliveryCodec(3) }
+    }
+
+    @Test
+    fun `신규 전용 reader는 기본 enum 값으로 숨긴 새 필드와 새 접수 응답도 거절한다`() {
+        val legacy = command(codec.encode(91, SplitOrderDeliveryCommand.Apply(dispatch())))
+        val applyBody = legacy.apply.toByteArray() + byteArrayOf(72, 0)
+        val body = byteArrayOf(8, 91, 106) + varint(applyBody.size.toLong()) + applyBody
+        assertFailsWith<AdmissionMessageException> { codec.decode(frame(1, body, 1)) }
+        val receipt = CancelReceipt(CancelCode.REJECTED, reason = "CANCEL_PENDING")
+        val response = response(SplitOrderDeliveryCodec(2).encodeReply(reply("REJECTED").copy(cancellation = receipt)))
+        assertFailsWith<AdmissionMessageException> { codec.decodeReply(frame(2, response, 1)) }
+    }
+
+    @Test
+    fun `취소 종류 식별자 요청자 대상 순서 변조와 필수 토큰 누락은 거절한다`() {
+        val v2 = SplitOrderDeliveryCodec(2)
+        val valid = command(v2.encode(91, SplitOrderDeliveryCommand.Apply(cancellation(dispatch().copy(inputContractVersion = 2)))))
+        val input = valid.apply
+        val cancel = input.cancellation
+        val invalid =
+            listOf(
+                input.toBuilder().clearInputKind(),
+                input.toBuilder().setInputKindValue(99),
+                input.toBuilder().setInputKind(SplitInputKind.SPLIT_NEW),
+                input.toBuilder().clearCancellation(),
+                input.toBuilder().setCancellation(cancel.toBuilder().setCancelId(TradingIdentifiers.cancel(source, 8))),
+                input.toBuilder().setCancellation(cancel.toBuilder().setCancelSequence(0)),
+                input.toBuilder().setCancellation(cancel.toBuilder().setTargetInputSequence(0)),
+                input.toBuilder().setCancellation(cancel.toBuilder().setTargetInputSequence(input.dispatchSequence)),
+                input.toBuilder().setCancellation(cancel.toBuilder().setRequestToken(cancel.requestToken.toBuilder().setUserId("other"))),
+                input.toBuilder().setCancellation(cancel.toBuilder().setRequestToken(cancel.requestToken.toBuilder().setChannel(-1))),
+                input.toBuilder().setCancellation(cancel.toBuilder().setRequestToken(cancel.requestToken.toBuilder().setEpoch(0))),
+                input.toBuilder().setCancellation(cancel.toBuilder().setRequestToken(cancel.requestToken.toBuilder().setSequence(0))),
+            )
+        for ((index, damaged) in invalid.withIndex()) {
+            assertFailsWith<AdmissionMessageException>("변조 $index") { v2.decode(frame(1, valid.toBuilder().setApply(damaged).build(), 2)) }
+        }
+        for ((path, incomplete) in missingRequired(cancel)) {
+            val damaged =
+                input.toBuilder().setCancellation(
+                    incomplete as com.exchange.core.api.trading.infrastructure.codec.generated.SplitCancellation,
+                )
+            assertFailsWith<AdmissionMessageException>(path) { v2.decode(frame(1, valid.toBuilder().setApply(damaged).build(), 2)) }
+        }
+        for ((path, damaged) in unknownFields(valid)) {
+            assertFailsWith<AdmissionMessageException>(path) { v2.decode(frame(1, damaged, 2)) }
+        }
+    }
+
+    @Test
+    fun `취소 접수의 잘린 int32와 중복 필드는 parser의 정상 값으로 바뀌지 않는다`() {
+        val v2 = SplitOrderDeliveryCodec(2)
+
+        fun request(channel: ByteArray): ByteArray {
+            val token = byteArrayOf(10, 2, 85, 49, 16) + channel + byteArrayOf(24, 1, 32, 1)
+            val intent = byteArrayOf(10, 1, 109, 18, 1, 111, 24, 1)
+            val cancel = byteArrayOf(10) + varint(token.size.toLong()) + token + byteArrayOf(18) + varint(intent.size.toLong()) + intent
+            return byteArrayOf(8, 91, 122) + varint(cancel.size.toLong()) + cancel
+        }
+        val maximum = request(varint(Int.MAX_VALUE.toLong()))
+        val decoded = v2.decode(frame(1, maximum, 2)).command as SplitOrderDeliveryCommand.Cancel
+        assertEquals(Int.MAX_VALUE, decoded.token.channel)
+        for (overflow in listOf(Int.MAX_VALUE.toLong() + 1, 1L shl 32, (1L shl 32) + 1)) {
+            assertFailsWith<AdmissionMessageException> { v2.decode(frame(1, request(varint(overflow)), 2)) }
+        }
+        val valid = command(v2.encode(91, SplitOrderDeliveryCommand.Apply(dispatch().copy(inputContractVersion = 2))))
+        val kindOverflow =
+            valid.apply
+                .toBuilder()
+                .clearInputKind()
+                .build()
+                .toByteArray() + byteArrayOf(72) + varint((1L shl 32) + 1)
+        val body = byteArrayOf(8, 91, 106) + varint(kindOverflow.size.toLong()) + kindOverflow
+        assertFailsWith<AdmissionMessageException> { v2.decode(frame(1, body, 2)) }
+        assertFailsWith<AdmissionMessageException> { v2.decode(frame(1, byteArrayOf(8, 91, 80, 2), 2)) }
+        assertFailsWith<AdmissionMessageException> { v2.decode(frame(1, maximum + byteArrayOf(8, 91), 2)) }
+    }
+
+    @Test
+    fun `취소 최초 응답은 성공과 거절의 필드 조합을 바꾸거나 누락할 수 없다`() {
+        val v2 = SplitOrderDeliveryCodec(2)
+        val accepted = CancelReceipt(CancelCode.ACCEPTED, TradingIdentifiers.cancel(source, 7), dispatch().order.orderId, 4)
+        val valid = response(v2.encodeReply(reply("ACCEPTED").copy(cancellation = accepted)))
+        val receipt = valid.cancellation
+        val invalid =
+            listOf(
+                receipt.toBuilder().clearCode(),
+                receipt.toBuilder().setCodeValue(99),
+                receipt.toBuilder().clearCancelId(),
+                receipt.toBuilder().clearTargetOrderId(),
+                receipt.toBuilder().clearInputSequence(),
+                receipt.toBuilder().setInputSequence(0),
+                receipt.toBuilder().setReason("CANCEL_PENDING"),
+                receipt.toBuilder().setCode(
+                    com.exchange.core.api.trading.infrastructure.codec.generated.SplitCancelCode.SPLIT_CANCEL_REJECTED,
+                ),
+            )
+        for ((index, damaged) in invalid.withIndex()) {
+            assertFailsWith<AdmissionMessageException>("응답 변조 $index") {
+                v2.decodeReply(frame(2, valid.toBuilder().setCancellation(damaged).build(), 2))
+            }
+        }
+        for ((path, damaged) in unknownFields(valid)) {
+            assertFailsWith<AdmissionMessageException>(path) { v2.decodeReply(frame(2, damaged, 2)) }
+        }
+    }
 
     @Test
     fun `typed dispatch preserves both lineages original order full reservation and fixed context`() {
@@ -440,6 +634,34 @@ class SplitOrderDeliveryCodecTest {
         assertTrue(bytes.size <= maximumFrame)
         assertTrue(maximumFrame <= SplitOrderDeliveryCodec.MAX_MESSAGE_BYTES)
         assertEquals(SplitOrderDeliveryEnvelope(Long.MAX_VALUE, SplitOrderDeliveryCommand.Apply(input)), codec.decode(bytes))
+
+        val v2 = SplitOrderDeliveryCodec(2)
+        val original =
+            input.copy(
+                dispatchSequence = Long.MAX_VALUE - 1,
+                marketAdmissionSequence = Long.MAX_VALUE - 2,
+                inputContractVersion = 2,
+            )
+        val cancel =
+            cancellation(original).copy(
+                cancel =
+                    FundsCancelDispatch(
+                        TradingIdentifiers.cancel(original.stream.fundsLineage, Long.MAX_VALUE),
+                        RequestToken(original.order.userId, Int.MAX_VALUE, Long.MAX_VALUE, Long.MAX_VALUE),
+                        Long.MAX_VALUE,
+                        original.dispatchSequence,
+                    ),
+            )
+        val cancelledBytes = v2.encode(Long.MAX_VALUE, SplitOrderDeliveryCommand.Apply(cancel))
+        val cancelMaximumFrame = SplitOrderDeliveryCodec.maximumDispatchFrameBytes(2)
+        assertTrue(cancelledBytes.size > bytes.size)
+        assertTrue(cancelledBytes.size <= cancelMaximumFrame)
+        assertTrue(cancelMaximumFrame <= SplitOrderDeliveryCodec.MAX_MESSAGE_BYTES)
+        assertEquals(SplitOrderDeliveryEnvelope(Long.MAX_VALUE, SplitOrderDeliveryCommand.Apply(cancel)), v2.decode(cancelledBytes))
+        assertEquals(v2.decode(cancelledBytes), v2.decode(ByteArray(9) + cancelledBytes + ByteArray(7), 9, cancelledBytes.size))
+        assertFailsWith<AdmissionMessageException> { v2.decode(cancelledBytes.copyOf(cancelledBytes.size - 1)) }
+        assertFailsWith<AdmissionMessageException> { v2.decode(cancelledBytes + cancelledBytes) }
+        assertFailsWith<AdmissionMessageException> { v2.decode(ByteArray(SplitOrderDeliveryCodec.MAX_MESSAGE_BYTES + 1)) }
     }
 
     @Test
@@ -507,6 +729,18 @@ class SplitOrderDeliveryCodecTest {
     private fun reply(code: String): SplitOrderDeliveryReply =
         SplitOrderDeliveryReply(91, code, TradingServiceRole.MATCHING, matching, topology, 8192, lifecycle = TradingLifecycle.RUNNING.name)
 
+    private fun cancellation(original: FundsOrderDispatch): FundsOrderDispatch =
+        original.copy(
+            dispatchSequence = original.dispatchSequence + 1,
+            cancel =
+                FundsCancelDispatch(
+                    TradingIdentifiers.cancel(original.stream.fundsLineage, 7),
+                    RequestToken(original.order.userId, 2, 11, 13),
+                    7,
+                    original.dispatchSequence,
+                ),
+        )
+
     private fun command(bytes: ByteArray): SplitDeliveryCommand = SplitDeliveryCommand.parser().parseFrom(bytes, 8, bytes.size - 8)
 
     private fun response(bytes: ByteArray): SplitDeliveryReply = SplitDeliveryReply.parser().parseFrom(bytes, 8, bytes.size - 8)
@@ -514,8 +748,14 @@ class SplitOrderDeliveryCodecTest {
     private fun frame(
         kind: Int,
         message: Message,
+        version: Int = 1,
+    ): ByteArray = frame(kind, message.toByteArray(), version)
+
+    private fun frame(
+        kind: Int,
+        body: ByteArray,
+        version: Int,
     ): ByteArray {
-        val body = message.toByteArray()
         val bytes = ByteArray(8 + body.size)
         ByteBuffer
             .wrap(
@@ -524,9 +764,21 @@ class SplitOrderDeliveryCodecTest {
             .putShort(body.size.toShort())
             .putShort(kind.toShort())
             .putShort(88)
-            .putShort(1)
+            .putShort(version.toShort())
         body.copyInto(bytes, 8)
         return bytes
+    }
+
+    private fun varint(value: Long): ByteArray {
+        require(value >= 0)
+        val bytes = mutableListOf<Byte>()
+        var remainder = value
+        while (remainder > 127) {
+            bytes += ((remainder and 127) or 128).toByte()
+            remainder = remainder ushr 7
+        }
+        bytes += remainder.toByte()
+        return bytes.toByteArray()
     }
 
     private fun missingRequired(

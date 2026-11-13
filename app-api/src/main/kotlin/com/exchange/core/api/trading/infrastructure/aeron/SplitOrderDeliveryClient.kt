@@ -15,10 +15,11 @@ internal data class SplitOrderDeliveryEndpoint(
     val ingressEndpoints: String,
     val egressEndpoint: String,
     val clusterId: Int,
+    val inputContractVersion: Int = 1,
 ) {
     init {
         require(driverDirectory.isNotBlank() && ingressEndpoints.isNotBlank() && egressEndpoint.isNotBlank())
-        require(clusterId >= 0)
+        require(clusterId >= 0 && inputContractVersion in 1..2)
     }
 }
 
@@ -52,7 +53,7 @@ internal object AeronSplitOrderDeliveryConnectionFactory : SplitOrderDeliveryCon
         onReply: (SplitOrderDeliveryReply) -> Unit,
     ): SplitOrderDeliveryConnectAttempt {
         val failure = AtomicReference<Throwable?>()
-        val codec = SplitOrderDeliveryCodec()
+        val codec = SplitOrderDeliveryCodec(endpoint.inputContractVersion)
         val context =
             AeronCluster
                 .Context()
@@ -129,7 +130,7 @@ internal class SplitOrderDeliveryClient(
     private val onReply: (SplitOrderDeliveryReply) -> Unit = {},
     factory: SplitOrderDeliveryConnectionFactory = AeronSplitOrderDeliveryConnectionFactory,
 ) : AutoCloseable {
-    private val codec = SplitOrderDeliveryCodec()
+    private val codec = SplitOrderDeliveryCodec(endpoint.inputContractVersion)
     private val connection: SplitOrderDeliveryConnection
     private var expected: Long? = null
     private var response: SplitOrderDeliveryReply? = null

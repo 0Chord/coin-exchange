@@ -52,9 +52,9 @@ internal class SplitTradingConfiguration(
         resultTopologySha256 = sha256(resultDeliveryConfigurationBytes())
     }
 
-    /** 실제 전송 계약이 준비되기 전에는 새 코어 계약으로 실행 자원을 열지 않는다. */
-    fun requireTransportCompatible() {
-        require(inputContractVersion == 1) { "기존 분리 전송은 신규 전용 입력 계약만 지원합니다" }
+    /** 취소는 결과의 자금 반영까지 이어지는 명시적 양방향 실행에서만 활성화한다. */
+    fun requireTransportCompatible(resultDeliveryEnabled: Boolean = false) {
+        require(inputContractVersion == 1 || resultDeliveryEnabled) { "취소 입력 계약은 양방향 정산 개발 모드가 필요합니다" }
     }
 
     /** 기존 한 방향 실행의 한도를 바꾸지 않고 새 양방향 모드만 자원 생성 전에 검사한다. */
@@ -62,7 +62,11 @@ internal class SplitTradingConfiguration(
         resultLimits.requireCompatible(matchingLimits)
         require(resultDeliveryLimits.maxReadBytes >= matchingLimits.maxSingleResultBytes) { "단일 최대 결과를 조회할 공간이 필요합니다" }
         require(
-            SplitResultDeliveryCodec.maximumResultFrameBytes(matchingLimits.maxSingleResultBytes, matchingLimits.maxResultEvents) <=
+            SplitResultDeliveryCodec.maximumResultFrameBytes(
+                matchingLimits.maxSingleResultBytes,
+                matchingLimits.maxResultEvents,
+                inputContractVersion,
+            ) <=
                 SplitResultDeliveryCodec.MAX_MESSAGE_BYTES,
         ) { "허용된 전체 결과가 전송 한도를 넘습니다" }
         resultDeliveryLimits.requireCompatible(this)
@@ -102,8 +106,9 @@ internal class SplitTradingConfiguration(
         matching()
         resultLimits.requireCompatible(matchingLimits)
         // FundsDispatchCharge의 고정245byte와 최대256byte인 문자열12개(길이4byte 포함)의 보수적 상한이다.
-        require(deliveryLimits.maxReadBytes >= 245L + 12L * (4L + 256L)) { "단일 정상 승인 원본을 조회할 공간이 필요합니다" }
-        require(SplitOrderDeliveryCodec.maximumDispatchFrameBytes() <= SplitOrderDeliveryCodec.MAX_MESSAGE_BYTES)
+        val cancellationBytes = if (inputContractVersion == 2) 96L + 256L else 0L
+        require(deliveryLimits.maxReadBytes >= 245L + 12L * (4L + 256L) + cancellationBytes) { "단일 정상 승인 원본을 조회할 공간이 필요합니다" }
+        require(SplitOrderDeliveryCodec.maximumDispatchFrameBytes(inputContractVersion) <= SplitOrderDeliveryCodec.MAX_MESSAGE_BYTES)
     }
 
     /** 프로토콜, 두 역할의 구성, 수신 한도, 주문 전달 한도 순서를 기존 지문과 같게 유지한다. */
@@ -114,7 +119,7 @@ internal class SplitTradingConfiguration(
                 MatchingRoleSnapshotCodec().configurationBytes(matchingConfiguration),
             )
         return encodeConfiguration { out ->
-            out.writeUTF("split-order-delivery-v1;schema=88;version=1;frame=32768;session-limit=16")
+            out.writeUTF("split-order-delivery-v$inputContractVersion;schema=88;version=$inputContractVersion;frame=32768;session-limit=16")
             for (part in roleConfigurations) {
                 out.writeInt(part.size)
                 out.write(part)
@@ -132,7 +137,7 @@ internal class SplitTradingConfiguration(
     /** 기존 주문 지문에 결과 프로토콜과 별도 전달 한도를 묶어 결과 모드 지문을 만든다. */
     private fun resultDeliveryConfigurationBytes(): ByteArray =
         encodeConfiguration { out ->
-            out.writeUTF("split-result-delivery-v1;schema=89;version=1;header=12;session-limit=16")
+            out.writeUTF("split-result-delivery-v$inputContractVersion;schema=89;version=$inputContractVersion;header=12;session-limit=16")
             out.writeUTF(topologySha256)
             out.writeInt(SplitResultDeliveryCodec.MAX_MESSAGE_BYTES)
             writeResultDeliveryLimits(out)

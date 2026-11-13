@@ -585,6 +585,7 @@ internal class DockerFundingVerification(
     private fun collectNodes(
         deadline: Long,
         requireRunning: Boolean,
+        completeOutput: Boolean = false,
     ) {
         for ((member, id) in nodeIds) {
             try {
@@ -592,7 +593,7 @@ internal class DockerFundingVerification(
                 if (!logs.succeeded) issues.add(FundingVerificationIssue("COLLECTION", "node$member 로그 수집 실패: ${logs.failure()}"))
                 Files.writeString(reportDirectory.resolve("node$member.stdout.log"), logs.stdout)
                 Files.writeString(reportDirectory.resolve("node$member.stderr.log"), logs.stderr)
-                val parsed = readFundingEvents(logs.stdout, issues)
+                val parsed = readFundingEvents(logs.stdout, issues, completeOutput)
                 events[member] = mergeFundingObservations(events[member].orEmpty(), parsed)
                 val inspected = command(dockerContainerInspection(id), remaining(deadline))
                 if (inspected.succeeded) {
@@ -735,7 +736,7 @@ internal class DockerFundingVerification(
                 val stopped = compose(listOf("stop", "--timeout", "10", "node0", "node1", "node2"), remaining(deadline))
                 cleanStop = stopped.succeeded
                 if (!cleanStop) issues.add(FundingVerificationIssue("CLEANUP", "정상 종료 확인 실패: ${stopped.failure()}"))
-                collectNodes(deadline, requireRunning = false)
+                collectNodes(deadline, requireRunning = false, completeOutput = true)
                 for ((member, id) in nodeIds) {
                     val stoppedEvent =
                         events[member].orEmpty().lastOrNull {

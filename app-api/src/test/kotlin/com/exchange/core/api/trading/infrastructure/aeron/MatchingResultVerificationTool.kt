@@ -27,6 +27,7 @@ import com.exchange.core.order.OrderType
 import com.exchange.core.order.Side
 import com.exchange.core.order.TimeInForce
 import com.exchange.core.trading.BoundedFundingState
+import com.exchange.core.trading.CancelIntent
 import com.exchange.core.trading.ClusterLineage
 import com.exchange.core.trading.OrderIntent
 import com.exchange.core.trading.RequestToken
@@ -59,6 +60,16 @@ private val resultControl = Path.of(System.getenv("FUNDING_CONTROL_DIRECTORY") ?
 private val resultBuyer = UserId("😀".repeat(64))
 private val resultSeller = UserId("🦊".repeat(64))
 private val resultFixture = System.getenv("SPLIT_RESULT_FIXTURE") ?: "baseline"
+private val resultInputContract = System.getenv("SPLIT_INPUT_CONTRACT_VERSION")?.toInt() ?: 1
+private val resultOrderCodec = SplitOrderDeliveryCodec(resultInputContract)
+private val resultDeliveryCodec = SplitResultDeliveryCodec(resultInputContract)
+
+/** compose의 선택적 시험 한도가 비어 있으면 기존 제품 기본값을 그대로 사용한다. */
+private fun resultVerificationEnvironment(): Map<String, String> =
+    System.getenv().filter { (name, value) ->
+        name !in setOf("SPLIT_MAX_FUNDS_DISPATCH_BYTES", "SPLIT_MAX_FUNDS_ACTIVE_BYTES") ||
+            value.isNotBlank()
+    }
 
 /** 상태 복사와 파일 관찰은 시험 wrapper가 서비스 소유 스레드 안에서만 수행한다. */
 private class ResultVerificationService(
@@ -165,6 +176,9 @@ private class ResultVerificationService(
                             saved.dispatch.streams
                                 .single()
                                 .issued,
+                        "admissionIssued" to saved.financial.lastAdmissionSequence,
+                        "cancellationIssued" to saved.lastCancellationSequence,
+                        "pendingCancellations" to saved.cancellations.size,
                         "executedThrough" to
                             saved.financial.markets
                                 .single()
@@ -188,6 +202,15 @@ private class ResultVerificationService(
                 val saved = (field.get(delegate) as ReservedMatchingState).recoveryState()
                 val market = saved.matching.markets.singleOrNull()
                 val stream = saved.streams.single()
+                if (resultFixture == "cancellation" && cluster.role() == Cluster.Role.LEADER) {
+                    for (result in stream.outstanding.filter { it.resultSequence <= 8 }) {
+                        writeBoundedHttpArtifact(
+                            resultControl.resolve("retained-result-${result.resultSequence}.bin"),
+                            resultDeliveryCodec.encode(1, SplitResultDeliveryCommand.Apply(result)),
+                            true,
+                        )
+                    }
+                }
                 values["matching"] =
                     mapOf(
                         "bookOrders" to (market?.orders ?: emptyList()).size,
@@ -215,7 +238,7 @@ private fun resultOrderConnections(bootId: String): SplitOrderDeliveryConnection
                 if (endpoint.clusterId == SplitTradingNodeSettings.MATCHING_CLUSTER_ID && reply.ack != null) {
                     writeBoundedHttpArtifact(
                         resultControl.resolve("original-order-ack.bin"),
-                        SplitOrderDeliveryCodec().encode(1, SplitOrderDeliveryCommand.RecordAck(reply.ack)),
+                        resultOrderCodec.encode(1, SplitOrderDeliveryCommand.RecordAck(reply.ack)),
                         true,
                     )
                     writeSplitTestJson(
@@ -241,7 +264,7 @@ private fun resultOrderConnections(bootId: String): SplitOrderDeliveryConnection
                 val connection = attempt.poll() ?: return null
                 return object : SplitOrderDeliveryConnection by connection {
                     override fun offer(bytes: ByteArray): Long {
-                        val command = SplitOrderDeliveryCodec().decode(bytes).command
+                        val command = resultOrderCodec.decode(bytes).command
                         if (command is SplitOrderDeliveryCommand.Apply && command.input.dispatchSequence <= 8) {
                             writeBoundedHttpArtifact(resultControl.resolve("dispatch-${command.input.dispatchSequence}.bin"), bytes, true)
                         }
@@ -279,7 +302,7 @@ private fun resultConnections(bootId: String): SplitResultDeliveryConnectionFact
                 val connection = attempt.poll() ?: return null
                 return object : SplitResultDeliveryConnection by connection {
                     override fun offer(bytes: ByteArray): Long {
-                        when (val command = SplitResultDeliveryCodec().decode(bytes).command) {
+                        when (val command = resultDeliveryCodec.decode(bytes).command) {
                             is SplitResultDeliveryCommand.Apply -> {
                                 if (command.result.resultSequence <= 8 || command.result.eventCount > 8) {
                                     val path = resultControl.resolve("result-${command.result.resultSequence}.bin")
@@ -307,7 +330,7 @@ private fun resultConnections(bootId: String): SplitResultDeliveryConnectionFact
     }
 
 private fun resultVerificationNode() {
-    val settings = splitTradingSettings()
+    val settings = splitTradingSettings(resultVerificationEnvironment())
     val bootId = UUID.randomUUID().toString()
     val workerFailure = AtomicReference<Throwable?>()
     DevelopmentSplitTradingNode
@@ -415,11 +438,11 @@ private fun setupResultVerification() {
 
 /** 논리 수용과 별개인 native publication의 경계를 실제 연결에서만 검사한다. */
 private fun verifyNativeResultFrameBoundary(endpoint: SplitOrderDeliveryEndpoint) {
-    val maximum = SplitResultDeliveryBoundaryFixture.frame(SplitResultDeliveryCodec.MAX_MESSAGE_BYTES)
-    val overflow = SplitResultDeliveryBoundaryFixture.frame(SplitResultDeliveryCodec.MAX_MESSAGE_BYTES + 1)
+    val maximum = SplitResultDeliveryBoundaryFixture.frame(SplitResultDeliveryCodec.MAX_MESSAGE_BYTES, endpoint.inputContractVersion)
+    val overflow = SplitResultDeliveryBoundaryFixture.frame(SplitResultDeliveryCodec.MAX_MESSAGE_BYTES + 1, endpoint.inputContractVersion)
     check(maximum.bytes.size == SplitResultDeliveryCodec.MAX_MESSAGE_BYTES)
     check(overflow.bytes.size == maximum.bytes.size + 1)
-    val decoded = SplitResultDeliveryCodec().decode(maximum.bytes)
+    val decoded = SplitResultDeliveryCodec(endpoint.inputContractVersion).decode(maximum.bytes)
     check(decoded.correlationId == maximum.correlationId)
     check((decoded.command as SplitResultDeliveryCommand.Apply).result == maximum.result)
     var reply: SplitResultDeliveryReply? = null
@@ -478,7 +501,7 @@ private fun verifyNativeResultFrameBoundary(endpoint: SplitOrderDeliveryEndpoint
 }
 
 private fun resultVerificationCommand(args: Array<String>) {
-    val env = System.getenv()
+    val env = resultVerificationEnvironment()
     val manifest = BoundedTradingStateCodec().decodeManifest(Files.readAllBytes(Path.of(env["SPLIT_MANIFEST"] ?: "/control/manifest.bin")))
     val configuration = splitTradingConfiguration(manifest, env)
     MediaDriver
@@ -496,6 +519,7 @@ private fun resultVerificationCommand(args: Array<String>) {
                     requireNotNull(env[if (matching) "SPLIT_MATCHING_INGRESS" else "SPLIT_FUNDS_INGRESS"]),
                     "${env["FUNDING_HOST"] ?: "client"}:0",
                     if (matching) SplitTradingNodeSettings.MATCHING_CLUSTER_ID else SplitTradingNodeSettings.FUNDS_CLUSTER_ID,
+                    configuration.inputContractVersion,
                 )
             SplitOrderDeliveryClient(endpoint(false), 10_000).use { funds ->
                 fun fund(
@@ -562,6 +586,7 @@ private fun resultVerificationCommand(args: Array<String>) {
                         val sellerQuantity =
                             when (resultFixture) {
                                 "partial", "cap", "active" -> 2L
+                                "cancellation" -> 3L
                                 "large" -> 1024L
                                 else -> 1L
                             }
@@ -578,6 +603,55 @@ private fun resultVerificationCommand(args: Array<String>) {
                         admit(args[1], args[2].toLong(), args[3].toLong(), args[4].toLong(), side)
                     }
 
+                    "cancel" -> {
+                        val original = resultOrderCodec.decode(Files.readAllBytes(resultControl.resolve("dispatch-${args[3]}.bin"))).command
+                        check(original is SplitOrderDeliveryCommand.Apply && !original.input.isCancellation)
+                        val reply =
+                            funds.request(
+                                SplitOrderDeliveryCommand.Cancel(
+                                    RequestToken(if (args[1] == "seller") resultSeller else resultBuyer, 0, 1, args[2].toLong()),
+                                    CancelIntent(
+                                        original.input.stream.marketId,
+                                        original.input.order.orderId,
+                                        manifest.configurationVersion,
+                                    ),
+                                ),
+                            )
+                        check(reply.code == "ACCEPTED") { reply.toString() }
+                        val receipt = checkNotNull(reply.cancellation)
+                        println(
+                            resultJson.writeValueAsString(
+                                mapOf(
+                                    "code" to reply.code,
+                                    "cancelId" to receipt.cancelId,
+                                    "targetOrderId" to receipt.targetOrderId?.value,
+                                    "inputSequence" to receipt.inputSequence,
+                                ),
+                            ),
+                        )
+                    }
+
+                    "deliver-result" -> {
+                        val original =
+                            resultDeliveryCodec
+                                .decode(
+                                    Files.readAllBytes(resultControl.resolve("retained-result-${args[1]}.bin")),
+                                ).command
+                        DevelopmentSplitResultDeliveryClient(endpoint(false), 10_000).use { client ->
+                            val reply = client.request(original)
+                            check(reply.code in setOf("APPLIED", "GAP", "DUPLICATE", "PRUNED")) { reply.toString() }
+                            println(
+                                resultJson.writeValueAsString(
+                                    mapOf(
+                                        "code" to reply.code,
+                                        "through" to reply.ack?.through,
+                                        "expectedSequence" to reply.expectedSequence,
+                                    ),
+                                ),
+                            )
+                        }
+                    }
+
                     "makers" -> {
                         for (sequence in 1..args[1].toInt()) admit("seller", sequence.toLong(), 100, 1)
                     }
@@ -589,7 +663,7 @@ private fun resultVerificationCommand(args: Array<String>) {
                     "replay-result", "replay-ack" -> {
                         val ack = args[0] == "replay-ack"
                         val path = if (ack) resultControl.resolve("settled-ack.bin") else resultControl.resolve("result-${args[1]}.bin")
-                        val original = SplitResultDeliveryCodec().decode(Files.readAllBytes(path)).command
+                        val original = resultDeliveryCodec.decode(Files.readAllBytes(path)).command
                         DevelopmentSplitResultDeliveryClient(endpoint(ack), 10_000).use { client ->
                             val reply = client.request(original)
                             val accepted = if (ack) setOf("ACKNOWLEDGED") else setOf("DUPLICATE", "PRUNED")
@@ -608,7 +682,7 @@ private fun resultVerificationCommand(args: Array<String>) {
 
                     "replay-order-ack" -> {
                         val bytes = Files.readAllBytes(resultControl.resolve("original-order-ack.bin"))
-                        val command = SplitOrderDeliveryCodec().decode(bytes).command
+                        val command = resultOrderCodec.decode(bytes).command
                         check(funds.request(command).code == "ACKNOWLEDGED")
                     }
 
@@ -616,7 +690,7 @@ private fun resultVerificationCommand(args: Array<String>) {
                         SplitOrderDeliveryClient(endpoint(true), 10_000).use { matching ->
                             val reply =
                                 matching.request(
-                                    SplitOrderDeliveryCodec()
+                                    resultOrderCodec
                                         .decode(
                                             Files.readAllBytes(resultControl.resolve("dispatch-${args[1]}.bin")),
                                         ).command,

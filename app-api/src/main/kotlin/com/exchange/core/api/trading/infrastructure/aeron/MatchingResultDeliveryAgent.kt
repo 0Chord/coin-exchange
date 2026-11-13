@@ -58,6 +58,7 @@ internal data class MatchingResultDeliveryLimits(
             SplitResultDeliveryCodec.maximumResultFrameBytes(
                 configuration.matchingLimits.maxSingleResultBytes,
                 configuration.matchingLimits.maxResultEvents,
+                configuration.inputContractVersion,
             )
         require(maximum <= SplitResultDeliveryCodec.MAX_MESSAGE_BYTES)
         require(Math.addExact(maximum, controlReserve(configuration)) <= maxInFlightBytes) {
@@ -66,7 +67,7 @@ internal data class MatchingResultDeliveryLimits(
     }
 
     internal fun controlReserve(configuration: SplitTradingConfiguration): Long {
-        val codec = SplitResultDeliveryCodec()
+        val codec = SplitResultDeliveryCodec(configuration.inputContractVersion)
         val contexts = configuration.matchingConfiguration.markets
         val ack =
             contexts.maxOf { context ->
