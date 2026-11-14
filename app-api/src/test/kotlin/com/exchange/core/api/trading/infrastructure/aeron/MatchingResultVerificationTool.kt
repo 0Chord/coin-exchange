@@ -4,6 +4,7 @@ import com.exchange.core.api.trading.infrastructure.codec.BoundedTradingCommand
 import com.exchange.core.api.trading.infrastructure.codec.DevelopmentBalanceCommandPayload
 import com.exchange.core.api.trading.infrastructure.codec.SplitOrderDeliveryCodec
 import com.exchange.core.api.trading.infrastructure.codec.SplitOrderDeliveryCommand
+import com.exchange.core.api.trading.infrastructure.codec.SplitOrderDeliveryReply
 import com.exchange.core.api.trading.infrastructure.codec.SplitResultDeliveryBoundaryFixture
 import com.exchange.core.api.trading.infrastructure.codec.SplitResultDeliveryCodec
 import com.exchange.core.api.trading.infrastructure.codec.SplitResultDeliveryCommand
@@ -21,6 +22,9 @@ import com.exchange.core.fee.FeeTier
 import com.exchange.core.fee.MakerTakerFeeRates
 import com.exchange.core.fee.TradingFeePolicySnapshot
 import com.exchange.core.ledger.OpeningBalance
+import com.exchange.core.matching.OrderCancelRejected
+import com.exchange.core.matching.OrderCancelled
+import com.exchange.core.matching.OrderEnteredBook
 import com.exchange.core.matching.TradeExecuted
 import com.exchange.core.order.MarketDefinition
 import com.exchange.core.order.OrderType
@@ -29,6 +33,7 @@ import com.exchange.core.order.TimeInForce
 import com.exchange.core.trading.BoundedFundingState
 import com.exchange.core.trading.CancelIntent
 import com.exchange.core.trading.ClusterLineage
+import com.exchange.core.trading.MatchingResultEnvelope
 import com.exchange.core.trading.OrderIntent
 import com.exchange.core.trading.RequestToken
 import com.exchange.core.trading.ReservedMatchingState
@@ -60,6 +65,7 @@ private val resultControl = Path.of(System.getenv("FUNDING_CONTROL_DIRECTORY") ?
 private val resultBuyer = UserId("😀".repeat(64))
 private val resultSeller = UserId("🦊".repeat(64))
 private val resultFixture = System.getenv("SPLIT_RESULT_FIXTURE") ?: "baseline"
+private val resultRecoveryFixture = resultFixture in setOf("recovery", "recovery-cap")
 private val resultInputContract = System.getenv("SPLIT_INPUT_CONTRACT_VERSION")?.toInt() ?: 1
 private val resultOrderCodec = SplitOrderDeliveryCodec(resultInputContract)
 private val resultDeliveryCodec = SplitResultDeliveryCodec(resultInputContract)
@@ -127,6 +133,7 @@ private class ResultVerificationService(
                 "pid" to ProcessHandle.current().pid(),
                 "bootId" to bootId,
                 "initialized" to delegate.tradingReady,
+                "lifecycle" to delegate.lifecycle.name,
                 "logPosition" to cluster.logPosition(),
                 "clusterRole" to cluster.role().name,
                 "snapshotCount" to snapshots,
@@ -155,6 +162,7 @@ private class ResultVerificationService(
                         "buyerX" to balance(resultBuyer, "X"),
                         "buyerXHold" to balance(resultBuyer, "X", true),
                         "sellerQ" to balance(resultSeller, "USDT"),
+                        "sellerQHold" to balance(resultSeller, "USDT", true),
                         "sellerX" to balance(resultSeller, "X"),
                         "sellerXHold" to balance(resultSeller, "X", true),
                         "feeQ" to (saved.financial.feeRevenueByAsset[AssetId("USDT")]?.longValueExact() ?: 0L),
@@ -197,12 +205,77 @@ private class ResultVerificationService(
                                     "logicalBytes" to it.result.canonicalBytes,
                                 )
                             },
-                    )
+                    ).apply {
+                        if (resultRecoveryFixture) {
+                            val channels = saved.financial.inbox.channels
+                            put("inboxEntries", channels.sumOf { it.entries.size + it.cancelEntries.size })
+                            put("inboxOrderEntries", channels.sumOf { it.entries.size })
+                            put("inboxCancelEntries", channels.sumOf { it.cancelEntries.size })
+                            put(
+                                "inboxChannels",
+                                channels.sortedBy { it.userId.value }.take(8).map { channel ->
+                                    mapOf(
+                                        "userId" to channel.userId.value,
+                                        "channel" to channel.channel,
+                                        "epoch" to channel.epoch,
+                                        "processedThrough" to channel.processedThrough,
+                                        "retiredThrough" to channel.retiredThrough,
+                                        "orders" to
+                                            channel.entries.sortedBy { it.sequence }.take(8).map {
+                                                mapOf(
+                                                    "requestSequence" to it.sequence,
+                                                    "code" to it.receipt.code.name,
+                                                    "orderId" to it.receipt.orderId?.value,
+                                                    "admissionSequence" to it.receipt.admissionSequence,
+                                                )
+                                            },
+                                        "cancellations" to
+                                            channel.cancelEntries.sortedBy { it.sequence }.take(8).map {
+                                                mapOf(
+                                                    "requestSequence" to it.sequence,
+                                                    "code" to it.receipt.code.name,
+                                                    "cancelId" to it.receipt.cancelId,
+                                                    "targetOrderId" to it.receipt.targetOrderId?.value,
+                                                    "inputSequence" to it.receipt.inputSequence,
+                                                )
+                                            },
+                                    )
+                                },
+                            )
+                            put(
+                                "liveReservations",
+                                saved.financial.liveOrders.sortedBy { it.admissionSequence }.take(8).map {
+                                    mapOf(
+                                        "orderId" to it.order.orderId.value,
+                                        "userId" to it.order.userId.value,
+                                        "admissionSequence" to it.admissionSequence,
+                                        "phase" to it.phase.name,
+                                        "quantity" to it.reservation.remainingQuantity.value,
+                                        "remainingAmount" to it.reservation.remainingAmount.value,
+                                        "remainingFeeReserve" to it.reservation.remainingFeeReserveAmount.value,
+                                        "feeRemainder" to it.reservation.feeRemainder.numerator,
+                                    )
+                                },
+                            )
+                            put(
+                                "cancellationDetails",
+                                saved.cancellations.sortedBy { it.input.dispatchSequence }.take(8).map {
+                                    mapOf(
+                                        "cancelId" to checkNotNull(it.input.cancel).cancelId,
+                                        "targetOrderId" to it.input.order.orderId.value,
+                                        "inputSequence" to it.input.dispatchSequence,
+                                        "terminalResultSequence" to it.terminalResultSequence,
+                                    )
+                                },
+                            )
+                            put("resultDetails", results.receipts.takeLast(8).map { resultMeaning(it.result) })
+                        }
+                    }
             } else {
                 val saved = (field.get(delegate) as ReservedMatchingState).recoveryState()
                 val market = saved.matching.markets.singleOrNull()
                 val stream = saved.streams.single()
-                if (resultFixture == "cancellation" && cluster.role() == Cluster.Role.LEADER) {
+                if ((resultFixture == "cancellation" || resultRecoveryFixture) && cluster.role() == Cluster.Role.LEADER) {
                     for (result in stream.outstanding.filter { it.resultSequence <= 8 }) {
                         writeBoundedHttpArtifact(
                             resultControl.resolve("retained-result-${result.resultSequence}.bin"),
@@ -212,7 +285,7 @@ private class ResultVerificationService(
                     }
                 }
                 values["matching"] =
-                    mapOf(
+                    mapOf<String, Any?>(
                         "bookOrders" to (market?.orders ?: emptyList()).size,
                         "bookQuantity" to (market?.orders ?: emptyList()).sumOf { it.remainingQuantity.value },
                         "engineSequence" to (market?.lastEngineSequence ?: 0L),
@@ -223,11 +296,92 @@ private class ResultVerificationService(
                         "activeOrders" to saved.activeOrders,
                         "activeBytes" to saved.activeBytes,
                         "fundsSettledThrough" to stream.fundsSettledThrough,
-                    )
+                    ).toMutableMap().apply {
+                        if (resultRecoveryFixture) {
+                            put(
+                                "bookDetails",
+                                market?.orders.orEmpty().take(8).map {
+                                    mapOf(
+                                        "orderId" to it.orderId.value,
+                                        "userId" to it.userId.value,
+                                        "side" to it.side.name,
+                                        "price" to it.price.value,
+                                        "quantity" to it.remainingQuantity.value,
+                                    )
+                                },
+                            )
+                            put("resultDetails", stream.outstanding.take(8).map(::resultMeaning))
+                        }
+                    }
             }
         }
         writeSplitTestJson(resultControl.resolve("state-${settings.role.name.lowercase()}${settings.transport.memberId}.json"), values)
     }
+}
+
+/** 복합 시험의 다섯 결과만 의미 필드로 관찰하며 제품 이력 저장소로 사용하지 않는다. */
+private fun resultMeaning(result: MatchingResultEnvelope): Map<String, Any?> {
+    check(result.events.size <= 8 && result.effects.size <= 8)
+    return mapOf(
+        "sequence" to result.resultSequence,
+        "resultId" to result.resultId,
+        "inputSequence" to result.input.dispatchSequence,
+        "orderId" to result.input.order.orderId.value,
+        "cancelId" to result.input.cancel?.cancelId,
+        "outcome" to result.outcome.name,
+        "engineBefore" to result.engineSequenceBefore,
+        "engineAfter" to result.engineSequenceAfter,
+        "events" to
+            result.events.map { event ->
+                mapOf<String, Any?>("engineSequence" to event.engineSequence) +
+                    when (event) {
+                        is TradeExecuted -> {
+                            mapOf(
+                                "kind" to "TRADE",
+                                "makerOrderId" to event.makerOrderId.value,
+                                "takerOrderId" to event.takerOrderId.value,
+                                "quantity" to event.quantity.value,
+                                "price" to event.price.value,
+                            )
+                        }
+
+                        is OrderEnteredBook -> {
+                            mapOf(
+                                "kind" to "RESTING",
+                                "orderId" to event.orderId.value,
+                                "quantity" to event.remainingQuantity.value,
+                                "price" to event.price.value,
+                            )
+                        }
+
+                        is OrderCancelled -> {
+                            mapOf(
+                                "kind" to "CANCELLED",
+                                "orderId" to event.orderId.value,
+                                "quantity" to event.remainingQuantity.value,
+                            )
+                        }
+
+                        is OrderCancelRejected -> {
+                            mapOf(
+                                "kind" to "CANCEL_REJECTED",
+                                "orderId" to event.orderId.value,
+                                "reason" to event.reason,
+                            )
+                        }
+                    }
+            },
+        "effects" to
+            result.effects.map {
+                mapOf(
+                    "orderId" to it.orderId.value,
+                    "originInputSequence" to it.origin.dispatchSequence,
+                    "beforeQuantity" to it.beforeQuantity.value,
+                    "afterQuantity" to it.afterQuantity.value,
+                    "disposition" to it.disposition.name,
+                )
+            },
+    )
 }
 
 /** 유실·보류는 시험 전송 wrapper에만 있고 제품 상태·응답 처리 경계는 그대로다. */
@@ -277,8 +431,83 @@ private fun resultOrderConnections(bootId: String): SplitOrderDeliveryConnection
         }
     }
 
-private fun resultConnections(bootId: String): SplitResultDeliveryConnectionFactory =
-    SplitResultDeliveryConnectionFactory { endpoint, timeout, onReply ->
+/** 실제 결과 client는 전달 스레드만 닫는다. 요청 파일은 재시작 후 다시 소비하지 않는다. */
+private class ResultConnectionObservation(
+    private val bootId: String,
+) {
+    private val request = resultControl.resolve("close-result-connection")
+    private var seenToken = if (Files.exists(request)) Files.readString(request) else null
+    private var connectionId: String? = null
+    private var closedConnectionId: String? = null
+    private var describedConnectionId: String? = null
+    private var consumedCloseToken: String? = null
+    private var connectionAttempts = 0
+    private var connectedCount = 0
+    private var describedCount = 0
+    private var closeCount = 0
+
+    fun opening(): String {
+        connectionId = UUID.randomUUID().toString()
+        connectionAttempts++
+        publish("OPENING")
+        return checkNotNull(connectionId)
+    }
+
+    fun connected(id: String) {
+        check(id == connectionId)
+        connectedCount++
+        publish("CONNECTED")
+    }
+
+    fun described(id: String) {
+        check(id == connectionId)
+        describedConnectionId = id
+        describedCount++
+        publish("DESCRIBED")
+    }
+
+    fun closeRequested(
+        connection: SplitResultDeliveryConnection,
+        id: String,
+    ): Boolean {
+        if (!Files.exists(request)) return false
+        val token = Files.readString(request)
+        if (token == seenToken) return false
+        check(token.isNotBlank() && token.length <= 128)
+        seenToken = token
+        connection.close()
+        check(connection.isClosed) { "시험이 요청한 실제 결과 연결이 닫히지 않았습니다" }
+        consumedCloseToken = token
+        closedConnectionId = id
+        closeCount++
+        publish("CLOSED")
+        return true
+    }
+
+    private fun publish(state: String) {
+        writeSplitTestJson(
+            resultControl.resolve("result-connection.json"),
+            mapOf(
+                "bootId" to bootId,
+                "connectionId" to connectionId,
+                "closedConnectionId" to closedConnectionId,
+                "describedConnectionId" to describedConnectionId,
+                "connectionAttempts" to connectionAttempts,
+                "connectedCount" to connectedCount,
+                "describedCount" to describedCount,
+                "consumedCloseToken" to consumedCloseToken,
+                "closeCount" to closeCount,
+                "state" to state,
+            ),
+        )
+    }
+}
+
+private fun resultConnections(bootId: String): SplitResultDeliveryConnectionFactory {
+    val observation = if (resultRecoveryFixture) ResultConnectionObservation(bootId) else null
+    return SplitResultDeliveryConnectionFactory { endpoint, timeout, onReply ->
+        val observed = observation.takeIf { endpoint.clusterId == SplitTradingNodeSettings.FUNDS_CLUSTER_ID }
+        val connectionId = observed?.opening()
         val attempt =
             AeronSplitResultDeliveryConnectionFactory.begin(endpoint, timeout) { reply ->
                 if (reply.ack != null) {
@@ -296,12 +525,22 @@ private fun resultConnections(bootId: String): SplitResultDeliveryConnectionFact
                     if (Files.exists(resultControl.resolve("hold-$name-result-replies"))) return@begin
                 }
                 onReply(reply)
+                if (reply.code == "DESCRIBED" && reply.lifecycle == TradingLifecycle.RUNNING) {
+                    connectionId?.let { observed?.described(it) }
+                }
             }
         object : SplitResultDeliveryConnectAttempt {
             override fun poll(): SplitResultDeliveryConnection? {
                 val connection = attempt.poll() ?: return null
+                connectionId?.let { observed?.connected(it) }
                 return object : SplitResultDeliveryConnection by connection {
+                    override fun poll(): Int {
+                        if (connectionId != null && observed?.closeRequested(connection, connectionId) == true) return 0
+                        return connection.poll()
+                    }
+
                     override fun offer(bytes: ByteArray): Long {
+                        if (connectionId != null && observed?.closeRequested(connection, connectionId) == true) return Publication.CLOSED
                         when (val command = resultDeliveryCodec.decode(bytes).command) {
                             is SplitResultDeliveryCommand.Apply -> {
                                 if (command.result.resultSequence <= 8 || command.result.eventCount > 8) {
@@ -328,6 +567,7 @@ private fun resultConnections(bootId: String): SplitResultDeliveryConnectionFact
             override fun close() = attempt.close()
         }
     }
+}
 
 private fun resultVerificationNode() {
     val settings = splitTradingSettings(resultVerificationEnvironment())
@@ -360,6 +600,10 @@ private fun resultVerificationNode() {
         ).use { node ->
             Runtime.getRuntime().addShutdownHook(Thread(node::close))
             val config = settings.transport
+            val dispatchLimits = settings.configuration.dispatchLimits
+            val dispatchMarket = dispatchLimits.marketLimits.values.single()
+            val matchingLimits = settings.configuration.matchingLimits
+            val matchingMarket = matchingLimits.marketLimits.values.single()
             writeSplitTestJson(
                 resultControl.resolve("runtime-${settings.role.name.lowercase()}${config.memberId}.json"),
                 mapOf(
@@ -378,6 +622,19 @@ private fun resultVerificationNode() {
                     "schemaSha256" to BoundedExecutionIdentity.schemaSha256,
                     "topologySha256" to settings.configuration.resultTopologySha256,
                     "mode" to settings.mode,
+                    "fixture" to resultFixture,
+                    "inputContractVersion" to settings.configuration.inputContractVersion,
+                    "maxPendingOrders" to settings.configuration.topology.fundsManifest.limits.maxPendingOrders,
+                    "maxMarketPendingOrders" to settings.configuration.topology.fundsManifest.limits.maxMarketPendingOrders,
+                    "maxMatchingResultEntries" to settings.configuration.matchingLimits.maxResultEntries,
+                    "maxMarketMatchingResultEntries" to
+                        settings.configuration.matchingLimits.marketLimits.values
+                            .single()
+                            .maxResultEntries,
+                    "effectiveFundsDispatchBytes" to minOf(dispatchLimits.maxDispatchBytes, dispatchMarket.maxDispatchBytes),
+                    "effectiveFundsActiveBytes" to minOf(dispatchLimits.maxActiveBytes, dispatchMarket.maxActiveBytes),
+                    "effectiveMatchingResultBytes" to minOf(matchingLimits.maxResultBytes, matchingMarket.maxResultBytes),
+                    "effectiveMatchingActiveBytes" to minOf(matchingLimits.maxActiveBytes, matchingMarket.maxActiveBytes),
                     "jdkVersion" to System.getProperty("java.version"),
                     "termLengthBytes" to TradingAeronRuntime.TERM_LENGTH_BYTES,
                     "mtuLength" to 1408,
@@ -405,7 +662,18 @@ private fun setupResultVerification() {
                 FeeProductType.SPOT,
                 FeeTier.NORMAL,
                 1,
-                MakerTakerFeeRates(FeeRate(if (resultFixture == "fee") 10_000 else 0), FeeRate(if (resultFixture == "fee") 20_000 else 0)),
+                MakerTakerFeeRates(
+                    FeeRate(if (resultFixture == "fee" || resultRecoveryFixture) 10_000 else 0),
+                    FeeRate(
+                        if (resultRecoveryFixture) {
+                            10_000
+                        } else if (resultFixture == "fee") {
+                            20_000
+                        } else {
+                            0
+                        },
+                    ),
+                ),
             ),
             0,
         )
@@ -424,9 +692,9 @@ private fun setupResultVerification() {
                 requestWindow = 1024,
                 maxInboxEntries = 2048,
                 maxActiveOrders = 1024,
-                maxPendingOrders = 1024,
+                maxPendingOrders = if (resultFixture == "recovery-cap") 1 else 1024,
                 maxMarketActiveOrders = 1024,
-                maxMarketPendingOrders = 1024,
+                maxMarketPendingOrders = if (resultFixture == "recovery-cap") 1 else 1024,
                 maxBalanceKeys = 32,
                 maxPreparations = 16,
                 maxMarkets = 1,
@@ -551,7 +819,8 @@ private fun resultVerificationCommand(args: Array<String>) {
                     price: Long,
                     quantity: Long,
                     side: Side = if (who == "seller") Side.SELL else Side.BUY,
-                ) {
+                    requireAccepted: Boolean = true,
+                ): SplitOrderDeliveryReply {
                     val reply =
                         funds.request(
                             SplitOrderDeliveryCommand.Control(
@@ -571,7 +840,8 @@ private fun resultVerificationCommand(args: Array<String>) {
                                 ),
                             ),
                         )
-                    check(reply.code == "ACCEPTED") { reply.toString() }
+                    if (requireAccepted) check(reply.code == "ACCEPTED") { reply.toString() }
+                    return reply
                 }
                 when (args[0]) {
                     "prepare" -> {
@@ -586,12 +856,13 @@ private fun resultVerificationCommand(args: Array<String>) {
                         val sellerQuantity =
                             when (resultFixture) {
                                 "partial", "cap", "active" -> 2L
-                                "cancellation" -> 3L
+                                "cancellation", "recovery", "recovery-cap" -> 3L
                                 "large" -> 1024L
                                 else -> 1L
                             }
                         fund(resultBuyer, "USDT", if (resultFixture == "large") 1_000_000 else 1_000, "result169-buyer")
                         fund(resultSeller, "X", sellerQuantity, "result169-seller")
+                        if (resultRecoveryFixture) fund(resultSeller, "USDT", 100, "result134-seller-quote")
                         for (user in listOf(resultBuyer, resultSeller)) {
                             val rotated = funds.request(SplitOrderDeliveryCommand.Control(BoundedTradingCommand.Rotate(user, 0, 0)))
                             check(rotated.control?.epoch == 1L)
@@ -601,6 +872,25 @@ private fun resultVerificationCommand(args: Array<String>) {
                     "admit" -> {
                         val side = args.getOrNull(5)?.let(Side::valueOf) ?: if (args[1] == "seller") Side.SELL else Side.BUY
                         admit(args[1], args[2].toLong(), args[3].toLong(), args[4].toLong(), side)
+                    }
+
+                    "probe-capacity" -> {
+                        check(resultRecoveryFixture)
+                        val reply = admit("buyer", 3, 1, 1, Side.BUY, requireAccepted = false)
+                        println(
+                            resultJson.writeValueAsString(
+                                mapOf(
+                                    "code" to reply.code,
+                                    "reason" to (
+                                        reply.control
+                                            ?.admission
+                                            ?.reason
+                                            ?.name ?: reply.code
+                                    ),
+                                    "appliedLogPosition" to reply.appliedLogPosition,
+                                ),
+                            ),
+                        )
                     }
 
                     "cancel" -> {

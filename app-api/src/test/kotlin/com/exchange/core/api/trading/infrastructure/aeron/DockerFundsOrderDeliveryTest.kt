@@ -42,6 +42,7 @@ internal class DockerFundsOrderDeliveryVerification(
     internal val control = reports.resolve("control")
     private val image = "exchange-order-delivery:$runId"
     private val composeFile = project.resolve("src/test/docker/aeron-order-delivery/compose.yml")
+    private val recovery = resultFixture?.startsWith("recovery") == true
     private val environment =
         mutableMapOf(
             "SPLIT_IMAGE" to image,
@@ -49,21 +50,23 @@ internal class DockerFundsOrderDeliveryVerification(
             "SPLIT_CONTROL_DIRECTORY" to control.toString(),
             "SPLIT_RECOVER_EXISTING" to "false",
             "SPLIT_RESULT_FIXTURE" to (resultFixture ?: "baseline"),
-            "SPLIT_MAX_RESULT_ENTRIES" to (if (resultFixture == "cap") "1" else "4096"),
+            "SPLIT_MAX_RESULT_ENTRIES" to (if (resultFixture in setOf("cap", "recovery-cap")) "1" else "4096"),
             "SPLIT_MAX_MATCHING_ACTIVE" to (if (resultFixture == "active") "1" else "8192"),
-            "SPLIT_INPUT_CONTRACT_VERSION" to (if (resultFixture == "cancellation") "2" else "1"),
-            "SPLIT_MAX_FUNDS_DISPATCH_BYTES" to (if (resultFixture == "cancellation") "1048576" else ""),
-            "SPLIT_MAX_FUNDS_ACTIVE_BYTES" to (if (resultFixture == "cancellation") "1048576" else ""),
+            "SPLIT_INPUT_CONTRACT_VERSION" to (if (resultFixture == "cancellation" || recovery) "2" else "1"),
+            "SPLIT_MAX_FUNDS_DISPATCH_BYTES" to (if (resultFixture == "cancellation" || recovery) "1048576" else ""),
+            "SPLIT_MAX_FUNDS_ACTIVE_BYTES" to (if (resultFixture == "cancellation" || recovery) "1048576" else ""),
         )
     private val commands = VerificationCommands(project, reports, environment)
     val failures = mutableListOf<String>()
     internal val checkpoints = mutableListOf<Map<String, Any?>>()
     private val containers = linkedMapOf<String, String>()
+    private val verifiedBootIds = linkedMapOf<String, String>()
     private val inspections = linkedMapOf<String, JsonNode>()
     private var originalVolumes = emptyMap<String, String>()
     private var frozenImageId = ""
     private var frozenManifestSha256 = ""
     private var headCommit = ""
+    private var frozenVerificationSources = emptyMap<String, String>()
     private var hostFreeDiskBytes: Long? = null
     private var dockerMemoryBytes: Long? = null
     private var recordsBytes: Long = 0
@@ -177,6 +180,7 @@ internal class DockerFundsOrderDeliveryVerification(
                 awaitExpected("G5 repeated user request keeps original identity and one effect", 4, 10, 0, 4)
             }
             check(sha256(control.resolve("manifest.bin")) == frozenManifestSha256) { "복구 도중 manifest가 변경됐습니다" }
+            if (recovery) check(verificationSources() == frozenVerificationSources) { "시험 도중 검증 소스가 변경됐습니다" }
             checkStorageBudget()
         } catch (failure: Throwable) {
             failures += "$stage: ${failure.javaClass.simpleName}: ${failure.message}"
@@ -189,6 +193,7 @@ internal class DockerFundsOrderDeliveryVerification(
 
     private fun preflight() {
         headCommit = must(command(listOf("git", "rev-parse", "HEAD"), 5_000), "검증 HEAD 확인").stdout.trim()
+        if (recovery) frozenVerificationSources = verificationSources()
         hostFreeDiskBytes = Files.getFileStore(project).usableSpace
         check(checkNotNull(hostFreeDiskBytes) >= 8L * GIB) { "호스트 기록 디스크 여유 8GiB 필요: $hostFreeDiskBytes bytes" }
         must(command(listOf("docker", "version"), 15_000), "Docker 준비")
@@ -201,23 +206,88 @@ internal class DockerFundsOrderDeliveryVerification(
     private fun startNodes(
         label: String,
         oldBootIds: Map<String, String>,
+        services: List<String> = SERVICES,
     ) {
         val startupDeadline = minOf(workDeadline, System.nanoTime() + TimeUnit.SECONDS.toNanos(90))
-        must(compose(listOf("up", "-d", "--force-recreate") + SERVICES, remaining(startupDeadline)), "6개 독립 노드 기동")
-        for (service in SERVICES) {
+        val arguments = listOf("up", "-d", "--force-recreate") + if (services == SERVICES) emptyList() else listOf("--no-deps")
+        must(compose(arguments + services, remaining(startupDeadline)), "$label 독립 노드 기동")
+        for (service in services) {
             val id = must(compose(listOf("ps", "-q", service), minOf(10_000, remaining(startupDeadline))), "$service 컨테이너 식별").stdout.trim()
             check(id.matches(Regex("[0-9a-f]{12,64}"))) { "$service 실제 컨테이너가 없습니다: $id" }
             containers[service] = id
         }
-        awaitStates("$label all six current boot states and completed runtimes", remaining(startupDeadline)) { states ->
-            states.all { (service, state) ->
-                number(state, "pid") > 0 && state.path("bootId").asString().isNotBlank() &&
-                    (oldBootIds[service] == null || oldBootIds[service] != state.path("bootId").asString()) &&
-                    runtimeReadyFor(service, state)
+        val ready =
+            awaitStates("$label all six current boot states and completed runtimes", remaining(startupDeadline)) { states ->
+                states.all { (service, state) ->
+                    number(state, "pid") > 0 && state.path("bootId").asString().isNotBlank() &&
+                        (oldBootIds[service] == null || oldBootIds[service] != state.path("bootId").asString()) &&
+                        runtimeReadyFor(service, state)
+                }
             }
-        }
+        for (service in services) verifiedBootIds[service] = ready.getValue(service).path("bootId").asString()
         inspectIsolation(label)
         checkStorageBudget()
+    }
+
+    internal data class StoppedRole(
+        val services: List<String>,
+        val before: Map<String, JsonNode>,
+        val otherContainers: Map<String, String>,
+    )
+
+    /** 반대 역할의 실행은 유지하고 지정한 역할의 자기 기록만 다시 연다. */
+    internal fun stopRole(role: String): StoppedRole {
+        require(role in setOf("funds", "matching"))
+        val selected = SERVICES.filter { it.startsWith(role) }
+        val before = readStates()
+        val others = containers.filterKeys { it !in selected }.toMap()
+        collectLogs("before-$role-stop-${checkpoints.size}")
+        must(compose(listOf("stop", "--timeout", "15") + selected, 30_000), "$role 3노드만 종료")
+        for (service in selected) {
+            val state = inspect(containers.getValue(service)).path("State")
+            check(!state.path("Running").asBoolean() && !state.path("OOMKilled").asBoolean())
+            check(state.path("ExitCode").asInt() in setOf(0, 143)) { "$service 비정상 종료" }
+        }
+        check(others.values.all { inspect(it).path("State").path("Running").asBoolean() })
+        checkpoints += mapOf("case" to "$role only stopped", "states" to before, "otherContainers" to others)
+        return StoppedRole(selected, before, others)
+    }
+
+    internal fun startRole(
+        stopped: StoppedRole,
+        restoredSnapshot: Boolean,
+        expectation: (Map<String, JsonNode>) -> Boolean,
+    ): Map<String, JsonNode> {
+        for (service in stopped.services) {
+            verifiedBootIds.remove(service)
+            Files.deleteIfExists(control.resolve("state-$service.json"))
+            Files.deleteIfExists(control.resolve("runtime-$service.json"))
+        }
+        environment["SPLIT_RECOVER_EXISTING"] = "true"
+        val oldBoots =
+            stopped.services.associateWith {
+                stopped.before
+                    .getValue(it)
+                    .path("bootId")
+                    .asString()
+            }
+        startNodes("${stopped.services.first()} role recovery", oldBoots, stopped.services)
+        return awaitStates("역할별 복원과 상대 역할 boot 보존", 45_000) { states ->
+            expectation(states) && stopped.services.all { states.getValue(it).path("restoredSnapshot").asBoolean() == restoredSnapshot } &&
+                stopped.otherContainers.keys.all {
+                    states.getValue(it).path("bootId").asString() ==
+                        stopped.before
+                            .getValue(it)
+                            .path("bootId")
+                            .asString()
+                }
+        }.also {
+            for ((service, id) in stopped.otherContainers) {
+                check(must(compose(listOf("ps", "-q", service), 10_000), "계속 실행한 $service 확인").stdout.trim() == id)
+            }
+            check(sha256(control.resolve("manifest.bin")) == frozenManifestSha256)
+            checkStorageBudget()
+        }
     }
 
     private fun restart(
@@ -420,8 +490,16 @@ internal class DockerFundsOrderDeliveryVerification(
             mapper.readTree(Files.readString(file)).also {
                 check(it.path("role").asString() == if (service.startsWith("funds")) "FUNDS" else "MATCHING")
                 check(number(it, "memberId") == service.last().digitToInt().toLong())
+                if (recovery) {
+                    check(runtimeReadyFor(service, it)) { "$service 현재 runtime과 관찰의 실행 식별이 다릅니다" }
+                    verifiedBootIds[service]?.let { current ->
+                        check(it.path("bootId").asString() == current) { "$service 이전 boot 관찰입니다" }
+                    }
+                }
             }
         }
+
+    internal fun recoveryBoots(): Map<String, String> = verifiedBootIds.toMap()
 
     /** onStart의 상태 게시가 노드의 전체 런타임 기동보다 먼저 끝날 수 있다. */
     private fun runtimeReadyFor(
@@ -484,6 +562,21 @@ internal class DockerFundsOrderDeliveryVerification(
             check(Files.size(runtimePath) in 1..MAX_OBSERVATION_BYTES)
             val runtime = mapper.readTree(Files.readString(runtimePath))
             check(runtime.path("storageLevels").toList().map { it.asInt() } == listOf(2, 2, 2)) { "$service 실제 sync 2/2/2가 아닙니다" }
+            if (recovery) {
+                check(runtime.path("fixture").asString() == resultFixture && number(runtime, "inputContractVersion") == 2L)
+                val pendingLimit = if (resultFixture == "recovery-cap") 1L else 1024L
+                val resultLimit = if (resultFixture == "recovery-cap") 1L else 4096L
+                check(number(runtime, "maxPendingOrders") == pendingLimit && number(runtime, "maxMarketPendingOrders") == pendingLimit)
+                check(
+                    number(runtime, "maxMatchingResultEntries") == resultLimit &&
+                        number(runtime, "maxMarketMatchingResultEntries") == resultLimit,
+                )
+                check(number(runtime, "effectiveFundsDispatchBytes") == MIB && number(runtime, "effectiveFundsActiveBytes") == MIB)
+                check(
+                    number(runtime, "effectiveMatchingResultBytes") == 2L * MIB &&
+                        number(runtime, "effectiveMatchingActiveBytes") == 2L * MIB,
+                )
+            }
             runtimes[service] = runtime
         }
         check(
@@ -807,7 +900,9 @@ internal class DockerFundsOrderDeliveryVerification(
                 "success" to (failures.isEmpty() && cleaned),
                 "baseCommit" to
                     (
-                        if (resultScenario ==
+                        if (recovery) {
+                            "875e8257adaec4f49b240ec9d9c67a5261784861"
+                        } else if (resultScenario ==
                             null
                         ) {
                             "8d2572bfc98748f44569f5fecbaa8a7c47e87285"
@@ -818,6 +913,7 @@ internal class DockerFundsOrderDeliveryVerification(
                 "fixture" to resultFixture,
                 "headCommit" to headCommit,
                 "productSourceSha256" to fingerprints,
+                "verificationSourceSha256" to frozenVerificationSources,
                 "image" to image,
                 "frozenImageId" to frozenImageId,
                 "manifestSha256" to frozenManifestSha256,
@@ -843,7 +939,10 @@ internal class DockerFundsOrderDeliveryVerification(
                 "unverified" to
                     (
                         (if (resultScenario == null) listOf("#169 결과 역전달·정산") else emptyList()) +
-                            listOf("장애 과반·복합 복원·장기 부하", "악의적 peer 인증·위조 방어")
+                            listOf(
+                                if (recovery) "명세 두 사례 밖 복합 복원·리더/과반 장애·장기 부하" else "장애 과반·복합 복원·장기 부하",
+                                "악의적 peer 인증·위조 방어",
+                            )
                     ),
             )
         val encoded = mapper.writerWithDefaultPrettyPrinter().writeValueAsString(report)
@@ -869,6 +968,18 @@ internal class DockerFundsOrderDeliveryVerification(
     private fun sha256(path: Path): String =
         MessageDigest.getInstance("SHA-256").digest(Files.readAllBytes(path)).joinToString("") {
             "%02x".format(it)
+        }
+
+    private fun verificationSources(): Map<String, String> =
+        listOf(
+            "MatchingResultVerificationTool.kt",
+            "DockerFundsOrderDeliveryTest.kt",
+            "DockerSplitRecoveryTest.kt",
+            "SplitRecoveryConvergence.kt",
+            "SplitRecoveryConvergenceTest.kt",
+        ).associate { name ->
+            val path = "src/test/kotlin/com/exchange/core/api/trading/infrastructure/aeron/$name"
+            path to sha256(project.resolve(path))
         }
 
     private fun elapsedMs(): Long = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - started)
