@@ -1,4 +1,7 @@
+import groovy.json.JsonOutput
+import groovy.json.JsonSlurper
 import java.io.File
+import java.security.MessageDigest
 
 plugins {
     kotlin("jvm")
@@ -102,6 +105,134 @@ val stageFundingVerificationRuntime by tasks.registering(Sync::class) {
     }
     from(configurations.runtimeClasspath) {
         into("lib")
+    }
+}
+
+val ciTestGroup = providers.gradleProperty("ciTestGroup").orNull
+val ciTestGroupsFile = rootProject.layout.projectDirectory.file(".github/ci-test-groups.json")
+val ciTestGroups: Map<String, List<String>> by lazy {
+    val document = ciTestGroupsFile.asFile.readText()
+    val parsed = JsonSlurper().parseText(document)
+    require(parsed is Map<*, *> && parsed.isNotEmpty()) { "CI 테스트 그룹 목록은 비어 있지 않은 객체여야 합니다" }
+    // 이 스키마는 최상위 객체 하나뿐이다. 파서가 덮어쓴 중복 키도 실패시킨다.
+    require(Regex("\"(?:\\\\.|[^\"\\\\])*\"\\s*:").findAll(document).count() == parsed.size) { "중복된 CI 테스트 그룹 키가 있습니다" }
+    parsed.entries
+        .associate { (key, value) ->
+            require(key is String && key != "general" && key != "all" && key.matches(Regex("[a-z][a-z0-9-]*"))) { "잘못된 CI 테스트 그룹: $key" }
+            require(value is List<*> && value.isNotEmpty()) { "$key 그룹의 테스트 클래스가 비어 있습니다" }
+            val classes =
+                value.map {
+                    require(it is String && it.matches(Regex("[A-Za-z_][A-Za-z0-9_]*(\\.[A-Za-z_][A-Za-z0-9_]*)+"))) {
+                        "$key 그룹은 완전한 최상위 클래스 이름만 지정할 수 있습니다: $it"
+                    }
+                    it
+                }
+            key to classes
+        }.also { groups ->
+            val classes = groups.values.flatten()
+            require(classes.size == classes.distinct().size) { "하나의 CI 테스트 클래스를 중복 배정할 수 없습니다" }
+        }
+}
+
+val verifyCiTestPartition by tasks.registering {
+    group = "verification"
+    description = "컴파일된 테스트 후보를 CI 그룹에 빠짐없이 한 번씩 배정하고 기록한다."
+    dependsOn(tasks.named("testClasses"))
+    inputs.file(ciTestGroupsFile)
+    inputs.files(sourceSets["test"].output.classesDirs)
+    inputs.property("selectedGroup", ciTestGroup ?: "all")
+    val inventory = layout.buildDirectory.file("reports/ci-test-partition/inventory.json")
+    outputs.file(inventory)
+    doLast {
+        val groups = ciTestGroups
+        val owners = groups.flatMap { (group, classes) -> classes.map { it to group } }.toMap()
+        val roots =
+            sourceSets["test"]
+                .output.classesDirs.files
+                .filter(File::isDirectory)
+        val candidates =
+            roots
+                .flatMap { root ->
+                    root
+                        .walkTopDown()
+                        .filter { it.isFile && it.extension == "class" }
+                        .map { it.relativeTo(root).invariantSeparatorsPath }
+                        .toList()
+                }.sorted()
+        require(candidates.isNotEmpty() && candidates.distinct().size == candidates.size) { "CI 테스트 후보가 비었거나 클래스 출력이 중복됐습니다" }
+        val topLevelClasses = candidates.filterNot { '$' in it }.map { it.removeSuffix(".class").replace('/', '.') }.toSet()
+        require(owners.keys.all { it in topLevelClasses }) { "컴파일 결과에 없는 CI 테스트 클래스: ${owners.keys - topLevelClasses}" }
+        val partition =
+            (listOf("general") + groups.keys).associateWith { group ->
+                candidates.filter { path ->
+                    val topLevel = path.substringBefore('$').removeSuffix(".class").replace('/', '.')
+                    (owners[topLevel] ?: "general") == group
+                }
+            }
+        require(partition.values.all { it.isNotEmpty() } && partition.values.flatten().sorted() == candidates) {
+            "CI 그룹에 누락·중복 또는 빈 후보 목록이 있습니다"
+        }
+        val selected = if (ciTestGroup == null) candidates else partition.getValue(ciTestGroup)
+        val actual =
+            tasks
+                .named<Test>("test")
+                .get()
+                .candidateClassFiles.files
+                .filter { it.isFile && it.extension == "class" }
+                .map { candidate ->
+                    val path = candidate.toPath().toAbsolutePath().normalize()
+                    val root =
+                        roots.singleOrNull { path.startsWith(it.toPath().toAbsolutePath().normalize()) }
+                            ?: error("Gradle 테스트 후보가 테스트 출력 경로 밖에 있습니다: $candidate")
+                    root
+                        .toPath()
+                        .toAbsolutePath()
+                        .normalize()
+                        .relativize(path)
+                        .toString()
+                        .replace(File.separatorChar, '/')
+                }.sorted()
+        require(actual == selected) { "실제 Gradle 테스트 후보와 CI 그룹 배정이 다릅니다: 누락=${selected - actual.toSet()}, 추가=${actual - selected.toSet()}" }
+        val sourceSha =
+            MessageDigest
+                .getInstance(
+                    "SHA-256",
+                ).digest(ciTestGroupsFile.asFile.readBytes())
+                .joinToString("") { "%02x".format(it) }
+        inventory.get().asFile.apply {
+            parentFile.mkdirs()
+            writeText(
+                JsonOutput.prettyPrint(
+                    JsonOutput.toJson(
+                        mapOf(
+                            "group" to (ciTestGroup ?: "all"),
+                            "catalogSha256" to sourceSha,
+                            "groups" to (listOf("general") + groups.keys),
+                            "allCandidates" to candidates.map { it.removeSuffix(".class").replace('/', '.') },
+                            "selectedCandidates" to actual.map { it.removeSuffix(".class").replace('/', '.') },
+                        ),
+                    ),
+                ),
+            )
+        }
+    }
+}
+
+tasks.named<Test>("test") {
+    if (ciTestGroup != null) {
+        require(ciTestGroup == "general" || ciTestGroup in ciTestGroups) { "알 수 없는 CI 테스트 그룹: $ciTestGroup" }
+        dependsOn(verifyCiTestPartition)
+        inputs.property("ciTestGroup", ciTestGroup)
+        // 원래 클래스와 그 내부 클래스만 선택한다. runtimeClasspath의 공용 helper는 그대로 둔다.
+        val selected = if (ciTestGroup == "general") ciTestGroups.values.flatten() else ciTestGroups.getValue(ciTestGroup)
+        val patterns =
+            selected.flatMap { className ->
+                val path = className.replace('.', '/')
+                listOf("$path.class", "$path\$*.class")
+            }
+        if (ciTestGroup == "general") exclude(patterns) else include(patterns)
+        failOnNoDiscoveredTests.set(true)
+        filter.isFailOnNoMatchingTests = true
     }
 }
 
