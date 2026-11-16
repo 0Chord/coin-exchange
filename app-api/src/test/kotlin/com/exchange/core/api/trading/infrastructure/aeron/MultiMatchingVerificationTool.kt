@@ -75,6 +75,11 @@ private fun multiDispatch(
     mapOf(
         "dispatchSequence" to input.dispatchSequence,
         "orderId" to input.order.orderId.value,
+        "marketId" to input.order.marketId.value,
+        "userId" to input.order.userId.value,
+        "side" to input.order.side.name,
+        "price" to input.order.price.value,
+        "quantity" to input.order.quantity.value,
         "payloadSha256" to multiSha(multiOrderCodec.encode(0, SplitOrderDeliveryCommand.Apply(input))),
         "token" to
             token?.let {
@@ -125,7 +130,7 @@ private fun multiCancellation(receipt: CancelReceipt): Map<String, Any?> =
         "reason" to receipt.reason,
     )
 
-private fun multiReply(reply: SplitOrderDeliveryReply): Map<String, Any?> =
+internal fun multiReply(reply: SplitOrderDeliveryReply): Map<String, Any?> =
     mapOf(
         "code" to reply.code,
         "receipt" to (reply.control?.admission?.let(::multiAdmission) ?: reply.cancellation?.let(::multiCancellation)),
@@ -249,7 +254,70 @@ private class MultiMatchingService(
             } else {
                 null
             }
-        delegate.onSessionMessage(session, timestamp, buffer, offset, length, header)
+        val observedSession =
+            if (session != null && settings.role == TradingServiceRole.FUNDS &&
+                order is SplitOrderDeliveryCommand.Control && order.command is BoundedTradingCommand.Admit
+            ) {
+                val admission = order.command as BoundedTradingCommand.Admit
+                if (admission.token == RequestToken(multiBuyer, 0, 1, 1) &&
+                    admission.intent.marketId == multiMarket("btc") && admission.intent.quantity.value == 6L
+                ) {
+                    // 실제 계산을 마친 응답을 기록한 뒤 원래 세션으로 그대로 보낸다.
+                    // 응답 직후 프로세스가 종료돼도 after-delegate 관찰 파일에 의존하지 않는다.
+                    object : ClientSession by session {
+                        override fun offer(
+                            response: DirectBuffer,
+                            responseOffset: Int,
+                            responseLength: Int,
+                        ): Long {
+                            val reply =
+                                multiOrderCodec.decodeReply(
+                                    ByteArray(responseLength).also { response.getBytes(responseOffset, it) },
+                                )
+                            if (cluster.role() == Cluster.Role.LEADER && reply.control
+                                    ?.admission
+                                    ?.code
+                                    ?.name == "ACCEPTED"
+                            ) {
+                                val balance =
+                                    (field.get(delegate) as BoundedFundingState)
+                                        .fundsRecoveryState()
+                                        .financial.balances
+                                        .single { it.userId == multiBuyer && it.assetId.value == "USDT" }
+                                val committed =
+                                    mapOf(
+                                        "runId" to settings.transport.runId,
+                                        "service" to service,
+                                        "bootId" to boot,
+                                        "memberId" to settings.transport.memberId,
+                                        "leadershipTermId" to leadershipTermId,
+                                        "leaderMemberId" to leaderMemberId,
+                                        "clusterRole" to cluster.role().name,
+                                        "logPosition" to cluster.logPosition(),
+                                        "correlationId" to checkNotNull(orderEnvelope).correlationId,
+                                        "requestSha256" to multiSha(multiOrderCodec.encode(0, order)),
+                                        "wireSha256" to multiSha(bytes),
+                                        "receipt" to multiAdmission(checkNotNull(reply.control?.admission)),
+                                        "balance" to
+                                            mapOf(
+                                                "userId" to balance.userId.value,
+                                                "assetId" to balance.assetId.value,
+                                                "available" to balance.available.value,
+                                                "hold" to balance.hold.value,
+                                            ),
+                                    )
+                                writeBoundedHttpJson(multiControl.resolve("admission-$service.json"), committed)
+                            }
+                            return session.offer(response, responseOffset, responseLength)
+                        }
+                    }
+                } else {
+                    session
+                }
+            } else {
+                session
+            }
+        delegate.onSessionMessage(observedSession, timestamp, buffer, offset, length, header)
         if (order == SplitOrderDeliveryCommand.DescribePeer && checkNotNull(orderEnvelope).correlationId >= MULTI_PROBE_MINIMUM) {
             // 이 요청이 현재 부팅에서 실제 복제돼 처리된 위치와 선출 관찰을 한 번에 묶는다.
             probe =
@@ -387,6 +455,15 @@ private class MultiMatchingService(
                         "sequence" to entry.sequence,
                         "kind" to "ORDER",
                         "marketId" to entry.intent.marketId.value,
+                        "intent" to
+                            mapOf(
+                                "expectedConfigurationVersion" to entry.intent.expectedConfigurationVersion,
+                                "side" to entry.intent.side.name,
+                                "orderType" to entry.intent.orderType.name,
+                                "timeInForce" to entry.intent.timeInForce.name,
+                                "price" to entry.intent.price.value,
+                                "quantity" to entry.intent.quantity.value,
+                            ),
                         "receipt" to multiAdmission(entry.receipt),
                     )
                 } +
@@ -402,7 +479,7 @@ private class MultiMatchingService(
                         )
                     }
             }
-        check(receipts.size <= 6 && results.receipts.size <= 6)
+        check(receipts.size <= 6 && results.receipts.size <= 6 && saved.financial.liveOrders.size <= 6)
         return mapOf(
             "balances" to
                 saved.financial.balances.sortedWith(compareBy({ it.userId.value }, { it.assetId.value })).map {
@@ -446,6 +523,26 @@ private class MultiMatchingService(
             "activeBytes" to saved.dispatch.activeBytes,
             "pendingOrders" to saved.financial.markets.sumOf { it.pendingAdmissionSequences.size },
             "liveOrders" to saved.financial.liveOrders.size,
+            "liveOrderDetails" to
+                saved.financial.liveOrders.map { live ->
+                    val reservation = live.reservation
+                    mapOf(
+                        "orderId" to reservation.orderId.value,
+                        "userId" to reservation.userId.value,
+                        "marketId" to reservation.marketId.value,
+                        "admissionSequence" to live.admissionSequence,
+                        "marketAdmissionSequence" to live.marketAdmissionSequence,
+                        "phase" to live.phase.name,
+                        "remainingQuantity" to reservation.remainingQuantity.value,
+                        "remainingAmount" to reservation.remainingAmount.value,
+                        "remainingFeeReserveAmount" to reservation.remainingFeeReserveAmount.value,
+                        "reservedAmount" to reservation.reservedAmount.value,
+                        "initialQuantity" to reservation.initialQuantity.value,
+                        "assetId" to reservation.assetId.value,
+                        "status" to reservation.status.name,
+                        "feeRemainder" to reservation.feeRemainder.numerator,
+                    )
+                },
             "receipts" to
                 receipts.sortedWith(compareBy({ it["userId"].toString() }, { it["channel"].toString() }, { it["sequence"].toString() })),
             "resultDetails" to results.receipts.map { multiResult(it.result) + ("appliedAt" to it.appliedAt.toString()) },
@@ -834,6 +931,39 @@ private fun multiCommand(args: Array<String>) {
                             go.countDown()
                             executor.shutdownNow()
                             check(executor.awaitTermination(5, TimeUnit.SECONDS)) { "경쟁 입력 client 스레드 정리 실패" }
+                        }
+                    }
+
+                    "admit-observed" -> {
+                        require(args[1] in setOf("normal", "hidden"))
+                        val hidden = args[1] == "hidden"
+                        val command = order("buyer", "btc", 1, 6, Side.BUY)
+
+                        fun withCommit(observation: Map<String, Any?>): Map<String, Any?> {
+                            val commits =
+                                (0..2)
+                                    .mapNotNull { member ->
+                                        val file = multiControl.resolve("admission-funds$member.json")
+                                        if (Files.isRegularFile(file)) multiJson.readTree(Files.readAllBytes(file)) else null
+                                    }.filter {
+                                        it.path("correlationId").asLong() == observation.getValue("correlationId") &&
+                                            it.path("logPosition").asLong() == observation.getValue("appliedLogPosition") &&
+                                            it.path("requestSha256").asString() == observation.getValue("requestSha256") &&
+                                            it.path("wireSha256").asString() == observation.getValue("wireSha256")
+                                    }
+                            check(commits.size == 1) { "실제 최초 응답과 같은 commit 관찰이 없습니다" }
+                            return observation + ("commit" to commits.single())
+                        }
+                        val control =
+                            FundsAdmissionReplyControl(command, hidden) { observation ->
+                                writeBoundedHttpJson(multiControl.resolve("first-admission.json"), withCommit(observation))
+                            }
+                        SplitOrderDeliveryClient(endpoint(), 10_000, factory = control.factory()).use { connection ->
+                            try {
+                                withCommit(control.completed(connection.request(command)))
+                            } catch (unconfirmed: SplitOrderDeliveryUnconfirmedException) {
+                                withCommit(control.unconfirmed(unconfirmed))
+                            }
                         }
                     }
 
