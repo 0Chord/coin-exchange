@@ -130,9 +130,9 @@ ktlint Gradle 플러그인 14.2.0과 ktlint 1.8.0을 고정해 사용합니다. 
 
 현재 플러그인은 위반 파일을 삭제했을 때 이전 오류가 남는 증분 검사 문제가 있습니다. 검사·포맷 작업의 입력에 파일 목록을 추가해 추가·삭제 때 전체를 재검사합니다. 내용 수정은 증분 검사하고, 동일 입력은 재사용합니다. 오류를 무시하거나 검사 대상을 줄이지 않습니다.
 
-일반 `build`·`check`에도 린트가 포함됩니다. PR CI의 **Build and test**는 **Kotlin formatting → Docker 준비 → 전체 빌드·제품 테스트** 순서로 실행합니다. 린트가 실패하면 뒤 단계는 실행하지 않습니다. `build test --rerun -x :architecture-tests:test`로 제품 테스트만 강제 실행하고, 앞 단계의 린트 결과는 `UP-TO-DATE`로 재사용합니다. 구조 테스트는 별도 필수 작업인 **Architecture checks**에서 강제 실행하고 P01~P09 보고서를 확인하므로 전체 빌드에서 중복 실행하지 않습니다. 테스트를 과거 실행으로 대체하지 않으며 두 필수 작업이 모두 성공해야 합니다. 로컬 `build`는 기존대로 린트·구조·제품 테스트를 포함하며, 테스트 재실행은 `test --rerun`으로 선택할 수 있습니다.
+일반 `build`·`check`에도 린트가 포함됩니다. PR CI는 제품 검사를 `general`·`transport`·`settlement`·`multi-market`·`failover`의 독립 머신으로 나눕니다. `general`에서 **Kotlin formatting → Docker 준비 → 전체 빌드·일반/DB 테스트**를 실행하고, 나머지 네 그룹이 무거운 클러스터 테스트를 맡습니다. 린트가 실패하면 `general`의 뒤 단계는 실행하지 않습니다. 구조 테스트는 별도 필수 작업인 **Architecture checks**에서 강제 실행하고 P01~P09 보고서를 확인하므로 제품 빌드에서는 중복 실행하지 않습니다. 필수 **Build and test**는 모든 제품 그룹의 성공과 실제 후보·XML 보고서를 확인하는 마지막 관문입니다. 로컬 `build`는 기존대로 린트·구조·제품 테스트를 포함하며 `ciTestGroup`을 지정하지 않으면 필터링하지 않습니다.
 
-보고서는 모듈별 `build/reports/ktlint/`의 텍스트와 Checkstyle XML입니다. CI에서는 **Check Kotlin formatting** 로그와 `test-reports` artifact에서 확인합니다. CI는 자동 수정이나 commit을 하지 않습니다. 소스가 없는 작업은 `NO-SOURCE`·`SKIPPED`가 될 수 있고 이전 로컬 보고서가 남을 수 있으므로, 보고서만 보지 말고 이번 실행 로그와 생성 시각을 함께 확인합니다.
+보고서는 모듈별 `build/reports/ktlint/`의 텍스트와 Checkstyle XML입니다. CI에서는 `general`의 **Check Kotlin formatting** 로그와 `test-reports-general` artifact에서 확인합니다. CI는 자동 수정이나 commit을 하지 않습니다. 소스가 없는 작업은 `NO-SOURCE`·`SKIPPED`가 될 수 있고 이전 로컬 보고서가 남을 수 있으므로, 보고서만 보지 말고 이번 실행 로그와 생성 시각을 함께 확인합니다.
 
 ## 빠르게 검증하기
 
@@ -221,9 +221,19 @@ PR에서는 병합 후보를 검사하며, 실제 병합 커밋을 별도로 다
 | 작업 | 실행 범위 | 내려받을 보고서 |
 | --- | --- | --- |
 | Architecture checks | Docker 없이 구조 검사와 필수 운영 검사 실행 확인 | `architecture-test-reports` |
-| Build and test | 기존 전체 빌드·제품 테스트·Testcontainers DB 테스트 | `test-reports` |
+| Test partition plan | 한 배치표에서 실행 그룹 생성·검증 스크립트 자체 검사 | 해당 단계 로그 |
+| Product tests (general) | 전체 빌드·린트·일반 제품/DB 테스트 | `test-reports-general` |
+| Product tests (transport/settlement/multi-market/failover) | 그룹별 실제 클러스터 테스트 | `test-reports-그룹명` |
+| Build and test | 모든 제품 그룹 성공·후보의 누락/중복·실제 XML 대조 | 그룹별 artifact와 최종 요약 |
 
-두 작업은 서로 기다리지 않습니다. 구조만 성공하고 Docker 준비가 실패했다면 **구조 통과 / 제품 검사 미실행 / 전체 CI 실패**입니다. 구조 테스트는 **Architecture checks**가 담당하고 **Build and test**에서는 해당 작업만 제외합니다. 제품·DB·Aeron 장애 테스트와 일반 빌드는 유지합니다. 두 작업의 성공 여부를 함께 확인하며, 한쪽의 성공을 다른 쪽의 성공으로 간주하지 않습니다.
+구조 검사와 제품 검사는 독립 실행합니다. 구조만 성공하고 제품 그룹의 Docker 준비가 실패했다면 **구조 통과 / 해당 제품 검사 미실행 / 전체 CI 실패**입니다. 제품 그룹은 각자 30분 한도이며, 한 그룹이 실패해도 다른 그룹의 진단 보고서는 수집합니다. 마지막 **Build and test**는 실패·취소·미실행·보고서 부재를 통과시키지 않습니다. 두 필수 검사 이름은 유지하며 한쪽의 성공을 다른 쪽의 성공으로 간주하지 않습니다.
+
+클러스터 클래스의 배정은 [`.github/ci-test-groups.json`](.github/ci-test-groups.json) 한 곳에서 관리합니다. 새 테스트는 명시적으로 배정하지 않으면 `general`에 포함됩니다. 컴파일된 전체 후보와 실제 Gradle 선택 후보를 기록해 그룹별 합집합·중복을 확인하며, 내부 클래스도 원래 클래스와 함께 실행합니다. 후보 개수는 실제 테스트 실행 개수와 다릅니다. 실제 성공·skip은 XML로 따로 집계합니다. 특정 그룹 재현은 해당 작업 폴더에서 다음처럼 실행합니다.
+
+```bash
+cd /path/to/exchange-core
+./gradlew :app-api:test --rerun -PciTestGroup=failover --no-daemon --console=plain
+```
 
 1. 실행의 **커밋·시도 번호·두 작업 상태**를 확인합니다. PR head와 검사 대상인 PR merge ref를 구분하고, PR 검사를 병합 후 통합 커밋의 검사로 읽지 않습니다. 과거 push 실행은 당시 기록입니다. 실패한 작업의 **첫 실패 단계 → 실제 로그 메시지**를 읽습니다. 준비·컴파일에서 멈췄다면 뒤의 검사는 미실행입니다.
 2. 구조/제품 테스트가 실행됐다면 해당 artifact를 내려받아 ZIP을 풉니다. 압축 안에서 `reports/tests/test/index.html`로 끝나는 HTML을 CSS·JS와 함께 열고 **실패한 테스트**를 선택합니다. 최상위 폴더는 업로드 경로에 따라 달라질 수 있습니다.
