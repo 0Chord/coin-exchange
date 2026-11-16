@@ -1,5 +1,6 @@
 package com.exchange.core.api.trading.infrastructure.aeron
 
+import com.exchange.core.trading.ClusterLineage
 import com.exchange.core.trading.TradingServiceRole
 import io.aeron.archive.Archive
 import io.aeron.archive.ArchiveThreadingMode
@@ -29,6 +30,7 @@ import java.nio.file.Path
 import java.nio.file.StandardOpenOption.CREATE
 import java.nio.file.StandardOpenOption.CREATE_NEW
 import java.nio.file.StandardOpenOption.WRITE
+import java.util.Collections
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
@@ -42,9 +44,18 @@ internal data class SplitTradingNodeSettings(
     val fundsIngressEndpoints: String,
     val matchingIngressEndpoints: String,
     val mode: String = "DISABLED",
+    val matchingTargets: List<SplitMatchingTarget> = emptyList(),
 ) {
+    private val explicitTargets = matchingTargets.isNotEmpty()
+    val targets: List<SplitMatchingTarget> =
+        Collections.unmodifiableList(
+            matchingTargets
+                .ifEmpty { listOf(SplitMatchingTarget(configuration.matchingLineage, MATCHING_CLUSTER_ID, matchingIngressEndpoints)) }
+                .sortedWith(compareBy({ it.lineage.high }, { it.lineage.low })),
+        )
     val resultDeliveryEnabled: Boolean get() = mode == "RESULT_SETTLEMENT_DEV"
-    val clusterId: Int get() = if (role == TradingServiceRole.FUNDS) FUNDS_CLUSTER_ID else MATCHING_CLUSTER_ID
+    val clusterId: Int get() = if (role == TradingServiceRole.FUNDS) FUNDS_CLUSTER_ID else target(configuration.matchingLineage).clusterId
+    val lastPortOffset: Int get() = 6 + 2 * targets.size
 
     init {
         configuration.requireTransportCompatible(resultDeliveryEnabled)
@@ -56,43 +67,73 @@ internal data class SplitTradingNodeSettings(
         }
         require(transport.boundedManifest == configuration.topology.fundsManifest) { "실행 manifest와 고정 배치가 다릅니다" }
         require(transport.archiveFileSyncLevel == 2)
-        require(transport.basePort <= 65527) { "노드와 두 client의 연속 포트가 필요합니다" }
+        require(transport.basePort <= 65535 - lastPortOffset) { "노드와 담당별 두 client의 연속 포트가 필요합니다" }
         require(fundsIngressEndpoints.isNotBlank() && matchingIngressEndpoints.isNotBlank())
+        require(targets.size in 1..2 && targets.map { it.lineage }.distinct().size == targets.size)
+        require(targets.map { it.lineage }.toSet() == configuration.matchingDeclarations.map { it.lineage }.toSet()) {
+            "배치의 모든 매칭 담당에 연결 설정이 하나씩 필요합니다"
+        }
+        require(targets.all { it.clusterId >= 0 && it.clusterId != FUNDS_CLUSTER_ID })
+        require(targets.map { it.clusterId }.distinct().size == targets.size) { "매칭 cluster ID가 중복됐습니다" }
+        require(explicitTargets || configuration.matchingDeclarations.size == 1)
+        require(matchingIngressEndpoints == target(configuration.matchingLineage).ingressEndpoints) { "선택 담당 ingress가 다릅니다" }
         val funds = ingress(fundsIngressEndpoints)
-        val matching = ingress(matchingIngressEndpoints)
-        require(
-            funds.values
-                .toSet()
-                .intersect(matching.values.toSet())
-                .isEmpty(),
-        ) { "서로 다른 두 클러스터가 필요합니다" }
-        val own = if (role == TradingServiceRole.FUNDS) funds else matching
+        val matching = targets.associate { it.lineage to ingress(it.ingressEndpoints) }
+        val endpoints = listOf(funds) + matching.values
+        val ingressValues = endpoints.flatMap { it.values }
+        require(ingressValues.distinct().size == ingressValues.size) { "클러스터별 ingress가 겹칩니다" }
+        val own = if (role == TradingServiceRole.FUNDS) funds else matching.getValue(configuration.matchingLineage)
         val declared = ClusterMember.parse(transport.members).associate { it.id() to normalizeEndpoint(it.ingressEndpoint()) }
         require(own == declared) { "자기 역할의 멤버와 ingress 배치가 다릅니다" }
-        val remote = if (role == TradingServiceRole.FUNDS) matching else funds
+        val self = declared.getValue(transport.memberId)
+        require(self.substringAfterLast(':').toInt() == transport.basePort) { "자기 ingress와 실제 노드 기본 포트가 다릅니다" }
+        val localHosts = setOf(transport.advertisedHost.lowercase(), self.substringBeforeLast(':'))
+        // 자기 ingress만 제외한다. 같은 그룹의 다른 멤버도 응답·서비스 포트와 겹치면 안 된다.
+        val peers =
+            endpoints.flatMap { group ->
+                group.filterKeys { group !== own || it != transport.memberId }.values
+            }
         require(
-            remote.values.none { endpoint ->
-                endpoint.substringBeforeLast(':') == transport.advertisedHost.lowercase() &&
-                    endpoint.substringAfterLast(':').toInt() in transport.basePort..transport.basePort + 8
+            peers.none { endpoint ->
+                val port = endpoint.substringAfterLast(':').toInt()
+                endpoint.substringBeforeLast(':') in localHosts &&
+                    port <= transport.basePort + lastPortOffset && port + lastPortOffset >= transport.basePort
             },
-        ) { "다른 클러스터 ingress가 자기 노드 포트와 겹칩니다" }
+        ) { "다른 멤버의 서비스·응답 포트가 자기 노드 포트와 겹칩니다" }
         require(transport.runRoot.normalize() == transport.runRoot && !Files.isSymbolicLink(transport.runRoot))
         require(TradingAeronRuntime.TERM_LENGTH_BYTES / 8 >= 32768 + 32) { "분리 메시지가 transport 한도를 넘습니다" }
     }
 
-    fun endpoint(matching: Boolean): SplitOrderDeliveryEndpoint =
-        SplitOrderDeliveryEndpoint(
+    fun endpoint(
+        matching: Boolean,
+        lineage: ClusterLineage = configuration.matchingLineage,
+    ): SplitOrderDeliveryEndpoint {
+        val target = target(lineage)
+        val index = targets.indexOf(target)
+        return SplitOrderDeliveryEndpoint(
             transport.driverDirectory,
-            if (matching) matchingIngressEndpoints else fundsIngressEndpoints,
-            transport.endpoint(if (matching) 8 else 7),
-            if (matching) MATCHING_CLUSTER_ID else FUNDS_CLUSTER_ID,
+            if (matching) target.ingressEndpoints else fundsIngressEndpoints,
+            transport.endpoint(7 + index * 2 + if (matching) 1 else 0),
+            if (matching) target.clusterId else FUNDS_CLUSTER_ID,
             configuration.inputContractVersion,
         )
+    }
+
+    private fun target(lineage: ClusterLineage): SplitMatchingTarget =
+        requireNotNull(targets.singleOrNull { it.lineage == lineage }) { "등록되지 않은 매칭 담당입니다" }
 
     fun identityBytes(): ByteArray =
         ByteArrayOutputStream().use { bytes ->
             DataOutputStream(bytes).use { out ->
-                out.writeUTF(if (resultDeliveryEnabled) "exchange-split-result-delivery-run-v1" else "exchange-split-order-delivery-run-v1")
+                out.writeUTF(
+                    if (explicitTargets) {
+                        "exchange-split-multiple-matching-run-v1"
+                    } else if (resultDeliveryEnabled) {
+                        "exchange-split-result-delivery-run-v1"
+                    } else {
+                        "exchange-split-order-delivery-run-v1"
+                    },
+                )
                 out.writeUTF(mode)
                 out.writeUTF(role.name)
                 out.writeUTF(if (resultDeliveryEnabled) configuration.resultTopologySha256 else configuration.topologySha256)
@@ -107,6 +148,17 @@ internal data class SplitTradingNodeSettings(
                 out.writeUTF(fundsIngressEndpoints)
                 out.writeUTF(matchingIngressEndpoints)
                 out.writeInt(transport.archiveFileSyncLevel)
+                if (explicitTargets) {
+                    out.writeLong(configuration.matchingLineage.high)
+                    out.writeLong(configuration.matchingLineage.low)
+                    out.writeInt(targets.size)
+                    for (target in targets) {
+                        out.writeLong(target.lineage.high)
+                        out.writeLong(target.lineage.low)
+                        out.writeInt(target.clusterId)
+                        out.writeUTF(target.ingressEndpoints)
+                    }
+                }
             }
             bytes.toByteArray()
         }
@@ -136,6 +188,87 @@ internal data class SplitTradingNodeSettings(
     }
 }
 
+/** 실제 노드와 경량 검사에서 같은 담당별 조립을 사용한다. 자금 상태를 추가로 만들지 않는다. */
+internal fun splitTradingDeliveryTasks(
+    settings: SplitTradingNodeSettings,
+    service: SplitTradingClusterAdapter,
+    orderConnectionFactory: SplitOrderDeliveryConnectionFactory = AeronSplitOrderDeliveryConnectionFactory,
+    resultConnectionFactory: SplitResultDeliveryConnectionFactory = AeronSplitResultDeliveryConnectionFactory,
+    onFailure: (Throwable) -> Unit = {},
+    nanoTime: () -> Long = System::nanoTime,
+    legacyOrderFactory: ((SplitTradingClusterAdapter) -> FundsOrderDeliveryAgent)? = null,
+    legacyResultFactory: ((SplitTradingClusterAdapter) -> MatchingResultDeliveryAgent)? = null,
+): SplitTradingDeliveryTasks {
+    require(service.role == settings.role) { "작업 source와 실행 역할이 다릅니다" }
+    require(settings.targets.size == 1 || (legacyOrderFactory == null && legacyResultFactory == null)) {
+        "단일 담당 factory로 복수 담당 작업을 대체할 수 없습니다"
+    }
+    val orders =
+        if (settings.role == TradingServiceRole.FUNDS) {
+            settings.targets.map { target ->
+                legacyOrderFactory?.invoke(service) ?: FundsOrderDeliveryAgent(
+                    settings.configuration.forMatching(target.lineage),
+                    service,
+                    settings.endpoint(false, target.lineage),
+                    settings.endpoint(true, target.lineage),
+                    connectionFactory = orderConnectionFactory,
+                    onFailure = onFailure,
+                    nanoTime = nanoTime,
+                )
+            }
+        } else {
+            emptyList()
+        }
+    val result =
+        if (settings.resultDeliveryEnabled && settings.role == TradingServiceRole.MATCHING) {
+            legacyResultFactory?.invoke(service) ?: MatchingResultDeliveryAgent(
+                settings.configuration,
+                service,
+                settings.endpoint(false),
+                settings.endpoint(true),
+                connectionFactory = resultConnectionFactory,
+                onFailure = onFailure,
+                nanoTime = nanoTime,
+            )
+        } else {
+            null
+        }
+    return SplitTradingDeliveryTasks(orders, result)
+}
+
+/** 각 작업의 연결/재시도는 독립이고 모든 작업의 생명주기는 노드 하나가 소유한다. */
+internal class SplitTradingDeliveryTasks(
+    orders: List<FundsOrderDeliveryAgent>,
+    val result: MatchingResultDeliveryAgent?,
+) : AutoCloseable {
+    val orders: List<FundsOrderDeliveryAgent> = Collections.unmodifiableList(orders.toList())
+    val failure: Throwable? get() = orders.firstNotNullOfOrNull { it.failure } ?: result?.failure
+
+    fun start() {
+        try {
+            orders.forEach { it.start() }
+            result?.start()
+        } catch (error: Throwable) {
+            runCatching { close() }.exceptionOrNull()?.let(error::addSuppressed)
+            throw error
+        }
+    }
+
+    internal fun doWork(): Int = orders.sumOf { it.doWork() } + (result?.doWork() ?: 0)
+
+    override fun close() {
+        var first: Throwable? = null
+        for (resource in listOfNotNull(result) + orders) {
+            try {
+                resource.close()
+            } catch (error: Throwable) {
+                if (first == null) first = error else first.addSuppressed(error)
+            }
+        }
+        first?.let { throw it }
+    }
+}
+
 /** 역할별 고정 설정과 기록을 소유하는 명시적 개발 노드다. */
 internal class DevelopmentSplitTradingNode private constructor(
     val settings: SplitTradingNodeSettings,
@@ -151,10 +284,9 @@ internal class DevelopmentSplitTradingNode private constructor(
     private var consensus: ConsensusModule? = null
     private var container: ClusteredServiceContainer? = null
     private var run: SplitTradingRun? = null
-    private var delivery: FundsOrderDeliveryAgent? = null
-    private var resultDelivery: MatchingResultDeliveryAgent? = null
+    private var tasks: SplitTradingDeliveryTasks? = null
     private val service = SplitTradingClusterAdapter(settings.role, settings.configuration, ::fail, settings.resultDeliveryEnabled)
-    val error: Throwable? get() = failure.get() ?: delivery?.failure ?: resultDelivery?.failure
+    val error: Throwable? get() = failure.get() ?: tasks?.failure
     val isClosed: Boolean get() = stopped.get()
     val role: Cluster.Role get() = Cluster.Role.get(checkNotNull(consensus).context().clusterNodeRoleCounter().get())
     val tradingReady: Boolean get() = service.tradingReady
@@ -183,7 +315,7 @@ internal class DevelopmentSplitTradingNode private constructor(
         run = SplitTradingRun.open(settings)
         val ports = mutableListOf<DatagramSocket>()
         try {
-            (0..8).forEach { offset ->
+            (0..settings.lastPortOffset).forEach { offset ->
                 DatagramSocket(null).also { socket ->
                     ports.add(socket)
                     socket.reuseAddress = false
@@ -275,30 +407,16 @@ internal class DevelopmentSplitTradingNode private constructor(
             Thread.sleep(1)
         }
         check(storageLevels == listOf(2, 2, 2))
-        if (settings.role == TradingServiceRole.FUNDS) {
-            delivery =
-                (
-                    deliveryFactory?.invoke(service) ?: FundsOrderDeliveryAgent(
-                        settings.configuration,
-                        service,
-                        settings.endpoint(false),
-                        settings.endpoint(true),
-                        onFailure = ::fail,
-                    )
-                ).also { it.start() }
-        }
-        if (settings.resultDeliveryEnabled && settings.role == TradingServiceRole.MATCHING) {
-            resultDelivery =
-                (
-                    resultDeliveryFactory?.invoke(service) ?: MatchingResultDeliveryAgent(
-                        settings.configuration,
-                        service,
-                        settings.endpoint(false),
-                        settings.endpoint(true),
-                        onFailure = ::fail,
-                    )
-                ).also { it.start() }
-        }
+        // 먼저 소유권을 저장해야 두 번째 작업의 시작 실패도 첫 작업 정리로 이어진다.
+        tasks =
+            splitTradingDeliveryTasks(
+                settings,
+                service,
+                onFailure = ::fail,
+                legacyOrderFactory = deliveryFactory,
+                legacyResultFactory = resultDeliveryFactory,
+            )
+        checkNotNull(tasks).start()
         Thread({
             signal.await()
             close()
@@ -308,7 +426,7 @@ internal class DevelopmentSplitTradingNode private constructor(
     override fun close() {
         if (!stopped.compareAndSet(false, true)) return
         signal.countDown()
-        listOf(resultDelivery, delivery, container, consensus, archive, driver, run).forEach { resource ->
+        listOf(tasks, container, consensus, archive, driver, run).forEach { resource ->
             try {
                 resource?.close()
             } catch (error: Throwable) {
