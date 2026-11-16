@@ -1,6 +1,7 @@
 package com.exchange.core.api.trading.infrastructure.aeron
 
 import org.junit.jupiter.api.io.TempDir
+import java.nio.file.Files
 import java.nio.file.Path
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -56,6 +57,66 @@ class VerificationCommandsTest {
             assertTrue(result.timedOut)
             assertFalse(result.succeeded)
             assertFalse(running.isAlive)
+        } finally {
+            assertTrue(commands.closeRunning().isEmpty())
+        }
+    }
+
+    @Test
+    fun `한도 안의 출력은 두 스트림 모두 그대로 보존하며 성공한다`() {
+        val commands = VerificationCommands(directory, directory, emptyMap())
+        try {
+            val running = commands.start(listOf("sh", "-c", "printf ABCD; printf 1234 >&2"), outputLimitBytes = 4)
+            val result = running.await(5_000)
+            assertTrue(result.succeeded, result.failure())
+            assertEquals("ABCD", result.stdout)
+            assertEquals("1234", result.stderr)
+            assertEquals(4L, Files.size(running.stdoutPath))
+            assertEquals(4L, Files.size(running.stderrPath))
+        } finally {
+            assertTrue(commands.closeRunning().isEmpty())
+        }
+    }
+
+    @Test
+    fun `파이프보다 큰 양쪽 출력은 계속 소비하되 한도만 보존하고 실패한다`() {
+        val commands = VerificationCommands(directory, directory, emptyMap())
+        val script =
+            "i=0; while [ \"\$i\" -lt 4096 ]; do " +
+                "printf %064d 0; printf %064d 0 >&2; i=\$((i+1)); done"
+        try {
+            val running = commands.start(listOf("sh", "-c", script), outputLimitBytes = 128)
+            val result = running.await(5_000)
+            assertEquals(0, result.exitCode)
+            assertFalse(result.timedOut, result.failure())
+            assertFalse(result.succeeded)
+            assertTrue(result.error.orEmpty().contains("stdout 출력 보존 한도 초과"))
+            assertTrue(result.error.orEmpty().contains("stderr 출력 보존 한도 초과"))
+            assertEquals(128L, Files.size(running.stdoutPath))
+            assertEquals(128L, Files.size(running.stderrPath))
+            assertEquals(128, result.stdout.length)
+            assertEquals(128, result.stderr.length)
+            assertEquals(result.error, commands.records.single()["failure"])
+        } finally {
+            assertTrue(commands.closeRunning().isEmpty())
+        }
+    }
+
+    @Test
+    fun `계속 출력하는 프로세스도 기다림 상한에서 종료하고 한도만 남긴다`() {
+        val commands = VerificationCommands(directory, directory, emptyMap())
+        val running =
+            commands.start(
+                listOf("sh", "-c", "while :; do printf 0123456789; printf 0123456789 >&2; done"),
+                outputLimitBytes = 128,
+            )
+        try {
+            val result = running.await(50)
+            assertTrue(result.timedOut)
+            assertFalse(result.succeeded)
+            assertFalse(running.isAlive)
+            assertTrue(Files.size(running.stdoutPath) <= 128L)
+            assertTrue(Files.size(running.stderrPath) <= 128L)
         } finally {
             assertTrue(commands.closeRunning().isEmpty())
         }
