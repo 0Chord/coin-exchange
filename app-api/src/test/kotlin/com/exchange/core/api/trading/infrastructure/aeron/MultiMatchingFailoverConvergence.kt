@@ -237,13 +237,18 @@ internal object MultiMatchingFailoverConvergence {
         }
 
     /** controller 한 시계의 순서와, 실제 현재 probe·같은 기록으로 복귀한 한 member를 대조한다. */
-    fun lifecycleViolations(evidence: JsonNode): List<String> {
+    fun lifecycleViolations(
+        evidence: JsonNode,
+        fundsFailover: Boolean = false,
+    ): List<String> {
         val c = Check()
         val target = text(evidence.path("target"))
         val initial = evidence.path("initial")
         val elected = evidence.path("elected")
         val rejoined = evidence.path("rejoined")
-        c.require(target in setOf("btc0", "btc1", "btc2"), "종료 대상은 실제 BTC member여야 합니다")
+        val owner = if (fundsFailover) "funds" else "btc"
+        val members = (0..2).map { "$owner$it" }
+        c.require(target in members, "종료 대상은 실제 $owner member여야 합니다")
         c.require(initial.properties().map { it.key }.toSet() == names, "초기9개 실행 근거 누락")
         c.require(elected.properties().map { it.key }.toSet() == names - target, "생존8개에 죽은 관찰 혼합/사본 누락")
         c.require(rejoined.properties().map { it.key }.toSet() == names, "재합류9개 실행 근거 누락")
@@ -259,15 +264,15 @@ internal object MultiMatchingFailoverConvergence {
             "종료 미확인/OOM 종료",
         )
         c.number(stop, "exitCode", 137, "SIGKILL")
-        val firstLeader = leader(c, initial, listOf("btc0", "btc1", "btc2"), "종료 전")
-        c.require(firstLeader.second == target.last().digitToInt().toLong(), "실제 BTC 리더가 아닌 member 종료")
-        val survivors = listOf("btc0", "btc1", "btc2").filter { it != target }
+        val firstLeader = leader(c, initial, members, "종료 전")
+        c.require(firstLeader.second == target.last().digitToInt().toLong(), "실제 $owner 리더가 아닌 member 종료")
+        val survivors = members.filter { it != target }
         val newLeader = leader(c, elected, survivors, "구 리더 정지 중")
         c.require(
             firstLeader.first != null && newLeader.first != null && (newLeader.first ?: -1L) > (firstLeader.first ?: Long.MAX_VALUE),
             "더 높은 새 임기 관찰 누락",
         )
-        val finalLeader = leader(c, rejoined, listOf("btc0", "btc1", "btc2"), "재합류 뒤")
+        val finalLeader = leader(c, rejoined, members, "재합류 뒤")
         c.require(
             finalLeader.first != null && newLeader.first != null && (finalLeader.first ?: -1L) >= (newLeader.first ?: Long.MAX_VALUE),
             "재합류 뒤 임기 후퇴",
@@ -409,17 +414,31 @@ internal object MultiMatchingFailoverConvergence {
         }
         val timeline = evidence.path("timeline")
         val phases =
-            listOf(
-                "killSent",
-                "killConfirmed",
-                "electionObserved",
-                "suiStarted",
-                "suiSettled",
-                "gateReleased",
-                "btcSettled",
-                "rejoined",
-                "followupCompleted",
-            )
+            if (fundsFailover) {
+                listOf(
+                    "acceptedObserved",
+                    "killSent",
+                    "killConfirmed",
+                    "electionObserved",
+                    "refusalConfirmed",
+                    "gateReleased",
+                    "btcSettled",
+                    "rejoined",
+                    "followupCompleted",
+                )
+            } else {
+                listOf(
+                    "killSent",
+                    "killConfirmed",
+                    "electionObserved",
+                    "suiStarted",
+                    "suiSettled",
+                    "gateReleased",
+                    "btcSettled",
+                    "rejoined",
+                    "followupCompleted",
+                )
+            }
         val times = phases.map { number(timeline.path(it)) }
         val order = phases.map { number(evidence.path("eventOrder").path(it)) }
         c.require(
@@ -428,7 +447,7 @@ internal object MultiMatchingFailoverConvergence {
                 order.zipWithNext().all { (a, b) -> a != null && b != null && a < b },
             "종료→새 임기→SUI 정산→gate 해제→BTC 정산→재합류→후속 순서 위반",
         )
-        gates(c, evidence, initial, elected, timeline, newLeader.second)
+        if (!fundsFailover) gates(c, evidence, initial, elected, timeline, newLeader.second)
         return c.issues
     }
 

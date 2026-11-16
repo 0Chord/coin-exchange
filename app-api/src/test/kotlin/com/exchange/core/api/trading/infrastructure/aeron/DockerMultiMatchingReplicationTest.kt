@@ -180,6 +180,7 @@ class DockerMultiMatchingReplicationTest {
 internal class MultiMatchingRun(
     private val scenario: String,
     private val leaderFailover: Boolean = false,
+    private val failoverOwner: String = "btc",
 ) {
     private val mapper = jacksonObjectMapper()
     private val project = Path.of(checkNotNull(System.getProperty("fundingProjectDirectory")))
@@ -229,7 +230,7 @@ internal class MultiMatchingRun(
     private val eventOrder = linkedMapOf<String, Int>()
     private val gates = mutableListOf<Map<String, Any?>>()
     private var gateInstallation = ""
-    private var electedBtcLeader = ""
+    private var electedLeader = ""
 
     fun verify(scenarioBody: (MultiMatchingRun) -> Unit) {
         Files.createDirectories(control)
@@ -669,6 +670,11 @@ internal class MultiMatchingRun(
     }
 
     fun tool(vararg args: String): JsonNode {
+        val (inspection, deadline) = startClient(args.toList())
+        return finishClient(args.toList(), inspection, deadline)
+    }
+
+    private fun startClient(args: List<String>): Pair<JsonNode, Long> {
         // 종료 뒤에도 inspect를 남겨 client의 실제 한도를 확인하고, 이 호출이 직접 회수한다.
         val name = "$runId-client"
         val clientDeadline = minOf(workDeadline, System.nanoTime() + TimeUnit.SECONDS.toNanos(60))
@@ -696,6 +702,17 @@ internal class MultiMatchingRun(
         )
         check(host.path("Tmpfs").path("/tmp").asString() == "size=536870912,mode=1777")
         check(inspection.path("Image").asString() == imageId)
+        return inspection to clientDeadline
+    }
+
+    private fun finishClient(
+        args: List<String>,
+        inspection: JsonNode,
+        clientDeadline: Long,
+    ): JsonNode {
+        val name = "$runId-client"
+
+        fun left() = TimeUnit.NANOSECONDS.toMillis(clientDeadline - System.nanoTime()).also { check(it > 0) }
         val exit = command(listOf("docker", "wait", name), left()).stdout.trim()
         val result = command(listOf("docker", "logs", name), minOf(5_000, left()))
         check(exit == "0") { "client ${args.toList()} 종료 코드=$exit: ${result.stderr.takeLast(1600)}" }
@@ -713,14 +730,59 @@ internal class MultiMatchingRun(
         return mapper.readTree(result.stdout.lineSequence().last { it.trim().startsWith("{") })
     }
 
-    /** 기존 정상 수명은 유지하고, 이 시험에서 명시한 죽은 BTC 한 개만 현재 사본에서 뺀다. */
+    /** 실제 최초 응답 관측 뒤 다른 업무 요청 없이 사전에 확인한 자금 리더를 종료한다. */
+    fun admitThenKill(
+        initial: Map<String, JsonNode>,
+        hidden: Boolean,
+    ): Pair<JsonNode, Long> {
+        check(leaderFailover && failoverOwner == "funds")
+        phase = if (hidden) "실제 접수 응답 숨김" else "실제 접수 응답 직후 종료"
+        val args = listOf("admit-observed", if (hidden) "hidden" else "normal")
+        val (inspection, clientDeadline) = startClient(args)
+        val file = control.resolve("first-admission.json")
+        val until = minOf(clientDeadline, System.nanoTime() + TimeUnit.SECONDS.toNanos(45))
+        while (!Files.isRegularFile(file)) {
+            check(System.nanoTime() < until) { "실제 최초 접수 응답 관측 기한 초과" }
+            Thread.sleep(20)
+        }
+        val observed = read(file)
+        lifecycle["admission"] = observed
+        mark("acceptedObserved")
+        val term = killLeader(initial)
+        val completed = finishClient(args, inspection, clientDeadline)
+        lifecycle["admissionCompleted"] = completed
+        check(completed.path("reply") == observed.path("reply")) { "최초 실응답과 client 종료 근거 불일치" }
+        check(completed.path("code").asString() == if (hidden) "UNCONFIRMED" else "ACCEPTED")
+        return observed.path("reply") to term
+    }
+
+    /** 의도한 단일 노드 종료만 제외하고 현재 부팅·임기의 실제 복제 관찰을 요구한다. */
     fun awaitFailover(
         stage: MultiMatchingFailoverStage,
         originals: Map<String, JsonNode>,
         higherThanTerm: Long? = null,
+    ): Map<String, JsonNode> =
+        awaitCurrent(stage.name, originals, higherThanTerm) { states ->
+            MultiMatchingFailoverConvergence.violations(stage, states, originals)
+        }
+
+    fun awaitFunds(
+        stage: FundsFailoverStage,
+        originals: Map<String, JsonNode> = emptyMap(),
+        higherThanTerm: Long? = null,
+    ): Map<String, JsonNode> =
+        awaitCurrent(stage.name, originals, higherThanTerm) { states ->
+            FundsFailoverConvergence.violations(stage, states, originals)
+        }
+
+    private fun awaitCurrent(
+        stage: String,
+        originals: Map<String, JsonNode>,
+        higherThanTerm: Long?,
+        violations: (Map<String, JsonNode>) -> List<String>,
     ): Map<String, JsonNode> {
         check(leaderFailover)
-        phase = stage.name
+        phase = stage
         val until = minOf(workDeadline, System.nanoTime() + TimeUnit.SECONDS.toNanos(45))
         var failures = emptyList<String>()
         var probe: Long? = null
@@ -728,8 +790,7 @@ internal class MultiMatchingRun(
             budgets()
             val states = SERVICES.filter { it != stoppedService }.associateWith { read(control.resolve("state-$it.json")) }
             latestStates = states
-            failures = MultiMatchingFailoverConvergence.violations(stage, states, originals) +
-                currentFailures(states, probe, higherThanTerm)
+            failures = violations(states) + currentFailures(states, probe, higherThanTerm)
             if (failures.isEmpty()) {
                 if (probe == null) {
                     probe = 1_000_000_000_000L + ++probeSequence
@@ -737,7 +798,7 @@ internal class MultiMatchingRun(
                     continue
                 }
                 verifyLiveNodes()
-                checkpoints += mapOf("phase" to stage.name, "elapsedMs" to elapsedMs(), "states" to states, "originals" to originals)
+                checkpoints += mapOf("phase" to stage, "elapsedMs" to elapsedMs(), "states" to states, "originals" to originals)
                 return states
             }
             Thread.sleep(100)
@@ -799,8 +860,10 @@ internal class MultiMatchingRun(
             ) {
                 failures += "$owner 현재 임기/리더 합의 미완료"
             }
-            if (owner == "btc" && higherThanTerm != null && group.any { it.path("leadershipTermId").asLong(-1) <= higherThanTerm }) {
-                failures += "BTC 생존 과반의 더 높은 임기 미관측"
+            if (owner == failoverOwner && higherThanTerm != null &&
+                group.any { it.path("leadershipTermId").asLong(-1) <= higherThanTerm }
+            ) {
+                failures += "$owner 생존 과반의 더 높은 임기 미관측"
             }
         }
         return failures
@@ -862,7 +925,7 @@ internal class MultiMatchingRun(
     /** 보류 해제 뒤 같은 원문이 실제 worker에서 양수 offer와 실제 응답까지 이어졌는지 결속한다. */
     fun awaitReleased() {
         val gate = gates.last()
-        val expected = if (gate.getValue("gate") == "btc-dispatch") gate.getValue("blockedService").toString() else electedBtcLeader
+        val expected = if (gate.getValue("gate") == "btc-dispatch") gate.getValue("blockedService").toString() else electedLeader
         check(expected.isNotEmpty())
         val until = minOf(workDeadline, System.nanoTime() + TimeUnit.SECONDS.toNanos(45))
         while (System.nanoTime() < until) {
@@ -910,8 +973,10 @@ internal class MultiMatchingRun(
         gates[gates.lastIndex] = gate + ("releaseAt" to timeline.getValue("gateReleased"))
     }
 
-    /** 종료 직전 새 probe의 실제 리더만 죽이고, 과거 LEADER 파일을 이후의 현재 사본에서 제외한다. */
-    fun killBtcLeader(states: Map<String, JsonNode>): Long {
+    /** 요청 전 확인한 실제 리더만 종료하고 과거 LEADER 파일을 이후 현재 사본에서 제외한다. */
+    fun killBtcLeader(states: Map<String, JsonNode>): Long = killLeader(states)
+
+    private fun killLeader(states: Map<String, JsonNode>): Long {
         check(leaderFailover && stoppedService == null)
         check(
             currentFailures(
@@ -924,9 +989,9 @@ internal class MultiMatchingRun(
                 null,
             ).isEmpty(),
         )
-        val btc = states.filterKeys { it.startsWith("btc") }
-        val target = btc.entries.single { it.value.path("clusterRole").asString() == "LEADER" }.key
-        val term = btc.getValue(target).path("leadershipTermId").asLong()
+        val group = states.filterKeys { it.startsWith(failoverOwner) }
+        val target = group.entries.single { it.value.path("clusterRole").asString() == "LEADER" }.key
+        val term = group.getValue(target).path("leadershipTermId").asLong()
         lifecycle["target"] = target
         lifecycle["initial"] = boundRuntimes(states)
         mark("killSent")
@@ -954,7 +1019,8 @@ internal class MultiMatchingRun(
         check(stoppedService != null)
         mark("electionObserved")
         lifecycle["elected"] = boundRuntimes(states)
-        electedBtcLeader = states.entries.single { it.key.startsWith("btc") && it.value.path("clusterRole").asString() == "LEADER" }.key
+        electedLeader =
+            states.entries.single { it.key.startsWith(failoverOwner) && it.value.path("clusterRole").asString() == "LEADER" }.key
     }
 
     private fun boundRuntimes(states: Map<String, JsonNode>) =
@@ -963,7 +1029,9 @@ internal class MultiMatchingRun(
         }
 
     /** 같은 Archive를 그대로 다시 열되, 이 노드 한 개의 복구 플래그만 바꾼다. */
-    fun rejoinBtcLeader() {
+    fun rejoinBtcLeader() = rejoinLeader()
+
+    fun rejoinLeader() {
         val target = checkNotNull(stoppedService)
         val until = minOf(workDeadline, System.nanoTime() + TimeUnit.SECONDS.toNanos(90))
         val previous = runtimes.getValue(target)
@@ -984,7 +1052,7 @@ internal class MultiMatchingRun(
         Files.delete(control.resolve("runtime-$target.json"))
         compose(listOf("up", "-d", "--no-deps", "--force-recreate", target), TimeUnit.NANOSECONDS.toMillis(until - System.nanoTime()))
         while (!Files.isRegularFile(control.resolve("runtime-$target.json"))) {
-            check(System.nanoTime() < until) { "구 BTC 리더의 새 runtime 미관측" }
+            check(System.nanoTime() < until) { "구 $failoverOwner 리더의 새 runtime 미관측" }
             Thread.sleep(100)
         }
         val runtime = read(control.resolve("runtime-$target.json")) as ObjectNode
@@ -1063,7 +1131,12 @@ internal class MultiMatchingRun(
         lifecycle["eventOrder"] = eventOrder
         lifecycle["gates"] = gates
         val evidence = mapper.readTree(mapper.writeValueAsBytes(lifecycle))
-        val failures = MultiMatchingFailoverConvergence.lifecycleViolations(evidence)
+        val failures =
+            if (failoverOwner == "funds") {
+                FundsFailoverConvergence.lifecycleViolations(evidence)
+            } else {
+                MultiMatchingFailoverConvergence.lifecycleViolations(evidence)
+            }
         check(failures.isEmpty()) { "장애 수명 근거 실패: $failures" }
     }
 
@@ -1131,7 +1204,8 @@ internal class MultiMatchingRun(
         before: Map<String, JsonNode>,
         after: Map<String, JsonNode>,
     ) {
-        for (service in SERVICES) {
+        assertEquals(before.keys, after.keys, "중복 대조 사본 집합 변경")
+        for (service in before.keys) {
             for (field in listOf(
                 "funds",
                 "matching",
@@ -1296,11 +1370,30 @@ internal class MultiMatchingRun(
         val report =
             mapOf(
                 "runId" to runId,
-                "case" to if (leaderFailover) gates.firstOrNull()?.get("gate") ?: "leader-failover" else scenario,
+                "case" to
+                    if (leaderFailover && failoverOwner == "funds") {
+                        if ((lifecycle["admission"] as? JsonNode)?.path("hidden")?.asBoolean() ==
+                            true
+                        ) {
+                            "funds-hidden-reply"
+                        } else {
+                            "funds-after-reply"
+                        }
+                    } else if (leaderFailover) {
+                        gates.firstOrNull()?.get("gate") ?: "leader-failover"
+                    } else {
+                        scenario
+                    },
                 "success" to (issues.isEmpty() && resourcesRemoved),
                 "issues" to issues,
                 "baseCommit" to
-                    if (leaderFailover) "9001e14a5afe96f91aeb461861052dd62c57ef9a" else "e3656d88e1cd1a10fe670472ca5744a23eb037f9",
+                    if (leaderFailover && failoverOwner == "funds") {
+                        "26d2013cca94abcdc38a1a55c2d048a68ee7fc3b"
+                    } else if (leaderFailover) {
+                        "9001e14a5afe96f91aeb461861052dd62c57ef9a"
+                    } else {
+                        "e3656d88e1cd1a10fe670472ca5744a23eb037f9"
+                    },
                 "headCommit" to headCommit,
                 "sourceSha256" to sourceHashes,
                 "imageId" to imageId,
@@ -1334,7 +1427,9 @@ internal class MultiMatchingRun(
                     ),
                 "commands" to commands.records,
                 "unverified" to
-                    if (leaderFailover) {
+                    if (leaderFailover && failoverOwner == "funds") {
+                        listOf("BTC 리더 종료/장애 격리", "과반 상실/네트워크 분할", "전체 볼륨 유실", "장기 부하/성능")
+                    } else if (leaderFailover) {
                         listOf("자금 리더 종료", "과반 상실/네트워크 분할", "전체 볼륨 유실", "장기 부하/성능")
                     } else {
                         listOf("리더 전환/과반 장애", "장기 부하/성능", "실제5마켓3+2 배치", "미회수 payload에 대한 부정 ACK 격리")
@@ -1367,6 +1462,9 @@ internal class MultiMatchingRun(
                 "src/test/kotlin/com/exchange/core/api/trading/infrastructure/aeron/MultiMatchingConvergence.kt",
                 "src/test/kotlin/com/exchange/core/api/trading/infrastructure/aeron/MultiMatchingLeaderFailoverTest.kt",
                 "src/test/kotlin/com/exchange/core/api/trading/infrastructure/aeron/MultiMatchingFailoverConvergence.kt",
+                "src/test/kotlin/com/exchange/core/api/trading/infrastructure/aeron/FundsLeaderFailoverTest.kt",
+                "src/test/kotlin/com/exchange/core/api/trading/infrastructure/aeron/FundsFailoverConvergence.kt",
+                "src/test/kotlin/com/exchange/core/api/trading/infrastructure/aeron/FundsAdmissionReplyControl.kt",
                 "src/test/kotlin/com/exchange/core/api/trading/infrastructure/aeron/MarketConfigurationDatabase.kt",
                 "src/test/kotlin/com/exchange/core/api/trading/infrastructure/aeron/VerificationCommands.kt",
                 "src/test/docker/aeron-multi-matching/compose.yml",
