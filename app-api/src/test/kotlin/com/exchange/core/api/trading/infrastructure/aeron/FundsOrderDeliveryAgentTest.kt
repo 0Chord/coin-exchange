@@ -92,6 +92,28 @@ class FundsOrderDeliveryAgentTest {
     }
 
     @Test
+    fun `상대 조회 응답에서 재연결하면 닫힌 연결에 keepalive를 보내지 않는다`() {
+        val f = Fixture()
+        f.now = f.config.deliveryLimits.keepAliveNs + 1
+        f.transport.describeLifecycle = "UNINITIALIZED"
+        f.agent.use {
+            f.cycles(1)
+            f.advance(f.config.deliveryLimits.keepAliveNs + 1)
+            f.cycles(5)
+            assertTrue(f.transport.connections.isNotEmpty())
+            assertTrue(f.transport.connections.all { it.closed })
+            assertEquals(0, f.transport.closedKeepAliveCalls)
+            f.transport.describeLifecycle = "RUNNING"
+            f.advance(f.config.deliveryLimits.reconnectDelayNs + 1)
+            f.admit(6)
+            f.cycles(30)
+            assertEquals(1L, f.pending().matchingAppliedThrough)
+            assertEquals(0, f.transport.closedKeepAliveCalls)
+            assertNull(f.agent.failure)
+        }
+    }
+
+    @Test
     fun `고정 설정과 다른 전송 한도는 연결을 열기 전에 거절한다`() {
         val f = Fixture()
         f.agent.use {
@@ -651,6 +673,8 @@ class FundsOrderDeliveryAgentTest {
         var holdMatching = false
         var dropSourceReplies = false
         var wrongTopology = false
+        var describeLifecycle = "RUNNING"
+        var closedKeepAliveCalls = 0
         var applyOfferResult: Long? = null
         var overrideMatching: ((SplitOrderDeliveryEnvelope) -> SplitOrderDeliveryReply?)? = null
         var overrideSourceAck: ((SplitOrderDeliveryEnvelope) -> SplitOrderDeliveryReply?)? = null
@@ -690,7 +714,7 @@ class FundsOrderDeliveryAgentTest {
             1,
             ack,
             expected,
-            lifecycle = "RUNNING",
+            lifecycle = if (code == "DESCRIBED") describeLifecycle else "RUNNING",
         )
 
         fun releaseMatching(onlyLast: Boolean = false) {
@@ -762,6 +786,8 @@ class FundsOrderDeliveryAgentTest {
 
             override fun keepAlive(): Boolean {
                 ownerThreads += Thread.currentThread()
+                if (closed) closedKeepAliveCalls++
+                check(!closed)
                 keepAlives++
                 return true
             }

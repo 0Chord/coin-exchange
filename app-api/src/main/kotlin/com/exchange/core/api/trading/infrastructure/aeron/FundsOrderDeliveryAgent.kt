@@ -62,7 +62,7 @@ internal class FundsOrderDeliveryAgent(
     private val source: FundsDispatchSource,
     fundsEndpoint: SplitOrderDeliveryEndpoint,
     matchingEndpoint: SplitOrderDeliveryEndpoint,
-    private val limits: FundsOrderDeliveryLimits = configuration.deliveryLimits,
+    private val limits: FundsOrderDeliveryLimits = configuration.orderDeliveryLimits(),
     private val connectionFactory: SplitOrderDeliveryConnectionFactory = AeronSplitOrderDeliveryConnectionFactory,
     private val onFailure: (Throwable) -> Unit = {},
     private val nanoTime: () -> Long = System::nanoTime,
@@ -141,9 +141,11 @@ internal class FundsOrderDeliveryAgent(
     private val funds = Peer(fundsEndpoint, TradingServiceRole.FUNDS, configuration.fundsLineage)
     private val matching = Peer(matchingEndpoint, TradingServiceRole.MATCHING, configuration.matchingLineage)
     private val streams =
-        configuration.dispatchConfiguration.manifest.markets.map {
+        configuration.matchingDeclaration.markets.map {
             Stream(configuration.dispatchConfiguration.stream(it.market.marketId))
         }
+    private val payloadByteBudget = limits.maxInFlightBytes - configuration.orderDeliveryControlReserve()
+    private val payloadEntryLimit = limits.maxInFlightEntries - if (configuration.matchingDeclarations.size > 1) 1 else 0
     private val flights = linkedMapOf<Long, Flight>()
     private var inFlightBytes = 0L
     private var read: Read? = null
@@ -162,7 +164,7 @@ internal class FundsOrderDeliveryAgent(
         private set
 
     init {
-        require(limits == configuration.deliveryLimits) { "실제 전송 한도는 복구 설정에 결속한 한도와 같아야 합니다" }
+        require(limits == configuration.orderDeliveryLimits()) { "실제 전송 한도는 복구 설정에 결속한 한도와 같아야 합니다" }
         require(fundsEndpoint.clusterId != matchingEndpoint.clusterId) { "split peers must have different cluster IDs" }
         require(fundsEndpoint.driverDirectory == matchingEndpoint.driverDirectory) { "delivery clients must reuse the node driver" }
         require(fundsEndpoint.egressEndpoint != matchingEndpoint.egressEndpoint || fundsEndpoint.egressEndpoint.endsWith(":0")) {
@@ -275,7 +277,7 @@ internal class FundsOrderDeliveryAgent(
                     return work + 1
                 }
                 work += connection.poll()
-                if (source.activeGeneration() != generation) return work
+                if (source.activeGeneration() != generation || peer.connection !== connection || connection.isClosed) return work
                 if (now - peer.lastKeepAlive >= limits.keepAliveNs) {
                     connection.keepAlive()
                     peer.lastKeepAlive = now
@@ -485,6 +487,7 @@ internal class FundsOrderDeliveryAgent(
         // 한 duty cycle의 최대64건 뒤에는 반드시 두 egress로 돌아간다.
         repeat(limits.maxInFlightEntries) {
             if (source.activeGeneration() != generation || !matching.verified || !funds.verified) return work
+            if (flights.size >= payloadEntryLimit) return work
             if (flights.size + (if (ackRequest == null) 0 else 1) >= limits.maxInFlightEntries) return work
             var item = prepared
             if (item == null) {
@@ -494,7 +497,7 @@ internal class FundsOrderDeliveryAgent(
                 prepared = item
             }
             val frame = item.frame
-            if (frame.bytes.size > limits.maxInFlightBytes - inFlightBytes) return work
+            if (frame.bytes.size > payloadByteBudget - inFlightBytes) return work
             val offered = offer(matching, frame, now)
             work += offered
             if (!frame.accepted || prepared !== item) return work
