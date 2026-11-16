@@ -1,6 +1,6 @@
 # #135 · 여러 매칭 담당과 공통 자금 연결
 
-**상태: A 로컬 구현·검증 완료 · B 미구현.** 2026-11-15 기준 통합 커밋은 `e0cb119bb672f024fd121d632c1109773f0927a6`이다. #134의 PR #183이 병합된 기준이며, 이전 작업 HEAD `fea5067`과 파일 tree가 같다. A는 이 기준 위의 미커밋 변경으로 검증했다. 1~10절은 합의한 계약, 11~12절은 실제 구현·실행 근거다. 실제3+3+3노드는 다음 PR 범위이므로 #135 전체 완료를 뜻하지 않는다.
+**상태: A는 PR #184 병합·CI 통과, B는 로컬 구현·실제9노드/회귀 검증 완료.** B의 최신 통합 기준은 2026-11-16 `e3656d88e1cd1a10fe670472ca5744a23eb037f9`이다. A는 이전 기준 `e0cb119bb672f024fd121d632c1109773f0927a6` 위의 고정 작업 파일로 검증했다. 1~10절은 A 명세 당시 계약, 11~12절은 A의 구현·실행 기록이며 보존한다. **현재 이어 할 B의 범위·메모리·실행 조건은13절**이다. #135 전체는 B가 완료돼야 닫는다.
 
 상위 #105 · 시스템 계약 #130 · 선행 #134 완료 · 기존 마켓 설정 #114~#118 재사용. 코드 근거는 위 커밋 기준이다.
 
@@ -330,3 +330,264 @@ v2 검토자는 잘못된 설정 거절37개·정상 수락20개를 최대 힙25
 </details>
 
 게시 준비에서는 위 고정 검토본의 코드·테스트7개와 실제 게시할 파일의 hash를 다시 대조한다. 문서의 미커밋·미게시 표현은 검증 당시의 기록으로 명확히 했으며, 실행 코드·테스트는 바꾸지 않는다. A 게시로 #135를 자동 종료하지 않고 실제9 JVM 검증은 B로 유지한다.
+
+
+## 13. B · 실제 자금3+매칭3+매칭3 검증 상세 명세
+
+**구현 전 명세 기록.** 아래는 구현/새 시험 실행 전 합의다. 기준은 통합 `e3656d88e1cd1a10fe670472ca5744a23eb037f9`이며 A의 [PR #184](https://github.com/0Chord/coin-exchange/pull/184)와 두 CI 검사가 끝난 상태를 이어받는다. B는 테스트·실행 구성·검증 기록만의 한 PR로 제한한다. 실제 실행 성공이나 현재 메모리 조건 충족을 보고하는 문서가 아니다.
+
+### 13.1 사용자가 확인할 흐름과 완료 기준
+
+서로 다른 두 매칭 담당에게 보내도 같은 돈을 두 번 예약하지 않고, 각 담당의 체결 결과가 공통 자금에서 한 번 정산되는 것을 **실제 세 클러스터와 각3사본**으로 확인한다.
+
+```text
+실제 RDB의 지정 버전·내용 지문 → 고정 실행 설정 한 벌 생성 → DB 종료 확인
+환경변수의 동일한 전체 배치 + 각자의 담당 선택
+                         ↓
+             공통 자금 클러스터(3노드)
+                ↙                  ↘
+     BTC 매칭 클러스터(3노드)     SUI 매칭 클러스터(3노드)
+                ↘                  ↙
+               실제 결과 전달 → 공통 자금 정산
+                         ↓
+             해당 매칭의 정산 확인 기록·자료 회수
+```
+
+예약·정산은 같은 자금 클러스터가 소유한다. 매칭 적용 확인과 결과 정산은 별도 경로이며 도착 순서가 바뀌어도 된다. 세 클러스터 전체를 하나의 트랜잭션이라고 하지 않는다. 아래 수기 기대값과 현재 실행 식별에 연결된9개 관찰이 일치하고, 미완료 전달·정산과 run 소유 자원이 정리돼야 사례 완료다.
+
+- **포함:** 기존 두 담당 실행 설정/worker를 실제9 JVM에 연결, RDB→고정 설정 출처 대조, 공유 자금 경쟁, 양쪽 체결·수수료·잔량 취소·중복 재시도, 각3사본 관찰, 유한 실행/실패/정리 판정.
+- **유지:** 노드/client당768MiB·heap256MiB·기존 전송/매칭/정산 알고리즘·프로토콜/상태 포맷·고정 배치. 같은8분 run에서 정책을 바꾸지 않는다.
+- **제외:** A의 단위/가상 전송 검사 재구현, HTTP·인증/인가·배치 RDB CRUD·동적 이동·성능/장기 부하·리더 전환/과반 상실·snapshot 복합 장애의 반복. 실제5마켓의3+2 묶음은 질문에서 가능성을 확인한 것으로, 이번 기존 BTC/SUI 기본 B에 자동 추가하지 않는다.
+
+<details>
+<summary>13.2 먼저 맞출 메모리·디스크·시간 조건 — 숫자는 실행 성공 보장이 아님</summary>
+
+**사용자 결정:** 기존 노드·client 한도를 유지한다. 소형 프로필은 채택하지 않았다. 다음 최소치·정리 기한은 이 결정에 맞춘 B의 검증 예산이다.
+
+| 단계/대상 | 개수 | 각 메모리 상한 | 기타 유지/제안 값 |
+| --- | ---: | ---: | --- |
+| 준비용 PostgreSQL |1|512MiB(B 전용 명시)|CPU0.5·pids128·준비60초·로그1MiB×2. 기존 DB helper의 무제한 기본값을 B에 그대로 쓰지 않음 |
+| 자금/BTC/SUI 노드 |9|각768MiB|각 heap256MiB(`-Xms64m -Xmx256m`), shm256MiB, CPU1, pids128, G1 |
+| 실행 client |동시 최대1|768MiB|heap256MiB·shm256MiB. 같은 JVM 안의 두 독립 연결/소유 스레드로 경쟁 입력. 추가 client 컨테이너 병렬 기동 금지 |
+| 역할 실행 단계 상한 합 |10 컨테이너|7,680MiB =7.5GiB|`9×768 + 1×768`. heap·shm을 다시 더하지 않음 |
+| Docker/VM 내부 여유 |해당 단계 전체|1.5GiB 추가 예약|보수 예산이며 실제 peak 측정값 아님 |
+| Docker에서 보이는 전체 메모리 |전체|**최소9GiB**|약10GiB급 Docker 설정을 권장하되 `docker info`의 실제 `MemTotal`로 판정 |
+
+DB의 지정 버전을 제품의 기존 RDB 조회 경로로 읽고, 구성 버전/원문 SHA와 생성된 고정 설정의 두 마켓/수수료를 대조한 뒤 **DB 컨테이너의 종료를 확인하고9노드를 기동**한다. DB를 종료하지 못했으면 node 단계로 넘어가지 않는다. DB 준비와 node/client는 겹치지 않으므로512MiB를7.5GiB에 더하지 않지만, 보조 reaper 등 잔류 프로세스/컨테이너가 있으면 여유 예산에 포함하고 식별한다. 출처 불명 상주 컨테이너가 있어 예산을 판단할 수 없으면 자원 생성 전에 실패한다. 다른 작업을 자동 종료하지 않는다.
+
+`-Xmx256m`은 heap 최대치이며 전체 JVM RSS 한도가 아니다. direct/매핑/native·thread stack·tmpfs 사용도 컨테이너 한도 안에서 공간을 쓴다. shm256MiB는 `/dev/shm` 용량 한도라768MiB에 재합산하지 않는다. 현재 설정은 swap 금지를 선언하지 않으므로 swap 없는 실행을 보장하지 않는다. 각 run에서 실제 memory/shm/CPU/pids·OOMKilled·exit 상태와 수집 가능한 memory peak/swap 지표를 남긴다. 실제 peak를 얻지 못하면 미관측으로 표시하고0으로 대체하지 않는다. [Oracle Java25의 heap/direct 옵션](https://docs.oracle.com/en/java/javase/25/docs/specs/man/java.html), [Docker tmpfs 회계](https://docs.docker.com/engine/storage/tmpfs/), [Docker 메모리·swap](https://docs.docker.com/engine/containers/resource_constraints/).
+
+**명세 작성 당시 환경은 미달:** 2026-11-16 읽기 조회에서 호스트 물리16GiB, Docker `MemTotal=8,321,798,144` bytes(약7.75GiB), CPU8이었다. 최소9GiB를 충족하지 않는다. Docker의 메모리 설정은 이번 명세 작업에서 변경하지 않는다. 호스트의 OS·Gradle/JUnit·다른 앱 여유도 따로 확보해야 하며, Mac의 Docker VM 설정은 호스트용 최소4GiB를 남기는 조건으로 준비한다. Linux에서 Docker와 호스트가 메모리를 공유하는 경우 VM 배분식을 그대로 적용하지 않는다. 이 예산을 충족하는 것이 기동 성공이나 무압박 상태를 보장하지는 않는다.
+
+| 항목 | B의 고정 예산·판정 |
+| --- | --- |
+| 실행 전 디스크 |호스트 제어/보고서 경로20GiB 이상, Docker 기록 볼륨이 놓일 파일시스템12GiB 이상 여유. 양쪽을 따로 확인하며 `docker system df`만으로 VM의 빈 공간을 추정하지 않음 |
+| 전체 run |사례당480초(기존8분). 마지막90초는 정리 전용, 업무는390초 안에 종료/실패 전환 |
+| 준비/연결 |이미지 build180초·DB 준비60초·9노드 준비90초·client 작업60초·개별 관찰45초는 각 최대치. 항상 남은 전체 업무 기한과의 최솟값 사용. 최대치를 순차로 더해 전체 기한을 늘리지 않음 |
+| run 기록 |9개 node volume **전체 합계2GiB**. client/DB 임시 데이터는 별도 최대512MiB로 제한·정리. 경과 중 확인, 초과하면 실패 후 정리 |
+| 진단 |run 전체16MiB, 관찰 파일각256KiB, result.json각4MiB. B1 순서 관찰은 최초2요청×자금3사본의 유한 행만 보관 |
+| 정리 |노드별 로그 최대2초·128KiB, 전체 down 최대25초, 잔존 컨테이너/볼륨/network 확인과 이미지/임시 DB 정리를90초의 남은 기한 안에서 수행 |
+| 병렬/CPU |두 native 사례를 직렬 실행. 노드당 CPU 상한1을 유지하지만 물리9코어를 요구하지 않음. 공유 CPU에서의 기능 검증이며 성능 수치로 쓰지 않음 |
+| 전체 B native 검사 |새 run 두 번, 합계 최대16분. 기존 CI `Build and test`30분 한도도 함께 지킴. 전체 CI 한도를 넘으면 실패/미검증이며 timeout 상향·사례 skip으로 성공 처리하지 않음 |
+
+Docker 내부 공간은9노드 전의 유한 준비 client/probe에서 실제 파일시스템을 확인한다. 보조 컨테이너/볼륨도 이 run 식별로 묶고 정리한다. 사전 조건 미달은0건 성공이나 skip이 아니라 구체적인 환경 실패다. 빌드/DB/업무가 먼저 실패해도90초 정리 구간으로 진입하고, 정리 실패나 잔존 자원이 있으면 최종 성공을 반환하지 않는다. 디스크·진단 한도는 관측 시 초과를 실패시키는 중단/정리 기준이며 파일시스템의 강제 quota 보장이 아니다. 시스템 전체 prune·다른 run 볼륨 제거·사용자 앱 종료를 시험의 자동 정리로 넣지 않는다.
+
+</details>
+
+<details>
+<summary>13.3 최신 코드에서 재사용할 경로와 작은 변경 경계</summary>
+
+| 기준 코드·확인한 사실 | B에서 필요한 차이 |
+| --- | --- |
+| [A 실행 main](../app-api/src/main/kotlin/com/exchange/core/api/trading/infrastructure/aeron/DevelopmentSplitTradingMain.kt)·[Node 조립](../app-api/src/main/kotlin/com/exchange/core/api/trading/infrastructure/aeron/DevelopmentSplitTradingNode.kt): 이미 두 담당·고정 배치·같은 자금 source 지원 |제품 실행 코드 재구현 없이 환경변수 두 담당 배치를 실제 실행에 공급 |
+| [기존 Compose](../app-api/src/test/docker/aeron-order-delivery/compose.yml): 자금3+매칭3, node/client cap 공통. [결과 모드](../app-api/src/test/docker/aeron-result-settlement/compose.yml) |B 전용9node 구성·서로 다른3 cluster ID·9개 records volume·공유 control의 충돌 없는 경로. 기존6node 기본값 보존 |
+| [기존 실행기](../app-api/src/test/kotlin/com/exchange/core/api/trading/infrastructure/aeron/DockerFundsOrderDeliveryTest.kt):6서비스 고정·회복 사례에만 엄격한 boot 연결 적용 |서비스/담당별 실행 식별·한도 검사를 B에 적용. 모든9개 현재 runtime/boot 교차 대조. 기존6node 검사 전체를 범용화하지 않음 |
+| [결과 관찰 wrapper](../app-api/src/test/kotlin/com/exchange/core/api/trading/infrastructure/aeron/MatchingResultVerificationTool.kt): 단일 마켓 `.single()`·X/USDT·단일 matching 파일명 |시험 전용 관찰을 담당/market map으로 표현하고9개 state/runtime와 owner별 결과·ACK 파일을 분리. 제품 상태/API 추가 금지 |
+| [기존 DB helper](../app-api/src/test/kotlin/com/exchange/core/api/trading/infrastructure/aeron/MarketConfigurationDatabase.kt)·[제품 RDB 조회](../app-api/src/main/kotlin/com/exchange/core/api/trading/infrastructure/aeron/DevelopmentMarketSettings.kt) |B의 유한 DB 설정·출처 기록·준비 후 종료. 재사용 시 기존 무제한 helper를 전역 변경하지 않고 B의 명시적 한도만 주입 |
+| [기존 동시 입력](../app-api/src/test/kotlin/com/exchange/core/api/trading/infrastructure/aeron/DockerFundingReplicationTest.kt) |ready/GO 원칙만 재사용. B는 한 client의 독립2연결·token 채널0/1, 현재 split 프로토콜로 실행 |
+
+명세 작성 당시 파일명 제안은 `DockerMultiMatchingReplicationTest`(native2개), `MultiMatchingConvergenceTest`(경량 판정 반례), `src/test/docker/aeron-multi-matching/compose.yml`이다. 구현 전 제안이며, 실제 구현·검사 결과는14절에서 구분한다. 구현자는 같은 책임 안에서 분할할 수 있다. 공통 명령 실행/이미지/관찰 helper는 필요한 부분만 재사용하고, 기존 약1,000줄 실행기를 통째 복사하거나 새 범용 실행 프레임워크로 확장하지 않는다. 기존 fixture 변경이 커지면 공통 명령/수명주기만 공유한 B 전용 작은 실행기로 둔다. 새로운 제품 결함을 발견하면 실패 근거와 필요한 수정 범위를 다시 확인하며, 검증을 통과시키려고 제품 검증을 완화하지 않는다.
+
+</details>
+
+<details>
+<summary>13.4 실제 RDB 출처·배치·9사본의 관찰 계약</summary>
+
+- 테스트가 실제 PostgreSQL에 두 마켓과 고정 정책의 버전1건을 등록한다. 기존 제품 조회로 같은 지정 버전·원문 SHA를 읽고 고정 manifest를 만든다. 수기로 정한 두 마켓/정책/ordinal과 버전·원문 SHA·manifest SHA의 연결을 기록한다. DB 원문을 읽었다는 사실 없이 fixture에서 같은 값의 manifest를 직접 만들면 실패다.
+- 잘못된 기대 원문 SHA는 준비 단계에서 거절되며 node 기록을 만들지 않는 경량/DB 준비 반례를 둔다. 실제9node의 유효 출처 확인과 구분한다. DB 비밀번호·인증 원문을 보고서에 기록하지 않는다.
+- 실행 자원은 A의 기존 논리 한도와 두 담당 설정을 재사용한다. 등록은BTC/SUI 두 마켓·BTC/SUI/USDT 세 자산이며, 기본 허용3마켓·4자산 안이다. 사용자별 채널은2개를 허용하고 필요한 채널을 먼저 발급해 epoch1을 확인한다. 기존 단일 마켓 native fixture의 `channelsPerAccount=1`을 그대로 복제하면 B01 채널1을 거절하므로 사용하지 않는다. 전달/활성 payload의 명시적1MiB 한도는 A의 두 담당 fixture와 같이 공급하며 다른 snapshot/송신 한도 검사를 모두 통과해야 한다.
+- 모든 노드에 동일한 전체 배치·동일 manifest bytes를 공급한다. 자금은 전체 두 마켓, BTC 담당은BTC만, SUI 담당은SUI만 맡는다. 자금198·BTC199·SUI200의 서로 다른 cluster ID와 서로 다른 업무 lineage를 쓴다(숫자는 시험 배치 고정값, 제품의 일반 규칙 아님). 입력 계약v2와 결과 정산 모드를 사용한다.
+- 관찰 대상은 정확히 `funds0..2`, `btc0..2`, `sui0..2`의9개다. container ID·현재 boot·역할·member·lineage·담당 market·실제 members/ingress·동결 image ID·소스/프로토콜/manifest/공통 구성 지문과 실제 sync`2/2/2`를 연결한다. 자기 담당 선택은 다르지만 전체 공통 지문은 같다.
+- 컨테이너 안 PID는 각각1일 수 있으므로 숫자PID9개 고유를 요구하지 않는다.9개 별도 container ID와 boot·inspect 실행 상태로 실제 분리를 확인한다. 각자의 records volume9개와격리된Driver 경로를 확인하고, 같은 머신의 Docker를 물리 장애 영역 분리로 해석하지 않는다.
+- 관찰은 각 서비스의 현재 runtime/boot와 연결하고, 처리 경계가 수렴한 시점의 의미 상태를 수기 기대값에 대조한다. 자금3사본끼리·BTC3사본끼리·SUI3사본끼리 비교하며 서로 다른 역할의9개 snapshot bytes가 같다고 요구하지 않는다. 자금은 두 마켓의 상태를, 각 matching은 자기 마켓의 주문/순서만 보여야 한다.
+- B1은 시험용 callback 관찰에서 최초 두 원본 token의 실제 자금 로그 위치와 처리 결과를 한 번만 기록한다. 자금3사본에서 같은 token→위치·순서인지 대조한다. **잔고 부족 거절은 승인 순번을 발급하지 않으므로** 승인 receipt의 순번1이나 응답 도착 순서만으로 먼저 처리됐다고 판정하지 않는다.
+- 자동 worker가 처리 완료까지 이어야 한다. 수동 결과/ACK replay를 필수 진행 조건으로 쓰지 않는다. 수렴 후 중복 검사용 재전송만 허용하며, 원래 응답·정산 시각·금융 효과를 보존해야 한다.
+
+</details>
+
+<details>
+<summary>13.5 새 기록에서 수행할 두 native 수용 사례</summary>
+
+**B01 · 수수료0에서 같은 사용자의600/500 동시 주문**
+
+초기 구매자USDT1,000, BTC/SUI0, maker/taker 수수료0. 구매자 채널0/1의 서로 다른 token(각 epoch1·sequence1), BTC BUY6@100과 SUI BUY5@100을 독립 연결2개가 공통 준비 장벽을 넘은 뒤 전송한다. 각자 연결됐다는 증거 없이 순차 함수 호출을 동시라고 하지 않는다. 기존 native client처럼 한 Driver를 재사용하되 각 소유 스레드가 자기 client 인스턴스와 세션을 사용하고, 동적 응답 포트 등으로 연결 충돌을 피한다. client 인스턴스 하나를 두 스레드가 동시에 호출하지 않는다.
+
+| 실제 자금 로그에서 먼저 처리한 요청 | BTC 결과 | SUI 결과 | 구매자 가용/예약 | 해당 매칭 주문장 |
+| --- | --- | --- | --- | --- |
+| BTC600 |승인|잔고 부족 거절|400 /600|BTC 주문1·잔량6, SUI0 |
+| SUI500 |잔고 부족 거절|승인|500 /500|BTC0, SUI 주문1·잔량5 |
+
+어느 쪽이 먼저 나와도 정상이다. 양쪽 승자를 얻기 위해 무기한 재실행하지 않는다. 승인1·거절1, 최초 두 로그 위치/결과의3사본 일치, 승인된 주문만 올바른 담당에 존재해야 한다. 승인 stream은 발급·매칭 적용·결과·정산/회수 경계1, 반대 stream은0이다. 승자는 활성 잔량과 예약이 남으므로 이를 미완료 누수로 판정하지 않는다. 두 요청을 같은 token·같은 원문으로 다시 보내도 최초 승인/거절·주문 ID·잔고·발급/실행 순번이 그대로여야 한다. 같은 token의 다른 수량은 기존 내용 충돌로 거절되고 상태를 바꾸지 않는다.
+
+**B02 · 양쪽 체결·1% 수수료·남은 예약 반환**
+
+B01과 **별도 새 run**을 사용한다. 초기 구매자USDT1,000, 판매자BTC1/SUI1·USDT0, 양쪽 maker/taker 각1%. 수량/가격 단위는 이 작은 정수 예시를 정확히 허용하도록 고정한다. 구매자BTC BUY2@100·SUI BUY3@100을 접수하고, 판매자가 각1개를100에 SELL한다. 두 매칭 담당의 실제 worker가 결과를 자금에 전달한 뒤 잔량 취소를 입력한다.
+
+| 단계 | 구매자USDT 가용 /예약 | 구매자BTC /SUI | 판매자USDT | 누적 수수료USDT |
+| --- | --- | --- | --- | --- |
+| 두 구매 주문 예약|495 /505|0 /0|0|0 |
+| 각1개 체결·정산|495 /303|1 /1|198|4 |
+| BTC 잔량1 취소·반환|596 /202|1 /1|198|4 |
+| SUI 잔량2 취소·반환|798 /0|1 /1|198|4 |
+
+판매자 잔여BTC/SUI는0이다. quote 총량`798+198+4=1,000`, 각 base 총량1을 보존한다. 주문장0·활성/미전달/미정산 payload0, 각 market의 입력·매칭 적용·결과·정산/확인 경계3, engine순번3, 체결 합계2를 확인한다. 자금 전체는 신규 승인4+취소2다. 최초 사용자 응답과 유한 결과 receipt6건은 기존 수명대로 남으므로 **모든 기록0**을 요구하지 않는다. 실제 주문/체결/취소/결과 ID와 상대·대상 마켓까지 대조하며 금액 합계만 맞는 관찰은 부족하다.
+
+자동 수렴 뒤 원래 신규/취소 token과 실제 결과·정산 ACK를 재전송한다. 최초 응답·정산 시각·순번·금액·원본/결과 회수 경계가 그대로인지 확인한다. BTC의 ACK로 SUI 자료가 회수되거나 다른 마켓의 결과가 적용되면 실패다. 수렴 후에는 양쪽 payload가 이미0이므로 이 재전송을 미회수 자료가 남은 상태의 부정 ACK 격리 시험으로 확대하지 않는다. 그 거절 계약은 A의 별도 반례 근거와 구분한다.
+
+**판정기 경량 반례:** 정상 관찰은 성공, 다음 변형은 각각 실패해야 한다:9개 중1누락/복제, BTC/SUI owner 교환, 낡은 boot, 잘못된 잔고·예약·fee, 잘못된 주문/대상 ID, 결과 중복, 미완료 확인 경계. 이 반례 통과를 실제9 JVM 성공으로 대신하지 않는다.
+
+</details>
+
+<details>
+<summary>13.6 첫 구현 단위·실행 방법·완료와 미검증</summary>
+
+1. 먼저 고정 관찰과 수기 정답으로 B01/B02 판정기의 정상·변조 반례를 작성한다.9개 대상·role/owner·현재 boot를 빠뜨리면 실패하도록 한다.
+2. B 전용 자원 사전 검사/정리와 RDB→동일 manifest 공급을 연결한다. 메모리/디스크 미달·잘못된 원문 SHA·준비 실패를 유한 실패로 남기고, 기존6node의 기본 조건을 바꾸지 않는다.
+3. 두 담당 환경 설정과9개 서비스의 실제 관찰·경쟁 입력/결과 환류를 연결한다. B01→B02를 직렬 실행하고 기존 A/단일 담당/구조·스타일 회귀를 확인한다. native를 가상 전송이나 단일 노드로 대체하지 않는다.
+
+**명세 작성 당시 예상 명령. 실제 실행과 결과는14절 참조.** 이름은13.3의 제안이다. 기존 앱 테스트 task의 staging 경로를 재사용하며 명령은 실제 구현 이름과 대조한다.
+
+```bash
+cd /Users/0chord/.codex/worktrees/issue148-http-aeron/exchange-core
+JAVA_HOME=/Users/0chord/Library/Java/JavaVirtualMachines/corretto-25.0.2/Contents/Home \
+./gradlew :app-api:test --tests '*MultiMatchingConvergenceTest' \
+  --tests '*DockerMultiMatchingReplicationTest' \
+  --no-daemon --max-workers=1 --console=plain
+```
+
+실행 파일의 실제 결과는0건·skip·예외 무시가 아닌 두 native run의 성공/실패로 남긴다. 기존 관련119/444/386과6 JVM8개는 A의 과거 근거이며 **B의 새 성공 건수로 재사용하지 않는다**. B에서 helper를 바꾸면 영향받는 기존 native 회귀와 필수 구조/스타일 검사를 다시 수행한다. 전체검사/CI의 성공 전에는 로컬 B 통과만으로 전체 통합 완료라고 하지 않는다.
+
+보고서 제안 경로는 `app-api/build/reports/aeron-funding/multi-matching/<runId>/result.json`이다. 기준 commit·실제 수정 source hash·실행 image ID·RDB 출처·manifest/배치·한도·관찰9개·수기 정답·실제 token/log 위치·각 stage/전체 시간·기록/진단 peak·초기/최종 디스크·메모리 사전값·정리 결과·미검증 범위를 남긴다. 제품/시험/환경 오류를 구분하고, 실패에도 마지막 유효 관찰과 정리 여부를 보존한다. raw 진단을 추가로 무제한 쌓지 않는다.
+
+**B 준비 완료 기준:** 두 사례와 독립 기대값, 실제9개 실행·출처 판정, 유한 자원/실패/정리 조건이 구현자가 선택할 수 있게 정해진 상태다. 실제9node 성공은 구현 후에만 판정한다. B01/B02·관련 회귀·독립 검토·통합이 끝난 뒤 #135 완료 처리 여부를 판단한다. 이 명세 작성 단계에서는 테스트/실행 구성/제품 코드 작성·클러스터 실행·커밋·PR·이슈/보드 상태 변경을 하지 않았다. 이후 사용자가 허용한 구현·실행은14절에 기록한다.
+
+</details>
+
+### 13.7 이번 결정·확인과 남은 실행 조건
+
+- **실제 질문:** “9노드 검증의 메모리 기준을 정하자. 기존 노드·클라이언트 한도를 유지하면 상한 합계만7.5GiB이고 DB와 Docker 여유가 더 필요해. 현재 Docker 메모리는 약7.75GiB야. 이번 B는 어떤 기준으로 명세할까?” 추천은 기존 한도 유지·약10GiB급 환경이었다. 대안은 현재 Mac에 맞춘 B 전용 소형 프로필과 먼저 기동 가능성 확인이었다.
+- **실제 답변:** “기존 한도 유지하는데 지금 디스크 모자를 수 있어 먼저 정리도 하고 해봐 불필요한거 정리하고 해봐”. **기존 한도 유지 채택**, 별도 선택 이유는 제출하지 않았다. 디스크 정리는 추가로 허용됐으며 명세 작성과 구분해 실행한다. Docker 메모리 자동 변경이나9노드 실행 허가는 아니다.
+- **반영:**13.2에서 기존768/256/256 한도를 보존하고 단계 분리·동시 client1·실제MemTotal 최소9GiB·전체480초/정리90초를 정했다. 상세 여유 수치는 보수 예산이며 사용자 발언의 숫자나 이미 실행한 측정값으로 쓰지 않는다.
+- **확인한 기술 공백:** 기존 관찰은 단일 마켓/담당에 고정이고 B1 거절은 승인 순번을 발급하지 않는다.13.3~13.5의 market/owner별 관찰과 유한 최초 로그 위치 대조로 해결할 계획이다. 구현된 기능으로 표시하지 않는다.
+- **환경:** 현 Docker 약7.75GiB는 선택한 최소 메모리에 미달한다. 디스크를 정리해도 RAM이 늘어나는 것은 아니다. 구현/실행 착수 때 적절한 환경에서 사전 조건을 다시 확인해야 한다.
+- **디스크 정리·명세 정적 검토:** 아래에 실제 수행 결과를 구분해 기록한다. 현재 문서에 새 테스트 통과나 실제9node 성공 기록은 없다.
+
+
+**추가 요청에 따라 수행한 디스크 정리(2026-11-16):** 미사용7일 이상 Docker build cache만 정리해 Docker 보고상17.93GB를 회수했다(24.31GB→6.376GB). 검토용 v1 사본의 재생성 가능한 staging2개와 구조 검사 TestKit 임시 work만 합계703,115,264 bytes(약670.5MiB) 제거했다. 소스·문서·고정 사본/manifest·probe·검증 XML/요약129개의 hash를 보존했다. 기존 이미지39개·볼륨124개·사용자 컨테이너와 출처/보존 조건이 불명확한 과거 성능 원본은 제거하지 않았다. 호스트 여유는 약74.5GiB→91GiB이며 Docker 내부 파일시스템 여유12GiB의 실행 사전 검사를 대신하지 않는다. 정리 원자료·전후 계수·보존 hash는 `/tmp/issue135b-disk-cleanup-20261116/`에 남겼다. Docker 메모리는 여전히약7.75GiB이고 새 클러스터/테스트는 실행하지 않았다.
+
+
+**명세 독립 정적 검토:** 작성 대화를 전달하지 않은 별도 검토자가 고정 v1(`/tmp/issue135b-spec-v1.md`, SHA256 `fb108e303b3b4e9c83141b377ff7d646402c4cc15add20a0f16143ed3672394b`)을 통합 소스와 대조했다. 메모리/시간 계산·RDB 출처·현재9사본·금액/수수료/순번에서 필수 수정사항은 확인되지 않았다. 사용 중 Aeron1.53.3 원본의 `Cluster.logPosition`·`BoundedLogAdapter`·`ClusteredServiceAgent`가 현재 메시지의 위치를 callback 전에 설정함을 확인해 B01 관찰 수단을 정적으로 대조했다. 실행 검증은 아니다. 수렴 후 재전송 검사를 미회수 상태의 부정 ACK 격리로 확대하지 않는 한계도13.5에 명시했다. 이후 변경은 문서의 준비 상태, 이 한계, client 소유/디스크 관측의 설명, 실제 정리 기록만이다. 최종 명세 사본과 해시는 `/tmp/issue135b-spec-v2.md`·`/tmp/issue135b-spec-v2.manifest.json`으로 고정한다. 현재 #135의 이슈 상태·보드·우선순위·관계는 그대로 유지하고 B의 명세 요약만 기존 이슈 본문에 연결한다.
+
+
+## 14. B 구현과 검증 기록 — 2026-11-16
+
+현재 구현 폴더는 `/Users/0chord/.codex/worktrees/issue148-http-aeron/exchange-core`, 브랜치는 `test/multi-matching-native/135`다. 13절은 구현 전 합의이며, 이 절에서 실행 결과를 구분한다. 제품 계산·프로토콜·복구·HTTP·인증/인가는 변경하지 않았다. 실제 9노드의 기능 검증이며 성능·장애 승계 결과로 해석하지 않는다.
+
+### 14.1 실제로 연결한 시험 흐름
+
+실제 PostgreSQL에 버전을 등록한다 → 기존 제품 RDB 조회로 원문 SHA·버전·마켓·정책을 확인한다 → DB 종료를 확인한다 → 동결 실행 이미지 안에서 동일 마켓·한도·버전과 schema를 유지한 채 실행 artifact에 결속한다 → 자금3/BTC3/SUI3 JVM을 시작한다 → 기존 자금/주문/결과 전달 worker가 자동 처리한다 → 현재 9개 실행 식별과 수기 정답을 대조한다 → 중복 재전송 후 상태를 다시 대조한다 → 이번 run 자원을 정리한다.
+
+- 이미지 결속 전 RDB manifest도 보존하고 전후 SHA와 모든 정책 필드의 동일성을 검사한다. 제품의 실행 artifact 불일치 거절을 완화하지 않는다. 첫 B01 실행은 이 경계에서 거절됐다. 호스트에서 만든 실행 식별자를 그대로 이미지에 공급한 시험 준비 오류로 분류하고, 성공 증거에 포함하지 않는다.
+- Docker 메모리 10GiB 변경·재시작은 사용자의 명시적 답변으로 허용됐다. 실제 `MemTotal=10,418,937,856` bytes, CPU8을 확인했다. 노드별768MiB/힙256MiB/shm256MiB/CPU1/pids128 한도는 유지한다. 원 설정은 `/tmp/issue135b-docker-settings-20261116/settings-before.json`에 보존한다.
+- 노드/클라이언트는 실제 inspect로 한도·이미지·분리를 확인한다. 클라이언트 `/tmp`는512MiB tmpfs로 강제 제한하고 사용량 peak는 미관측으로 표시한다. DB 데이터+`/tmp`는 종료 전에 관찰해512MiB 초과 시 실패한다. 기록·진단 합계 검사는 관측 시 중단 기준이며 강제 파일시스템 quota가 아니다.
+- 실행 전 소스 SHA를 고정하고 종료 시 재대조한다. 자신의 label을 가진 컨테이너·기록 볼륨과 Compose network만 정리하며 전체 prune은 하지 않는다. CLI 출력은 파일 기록 시점부터 제한하고 초과를 실패로 기록한다.
+
+### 14.2 새 테스트를 읽는 지도
+
+아래는 제품 테스트와 판정 도구 자체의 반례를 구분한 Given/When/Then이다. 테스트 수는 메서드 수이며 내부 반복 입력을 별도 테스트로 부풀리지 않는다.
+
+| 상황·테스트 위치 | Given 준비 | When 실행 | Then 실제 검증 |
+| --- | --- | --- | --- |
+| [B01 동시 주문](../app-api/src/test/kotlin/com/exchange/core/api/trading/infrastructure/aeron/DockerMultiMatchingReplicationTest.kt) |수수료0, 공통USDT1000, 독립 연결2개의 ready/GO |BTC600/SUI500 동시 접수 후 같은 요청 재전송·BTC 다른 수량 재전송 |최초2 callback의 로그 위치로 승인1/거절1 판정, 승자만 주문장·예약 보유, 원 응답 보존, 충돌 거절·금융 변화 없음 |
+| [B02 체결·두 잔량 취소](../app-api/src/test/kotlin/com/exchange/core/api/trading/infrastructure/aeron/DockerMultiMatchingReplicationTest.kt) |새 기록,1% 수수료, 구매자1000·판매자 각 base1 |두 BUY→각 SELL1→BTC/SUI 잔량 취소→원 요청·실제 결과/ACK 재전송 |각 단계495/505→495/303→596/202→798/0, 판매자198·수수료4·체결2, 마켓별 경계3·payload0, 원 응답·정산 효과 보존 |
+| [정상 관찰3개](../app-api/src/test/kotlin/com/exchange/core/api/trading/infrastructure/aeron/MultiMatchingConvergenceTest.kt) |외부 실행 없이 수기로 만든9사본과 원 응답 |초기/예약/체결/두 취소·BTC/SUI 두 경쟁 승자·생략된 초기0잔고 판정 |모든 정상 수기 정답 허용 |
+| 같은 파일의 누락·복제·담당 교환·지문 변조4개 |정상9사본 |하나 누락, 다른 사본 복제, 낡은 boot, 두 담당 교환, image/sync/공통 지문 변조 |실패 목록이 비어 있지 않음. 모두 같은 잘못된 값이어도 수기 정답과 비교 |
+| 같은 파일의 금액·주문·결과·미완료4개 |정상 금융 상태·원래 ID/결과/응답 |틀린 금액·수수료·주문 ID·체결 상대/결과 중복·남은 payload/확인 경계 주입 |합계만 맞거나 사본끼리만 같아도 거절 |
+| 같은 파일의 처리 순서·원 응답·관찰 metadata3개 |정상 경쟁/취소 관찰 |실제 로그 위치 제거/뒤집기, 원 응답/취소 대상 변경, 서로 다른 관찰 위치·같은 PID 숫자 |앞2종은 거절, 현재 boot/container가 별개인 마지막 정상 metadata는 허용 |
+| [실행 예산3개](../app-api/src/test/kotlin/com/exchange/core/api/trading/infrastructure/aeron/MultiMatchingRunBudgetTest.kt) |Docker 메모리/호스트 여유 값 |최소9/20GiB 경계 및 그 미만 입력 |경계 허용,8GiB·디스크 부족은 명시적 실패. 작은 프로필로 우회하지 않음 |
+| [명령 출력 신규3개](../app-api/src/test/kotlin/com/exchange/core/api/trading/infrastructure/aeron/VerificationCommandsTest.kt) |유한 정상/대량 stdout·stderr 및 무한 출력 자식 |cap을 지정해 실행·제한 시간 대기 |정확한 cap은 성공, 초과는 각 파일 cap 이하 유지하며 실패, 무한 출력은 timeout 후 종료 |
+
+판정기14개·예산3개는 도구 자체 검사다. 실제 DB와9 JVM·전송 worker의 성공을 대신하지 않는다. 명령 helper의 기존3개는 파일 분리·기동 실패 뒤 종료·timeout 계약을 함께 재검사한다. 실제 요청별 응답 도착 순서는 처리 순서 근거로 사용하지 않는다.
+
+### 14.3 실행 결과와 범위
+
+- 경량 검사: `/tmp/issue135b-light-v3.log`,22개(판정13+예산3+명령6), 실패/오류/skip0,27초. XML/요약은 `/tmp/issue135b-light-v3-results`에 보존했다.
+- 최초 B01 준비 실패: `multi17947996720111eb6ec8d`,108,727ms. 실제9노드 업무 수용 성공0건. `financial artifact differs from bounded manifest`로 시작 전 거절됐으며 정리를 확인했다.
+- 중간 B01 초기 판정 실패: `multi17948004844423bf92034`,77,535ms. 제품은9노드 기동·초기화에 도달했으나, 초기0잔고 행을 생략한 정상 표현을 판정기가 거절했다. Kotlin nullable Long 비교의 `?: 0`을 `?: 0L`로 통일하고 실제 생략 표현의 회귀 사례를 추가했다. 이 실패를 제품 정합성 결함이나 성공으로 집계하지 않는다.
+- 중간 B01 성공 `multi1794800662029c8dd8113`은47,791ms였다. 그 뒤 B02에서 시험 관찰 코드의 다른 stream 타입 비교로 실제 수신 ACK 파일이 누락된 오류를 수정했다. `multi1794800746875d450f99c`의 금융·취소 상태는 수렴했지만 재전송 검사가 실패했으므로 전체 성공으로 집계하지 않는다. 정식 `owner.configuration.resultStream(marketId)`로 비교하고 수신한 원본 bytes만 보존한다.
+- **최종 코드의 B01/B02:** `/tmp/issue135b-native-final-v1.log`, `BUILD SUCCESSFUL in 2m51s`,26개(실제9노드2+판정14+예산3+명령6+DB 잠금1), 실패/오류/skip0. XML/집계 `/tmp/issue135b-native-final-v1-results/summary.json`.
+
+| 최종 run | 직접 확인한 결과 | 시간 | 기록/진단 관찰값 | 종료·정리 |
+| --- | --- | ---: | --- | --- |
+| B01 `multi17948009487382fc9eaa8` |SUI 승인500/BTC 거절, 구매자500/500, SUI잔량5/BTC0, 원 요청·내용 충돌 거절 보존 |43,938ms|9,854,976 /952,874 bytes|success=true,issues=[],run 소유 자원 회수 |
+| B02 `multi17948009930293813b3a9` |구매자798/0·각 base1, 판매자198, 수수료4, 체결2·각stream3·잔량/payload0. 신규/취소·결과6건·ACK2건 재전송 뒤 동일 상태 |96,002ms|9,904,128 /2,047,968 bytes|success=true,issues=[],run 소유 자원 회수 |
+
+보고서는 `app-api/build/reports/aeron-funding/multi-matching/<run>/result.json`이다. 두 run의 실행 전 고정 source SHA는 현재 실행 소스와 모두 일치했다. 각각9개 container/boot와 각 역할의3사본, 실제sync2/2/2·768MiB/256MiB 한도를 대조했다. 관찰한 노드별 cgroup memory.peak의 최댓값은 B01 198,770,688bytes, B02 224,567,296bytes다. VM 전체/호스트 압박이나 swap 부재를 증명하는 값은 아니다. DB 데이터+tmp 관찰은 각각48,324,608bytes다.
+
+실행 명령은 다음과 같다. 형식 검사는 먼저 같은 코드에 적용하고, native는 한 task 안에서 직렬 실행했다.
+
+```bash
+cd /Users/0chord/.codex/worktrees/issue148-http-aeron/exchange-core
+JAVA_HOME=/Users/0chord/Library/Java/JavaVirtualMachines/corretto-25.0.2/Contents/Home \
+./gradlew :app-api:ktlintTestSourceSetFormat :app-api:test \
+  --tests '*MultiMatchingConvergenceTest' --tests '*MultiMatchingRunBudgetTest' \
+  --tests '*VerificationCommandsTest' --tests '*MarketConfigurationDatabaseTest' \
+  --tests '*DockerMultiMatchingReplicationTest' \
+  --no-daemon --max-workers=1 --console=plain
+```
+
+### 14.4 독립 검토와 남은 판정
+
+작성 대화를 상속하지 않은 검토자(`/root/review135b_v1`, `fork_turns=none`)가 기준 `e3656d88e1cd1a10fe670472ca5744a23eb037f9`와 불변 snapshot을 대조했다. 최초 전체 변경을 검토하고 수정 delta를 이어 검토했으며, 작성자 에이전트의 점검으로 대체하지 않았다.
+
+| 지적·발견 경계 | 수정과 근거 | 상태 |
+| --- | --- | --- |
+| 정리 로그가 무제한 파일로 먼저 기록됨·최종 진단 합계 미검사 |CLIstdout/stderr를 보존 시점에 제한, 초과 실패·계속 drain, 최종 보고서 포함 재판정. 신규3개 회귀와 검토자의 독립 작은 probe에서 경계/초과/연속 출력/최종 진단 초과 판정 확인 |해소 |
+| DB/client 임시 저장소512MiB 미구현 |DB 종료 전 실제 du·초과 실패, client512MiB tmpfs와 실제 inspect·종료/OOM 검사. client peak는 미관측으로 분리 |해소 |
+| down 실패 시 fallback의 기록 볼륨 조회 label 누락 |9개 named volume에 run label, 실제 native의 소유 자원 정리 확인. down 자체 실패에 대한 물리 장애 시험으로 확대하지 않음 |해소 |
+| 실제 생략된0잔고의 잘못된 거절 |0L 타입 통일, 생략 표현 회귀. v2 원자료에 대해 검토자가 실패/명시0 정상 대조를 독립 재현하고 최종 수정 코드와 대조 |해소 |
+| 실제 ACK bytes 관찰의 두 stream 타입 비교 |제품의 정식 resultStream 변환 재사용. 최종 B02에서 실제 결과6건 DUPLICATE·ACK2건 ACKNOWLEDGED/through3와 금융·정산 시각 동일을 확인 |해소 |
+
+코드 검토 대상은 `/tmp/issue135b-review-v4`, manifest SHA256 `224bf794f973951b48f1f444f34b284df472587808c393432db88176383bf84c`다. 최종9노드 두 run의 실행 source SHA가 해당 코드와 일치함을 검토자가 확인했다. 검토 범위에서 미해결 확정 결함0건이며, 모든 미래 결함이 없다는 보장은 아니다. 독립 원자료 대조 기록은 `/tmp/issue135b-reviewer-final-native-audit.json`, 작은 probe는 `/tmp/issue135b-reviewer-probe-v2/probe.log`다. 실제 Docker 시험은 구현자가 실행했고 검토자는 원자료를 직접 읽었다.
+
+### 14.5 최종 회귀·필수 검사와 정리
+
+`/tmp/issue135b-regression-v1.log`는 `BUILD SUCCESSFUL in 9m21s`다. 기존6노드8개를 포함해 아래 검사를 이번 코드로 다시 실행했으며, A의 과거 성공을 B의 새 실행으로 재사용하지 않았다.
+
+| 실제 실행 | 테스트 수 | 실패/오류/skip | 근거 |
+| --- | ---: | --- | --- |
+| B 최종: 판정·예산·CLI·DB 잠금·실제9노드 |26|0/0/0|`/tmp/issue135b-native-final-v1-results/summary.json` |
+| 앱 관련 설정·전달·Adapter·snapshot·가상 업무 흐름119 + 실제6노드8 |127|0/0/0|`/tmp/issue135b-regression-v1-results/app-api` XML |
+| 자금·정산 도메인 전체 |444|0/0/0|동일 보존 경로의 `domain-trading` XML |
+| 구조 검사 |386|0/0/0|동일 보존 경로의 `architecture-tests` XML |
+| 구조 report·전체 ktlint |명령 성공|해당 없음|회귀 로그의 `verifyArchitectureReport`·`ktlintCheck` |
+
+합계983개는 위 두 최종 실행의 서로 다른 테스트를 합한 수다. 내부 반복 입력·중간 실패/재실행·예전 A 결과를 추가 건수로 세지 않았다. 필수 검사 task 자체의 `NO-SOURCE`/캐시 표시는 JUnit 테스트 skip과 구분한다. 실제 JUnit skip은0이다.
+
+회귀 명령은9절의 관련 선택자에 다음3개를 추가해 같은 직렬 task에서 실행한 것이다: `--tests '*DockerFundsOrderDeliveryTest' --tests '*DockerSplitCancellationTest' --tests '*DockerMatchingResultDeliveryTest'`. 전체 명령은 `/tmp/issue135b-regression-v1-command.txt`, 실행 결과는 위 회귀 로그에 기록했고, domain/architecture test는 `--rerun`, `--max-workers=1`로 실행했다. 기존8개 native도 각각 `success=true`, `issues=[]`, 기록 볼륨/run 자원 회수 true이며 `/tmp/issue135b-regression-v1-results/native.json`에 각 원자료 경로를 연결했다.
+
+시험 종료 후 실행 컨테이너0개, `com.exchange.multi.run` label 기록 볼륨0개를 확인했다. 원자료·XML을 보존한 뒤 재생성 가능한 `architecture-tests/build/tmp/test/work`만 제거해268,531,635bytes(약256MiB)를 추가 정리했다. 정리 기록은 `/tmp/issue135b-regression-v1-results/cleanup.json`이며 호스트 디스크 여유는 약85GiB다. 시스템 전체 prune·사용자 앱 종료·다른 작업 볼륨 삭제는 하지 않았다.
+
+로컬 B 수용 범위는 충족했다. 현재 변경은 커밋·PR·원격 CI·병합 전이므로 #135 이슈/보드 상태는 여기서 변경하지 않는다. 독립 코드 검토 snapshot 이후에는 이 실행 기록을 포함한 문서만 갱신했으며, 최종 실행과 소스 hash를 다시 대조했다. 아래 미검증 범위를 로컬 통과로 대체하지 않는다.
+
+미검증 경계는 리더 전환·과반 장애, 장기 부하/최대 TPS, 실제5마켓3+2 배치, 미회수 다른 담당 payload가 남은 상태의 부정 ACK 격리다. 수렴 뒤 중복 ACK 재전송을 그 장애 시험으로 확대하지 않는다. 커밋·PR·CI·이슈 종료·보드 변경은 이 로컬 구현 결과와 구분한다.
