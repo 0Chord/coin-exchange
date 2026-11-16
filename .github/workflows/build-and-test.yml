@@ -127,10 +127,11 @@ jobs:
         id: docker
         run: docker info
 
-      - name: Build and run all tests
+      - name: Build and run product tests
         id: tests
         # 테스트만 강제로 재실행한다. 앞 단계의 린트 결과는 UP-TO-DATE로 재사용한다.
-        run: ./gradlew build test --rerun --no-daemon --continue --stacktrace
+        # 구조 테스트는 위 필수 Architecture checks 작업에서 실행·보고하므로 중복 실행하지 않는다.
+        run: ./gradlew build test --rerun -x :architecture-tests:test --no-daemon --continue --stacktrace
 
       - name: Upload test reports
         id: reports
@@ -171,8 +172,8 @@ jobs:
             echo "- 실제 이유: 해당 단계의 오류 메시지를 먼저 읽으세요. Docker 준비 실패라면 제품 테스트는 실행되지 않았습니다."
             echo "- 실행 상태: Kotlin 린트=$CI_LINT_OUTCOME / Docker 준비=$CI_DOCKER_OUTCOME / 전체 build=$CI_TESTS_OUTCOME / 보고서 업로드=$CI_REPORTS_OUTCOME"
             echo "- 기준 커밋: $GITHUB_SHA"
-            echo '- 명령: `./gradlew ktlintCheck --no-daemon --console=plain --continue` → `./gradlew build test --rerun --no-daemon --continue --stacktrace`'
+            echo '- 명령: `./gradlew ktlintCheck --no-daemon --console=plain --continue` → `./gradlew build test --rerun -x :architecture-tests:test --no-daemon --continue --stacktrace`'
             echo '- 보고서: `test-reports` · 모듈별 HTML과 XML, ktlint 텍스트/XML, Aeron 자금 준비의 노드별 관찰·Archive 기록 · 7일 보관. 준비 단계에서 실패하면 보고서가 없을 수 있습니다.'
-            echo '- 구조 작업의 성공은 제품·DB 성공을 뜻하지 않습니다. **Architecture checks** 결과는 별도로 확인하세요.'
+            echo '- 구조 테스트는 **Architecture checks**에서 한 번 실행·보고합니다. 두 필수 작업이 모두 성공해야 하며, 제품·DB 결과는 이 작업에서 확인하세요.'
             echo '- 읽는 절차: 저장소 README의 **CI 실패 이유와 보고서 읽기** 항목'
           } >> "$GITHUB_STEP_SUMMARY"

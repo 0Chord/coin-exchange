@@ -106,3 +106,13 @@ JAVA_HOME=/Users/0chord/Library/Java/JavaVirtualMachines/corretto-25.0.2/Content
 다른 별도 컨텍스트에서는 상세 수용 조건을 실제 callback·client stdout·inspection·단계별 사본·기록 측정·정리 조회에 대조했다. 초기 감사의 필수 미검증 F1은 callback 당시400/600 직접 근거였다. 후속 감사는 보완한 새 두 실행에서 해당 직접 근거와 나머지 상태·정리를 대조해 F1 해소를 확인했다. 실제 수용 근거의 미해결 항목·발견 위반은0이다. 코드 리뷰와 실제 수용 근거 검증을 같은 판정으로 합치지 않는다.
 
 602개 집계·로그 위치는 `/tmp/issue137-local-verification-summary.json`, 원자료 감사는 `/tmp/issue137-native-acceptance-audit-v2.json`에 연결한다. 실행 후 이 작업의 컨테이너는 남아 있지 않고 호스트 여유 공간은 약85GiB다. 커밋·PR·원격 CI·병합은 이번 로컬 구현 완료와 별개다. 과반 상실·네트워크 분할, 전체 기록 유실, 장기 부하·성능·운영 RTO·자동 프로세스 재시작은 이 검증의 보장에 포함하지 않는다.
+
+## PR #187의 CI 중복 실행 수정
+
+[Build and Test #256](https://github.com/0Chord/coin-exchange/actions/runs/43860084114)은 테스트 assertion 실패가 아니라 전체 작업의30분 한도 초과로 취소됐다. GitHub 주석의 원문은 `The job has exceeded the maximum execution time of 30m0s`다. 별도 **Architecture checks**는 구조 검사와 P01~P09 실행 확인을 이미 성공했지만, **Build and test**의 `build test --rerun`이 구조 검사를 다시 실행하다 취소됐다.
+
+보관된 `test-reports` XML에는 제품·도메인1970개가 기록됐고 실패/오류0, 기존 skip3개다. 이번 #137 장애2개는 skip 없이 모두 통과했으며, 원격 실행의 최초 응답·400/600·새 리더·동일 기록 재합류·후속300/700·정리까지 성공했다. 기존 skip은 저장된 Archive 재생 입력 또는 별도 장애·복구 환경변수를 명시적으로 제공할 때만 실행하는 검사이며, 이 수정에서 새로 제외하거나 성공으로 세지 않는다. 원격 두 장애 run은 `multi1794830602566b14d8593`, `multi179483071998839657127`이다.
+
+수정은 전체 빌드 명령에 `-x :architecture-tests:test`를 붙여 **이미 별도 필수 작업이 맡은 중복만 제거**한다. 구조 작업의 강제 실행·필수 보고·artifact, 제품·DB·Aeron 테스트와 패키징·린트는 유지한다. 두 필수 작업 이름과 전체30분·개별 run 한도도 바꾸지 않는다. 기본 로컬 `build`의 실행 범위는 그대로다.
+
+YAML 구조와 기존 작업·보고서 설정을 대조했고, 실제 Gradle dry-run에서 제품 작업의8개 테스트 task와 구조 작업의1개 task가 각각 남는지 확인했다. dry-run은 작업 선택 검증이며 테스트 실행 성공으로 세지 않는다. 전체 `ktlintCheck`도 통과했다. 제품 코드·테스트는 기존 검증 이후 변경하지 않았으므로 동일한 실행 근거를 재사용하며, 수정된 원격 CI의 결과는 별도로 확인한다.
