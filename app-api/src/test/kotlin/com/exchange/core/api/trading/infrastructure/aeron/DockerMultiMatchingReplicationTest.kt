@@ -14,8 +14,13 @@ import org.junit.jupiter.api.parallel.ExecutionMode
 import tools.jackson.databind.JsonNode
 import tools.jackson.databind.node.ObjectNode
 import tools.jackson.module.kotlin.jacksonObjectMapper
+import java.io.IOException
+import java.nio.file.FileVisitResult
 import java.nio.file.Files
+import java.nio.file.NoSuchFileException
 import java.nio.file.Path
+import java.nio.file.SimpleFileVisitor
+import java.nio.file.attribute.BasicFileAttributes
 import java.security.MessageDigest
 import java.util.UUID
 import java.util.concurrent.Executors
@@ -31,6 +36,38 @@ internal object MultiMatchingRunBudget {
     ) {
         check(dockerMemoryBytes >= 9L * 1024 * 1024 * 1024) { "Docker 실제 메모리9GiB 필요: $dockerMemoryBytes" }
         check(hostFreeDiskBytes >= 20L * 1024 * 1024 * 1024) { "호스트 보고서 여유20GiB 필요: $hostFreeDiskBytes" }
+    }
+
+    /** atomic 게시로 사라진 임시 파일만 이미 회수된 것으로 처리하고, 관찰 당시의 크기는 모두 센다. */
+    fun diagnosticBytes(path: Path): Long {
+        val root = path.toAbsolutePath().normalize()
+        var total = 0L
+        Files.walkFileTree(
+            root,
+            object : SimpleFileVisitor<Path>() {
+                override fun visitFile(
+                    file: Path,
+                    attributes: BasicFileAttributes,
+                ): FileVisitResult {
+                    if (attributes.isRegularFile) total += attributes.size()
+                    return FileVisitResult.CONTINUE
+                }
+
+                override fun visitFileFailed(
+                    file: Path,
+                    failure: IOException,
+                ): FileVisitResult {
+                    val name = file.fileName?.toString().orEmpty()
+                    if (failure is NoSuchFileException && file != root && file.startsWith(root) &&
+                        name.startsWith(".") && name.endsWith(".tmp")
+                    ) {
+                        return FileVisitResult.CONTINUE
+                    }
+                    throw failure
+                }
+            },
+        )
+        return total
     }
 }
 
@@ -140,8 +177,9 @@ class DockerMultiMatchingReplicationTest {
 }
 
 /** B에 필요한 실행 수명만 소유한다. 기존 6노드 실행기와 상태/기한을 공유하지 않는다. */
-private class MultiMatchingRun(
+internal class MultiMatchingRun(
     private val scenario: String,
+    private val leaderFailover: Boolean = false,
 ) {
     private val mapper = jacksonObjectMapper()
     private val project = Path.of(checkNotNull(System.getProperty("fundingProjectDirectory")))
@@ -152,7 +190,8 @@ private class MultiMatchingRun(
     private val image = "exchange-multi-matching:$runId"
     private val scratch = "$runId-space"
     private val environment =
-        mapOf(
+        mutableMapOf(
+            "SPLIT_NETWORK_PREFIX" to "172.29.${Math.floorMod(runId.hashCode(), 250) + 1}",
             "SPLIT_IMAGE" to image,
             "SPLIT_RUN_ID" to runId,
             "SPLIT_CONTROL_DIRECTORY" to control.toString(),
@@ -182,6 +221,15 @@ private class MultiMatchingRun(
     private var latestStates = emptyMap<String, JsonNode>()
     private var sourceHashes = emptyMap<String, String>()
     private var temporaryDataPeak = 0L
+    private var stoppedService: String? = null
+    private var recoveryOverride: Path? = null
+    private var probeSequence = 0L
+    private val lifecycle = linkedMapOf<String, Any?>()
+    private val timeline = linkedMapOf<String, Long>()
+    private val eventOrder = linkedMapOf<String, Int>()
+    private val gates = mutableListOf<Map<String, Any?>>()
+    private var gateInstallation = ""
+    private var electedBtcLeader = ""
 
     fun verify(scenarioBody: (MultiMatchingRun) -> Unit) {
         Files.createDirectories(control)
@@ -236,6 +284,38 @@ private class MultiMatchingRun(
             ).stdout.lineSequence().filter(String::isNotBlank).toList()
         check(others.size <= 1 && others.all { it.startsWith("testcontainers/ryuk:") }) { "다른 실행 컨테이너의 예산을 확인할 수 없습니다: $others" }
         check(Files.isDirectory(distribution.resolve("test-classes"))) { "검증 배포 경로가 없습니다" }
+        selectNetworkPrefix()
+    }
+
+    private fun selectNetworkPrefix() {
+        val ids = command(listOf("docker", "network", "ls", "-q"), 5_000).stdout.split(Regex("\\s+")).filter(String::isNotBlank)
+        val ranges =
+            if (ids.isEmpty()) {
+                emptyList()
+            } else {
+                mapper.readTree(command(listOf("docker", "network", "inspect") + ids, 10_000).stdout).flatMap { network ->
+                    network.path("IPAM").path("Config").mapNotNull { item ->
+                        val cidr = item.path("Subnet").asString().split('/')
+                        if (cidr.size != 2 || ':' in cidr[0]) {
+                            null
+                        } else {
+                            val address = cidr[0].split('.').fold(0L) { value, part -> (value shl 8) + part.toLong() }
+                            val mask = (0xffff_ffffL shl (32 - cidr[1].toInt())) and 0xffff_ffffL
+                            (address and mask)..((address and mask) or (mask xor 0xffff_ffffL))
+                        }
+                    }
+                }
+            }
+        val prefix =
+            (24..31)
+                .asSequence()
+                .flatMap { second -> (1..250).asSequence().map { third -> "172.$second.$third" } }
+                .first { candidate ->
+                    val address = candidate.split('.').fold(0L) { value, part -> (value shl 8) + part.toLong() } shl 8
+                    ranges.none { address <= it.last && address + 255 >= it.first }
+                }
+        environment["SPLIT_NETWORK_PREFIX"] = prefix
+        checkpoints += mapOf("phase" to "network", "stableNodeSubnet" to "$prefix.0/24")
     }
 
     private fun verifyDockerSpace() {
@@ -250,6 +330,10 @@ private class MultiMatchingRun(
                     "none",
                     "--memory",
                     "768m",
+                    "--cpus",
+                    "1",
+                    "--shm-size",
+                    "256m",
                     "--pids-limit",
                     "128",
                     "--label",
@@ -403,6 +487,8 @@ private class MultiMatchingRun(
                     "768m",
                     "--cpus",
                     "1",
+                    "--shm-size",
+                    "256m",
                     "--pids-limit",
                     "128",
                     "--label",
@@ -523,8 +609,21 @@ private class MultiMatchingRun(
                     .asString()
             check(node.path("Id").asString() == containers.getValue(service))
             val state = node.path("State")
+            (runtimes.getValue(service) as ObjectNode).set("inspection", node)
+            if (service == stoppedService) {
+                check(
+                    !state.path("Running").asBoolean() && !state.path("OOMKilled").asBoolean() &&
+                        state.path("ExitCode").asInt() == 137 && state.path("Pid").asLong() == 0L,
+                ) {
+                    "$service 의도한 SIGKILL 종료 상태가 아닙니다"
+                }
+                continue
+            }
             check(state.path("Running").asBoolean() && !state.path("OOMKilled").asBoolean() && state.path("Pid").asLong() > 0) {
                 "$service 현재 컨테이너가 정지/OOM 상태입니다"
+            }
+            check(read(control.resolve("runtime-$service.json")).path("bootId") == runtimes.getValue(service).path("bootId")) {
+                "$service 살아 있는 노드의 boot가 바뀌었습니다"
             }
             check(node.path("RestartCount").asLong() == 0L) { "$service 예기치 않은 재시작입니다" }
             if (collectMemory) {
@@ -576,7 +675,17 @@ private class MultiMatchingRun(
 
         fun left() = TimeUnit.NANOSECONDS.toMillis(clientDeadline - System.nanoTime()).also { check(it > 0) }
         compose(
-            listOf("run", "-d", "--no-deps", "--name", name, "--env", "FUNDING_HOST=$name", "client", TOOL) + args,
+            listOf(
+                "run",
+                "-d",
+                "--no-deps",
+                "--name",
+                name,
+                "--env",
+                "FUNDING_HOST=${environment.getValue("SPLIT_NETWORK_PREFIX")}.40",
+                "client",
+                TOOL,
+            ) + args,
             left(),
         )
         val inspection = mapper.readTree(command(listOf("docker", "inspect", name), minOf(5_000, left())).stdout).path(0)
@@ -604,6 +713,420 @@ private class MultiMatchingRun(
         return mapper.readTree(result.stdout.lineSequence().last { it.trim().startsWith("{") })
     }
 
+    /** 기존 정상 수명은 유지하고, 이 시험에서 명시한 죽은 BTC 한 개만 현재 사본에서 뺀다. */
+    fun awaitFailover(
+        stage: MultiMatchingFailoverStage,
+        originals: Map<String, JsonNode>,
+        higherThanTerm: Long? = null,
+    ): Map<String, JsonNode> {
+        check(leaderFailover)
+        phase = stage.name
+        val until = minOf(workDeadline, System.nanoTime() + TimeUnit.SECONDS.toNanos(45))
+        var failures = emptyList<String>()
+        var probe: Long? = null
+        while (System.nanoTime() < until) {
+            budgets()
+            val states = SERVICES.filter { it != stoppedService }.associateWith { read(control.resolve("state-$it.json")) }
+            latestStates = states
+            failures = MultiMatchingFailoverConvergence.violations(stage, states, originals) +
+                currentFailures(states, probe, higherThanTerm)
+            if (failures.isEmpty()) {
+                if (probe == null) {
+                    probe = 1_000_000_000_000L + ++probeSequence
+                    tool("probe", "all", probe.toString())
+                    continue
+                }
+                verifyLiveNodes()
+                checkpoints += mapOf("phase" to stage.name, "elapsedMs" to elapsedMs(), "states" to states, "originals" to originals)
+                return states
+            }
+            Thread.sleep(100)
+        }
+        error("$stage 현재 사본 수렴 실패: ${failures.take(12)}")
+    }
+
+    private fun currentFailures(
+        states: Map<String, JsonNode>,
+        probe: Long?,
+        higherThanTerm: Long?,
+    ): List<String> {
+        val failures = mutableListOf<String>()
+        for ((service, state) in states) {
+            val runtime = runtimes.getValue(service)
+            for (field in listOf(
+                "runId",
+                "service",
+                "bootId",
+                "memberId",
+                "role",
+                "clusterId",
+                "lineageHigh",
+                "lineageLow",
+                "manifestSha256",
+                "topologySha256",
+                "resultTopologySha256",
+                "pid",
+            )) {
+                if (state.path(field).isMissingNode ||
+                    state.path(field) != runtime.path(field)
+                ) {
+                    failures += "$service.$field 현재 runtime 불일치"
+                }
+            }
+            if (!state.path("initialized").asBoolean() || state.path("lifecycle").asString() != "RUNNING") {
+                failures += "$service 업무 준비 미완료"
+            }
+            if (probe != null) {
+                val observed = state.path("probe")
+                if (observed.path("correlationId").asLong() != probe || observed.path("bootId") != runtime.path("bootId") ||
+                    observed.path("leadershipTermId") != state.path("leadershipTermId") ||
+                    observed.path("leaderMemberId") != state.path("leaderMemberId") ||
+                    observed.path("logPosition").asLong(-1) !in 0..state.path("logPosition").asLong()
+                ) {
+                    failures += "$service 새 복제 probe 미관측"
+                }
+            }
+        }
+        for (owner in listOf("funds", "btc", "sui")) {
+            val group = states.filterKeys { it.startsWith(owner) }.values
+            val terms = group.map { it.path("leadershipTermId") }.distinct()
+            val leaders = group.map { it.path("leaderMemberId") }.distinct()
+            if (terms.size != 1 || terms.single().isNull || !terms.single().isIntegralNumber || terms.single().asLong() < 0 ||
+                leaders.size != 1 || !leaders.single().isIntegralNumber ||
+                group.count { it.path("clusterRole").asString() == "LEADER" } != 1 ||
+                group.any { it.path("clusterRole").asString() !in setOf("LEADER", "FOLLOWER") } ||
+                group.none { it.path("memberId") == leaders.singleOrNull() && it.path("clusterRole").asString() == "LEADER" }
+            ) {
+                failures += "$owner 현재 임기/리더 합의 미완료"
+            }
+            if (owner == "btc" && higherThanTerm != null && group.any { it.path("leadershipTermId").asLong(-1) <= higherThanTerm }) {
+                failures += "BTC 생존 과반의 더 높은 임기 미관측"
+            }
+        }
+        return failures
+    }
+
+    fun installGate(
+        gate: String,
+        sequence: Long,
+    ) {
+        check(leaderFailover && gate in setOf("btc-dispatch", "btc-result"))
+        gateInstallation = "$runId-$gate-$sequence"
+        val value = mapOf("gate" to gate, "sequence" to sequence, "enabled" to true, "installationId" to gateInstallation)
+        writeControl(value)
+        gates += value + ("installedAt" to elapsedMs())
+    }
+
+    private fun writeControl(value: Map<String, Any?>) {
+        val target = control.resolve("failover-control.json")
+        check(!Files.exists(target)) { "BTC 보류 설정은 실행마다 한 번만 설치합니다" }
+        val temporary = control.resolve("failover-control.tmp")
+        Files.write(temporary, mapper.writeValueAsBytes(value), java.nio.file.StandardOpenOption.CREATE_NEW)
+        Files.move(temporary, target, java.nio.file.StandardCopyOption.ATOMIC_MOVE)
+    }
+
+    fun awaitBlocked(): JsonNode {
+        val until = minOf(workDeadline, System.nanoTime() + TimeUnit.SECONDS.toNanos(45))
+        while (System.nanoTime() < until) {
+            for (service in SERVICES.filter { it != stoppedService }) {
+                val file = control.resolve("worker-$service.json")
+                if (!Files.isRegularFile(file)) continue
+                val worker = read(file)
+                val blocked = worker.path("blocked")
+                if (worker.path("bootId") == runtimes.getValue(service).path("bootId") &&
+                    blocked.path("installationId").asString() == gateInstallation
+                ) {
+                    check(blocked.path("wireBytes").asLong() > 0 && blocked.path("payloadSha256").asString().matches(Regex("[0-9a-f]{64}")))
+                    val gate = gates.last()
+                    val bytes =
+                        Files.readAllBytes(
+                            control.resolve("held-$service-${gate.getValue("gate")}-${gate.getValue("sequence")}.bin"),
+                        )
+                    check(sha(bytes) == blocked.path("wireSha256").asString()) { "보류 원문과 worker 지문 불일치" }
+                    gates[gates.lastIndex] = gate +
+                        mapOf(
+                            "blockedAt" to elapsedMs(),
+                            "blockedService" to service,
+                            "blocked" to blocked,
+                            "heldWireSha256" to sha(bytes),
+                            "heldWireBytes" to bytes.size,
+                        )
+                    return blocked
+                }
+            }
+            Thread.sleep(100)
+        }
+        error("실제 전송 직전 BTC 보류를 관측하지 못했습니다")
+    }
+
+    /** 보류 해제 뒤 같은 원문이 실제 worker에서 양수 offer와 실제 응답까지 이어졌는지 결속한다. */
+    fun awaitReleased() {
+        val gate = gates.last()
+        val expected = if (gate.getValue("gate") == "btc-dispatch") gate.getValue("blockedService").toString() else electedBtcLeader
+        check(expected.isNotEmpty())
+        val until = minOf(workDeadline, System.nanoTime() + TimeUnit.SECONDS.toNanos(45))
+        while (System.nanoTime() < until) {
+            val workerFile = control.resolve("worker-$expected.json")
+            if (!Files.isRegularFile(workerFile)) {
+                Thread.sleep(100)
+                continue
+            }
+            val worker = read(workerFile)
+            val offered = worker.path("offered")
+            val reply = worker.path("reply")
+            val original = gate.getValue("blocked") as JsonNode
+            if (offered.path("installationId").asString() == gateInstallation &&
+                offered.path("positiveOfferPosition").asLong() > 0 &&
+                offered.path("bootId") == runtimes.getValue(expected).path("bootId") &&
+                reply.path("bootId") == offered.path("bootId") && reply.path("connectionId") == offered.path("connectionId") &&
+                reply.path("correlationId") == offered.path("correlationId") &&
+                reply.path("through").asLong() >= original.path("sequence").asLong() &&
+                reply.path("payloadSha256") == original.path("payloadSha256")
+            ) {
+                check(offered.path("payloadSha256") == original.path("payloadSha256")) { "재개 worker 원문 변경" }
+                gates[gates.lastIndex] = gate +
+                    mapOf(
+                        "offered" to offered,
+                        "reply" to reply,
+                        "offeredService" to expected,
+                        "offeredObservedAt" to elapsedMs(),
+                    )
+                return
+            }
+            Thread.sleep(100)
+        }
+        error("BTC 실제 worker의 원문 전송·응답 재개 근거를 찾지 못했습니다: $expected")
+    }
+
+    fun mark(name: String) {
+        timeline[name] = elapsedMs()
+        eventOrder[name] = eventOrder.size + 1
+    }
+
+    fun releaseGate() {
+        val gate = gates.last()
+        Files.createFile(control.resolve("failover-release-$gateInstallation"))
+        mark("gateReleased")
+        gates[gates.lastIndex] = gate + ("releaseAt" to timeline.getValue("gateReleased"))
+    }
+
+    /** 종료 직전 새 probe의 실제 리더만 죽이고, 과거 LEADER 파일을 이후의 현재 사본에서 제외한다. */
+    fun killBtcLeader(states: Map<String, JsonNode>): Long {
+        check(leaderFailover && stoppedService == null)
+        check(
+            currentFailures(
+                states,
+                states.values
+                    .first()
+                    .path("probe")
+                    .path("correlationId")
+                    .asLong(),
+                null,
+            ).isEmpty(),
+        )
+        val btc = states.filterKeys { it.startsWith("btc") }
+        val target = btc.entries.single { it.value.path("clusterRole").asString() == "LEADER" }.key
+        val term = btc.getValue(target).path("leadershipTermId").asLong()
+        lifecycle["target"] = target
+        lifecycle["initial"] = boundRuntimes(states)
+        mark("killSent")
+        command(listOf("docker", "kill", "--signal", "KILL", containers.getValue(target)), 10_000)
+        check(command(listOf("docker", "wait", containers.getValue(target)), 10_000).stdout.trim() == "137")
+        val inspected = mapper.readTree(command(listOf("docker", "inspect", containers.getValue(target)), 10_000).stdout).path(0)
+        val state = inspected.path("State")
+        check(!state.path("Running").asBoolean() && state.path("ExitCode").asInt() == 137 && !state.path("OOMKilled").asBoolean())
+        stoppedService = target
+        mark("killConfirmed")
+        lifecycle["stopped"] =
+            mapOf(
+                "service" to target,
+                "containerId" to containers.getValue(target),
+                "running" to false,
+                "exitCode" to 137,
+                "oomKilled" to false,
+                "inspection" to inspected,
+            )
+        verifyLiveNodes()
+        return term
+    }
+
+    fun recordElection(states: Map<String, JsonNode>) {
+        check(stoppedService != null)
+        mark("electionObserved")
+        lifecycle["elected"] = boundRuntimes(states)
+        electedBtcLeader = states.entries.single { it.key.startsWith("btc") && it.value.path("clusterRole").asString() == "LEADER" }.key
+    }
+
+    private fun boundRuntimes(states: Map<String, JsonNode>) =
+        states.mapValues { (service, state) ->
+            (runtimes.getValue(service).deepCopy() as ObjectNode).apply { set("state", state) }
+        }
+
+    /** 같은 Archive를 그대로 다시 열되, 이 노드 한 개의 복구 플래그만 바꾼다. */
+    fun rejoinBtcLeader() {
+        val target = checkNotNull(stoppedService)
+        val until = minOf(workDeadline, System.nanoTime() + TimeUnit.SECONDS.toNanos(90))
+        val previous = runtimes.getValue(target)
+        val volume = recordVolume(previous)
+        val beforeFiles = recoveryFiles(target)
+        lifecycle["recoveryBefore"] =
+            mapOf(
+                "service" to target,
+                "volume" to volume,
+                "files" to beforeFiles,
+                "runRoot" to previous.path("runRoot"),
+                "archiveDirectory" to previous.path("archiveDirectory"),
+                "clusterDirectory" to previous.path("clusterDirectory"),
+            )
+        val recoveryFile = reports.resolve("recovery.override.yml")
+        Files.writeString(recoveryFile, "services:\n  $target:\n    environment:\n      FUNDING_RECOVER_EXISTING: \"true\"\n")
+        recoveryOverride = recoveryFile
+        Files.delete(control.resolve("runtime-$target.json"))
+        compose(listOf("up", "-d", "--no-deps", "--force-recreate", target), TimeUnit.NANOSECONDS.toMillis(until - System.nanoTime()))
+        while (!Files.isRegularFile(control.resolve("runtime-$target.json"))) {
+            check(System.nanoTime() < until) { "구 BTC 리더의 새 runtime 미관측" }
+            Thread.sleep(100)
+        }
+        val runtime = read(control.resolve("runtime-$target.json")) as ObjectNode
+        val id = compose(listOf("ps", "-q", target), 10_000).stdout.trim()
+        check(id.isNotEmpty() && id != containers.getValue(target))
+        val inspected = mapper.readTree(command(listOf("docker", "inspect", id), 10_000).stdout).path(0)
+        check(inspected.path("Image").asString() == imageId)
+        for (field in listOf("Memory", "ShmSize", "NanoCpus", "PidsLimit", "IpcMode", "PidMode", "PortBindings")) {
+            check(inspected.path("HostConfig").path(field) == previous.path("inspection").path("HostConfig").path(field)) {
+                "$target 재합류 자원/격리 한도 변경: $field"
+            }
+        }
+        check(runtime.path("storageLevels") == previous.path("storageLevels"))
+        val initial = checkNotNull((lifecycle["initial"] as? Map<*, *>)?.get(target) as? JsonNode)
+        val originalNetwork =
+            initial
+                .path("inspection")
+                .path("NetworkSettings")
+                .path("Networks")
+                .properties()
+                .single()
+                .value
+        val rejoinedNetwork =
+            inspected
+                .path("NetworkSettings")
+                .path("Networks")
+                .properties()
+                .single()
+                .value
+        val addresses =
+            listOf(
+                originalNetwork.path("IPAddress").asString(),
+                originalNetwork.path("IPAMConfig").path("IPv4Address").asString(),
+                rejoinedNetwork.path("IPAddress").asString(),
+                rejoinedNetwork.path("IPAMConfig").path("IPv4Address").asString(),
+            )
+        check(addresses.all(String::isNotBlank) && addresses.distinct().size == 1) { "$target 재합류 고정 endpoint 변경: $addresses" }
+        runtime.put("imageId", imageId)
+        runtime.put("containerId", id)
+        runtime.set("inspection", inspected)
+        check(runtime.path("bootId") != previous.path("bootId") && runtime.path("recoverExisting").asBoolean())
+        for (field in listOf(
+            "runId",
+            "service",
+            "memberId",
+            "clusterId",
+            "lineageHigh",
+            "lineageLow",
+            "manifestSha256",
+            "topologySha256",
+            "resultTopologySha256",
+            "members",
+            "runRoot",
+            "archiveDirectory",
+            "clusterDirectory",
+        )) {
+            check(runtime.path(field) == previous.path(field)) { "$target 재합류 identity/경로 변경: $field" }
+        }
+        check(recordVolume(runtime) == volume)
+        runtimes[target] = runtime
+        containers[target] = id
+        stoppedService = null
+        val afterFiles = recoveryFiles(target)
+        check(beforeFiles.lineSequence().first() == afterFiles.lineSequence().first()) { "재합류 복구 identity 원문 변경" }
+        lifecycle["recoveryAfter"] = mapOf("service" to target, "volume" to volume, "files" to afterFiles)
+        verifyLiveNodes()
+    }
+
+    fun recordRejoined(states: Map<String, JsonNode>) {
+        mark("rejoined")
+        lifecycle["rejoined"] = boundRuntimes(states)
+    }
+
+    fun verifyFailoverEvidence() {
+        lifecycle["timeline"] = timeline
+        lifecycle["eventOrder"] = eventOrder
+        lifecycle["gates"] = gates
+        val evidence = mapper.readTree(mapper.writeValueAsBytes(lifecycle))
+        val failures = MultiMatchingFailoverConvergence.lifecycleViolations(evidence)
+        check(failures.isEmpty()) { "장애 수명 근거 실패: $failures" }
+    }
+
+    private fun recordVolume(runtime: JsonNode): String =
+        runtime
+            .path("inspection")
+            .path("Mounts")
+            .single { it.path("Destination").asString() == "/records" }
+            .path("Name")
+            .asString()
+
+    private fun recoveryFiles(service: String): String {
+        val runtime = runtimes.getValue(service)
+        val root = runtime.path("runRoot").asString().replace("/records/", "/records/$service/")
+        val archive = runtime.path("archiveDirectory").asString().replace("/records/", "/records/$service/")
+        val cluster = runtime.path("clusterDirectory").asString().replace("/records/", "/records/$service/")
+        check(listOf(root, archive, cluster).all { it.matches(Regex("[a-zA-Z0-9/_.-]+")) })
+        return recordsHelper(
+            "sha256sum $root/split-recovery-identity.bin && stat -c '%n %s' $archive/archive.catalog $cluster/recording.log",
+        ).also { output ->
+            check(
+                output.lineSequence().filter(String::isNotBlank).count() == 3 &&
+                    output
+                        .lineSequence()
+                        .filter(String::isNotBlank)
+                        .drop(1)
+                        .all { it.substringAfterLast(' ').toLong() > 0 },
+            )
+        }
+    }
+
+    private fun recordsHelper(script: String): String {
+        val mounts =
+            SERVICES.flatMap { service ->
+                listOf("--mount", "type=volume,src=${recordVolume(runtimes.getValue(service))},dst=/records/$service,readonly")
+            }
+        return command(
+            listOf(
+                "docker",
+                "run",
+                "--rm",
+                "--name",
+                "$runId-records",
+                "--network",
+                "none",
+                "--read-only",
+                "--memory",
+                "768m",
+                "--cpus",
+                "1",
+                "--shm-size",
+                "256m",
+                "--pids-limit",
+                "128",
+                "--label",
+                "com.exchange.multi.run=$runId",
+                "--entrypoint",
+                "sh",
+            ) + mounts + listOf(image, "-c", script),
+            15_000,
+        ).stdout
+    }
+
     fun sameBusiness(
         before: Map<String, JsonNode>,
         after: Map<String, JsonNode>,
@@ -625,9 +1148,19 @@ private class MultiMatchingRun(
     }
 
     private fun budgets() {
-        diagnosticPeak = maxOf(diagnosticPeak, bytes(reports))
+        diagnosticPeak = maxOf(diagnosticPeak, MultiMatchingRunBudget.diagnosticBytes(reports))
         check(diagnosticPeak <= 16 * MIB) { "진단 합계16MiB 초과: $diagnosticPeak" }
         if (containers.isNotEmpty()) {
+            if (leaderFailover) {
+                val total =
+                    recordsHelper("du -sk /records/*")
+                        .lineSequence()
+                        .filter(String::isNotBlank)
+                        .sumOf { it.trim().split(Regex("\\s+"))[0].toLong() * 1024 }
+                recordsPeak = maxOf(recordsPeak, total)
+                check(total <= 2 * GIB) { "죽은 볼륨 포함9개 기록 합계2GiB 초과: $total" }
+                return
+            }
             val result = compose(listOf("exec", "-T", "funds0", "du", "-sk", "/records"), 5_000)
             // 각 named volume은 컨테이너별로 확인한다. 첫 볼륨을9배한 값으로 대신하지 않는다.
             var total =
@@ -661,8 +1194,7 @@ private class MultiMatchingRun(
                 runId,
                 "--file",
                 project.resolve("src/test/docker/aeron-multi-matching/compose.yml").toString(),
-            ) +
-                args,
+            ) + (recoveryOverride?.let { listOf("--file", it.toString()) } ?: emptyList()) + args,
             timeout,
             cleaning,
         )
@@ -760,14 +1292,15 @@ private class MultiMatchingRun(
 
     private fun writeReport() {
         if (sourceHashes.isNotEmpty() && currentSourceHashes() != sourceHashes) issues += "실행 중 소스가 변경되었습니다"
-        diagnosticPeak = maxOf(diagnosticPeak, bytes(reports))
+        diagnosticPeak = maxOf(diagnosticPeak, MultiMatchingRunBudget.diagnosticBytes(reports))
         val report =
             mapOf(
                 "runId" to runId,
-                "case" to scenario,
+                "case" to if (leaderFailover) gates.firstOrNull()?.get("gate") ?: "leader-failover" else scenario,
                 "success" to (issues.isEmpty() && resourcesRemoved),
                 "issues" to issues,
-                "baseCommit" to "e3656d88e1cd1a10fe670472ca5744a23eb037f9",
+                "baseCommit" to
+                    if (leaderFailover) "9001e14a5afe96f91aeb461861052dd62c57ef9a" else "e3656d88e1cd1a10fe670472ca5744a23eb037f9",
                 "headCommit" to headCommit,
                 "sourceSha256" to sourceHashes,
                 "imageId" to imageId,
@@ -777,6 +1310,7 @@ private class MultiMatchingRun(
                 "runtimes" to runtimes,
                 "checkpoints" to checkpoints,
                 "lastStates" to latestStates,
+                "failoverEvidence" to (lifecycle + mapOf("timeline" to timeline, "eventOrder" to eventOrder, "gates" to gates)),
                 "elapsedMs" to elapsedMs(),
                 "dockerMemoryBytes" to dockerMemory,
                 "hostFreeDiskBefore" to freeBefore,
@@ -800,12 +1334,16 @@ private class MultiMatchingRun(
                     ),
                 "commands" to commands.records,
                 "unverified" to
-                    listOf("리더 전환/과반 장애", "장기 부하/성능", "실제5마켓3+2 배치", "미회수 payload에 대한 부정 ACK 격리"),
+                    if (leaderFailover) {
+                        listOf("자금 리더 종료", "과반 상실/네트워크 분할", "전체 볼륨 유실", "장기 부하/성능")
+                    } else {
+                        listOf("리더 전환/과반 장애", "장기 부하/성능", "실제5마켓3+2 배치", "미회수 payload에 대한 부정 ACK 격리")
+                    },
             )
         val bytes = mapper.writeValueAsBytes(report)
         check(bytes.size <= 4 * MIB) { "결과 보고서4MiB 초과" }
         Files.write(reports.resolve("result.json"), bytes)
-        diagnosticPeak = maxOf(diagnosticPeak, bytes(reports))
+        diagnosticPeak = maxOf(diagnosticPeak, MultiMatchingRunBudget.diagnosticBytes(reports))
         if (diagnosticPeak > 16 * MIB) issues += "정리/보고서 포함 진단 합계16MiB 초과: $diagnosticPeak"
         // 최종 파일까지 포함한 판정으로 성공 여부를 다시 기록한다.
         val finalReport = report + mapOf("diagnosticBytesPeak" to diagnosticPeak, "success" to (issues.isEmpty() && resourcesRemoved))
@@ -825,7 +1363,10 @@ private class MultiMatchingRun(
             listOf(
                 "src/test/kotlin/com/exchange/core/api/trading/infrastructure/aeron/DockerMultiMatchingReplicationTest.kt",
                 "src/test/kotlin/com/exchange/core/api/trading/infrastructure/aeron/MultiMatchingVerificationTool.kt",
+                "src/test/kotlin/com/exchange/core/api/trading/infrastructure/aeron/MultiMatchingFailureControl.kt",
                 "src/test/kotlin/com/exchange/core/api/trading/infrastructure/aeron/MultiMatchingConvergence.kt",
+                "src/test/kotlin/com/exchange/core/api/trading/infrastructure/aeron/MultiMatchingLeaderFailoverTest.kt",
+                "src/test/kotlin/com/exchange/core/api/trading/infrastructure/aeron/MultiMatchingFailoverConvergence.kt",
                 "src/test/kotlin/com/exchange/core/api/trading/infrastructure/aeron/MarketConfigurationDatabase.kt",
                 "src/test/kotlin/com/exchange/core/api/trading/infrastructure/aeron/VerificationCommands.kt",
                 "src/test/docker/aeron-multi-matching/compose.yml",
@@ -836,8 +1377,5 @@ private class MultiMatchingRun(
             )
 
         private fun sha(bytes: ByteArray) = MessageDigest.getInstance("SHA-256").digest(bytes).joinToString("") { "%02x".format(it) }
-
-        private fun bytes(path: Path): Long =
-            Files.walk(path).use { files -> files.filter(Files::isRegularFile).mapToLong(Files::size).sum() }
     }
 }

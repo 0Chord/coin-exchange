@@ -275,6 +275,8 @@ internal class DevelopmentSplitTradingNode private constructor(
     private val serviceDecorator: (SplitTradingClusterAdapter) -> ClusteredService,
     private val deliveryFactory: ((SplitTradingClusterAdapter) -> FundsOrderDeliveryAgent)?,
     private val resultDeliveryFactory: ((SplitTradingClusterAdapter) -> MatchingResultDeliveryAgent)?,
+    private val orderConnectionFactory: SplitOrderDeliveryConnectionFactory,
+    private val resultConnectionFactory: SplitResultDeliveryConnectionFactory,
 ) : AutoCloseable {
     private val stopped = AtomicBoolean()
     private val failure = AtomicReference<Throwable?>()
@@ -412,6 +414,8 @@ internal class DevelopmentSplitTradingNode private constructor(
             splitTradingDeliveryTasks(
                 settings,
                 service,
+                orderConnectionFactory = orderConnectionFactory,
+                resultConnectionFactory = resultConnectionFactory,
                 onFailure = ::fail,
                 legacyOrderFactory = deliveryFactory,
                 legacyResultFactory = resultDeliveryFactory,
@@ -442,7 +446,31 @@ internal class DevelopmentSplitTradingNode private constructor(
             resultDeliveryFactory: ((SplitTradingClusterAdapter) -> MatchingResultDeliveryAgent)? = null,
             deliveryFactory: ((SplitTradingClusterAdapter) -> FundsOrderDeliveryAgent)? = null,
         ): DevelopmentSplitTradingNode =
-            DevelopmentSplitTradingNode(settings, serviceDecorator, deliveryFactory, resultDeliveryFactory).also { node ->
+            start(
+                settings,
+                AeronSplitOrderDeliveryConnectionFactory,
+                AeronSplitResultDeliveryConnectionFactory,
+                serviceDecorator,
+                resultDeliveryFactory,
+                deliveryFactory,
+            )
+
+        fun start(
+            settings: SplitTradingNodeSettings,
+            orderConnectionFactory: SplitOrderDeliveryConnectionFactory,
+            resultConnectionFactory: SplitResultDeliveryConnectionFactory,
+            serviceDecorator: (SplitTradingClusterAdapter) -> ClusteredService = { it },
+            resultDeliveryFactory: ((SplitTradingClusterAdapter) -> MatchingResultDeliveryAgent)? = null,
+            deliveryFactory: ((SplitTradingClusterAdapter) -> FundsOrderDeliveryAgent)? = null,
+        ): DevelopmentSplitTradingNode =
+            DevelopmentSplitTradingNode(
+                settings,
+                serviceDecorator,
+                deliveryFactory,
+                resultDeliveryFactory,
+                orderConnectionFactory,
+                resultConnectionFactory,
+            ).also { node ->
                 try {
                     node.launch()
                 } catch (failure: Throwable) {

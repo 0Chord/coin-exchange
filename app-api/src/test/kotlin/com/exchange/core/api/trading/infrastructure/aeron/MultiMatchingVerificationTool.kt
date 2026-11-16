@@ -27,6 +27,7 @@ import com.exchange.core.trading.AdmissionReceipt
 import com.exchange.core.trading.BoundedFundingState
 import com.exchange.core.trading.CancelIntent
 import com.exchange.core.trading.CancelReceipt
+import com.exchange.core.trading.FundsOrderDispatch
 import com.exchange.core.trading.MatchingResultEnvelope
 import com.exchange.core.trading.OrderIntent
 import com.exchange.core.trading.RequestToken
@@ -36,6 +37,7 @@ import com.exchange.core.trading.TradingLifecycle
 import com.exchange.core.trading.TradingServiceRole
 import io.aeron.ExclusivePublication
 import io.aeron.Image
+import io.aeron.Publication
 import io.aeron.cluster.service.ClientSession
 import io.aeron.cluster.service.Cluster
 import io.aeron.cluster.service.ClusteredService
@@ -62,6 +64,23 @@ private val multiOrderCodec = SplitOrderDeliveryCodec(2)
 private val multiResultCodec = SplitResultDeliveryCodec(2)
 private val multiBuyer = UserId("buyer")
 private val multiSeller = UserId("seller")
+private const val MULTI_PROBE_MINIMUM = 1_000_000_000_000L
+
+private fun multiSha(bytes: ByteArray): String = MessageDigest.getInstance("SHA-256").digest(bytes).joinToString("") { "%02x".format(it) }
+
+private fun multiDispatch(
+    input: FundsOrderDispatch,
+    token: RequestToken?,
+): Map<String, Any?> =
+    mapOf(
+        "dispatchSequence" to input.dispatchSequence,
+        "orderId" to input.order.orderId.value,
+        "payloadSha256" to multiSha(multiOrderCodec.encode(0, SplitOrderDeliveryCommand.Apply(input))),
+        "token" to
+            token?.let {
+                mapOf("userId" to it.userId.value, "channel" to it.channel, "epoch" to it.epoch, "sequence" to it.sequence)
+            },
+    )
 
 private fun multiLabel(marketId: String): String =
     when (marketId) {
@@ -122,6 +141,7 @@ private fun multiResult(result: MatchingResultEnvelope): Map<String, Any?> {
         "orderId" to result.input.order.orderId.value,
         "cancelId" to result.input.cancel?.cancelId,
         "inputSequence" to result.input.dispatchSequence,
+        "payloadSha256" to multiSha(multiResultCodec.encode(0, SplitResultDeliveryCommand.Apply(result))),
         "outcome" to result.outcome.name,
         "engineBefore" to result.engineSequenceBefore,
         "engineAfter" to result.engineSequenceAfter,
@@ -132,6 +152,7 @@ private fun multiResult(result: MatchingResultEnvelope): Map<String, Any?> {
                         is TradeExecuted -> {
                             mapOf(
                                 "kind" to "TRADE",
+                                "tradeId" to "${result.resultId}:${event.engineSequence}",
                                 "makerOrderId" to event.makerOrderId.value,
                                 "takerOrderId" to event.takerOrderId.value,
                                 "quantity" to event.quantity.value,
@@ -189,6 +210,9 @@ private class MultiMatchingService(
     private lateinit var cluster: Cluster
     private val raceRows = linkedMapOf<String, Map<String, Any?>>()
     private val retained = linkedMapOf<String, MatchingResultEnvelope>()
+    private var leadershipTermId: Long? = null
+    private var leaderMemberId: Int? = null
+    private var probe: Map<String, Any?>? = null
     private val field =
         delegate.javaClass
             .getDeclaredField(if (settings.role == TradingServiceRole.FUNDS) "funds" else "matching")
@@ -212,12 +236,13 @@ private class MultiMatchingService(
         header: Header,
     ) {
         val bytes = ByteArray(length).also { buffer.getBytes(offset, it) }
-        val order =
+        val orderEnvelope =
             if (length >= 8 && (buffer.getShort(offset + 4, ByteOrder.LITTLE_ENDIAN).toInt() and 65535) == 88) {
-                multiOrderCodec.decode(bytes).command
+                multiOrderCodec.decode(bytes)
             } else {
                 null
             }
+        val order = orderEnvelope?.command
         val result =
             if (length >= 12 && (buffer.getShort(offset, ByteOrder.LITTLE_ENDIAN).toInt() and 65535) == 89) {
                 multiResultCodec.decode(bytes).command
@@ -225,6 +250,17 @@ private class MultiMatchingService(
                 null
             }
         delegate.onSessionMessage(session, timestamp, buffer, offset, length, header)
+        if (order == SplitOrderDeliveryCommand.DescribePeer && checkNotNull(orderEnvelope).correlationId >= MULTI_PROBE_MINIMUM) {
+            // 이 요청이 현재 부팅에서 실제 복제돼 처리된 위치와 선출 관찰을 한 번에 묶는다.
+            probe =
+                mapOf(
+                    "correlationId" to orderEnvelope.correlationId,
+                    "bootId" to boot,
+                    "leadershipTermId" to leadershipTermId,
+                    "leaderMemberId" to leaderMemberId,
+                    "logPosition" to cluster.logPosition(),
+                )
+        }
         if (settings.role == TradingServiceRole.FUNDS && order is SplitOrderDeliveryCommand.Control &&
             order.command is BoundedTradingCommand.Admit && delegate.lifecycle == TradingLifecycle.RUNNING
         ) {
@@ -280,6 +316,31 @@ private class MultiMatchingService(
         capture()
     }
 
+    override fun onNewLeadershipTermEvent(
+        leadershipTermId: Long,
+        logPosition: Long,
+        timestamp: Long,
+        termBaseLogPosition: Long,
+        leaderMemberId: Int,
+        logSessionId: Int,
+        timeUnit: TimeUnit,
+        appVersion: Int,
+    ) {
+        delegate.onNewLeadershipTermEvent(
+            leadershipTermId,
+            logPosition,
+            timestamp,
+            termBaseLogPosition,
+            leaderMemberId,
+            logSessionId,
+            timeUnit,
+            appVersion,
+        )
+        this.leadershipTermId = leadershipTermId
+        this.leaderMemberId = leaderMemberId
+        capture()
+    }
+
     override fun doBackgroundWork(nowNs: Long): Int = delegate.doBackgroundWork(nowNs)
 
     private fun capture() {
@@ -289,6 +350,9 @@ private class MultiMatchingService(
                 put("lifecycle", delegate.lifecycle.name)
                 put("logPosition", cluster.logPosition())
                 put("clusterRole", cluster.role().name)
+                put("leadershipTermId", leadershipTermId)
+                put("leaderMemberId", leaderMemberId)
+                put("probe", probe)
                 put("raceRows", raceRows.values.toList())
             }
         if (delegate.lifecycle == TradingLifecycle.RUNNING) {
@@ -306,6 +370,13 @@ private class MultiMatchingService(
     private fun funds(): Map<String, Any?> {
         val saved = (field.get(delegate) as BoundedFundingState).fundsRecoveryState()
         val results = checkNotNull(saved.results)
+        val requestTokens =
+            saved.financial.inbox.channels
+                .flatMap { channel ->
+                    channel.entries.mapNotNull { entry ->
+                        entry.receipt.orderId?.let { it to RequestToken(channel.userId, channel.channel, channel.epoch, entry.sequence) }
+                    }
+                }.toMap()
         val receipts =
             saved.financial.inbox.channels.flatMap { channel ->
                 channel.entries.map { entry ->
@@ -357,6 +428,7 @@ private class MultiMatchingService(
                             "dispatchBytes" to it.dispatchBytes,
                             "activeOrders" to it.activeOrders,
                             "activeBytes" to it.activeBytes,
+                            "outstanding" to it.outstanding.map { input -> multiDispatch(input, requestTokens[input.order.orderId]) },
                         )
                 },
             "resultProgress" to
@@ -417,6 +489,16 @@ private class MultiMatchingService(
                             "appliedThrough" to stream.appliedThrough,
                             "resultIssued" to stream.resultIssued,
                             "fundsSettledThrough" to stream.fundsSettledThrough,
+                            "outstanding" to
+                                stream.outstanding.map {
+                                    mapOf(
+                                        "resultSequence" to it.resultSequence,
+                                        "resultId" to it.resultId,
+                                        "orderId" to it.input.order.orderId.value,
+                                        "inputSequence" to it.input.dispatchSequence,
+                                        "payloadSha256" to multiSha(multiResultCodec.encode(0, SplitResultDeliveryCommand.Apply(it))),
+                                    )
+                                },
                         )
                 },
             "resultEntries" to saved.resultEntries,
@@ -466,14 +548,15 @@ private fun multiNode() {
     val settings = splitTradingSettings()
     val service = requireNotNull(System.getenv("SPLIT_MULTI_SERVICE"))
     val boot = UUID.randomUUID().toString()
-    val sha =
-        MessageDigest
-            .getInstance("SHA-256")
-            .digest(Files.readAllBytes(Path.of(requireNotNull(System.getenv("SPLIT_MANIFEST")))))
-            .joinToString("") { "%02x".format(it) }
+    val control = MultiMatchingFailureControl(checkNotNull(settings.transport.runId), boot, service, multiControl)
+    val sha = multiSha(Files.readAllBytes(Path.of(requireNotNull(System.getenv("SPLIT_MANIFEST")))))
     DevelopmentSplitTradingNode
-        .start(settings, serviceDecorator = { MultiMatchingService(it, settings, boot, service, sha) })
-        .use { node ->
+        .start(
+            settings,
+            serviceDecorator = { MultiMatchingService(it, settings, boot, service, sha) },
+            orderConnectionFactory = control.orderConnections(),
+            resultConnectionFactory = control.resultConnections(),
+        ).use { node ->
             Runtime.getRuntime().addShutdownHook(Thread(node::close))
             val transport = settings.transport
             writeSplitTestJson(
@@ -484,6 +567,9 @@ private fun multiNode() {
                         "members" to transport.members,
                         "driverDirectory" to transport.driverDirectory,
                         "runRoot" to transport.runRoot.toString(),
+                        "archiveDirectory" to transport.archiveDirectory.toString(),
+                        "clusterDirectory" to transport.clusterDirectory.toString(),
+                        "recoverExisting" to transport.recoverExisting,
                         "artifactSha256" to BoundedExecutionIdentity.artifactSha256,
                         "schemaSha256" to BoundedExecutionIdentity.schemaSha256,
                         "inputContractVersion" to settings.configuration.inputContractVersion,
@@ -515,15 +601,14 @@ private fun freezeMultiManifest() {
         )
     val bytes = codec.encodeManifest(bound)
 
-    fun sha(value: ByteArray) = MessageDigest.getInstance("SHA-256").digest(value).joinToString("") { "%02x".format(it) }
     writeBoundedHttpArtifact(multiControl.resolve("manifest-rdb-input.bin"), sourceBytes, false)
     writeBoundedHttpArtifact(path, bytes, true)
     println(
         multiJson.writeValueAsString(
             mapOf(
                 "code" to "FROZEN",
-                "sourceManifestSha256" to sha(sourceBytes),
-                "manifestSha256" to sha(bytes),
+                "sourceManifestSha256" to multiSha(sourceBytes),
+                "manifestSha256" to multiSha(bytes),
                 "artifactSha256" to bound.executionArtifactSha256,
                 "schemaSha256" to bound.schemaSha256,
                 "runtimeVersion" to Runtime.version().toString(),
@@ -571,6 +656,36 @@ private fun multiCommand(args: Array<String>) {
 
             fun client(label: String? = null) = SplitOrderDeliveryClient(endpoint(label), 10_000)
 
+            fun probe(
+                label: String,
+                correlation: Long,
+            ): Map<String, Any?> {
+                require(correlation >= MULTI_PROBE_MINIMUM) { "시험 probe는 일반 worker와 다른 상관값 범위를 씁니다" }
+                var received: SplitOrderDeliveryReply? = null
+                SplitOrderDeliveryClient(
+                    endpoint(label.takeUnless { it == "funds" }),
+                    10_000,
+                    onReply = { if (it.correlationId == correlation) received = it },
+                ).use { connection ->
+                    val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10)
+                    val idle = TradingAeronRuntime.idleStrategy()
+                    var accepted = false
+                    while (System.nanoTime() - deadline < 0 && !Thread.currentThread().isInterrupted) {
+                        if (!accepted) {
+                            val position = connection.offer(correlation, SplitOrderDeliveryCommand.DescribePeer)
+                            check(position != Publication.CLOSED && position != Publication.MAX_POSITION_EXCEEDED)
+                            accepted = position > 0
+                        }
+                        idle.idle(connection.poll())
+                        received?.let {
+                            check(it.code == "DESCRIBED") { "현재성 probe가 거절됐습니다: ${it.code}" }
+                            return mapOf("code" to it.code, "correlationId" to correlation, "appliedLogPosition" to it.appliedLogPosition)
+                        }
+                    }
+                    error("현재성 probe 처리 기한을 넘었습니다: $label")
+                }
+            }
+
             fun order(
                 who: String,
                 label: String,
@@ -596,6 +711,17 @@ private fun multiCommand(args: Array<String>) {
             }
             val output: Any =
                 when (args[0]) {
+                    "probe" -> {
+                        val labels = if (args[1] == "all") listOf("funds", "btc", "sui") else listOf(args[1])
+                        require(labels.all { it in setOf("funds", "btc", "sui") })
+                        val correlation = args[2].toLong()
+                        mapOf(
+                            "code" to "PROBED",
+                            "correlationId" to correlation,
+                            "probes" to labels.associateWith { probe(it, correlation) },
+                        )
+                    }
+
                     "prepare" -> {
                         for (label in listOf(null, "btc", "sui")) {
                             client(label).use {
