@@ -20,6 +20,8 @@ import com.exchange.core.trading.MatchingIntakeConfiguration
 import com.exchange.core.trading.MatchingIntakeLimits
 import com.exchange.core.trading.OrderAdmissionCalculator
 import com.exchange.core.trading.OrderSettlementCalculator
+import com.exchange.core.trading.QueryRetentionConfiguration
+import com.exchange.core.trading.QueryRetentionLimits
 import com.exchange.core.trading.ReservedMatchingState
 import com.exchange.core.trading.SettlementLedgerTransactions
 import com.exchange.core.trading.TradingRoleAssembly
@@ -54,6 +56,7 @@ internal class SplitTradingConfiguration(
                     MatchingIntakeLimits.defaults(topology, declaration)
                 }
         },
+    val queryRetention: QueryRetentionConfiguration? = null,
 ) {
     val matchingDeclarations: List<TradingRoleDeclaration> =
         Collections.unmodifiableList(matchingDeclarations.sortedWith(compareBy({ it.lineage.high }, { it.lineage.low })))
@@ -61,8 +64,9 @@ internal class SplitTradingConfiguration(
         Collections.unmodifiableMap(LinkedHashMap(matchingLimitsByLineage))
     val fundsLineage get() = topology.fundsManifest.lineage
     val matchingLineage get() = matchingDeclaration.lineage
-    val dispatchConfiguration = FundsDispatchConfiguration(topology, dispatchLimits, inputContractVersion)
-    val matchingConfiguration = MatchingIntakeConfiguration(topology, matchingDeclaration, matchingLimits, inputContractVersion)
+    val dispatchConfiguration = FundsDispatchConfiguration(topology, dispatchLimits, inputContractVersion, queryRetention)
+    val matchingConfiguration =
+        MatchingIntakeConfiguration(topology, matchingDeclaration, matchingLimits, inputContractVersion, queryRetention)
     val topologySha256: String
     val resultTopologySha256: String
 
@@ -81,6 +85,7 @@ internal class SplitTradingConfiguration(
             inputContractVersion,
             matchingDeclarations,
             matchingLimitsByLineage,
+            queryRetention,
         )
     }
 
@@ -153,10 +158,11 @@ internal class SplitTradingConfiguration(
             dispatchLimits,
             resultLimits,
             inputContractVersion,
+            queryRetention,
         )
 
     fun matching(): ReservedMatchingState =
-        TradingRoleAssembly.reservedMatching(topology, matchingDeclaration, matchingLimits, inputContractVersion)
+        TradingRoleAssembly.reservedMatching(topology, matchingDeclaration, matchingLimits, inputContractVersion, queryRetention)
 
     fun settlementCalculator(): OrderSettlementCalculator {
         val fees = TradingFeeReserveCalculator()
@@ -183,7 +189,7 @@ internal class SplitTradingConfiguration(
         matching()
         for (declaration in matchingDeclarations) {
             val limits = matchingLimitsByLineage.getValue(declaration.lineage)
-            TradingRoleAssembly.reservedMatching(topology, declaration, limits, inputContractVersion)
+            TradingRoleAssembly.reservedMatching(topology, declaration, limits, inputContractVersion, queryRetention)
             resultLimits.requireCompatible(limits)
         }
         // FundsDispatchCharge의 고정245byte와 최대256byte인 문자열12개(길이4byte 포함)의 보수적 상한이다.
@@ -213,6 +219,7 @@ internal class SplitTradingConfiguration(
                         declaration,
                         matchingLimitsByLineage.getValue(declaration.lineage),
                         inputContractVersion,
+                        queryRetention,
                     )
                 }
             } else {
@@ -290,4 +297,28 @@ internal class SplitTradingConfiguration(
     private fun sha256(bytes: ByteArray): String = MessageDigest.getInstance("SHA-256").digest(bytes).joinToString("") { "%02x".format(it) }
 
     private fun reservations() = OrderReservationCalculator(BuyOrderFundingQuoteCalculator(TradingFeeReserveCalculator()))
+}
+
+/** 고정 consumer를 명시할 때만 원본 보관을 활성화한다. 모든 멤버가 같은 구성 지문을 사용한다. */
+internal fun splitQueryRetentionConfiguration(
+    topology: TradingRoleTopology,
+    environment: Map<String, String>,
+    dispatchLimits: FundsDispatchLimits,
+    inputContractVersion: Int,
+): QueryRetentionConfiguration? {
+    val consumerId = environment["EXCHANGE_ORDER_QUERY_CONSUMER_ID"] ?: return null
+    require(consumerId.isNotBlank()) { "EXCHANGE_ORDER_QUERY_CONSUMER_ID 설정이 비어 있습니다" }
+    val baseBytes =
+        FundsResultLimits().snapshotByteUpperBound(FundsDispatchConfiguration(topology, dispatchLimits, inputContractVersion))
+    val room = (FundsDispatchConfiguration.MAX_SNAPSHOT_BYTES - baseBytes) / 4L
+    val defaultBytes = minOf(4L * 1_024 * 1_024, room)
+    require(defaultBytes > 0) { "자금 snapshot 예산에 조회 원본을 보관할 여유가 없습니다" }
+    val marketEntries = environment["EXCHANGE_ORDER_QUERY_MAX_MARKET_ENTRIES"]?.toInt() ?: 2_048
+    val marketBytes = environment["EXCHANGE_ORDER_QUERY_MAX_MARKET_BYTES"]?.toLong() ?: minOf(2L * 1_024 * 1_024, defaultBytes)
+    return QueryRetentionConfiguration(
+        consumerId,
+        topology.fundsManifest.markets.associate { it.market.marketId to QueryRetentionLimits(marketEntries, marketBytes) },
+        environment["EXCHANGE_ORDER_QUERY_MAX_ENTRIES"]?.toInt() ?: 4_096,
+        environment["EXCHANGE_ORDER_QUERY_MAX_BYTES"]?.toLong() ?: defaultBytes,
+    )
 }

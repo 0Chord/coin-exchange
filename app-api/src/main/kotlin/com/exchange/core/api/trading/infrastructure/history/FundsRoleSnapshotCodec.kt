@@ -92,6 +92,11 @@ internal class FundsRoleSnapshotCodec {
         writeDispatch(output, saved.configuration, saved.dispatch)
         writeResults(output, saved.configuration, checkNotNull(saved.results))
         if (saved.configuration.inputContractVersion == 2) writeCancellations(output, saved)
+        if (saved.configuration.queryRetention != null) {
+            QueryFactsSnapshotCodec.write(output, checkNotNull(saved.queryAdmissions)) { framed, entry ->
+                results.writeDispatch(framed, entry, saved.configuration.inputContractVersion)
+            }
+        }
         output.flush()
         checked.on(false)
         output.write(digest.digest())
@@ -113,7 +118,13 @@ internal class FundsRoleSnapshotCodec {
         require(input.readInt() == MAGIC) { "unsupported funds snapshot" }
         val version = input.readInt()
         require(
-            if (expected.inputContractVersion == 2) version == CANCELLATION_VERSION else version == LEGACY_VERSION || version == VERSION,
+            if (expected.queryRetention != null) {
+                version == QUERY_VERSION
+            } else if (expected.inputContractVersion == 2) {
+                version == CANCELLATION_VERSION
+            } else {
+                version == LEGACY_VERSION || version == VERSION
+            },
         ) { "unsupported funds snapshot" }
         require(input.readLong() == expectedPosition) { "funds snapshot framework position differs" }
         require(input.blob(MAX_CONFIGURATION_BYTES).contentEquals(configurationBytes(expected))) {
@@ -134,9 +145,10 @@ internal class FundsRoleSnapshotCodec {
         }
         val dispatch = readDispatch(input, expected)
         val resultState = if (version != LEGACY_VERSION) readResults(input, expected, expectedResultLimits) { limited.remaining } else null
-        val lastCancellationSequence = if (version == CANCELLATION_VERSION) input.readLong() else 0L
+        val hasCancellations = expected.inputContractVersion == 2
+        val lastCancellationSequence = if (hasCancellations) input.readLong() else 0L
         val approvalInputs =
-            if (version == CANCELLATION_VERSION) {
+            if (hasCancellations) {
                 List(input.count(expected.limits.maxActiveOrders)) {
                     results.readDispatch(
                         input,
@@ -149,7 +161,7 @@ internal class FundsRoleSnapshotCodec {
                 emptyList()
             }
         val cancellations =
-            if (version == CANCELLATION_VERSION) {
+            if (hasCancellations) {
                 List(input.count(expected.limits.maxDispatchEntries)) {
                     val original =
                         results.readDispatch(
@@ -172,6 +184,23 @@ internal class FundsRoleSnapshotCodec {
             } else {
                 emptyList()
             }
+        val queryAdmissions =
+            expected.queryRetention?.let { retention ->
+                QueryFactsSnapshotCodec.read(
+                    input,
+                    retention.maxEntries,
+                    retention.maxBytes,
+                    readEntry = { framed ->
+                        results.readDispatch(
+                            framed,
+                            expected::stream,
+                            { market -> expected.manifest.markets.single { it.market.marketId == market } },
+                            expected.inputContractVersion,
+                        )
+                    },
+                    charge = { it.dispatchCanonicalBytes },
+                )
+            }
         checked.on(false)
         val expectedDigest = ByteArray(32).also(input::readFully)
         require(MessageDigest.isEqual(digest.digest(), expectedDigest)) { "funds snapshot checksum differs" }
@@ -186,6 +215,7 @@ internal class FundsRoleSnapshotCodec {
                 approvalInputs,
                 cancellations,
                 lastCancellationSequence,
+                queryAdmissions,
             )
         // 체크섬 뒤에도 금융·전달·정산 경계의 관계를 빈 소유자에서 검사한다.
         validatedState(state, expectedResultLimits)
@@ -585,6 +615,7 @@ internal class FundsRoleSnapshotCodec {
                 }
                 // 기존 설정의 바이트는 보존하고 새 계약만 버전을 추가한다.
                 if (configuration.inputContractVersion == 2) output.writeInt(configuration.inputContractVersion)
+                configuration.queryRetention?.let { QueryFactsSnapshotCodec.writeConfiguration(output, it) }
             }
             bytes.toByteArray()
         }
@@ -649,7 +680,15 @@ internal class FundsRoleSnapshotCodec {
     ): Long = limits.snapshotByteUpperBound(configuration).also { require(it in 1..MAX_SNAPSHOT_BYTES) }
 
     private fun snapshotVersion(configuration: FundsDispatchConfiguration): Int =
-        if (configuration.inputContractVersion == 2) CANCELLATION_VERSION else VERSION
+        if (configuration.queryRetention !=
+            null
+        ) {
+            QUERY_VERSION
+        } else if (configuration.inputContractVersion == 2) {
+            CANCELLATION_VERSION
+        } else {
+            VERSION
+        }
 
     private class LimitedInput(
         source: InputStream,
@@ -709,6 +748,7 @@ internal class FundsRoleSnapshotCodec {
         private const val VERSION = 2
         private const val LEGACY_VERSION = 1
         private const val CANCELLATION_VERSION = 3
+        private const val QUERY_VERSION = 4
         private const val FOOTER_BYTES = 36L
         private const val END = 0x46524531
         private const val MAX_TEXT_BYTES = 1_024

@@ -3,6 +3,10 @@ package com.exchange.core.api.trading.infrastructure.aeron
 import com.exchange.core.api.trading.infrastructure.codec.BoundedMarketProgress
 import com.exchange.core.api.trading.infrastructure.codec.BoundedTradingCommand
 import com.exchange.core.api.trading.infrastructure.codec.BoundedTradingReply
+import com.exchange.core.api.trading.infrastructure.codec.OrderQuerySourceCodec
+import com.exchange.core.api.trading.infrastructure.codec.OrderQuerySourceCommand
+import com.exchange.core.api.trading.infrastructure.codec.OrderQuerySourceProgress
+import com.exchange.core.api.trading.infrastructure.codec.OrderQuerySourceReply
 import com.exchange.core.api.trading.infrastructure.codec.SplitOrderDeliveryCodec
 import com.exchange.core.api.trading.infrastructure.codec.SplitOrderDeliveryCommand
 import com.exchange.core.api.trading.infrastructure.codec.SplitOrderDeliveryReply
@@ -57,6 +61,28 @@ internal class SplitTradingClusterAdapter(
     private val matching: ReservedMatchingState? = if (role == TradingServiceRole.MATCHING) configuration.matching() else null
     private val codec = SplitOrderDeliveryCodec(configuration.inputContractVersion)
     private val resultCodec = SplitResultDeliveryCodec(configuration.inputContractVersion)
+    private val queryCodec = OrderQuerySourceCodec(configuration.inputContractVersion)
+    private val queryContexts =
+        (
+            if (role ==
+                TradingServiceRole.FUNDS
+            ) {
+                configuration.topology.fundsManifest.markets
+            } else {
+                configuration.matchingConfiguration.markets
+            }
+        ).associateBy { it.market.marketId.value }
+    private val queryStreams =
+        queryContexts.mapValues { (_, context) ->
+            val source = configuration.dispatchConfiguration.stream(context.market.marketId)
+            MatchingResultStream(
+                source.matchingLineage,
+                source.fundsLineage,
+                source.marketId,
+                source.ownershipEpoch,
+                source.configurationVersion,
+            )
+        }
     private val settlementCalculator = configuration.settlementCalculator()
     private lateinit var cluster: Cluster
     private lateinit var serviceThread: Thread
@@ -156,6 +182,13 @@ internal class SplitTradingClusterAdapter(
         try {
             requireMillisecondClock(cluster.timeUnit())
             appliedLogPosition = cluster.logPosition()
+            if (offset >= 0 && length in 4..OrderQuerySourceCodec.MAX_CONTROL_BYTES && offset <= buffer.capacity() - length &&
+                OrderQuerySourceCodec.isQueryFrame(buffer, offset, length)
+            ) {
+                onQueryMessage(session, ByteArray(length).also { buffer.getBytes(offset, it) })
+                refreshReadiness()
+                return
+            }
             val bytes =
                 try {
                     require(
@@ -395,6 +428,144 @@ internal class SplitTradingClusterAdapter(
                 }
             }
         sendResult(session, reply)
+    }
+
+    private fun queryReply(
+        correlation: Long,
+        code: String,
+    ): OrderQuerySourceReply {
+        val progress =
+            if (!tradingReady || configuration.queryRetention == null) {
+                emptyList()
+            } else if (role == TradingServiceRole.FUNDS) {
+                val admissions = checkNotNull(funds).queryAdmissionsProgress()!!
+                listOf(OrderQuerySourceProgress(null, admissions.issued, admissions.retiredThrough)) +
+                    queryStreams.map { (market, stream) ->
+                        OrderQuerySourceProgress(market, 0, 0, checkNotNull(funds).matchingSettlementAck(stream)?.through ?: 0)
+                    }
+            } else {
+                queryStreams.map { (market, stream) ->
+                    val saved = checkNotNull(matching).queryResultsProgress(stream)!!
+                    OrderQuerySourceProgress(market, saved.issued, saved.retiredThrough)
+                }
+            }
+        return OrderQuerySourceReply(
+            correlation,
+            code,
+            role,
+            if (role == TradingServiceRole.FUNDS) configuration.fundsLineage else configuration.matchingLineage,
+            configuration.topologySha256,
+            configuration.queryRetention?.consumerId ?: "",
+            queryStreams,
+            queryContexts,
+            progress,
+            inputContractVersion = configuration.inputContractVersion,
+        )
+    }
+
+    private fun onQueryMessage(
+        session: ClientSession?,
+        bytes: ByteArray,
+    ) {
+        val envelope =
+            try {
+                queryCodec.decode(bytes)
+            } catch (_: IllegalArgumentException) {
+                malformedMessages++
+                return
+            }
+        val command = envelope.command
+        val correlation = envelope.correlationId
+        val source = configuration.queryRetention
+        val reply =
+            when {
+                source == null -> {
+                    queryReply(correlation, "DISABLED")
+                }
+
+                !tradingReady -> {
+                    queryReply(correlation, "NOT_READY")
+                }
+
+                command == OrderQuerySourceCommand.Describe -> {
+                    queryReply(correlation, "DESCRIBED")
+                }
+
+                else -> {
+                    val consumer =
+                        when (command) {
+                            is OrderQuerySourceCommand.Read -> command.consumerId
+                            is OrderQuerySourceCommand.Acknowledge -> command.consumerId
+                            else -> error("query command")
+                        }
+                    val market =
+                        when (command) {
+                            is OrderQuerySourceCommand.Read -> command.market
+                            is OrderQuerySourceCommand.Acknowledge -> command.market
+                            else -> error("query command")
+                        }
+                    when {
+                        consumer != source.consumerId -> {
+                            queryReply(correlation, "INVALID_CONSUMER")
+                        }
+
+                        (market == null) != (role == TradingServiceRole.FUNDS) || (market != null && market !in queryStreams) -> {
+                            queryReply(correlation, "INVALID_STREAM")
+                        }
+
+                        command is OrderQuerySourceCommand.Acknowledge -> {
+                            val ack =
+                                if (market == null) {
+                                    checkNotNull(funds).acknowledgeQueryAdmissions(consumer, command.through)
+                                } else {
+                                    checkNotNull(
+                                        matching,
+                                    ).acknowledgeQueryResults(consumer, queryStreams.getValue(market), command.through)
+                                }
+                            queryReply(correlation, ack.status.name)
+                        }
+
+                        command is OrderQuerySourceCommand.Read && market == null -> {
+                            val read =
+                                checkNotNull(
+                                    funds,
+                                ).readQueryAdmissions(command.from, 1, SplitResultDeliveryCodec.MAX_MESSAGE_BYTES.toLong())
+                            read.entries.firstOrNull()?.let { OrderQuerySourceReply(correlation, "FACT", admission = it) }
+                                ?: queryReply(correlation, read.status.name)
+                        }
+
+                        command is OrderQuerySourceCommand.Read -> {
+                            val read =
+                                checkNotNull(
+                                    matching,
+                                ).readQueryResults(
+                                    queryStreams.getValue(checkNotNull(market)),
+                                    command.from,
+                                    1,
+                                    SplitResultDeliveryCodec.MAX_MESSAGE_BYTES.toLong(),
+                                )
+                            read.entries.firstOrNull()?.let { OrderQuerySourceReply(correlation, "FACT", result = it) }
+                                ?: queryReply(correlation, read.status.name)
+                        }
+
+                        else -> {
+                            error("query command")
+                        }
+                    }
+                }
+            }
+        if (session == null || !liveLeader || cluster.role() != Cluster.Role.LEADER) return
+        val encoded = queryCodec.encodeReply(reply)
+        repeat(3) {
+            if (!liveLeader || cluster.role() != Cluster.Role.LEADER) return
+            val offered = session.offer(UnsafeBuffer(encoded), 0, encoded.size)
+            if (offered > 0 || offered == Publication.CLOSED || offered == Publication.MAX_POSITION_EXCEEDED ||
+                offered == Publication.NOT_CONNECTED
+            ) {
+                return
+            }
+            cluster.idleStrategy().idle()
+        }
     }
 
     private fun resultResponse(

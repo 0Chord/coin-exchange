@@ -78,6 +78,15 @@ internal class MatchingRoleSnapshotCodec {
             output.writeInt(stream.outstanding.size)
             for (result in stream.outstanding) results.writeResult(output, result, state.configuration.inputContractVersion)
         }
+        if (state.configuration.queryRetention != null) {
+            output.writeInt(state.configuration.markets.size)
+            for (context in state.configuration.markets) {
+                output.text(context.market.marketId.value)
+                QueryFactsSnapshotCodec.write(output, state.queryResults.getValue(context.market.marketId)) { framed, result ->
+                    results.writeResult(framed, result, state.configuration.inputContractVersion)
+                }
+            }
+        }
         output.flush()
         checked.on(false)
         output.write(digest.digest())
@@ -190,6 +199,37 @@ internal class MatchingRoleSnapshotCodec {
                     sourceMarket,
                 )
             }
+        val queryResults =
+            expected.queryRetention?.let { retention ->
+                require(input.count(owned.size) == owned.size) { "query snapshot stream coverage differs" }
+                var totalEntries = 0
+                var totalBytes = 0L
+                expected.markets.associate { context ->
+                    val market = context.market.marketId
+                    require(MarketId(input.text()) == market) { "query snapshot stream order differs" }
+                    val local = retention.marketLimits.getValue(market)
+                    val facts =
+                        QueryFactsSnapshotCodec.read(
+                            input,
+                            minOf(local.maxEntries, retention.maxEntries - totalEntries),
+                            minOf(local.maxBytes, retention.maxBytes - totalBytes),
+                            expected.limits.maxSingleResultBytes,
+                            readEntry = { framed ->
+                                results.readResult(
+                                    framed,
+                                    expected.stream(market),
+                                    context,
+                                    expected.limits.maxResultEvents,
+                                    expected.inputContractVersion,
+                                )
+                            },
+                            charge = { it.canonicalBytes },
+                        )
+                    totalEntries = Math.addExact(totalEntries, facts.entries.size)
+                    totalBytes = Math.addExact(totalBytes, facts.retainedBytes)
+                    market to facts
+                }
+            } ?: emptyMap()
         checked.on(false)
         val checksum = ByteArray(32).also(input::readFully)
         require(MessageDigest.isEqual(digest.digest(), checksum)) { "matching snapshot checksum differs" }
@@ -205,6 +245,7 @@ internal class MatchingRoleSnapshotCodec {
                 resultBytes,
                 activeOrders,
                 activeBytes,
+                queryResults,
             )
         // checksum만 맞는 손상 자료도 정상 상태로 공개하지 않는다.
         ReservedMatchingState(expected).restore(state)
@@ -250,6 +291,7 @@ internal class MatchingRoleSnapshotCodec {
                 }
                 // 신규 전용 지문은 그대로 두고 새 계약만 입력 버전에 결속한다.
                 if (configuration.inputContractVersion == 2) output.writeInt(configuration.inputContractVersion)
+                configuration.queryRetention?.let { QueryFactsSnapshotCodec.writeConfiguration(output, it) }
             }
             bytes.toByteArray()
         }
@@ -291,7 +333,15 @@ internal class MatchingRoleSnapshotCodec {
         }
 
     private fun snapshotVersion(configuration: MatchingIntakeConfiguration): Int =
-        if (configuration.inputContractVersion == 2) CANCELLATION_VERSION else VERSION
+        if (configuration.queryRetention !=
+            null
+        ) {
+            QUERY_VERSION
+        } else if (configuration.inputContractVersion == 2) {
+            CANCELLATION_VERSION
+        } else {
+            VERSION
+        }
 
     private class LimitedInput(
         source: InputStream,
@@ -350,6 +400,7 @@ internal class MatchingRoleSnapshotCodec {
         private const val MAGIC = 0x4D525350
         private const val VERSION = 1
         private const val CANCELLATION_VERSION = 2
+        private const val QUERY_VERSION = 3
         private const val END = 0x4D524531
         private const val MAX_TEXT_BYTES = 1_024
         private const val MAX_CONFIGURATION_BYTES = 256 * 1_024
