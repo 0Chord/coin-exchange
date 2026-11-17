@@ -223,7 +223,7 @@ PR에서는 병합 후보를 검사하며, 실제 병합 커밋을 별도로 다
 | Architecture checks | Docker 없이 구조 검사와 필수 운영 검사 실행 확인 | `architecture-test-reports` |
 | Test partition plan | 한 배치표에서 실행 그룹 생성·검증 스크립트 자체 검사 | 해당 단계 로그 |
 | Product tests (general) | 전체 빌드·린트·일반 제품/DB 테스트 | `test-reports-general` |
-| Product tests (transport/settlement/multi-market/failover) | 그룹별 실제 클러스터 테스트 | `test-reports-그룹명` |
+| Product tests (transport/settlement/multi-market/failover/quorum-loss/quorum-partition) | 그룹별 실제 클러스터 테스트 | `test-reports-그룹명` |
 | Build and test | 모든 제품 그룹 성공·후보의 누락/중복·실제 XML 대조 | 그룹별 artifact와 최종 요약 |
 
 구조 검사와 제품 검사는 독립 실행합니다. 구조만 성공하고 제품 그룹의 Docker 준비가 실패했다면 **구조 통과 / 해당 제품 검사 미실행 / 전체 CI 실패**입니다. 제품 그룹은 각자 30분 한도이며, 한 그룹이 실패해도 다른 그룹의 진단 보고서는 수집합니다. 마지막 **Build and test**는 실패·취소·미실행·보고서 부재를 통과시키지 않습니다. 두 필수 검사 이름은 유지하며 한쪽의 성공을 다른 쪽의 성공으로 간주하지 않습니다.
@@ -278,6 +278,7 @@ cd /path/to/exchange-core
 - [#133 취소 접수·매칭 취소·잔여 예약 반환 상세 명세](engineering/split-order-cancellation-spec.md): #179 이후 남은 연결입니다. 첫 PR은 실제 코어의 취소·반환 완주와 기본 저장·복원, 다음 PR은 두 클러스터 실제 송수신으로 구분합니다. 업무 흐름·완료 기준을 먼저 설명하고 구현·수용 사례는 접어 분리했습니다. 코어 단위를2550154로 커밋했고, 실제 취소 전송·양쪽 Archive 복구도 검증했고, 문서15절에서3+3노드 실행·독립 리뷰·남은 범위를 구분합니다.
 - [#134 복합 장애 뒤 취소·반환·후속 주문의 재개 명세·로컬 검증](engineering/split-delivery-failure-verification-spec.md): #133 기본 복구를 제외하고 서로 다른 snapshot의 역할별 재시작, 결과 포화·ACK 유실·재연결을 실제 3+3노드의 두 사례로 검사했습니다. 9절에서 경량13개·실제 두 사례의 준비/실행/검증문, 실행 근거·독립 리뷰 수정과 남은 범위를 구분합니다. 이 기록의 로컬 검증과 원격 PR·CI·병합 상태는 구분합니다.
 - [#135 여러 매칭 담당과 공통 자금 연결 명세·구현](engineering/multi-matching-shared-funds-spec.md): A의 두 담당 실행 연결과 Adapter 경량 검증·기존 6노드 회귀 검증을 완료했으며, 실제 3+3+3노드 검증은 다음 PR입니다. 누가·언제·왜 판단하는지 먼저 설명하고 설정·호환성·수용 사례와 실제 검사 근거는 분리했습니다.
+- [#138 자금 과반 상실·분할 검증](engineering/funds-quorum-failure-verification.md): 실제9노드 Q1~Q4·경량31개·기존 장애 회귀·구조/스타일 검사, 최초 결정과 복구·정리 원자료 및 독립 검토.
 
 현재 운영에 적용한 것은 ARCH-01·02·03·04·06·08, 업무 자동 등록 금지·config Bean 선언, 저장·발행을 포함한 이름 17개 규칙과 전체 main 파일 폴더 검사입니다. 필수 운영 기록은 P01~P09입니다. 네 이행 폴더는 종료했으며 새 저장·발행 위치에 기존 의존·포트 계약 검사를 유지합니다. P09는 운영 app-api의 매칭 엔진·내부 주문 직접 참조와 config 밖 실행기 구현 참조를 금지합니다. #23에서 내부 타입·잔량 변경 경로를 제한하고 콜백·실패·시간 초과·종료 계약을 검증합니다. DB·불변 상태 계약은 #22의 별도 범위입니다.
 
