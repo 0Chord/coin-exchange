@@ -211,6 +211,7 @@ private class MultiMatchingService(
     private val boot: String,
     private val service: String,
     private val manifestSha: String,
+    private val quorumObservation: FundsQuorumServiceObservation? = null,
 ) : ClusteredService by delegate {
     private lateinit var cluster: Cluster
     private val raceRows = linkedMapOf<String, Map<String, Any?>>()
@@ -259,8 +260,11 @@ private class MultiMatchingService(
                 order is SplitOrderDeliveryCommand.Control && order.command is BoundedTradingCommand.Admit
             ) {
                 val admission = order.command as BoundedTradingCommand.Admit
-                if (admission.token == RequestToken(multiBuyer, 0, 1, 1) &&
-                    admission.intent.marketId == multiMarket("btc") && admission.intent.quantity.value == 6L
+                if ((
+                        admission.token == RequestToken(multiBuyer, 0, 1, 1) &&
+                            admission.intent.marketId == multiMarket("btc") && admission.intent.quantity.value == 6L
+                    ) ||
+                    (quorumObservation != null && fundsQuorumPendingLabel(admission.token) != null)
                 ) {
                     // 실제 계산을 마친 응답을 기록한 뒤 원래 세션으로 그대로 보낸다.
                     // 응답 직후 프로세스가 종료돼도 after-delegate 관찰 파일에 의존하지 않는다.
@@ -306,9 +310,29 @@ private class MultiMatchingService(
                                                 "hold" to balance.hold.value,
                                             ),
                                     )
-                                writeBoundedHttpJson(multiControl.resolve("admission-$service.json"), committed)
+                                val pending = if (quorumObservation != null) fundsQuorumPendingLabel(admission.token) else null
+                                val file = if (pending == null) "admission-$service.json" else "admission-$service-$pending.json"
+                                writeBoundedHttpJson(multiControl.resolve(file), committed)
                             }
-                            return session.offer(response, responseOffset, responseLength)
+                            val offered = session.offer(response, responseOffset, responseLength)
+                            if (quorumObservation != null) {
+                                val pending = fundsQuorumPendingLabel(admission.token)
+                                if (pending != null) {
+                                    writeBoundedHttpJson(
+                                        multiControl.resolve("reply-$service-$pending.json"),
+                                        mapOf(
+                                            "bootId" to boot,
+                                            "sessionId" to session.id(),
+                                            "logPosition" to cluster.logPosition(),
+                                            "leadershipTermId" to leadershipTermId,
+                                            "clusterRole" to cluster.role().name,
+                                            "responseOfferPosition" to offered,
+                                            "correlationId" to checkNotNull(orderEnvelope).correlationId,
+                                        ),
+                                    )
+                                }
+                            }
+                            return offered
                         }
                     }
                 } else {
@@ -317,6 +341,37 @@ private class MultiMatchingService(
             } else {
                 session
             }
+        if (quorumObservation != null && settings.role == TradingServiceRole.FUNDS && order is SplitOrderDeliveryCommand.Control &&
+            order.command is BoundedTradingCommand.Admit
+        ) {
+            val admission = order.command as BoundedTradingCommand.Admit
+            val label = fundsQuorumPendingLabel(admission.token)
+            if (label != null) {
+                quorumObservation.enter(
+                    mapOf(
+                        "request" to label,
+                        "token" to
+                            mapOf(
+                                "userId" to admission.token.userId.value,
+                                "channel" to admission.token.channel,
+                                "epoch" to admission.token.epoch,
+                                "sequence" to admission.token.sequence,
+                            ),
+                        "marketId" to admission.intent.marketId.value,
+                        "quantity" to admission.intent.quantity.value,
+                        "correlationId" to checkNotNull(orderEnvelope).correlationId,
+                        "requestSha256" to multiSha(multiOrderCodec.encode(0, order)),
+                        "wireSha256" to multiSha(bytes),
+                        "bootId" to boot,
+                        "memberId" to settings.transport.memberId,
+                        "leadershipTermId" to leadershipTermId,
+                        "leaderMemberId" to leaderMemberId,
+                        "clusterRole" to cluster.role().name,
+                        "logPosition" to cluster.logPosition(),
+                    ),
+                )
+            }
+        }
         delegate.onSessionMessage(observedSession, timestamp, buffer, offset, length, header)
         if (order == SplitOrderDeliveryCommand.DescribePeer && checkNotNull(orderEnvelope).correlationId >= MULTI_PROBE_MINIMUM) {
             // 이 요청이 현재 부팅에서 실제 복제돼 처리된 위치와 선출 관찰을 한 번에 묶는다.
@@ -409,7 +464,11 @@ private class MultiMatchingService(
         capture()
     }
 
-    override fun doBackgroundWork(nowNs: Long): Int = delegate.doBackgroundWork(nowNs)
+    override fun doBackgroundWork(nowNs: Long): Int {
+        val work = delegate.doBackgroundWork(nowNs)
+        quorumObservation?.backgroundWork()
+        return work
+    }
 
     private fun capture() {
         val values =
@@ -432,6 +491,7 @@ private class MultiMatchingService(
         }
         val bytes = multiJson.writeValueAsBytes(values)
         check(bytes.size <= 256 * 1024) { "9사본 관찰 파일 한도를 넘었습니다" }
+        quorumObservation?.publish(bytes.toString(Charsets.UTF_8))
         writeBoundedHttpArtifact(multiControl.resolve("state-$service.json"), bytes, true)
     }
 
@@ -555,7 +615,8 @@ private class MultiMatchingService(
             for (result in stream.outstanding) {
                 val previous = retained.putIfAbsent(result.resultId, result)
                 check(previous == null || previous == result) { "최초 매칭 결과가 바뀌었습니다" }
-                check(retained.size <= 3) { "시험 관찰 결과 상한을 넘었습니다" }
+                val maximum = if (System.getenv("SPLIT_MULTI_CASE") == "quorum" && result.stream.marketId.value == "BTC-USDT") 4 else 3
+                check(retained.size <= maximum) { "시험 관찰 결과 상한을 넘었습니다" }
                 if (cluster.role() == Cluster.Role.LEADER && previous == null) {
                     writeBoundedHttpArtifact(
                         multiControl.resolve("${multiLabel(result.stream.marketId.value)}/result-${result.resultSequence}.bin"),
@@ -647,10 +708,12 @@ private fun multiNode() {
     val boot = UUID.randomUUID().toString()
     val control = MultiMatchingFailureControl(checkNotNull(settings.transport.runId), boot, service, multiControl)
     val sha = multiSha(Files.readAllBytes(Path.of(requireNotNull(System.getenv("SPLIT_MANIFEST")))))
+    val quorumObservation =
+        if (System.getenv("SPLIT_MULTI_CASE") == "quorum") FundsQuorumServiceObservation() else null
     DevelopmentSplitTradingNode
         .start(
             settings,
-            serviceDecorator = { MultiMatchingService(it, settings, boot, service, sha) },
+            serviceDecorator = { MultiMatchingService(it, settings, boot, service, sha, quorumObservation) },
             orderConnectionFactory = control.orderConnections(),
             resultConnectionFactory = control.resultConnections(),
         ).use { node ->
@@ -674,7 +737,14 @@ private fun multiNode() {
                         "jdkVersion" to System.getProperty("java.version"),
                     ),
             )
-            while (!node.isClosed && node.error == null) Thread.sleep(10)
+            val witness =
+                quorumObservation?.let {
+                    FundsQuorumWitness(multiControl, service, multiIdentity(settings, boot, service, sha), it, node::runtimeObservation)
+                }
+            while (!node.isClosed && node.error == null) {
+                witness?.poll()
+                Thread.sleep(10)
+            }
             node.error?.let { throw IllegalStateException("다중 매칭 노드 실패", it) }
         }
 }
@@ -756,6 +826,7 @@ private fun multiCommand(args: Array<String>) {
             fun probe(
                 label: String,
                 correlation: Long,
+                heartbeat: () -> Unit = {},
             ): Map<String, Any?> {
                 require(correlation >= MULTI_PROBE_MINIMUM) { "시험 probe는 일반 worker와 다른 상관값 범위를 씁니다" }
                 var received: SplitOrderDeliveryReply? = null
@@ -763,11 +834,24 @@ private fun multiCommand(args: Array<String>) {
                     endpoint(label.takeUnless { it == "funds" }),
                     10_000,
                     onReply = { if (it.correlationId == correlation) received = it },
+                    factory =
+                        SplitOrderDeliveryConnectionFactory { target, timeout, onReply ->
+                            val attempt = AeronSplitOrderDeliveryConnectionFactory.begin(target, timeout, onReply)
+                            object : SplitOrderDeliveryConnectAttempt {
+                                override fun poll(): SplitOrderDeliveryConnection? {
+                                    heartbeat()
+                                    return attempt.poll()
+                                }
+
+                                override fun close() = attempt.close()
+                            }
+                        },
                 ).use { connection ->
                     val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10)
                     val idle = TradingAeronRuntime.idleStrategy()
                     var accepted = false
                     while (System.nanoTime() - deadline < 0 && !Thread.currentThread().isInterrupted) {
+                        heartbeat()
                         if (!accepted) {
                             val position = connection.offer(correlation, SplitOrderDeliveryCommand.DescribePeer)
                             check(position != Publication.CLOSED && position != Publication.MAX_POSITION_EXCEEDED)
@@ -808,6 +892,35 @@ private fun multiCommand(args: Array<String>) {
             }
             val output: Any =
                 when (args[0]) {
+                    "quorum-admit" -> {
+                        require(env["SPLIT_MULTI_CASE"] == "quorum")
+                        val label =
+                            if (args[2] == "sui") {
+                                "ps"
+                            } else if (args[3] == "1") {
+                                "b0"
+                            } else {
+                                "pb"
+                            }
+                        val trace = FundsQuorumClientTrace()
+                        SplitOrderDeliveryClient(endpoint(), 10_000, factory = trace.factory()).use {
+                            trace.request(it, label, order(args[1], args[2], args[3].toLong(), args[4].toLong(), Side.valueOf(args[5])))
+                        }
+                    }
+
+                    "quorum-client" -> {
+                        require(env["SPLIT_MULTI_CASE"] == "quorum")
+                        require(args[2] in setOf("baseline", "pending"))
+                        runFundsQuorumClient(
+                            args[1],
+                            args[2] == "baseline",
+                            manifest.configurationVersion,
+                            multiControl,
+                            endpoint(),
+                            ::probe,
+                        )
+                    }
+
                     "probe" -> {
                         val labels = if (args[1] == "all") listOf("funds", "btc", "sui") else listOf(args[1])
                         require(labels.all { it in setOf("funds", "btc", "sui") })
@@ -830,9 +943,7 @@ private fun multiCommand(args: Array<String>) {
                         }
                         client().use { funds ->
                             val openings = mutableListOf(Triple(multiBuyer, "USDT", 1_000L))
-                            if (env["SPLIT_MULTI_CASE"] ==
-                                "settlement"
-                            ) {
+                            if (env["SPLIT_MULTI_CASE"] in setOf("settlement", "quorum")) {
                                 openings.addAll(listOf(Triple(multiSeller, "BTC", 1L), Triple(multiSeller, "SUI", 1L)))
                             }
                             for ((user, asset, amount) in openings) {
