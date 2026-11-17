@@ -5,6 +5,7 @@ import com.exchange.core.api.trading.application.BoundedTradingOrderUseCase
 import com.exchange.core.api.trading.application.OrderQueryNamespace
 import com.exchange.core.api.trading.infrastructure.aeron.AeronGatewaySettings
 import com.exchange.core.api.trading.infrastructure.aeron.BoundedAeronGateway
+import com.exchange.core.api.trading.infrastructure.aeron.SplitFundsGatewayTransport
 import com.exchange.core.api.trading.infrastructure.recovery.RecoveryDurabilityGate
 import org.springframework.beans.factory.ObjectProvider
 import org.springframework.context.annotation.Bean
@@ -37,6 +38,10 @@ class BoundedTradingGatewayConfig {
             settings,
             protectedLineage,
             durabilityGate,
+            commandEncoder = { correlationId, command ->
+                SplitFundsGatewayTransport.encodeCommand(correlationId, command)
+            },
+            openTransport = { receive -> SplitFundsGatewayTransport(settings, namespace.fundsLineage, receive) },
         )
         if (protection == "local") return gateway()
         val file =

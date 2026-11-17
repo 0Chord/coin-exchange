@@ -35,7 +35,7 @@ internal class BoundedGatewayException(
     val possiblySubmitted: Boolean,
 ) : IllegalStateException(code)
 
-/** HTTP 경계가 연결 소유 스레드 하나에서 bounded version3 요청을 파이프라인으로 처리한다. */
+/** HTTP 경계의 송수신은 선택한 wire와 무관하게 연결 소유 스레드 하나가 담당한다. */
 internal interface BoundedGatewayTransport : AutoCloseable {
     fun offer(bytes: ByteArray): Long
 
@@ -46,6 +46,7 @@ internal class BoundedAeronGateway(
     private val settings: AeronGatewaySettings,
     private val protectedLineage: ClusterLineage? = null,
     private val durabilityGate: RecoveryDurabilityGate? = null,
+    private val commandEncoder: (Long, BoundedTradingCommand) -> ByteArray = BoundedTradingCodec()::encode,
     private val openTransport: ((BoundedTradingReply) -> Unit) -> BoundedGatewayTransport = { receive ->
         val client = BoundedAeronClient(settings, receive)
         object : BoundedGatewayTransport {
@@ -76,7 +77,6 @@ internal class BoundedAeronGateway(
     private val shutdownFailure = AtomicReference<Throwable?>()
     private val completionContext = ThreadLocal<Boolean>()
     private val logger = LoggerFactory.getLogger(BoundedAeronGateway::class.java)
-    private val codec = BoundedTradingCodec()
     private val admissionLock = Any()
     private val completionPermits = Semaphore(settings.queueCapacity + settings.maxInFlight)
     private val completions = Executors.newThreadPerTaskExecutor(Thread.ofVirtual().name("bounded-http-completion-", 0).factory())
@@ -259,7 +259,7 @@ internal class BoundedAeronGateway(
                         // 외부 입력의 인코딩 실패만 이 요청의 실패로 처리한다. 카운터·전송·내부 오류는
                         // 계속 바깥으로 전파해 소유자를 중단시킨다.
                         try {
-                            pending.bytes = codec.encode(pending.correlation, pending.command)
+                            pending.bytes = commandEncoder(pending.correlation, pending.command)
                         } catch (_: IllegalArgumentException) {
                             check(queue.poll() === pending) { "gateway queue owner changed" }
                             complete(pending, null, BoundedGatewayException("INVALID_REQUEST", false))
