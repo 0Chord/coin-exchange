@@ -1,0 +1,10 @@
+# 기존 compose 위에 #138 실행에만 더한다. 매칭과 host에는 권한을 추가하지 않는다.
+services:
+  funds0:
+    cap_add: [NET_ADMIN]
+  funds1:
+    cap_add: [NET_ADMIN]
+  funds2:
+    cap_add: [NET_ADMIN]
+  client:
+    cap_add: [NET_ADMIN]
