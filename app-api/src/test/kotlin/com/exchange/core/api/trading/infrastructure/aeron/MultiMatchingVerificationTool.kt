@@ -739,7 +739,8 @@ private fun multiNode() {
             )
             val witness =
                 quorumObservation?.let {
-                    FundsQuorumWitness(multiControl, service, multiIdentity(settings, boot, service, sha), it, node::runtimeObservation)
+                    val runtime = FundsQuorumRuntimeObservation(node)
+                    FundsQuorumWitness(multiControl, service, multiIdentity(settings, boot, service, sha), it, runtime::view)
                 }
             while (!node.isClosed && node.error == null) {
                 witness?.poll()

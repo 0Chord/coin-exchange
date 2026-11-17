@@ -200,7 +200,7 @@ internal class FundsQuorumClientTrace(
 
     fun factory(): SplitOrderDeliveryConnectionFactory =
         SplitOrderDeliveryConnectionFactory { endpoint, timeout, onReply ->
-            val factory = delegate ?: AeronSplitOrderDeliveryConnectionFactory.observed(::record)
+            val factory = delegate ?: ObservedAeronSplitOrderDeliveryConnectionFactory(::record)
             val attempt =
                 factory.begin(endpoint, timeout) { reply ->
                     replyRoute = route

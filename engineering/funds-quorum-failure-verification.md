@@ -52,8 +52,8 @@ no-quorum의 연속10초에는 시작·중간·끝의 새 nonce 관찰과 같은
 | [MultiMatchingRun](../app-api/src/test/kotlin/com/exchange/core/api/trading/infrastructure/aeron/DockerMultiMatchingReplicationTest.kt) | 기존 기동·현재 runtime·복수 종료/재합류·한도·정리·보고서를 재사용하고 영역별 witness/관찰을 연결 |
 | [FundsQuorumConvergence](../app-api/src/test/kotlin/com/exchange/core/api/trading/infrastructure/aeron/FundsQuorumConvergence.kt) | 고정 금융 정답·원 token/receipt·예약·주문장·결과·효과와 호출자가 명시한 사본 집합 판정 |
 | [FundsQuorumNetworkControl](../app-api/src/test/kotlin/com/exchange/core/api/trading/infrastructure/aeron/FundsQuorumNetworkControl.kt) | funds peer 양방향 전체IP 차단, client 자신의 namespace에서 scope 제한, 규칙/counter/도달 행렬·회수 확인 |
-| [FundsQuorumObservation](../app-api/src/test/kotlin/com/exchange/core/api/trading/infrastructure/aeron/FundsQuorumObservation.kt) · [MultiMatchingVerificationTool](../app-api/src/test/kotlin/com/exchange/core/api/trading/infrastructure/aeron/MultiMatchingVerificationTool.kt) | 서비스 소유 스레드의 완결된 불변 관찰·P callback·background 진행을 게시하고 새 로컬 nonce에 현재 runtime을 결속 |
-| [FundsQuorumClient](../app-api/src/test/kotlin/com/exchange/core/api/trading/infrastructure/aeron/FundsQuorumClient.kt) · [SplitOrderDeliveryClient](../app-api/src/main/kotlin/com/exchange/core/api/trading/infrastructure/aeron/SplitOrderDeliveryClient.kt) | B0 세션 유지·정상 poll/keepAlive/redirect·실제 endpoint/시도 기록, 연결 미확인·수용 후 무응답·실제 reply 구분 |
+| [FundsQuorumObservation](../app-api/src/test/kotlin/com/exchange/core/api/trading/infrastructure/aeron/FundsQuorumObservation.kt) · [FundsQuorumRuntimeObservation](../app-api/src/test/kotlin/com/exchange/core/api/trading/infrastructure/aeron/FundsQuorumRuntimeObservation.kt) · [MultiMatchingVerificationTool](../app-api/src/test/kotlin/com/exchange/core/api/trading/infrastructure/aeron/MultiMatchingVerificationTool.kt) | 서비스 소유 스레드의 완결된 불변 관찰·P callback·background 진행과 실제 합의 counter를 시험 코드에서 수집하고 새 로컬 nonce에 현재 runtime을 결속 |
+| [FundsQuorumClient](../app-api/src/test/kotlin/com/exchange/core/api/trading/infrastructure/aeron/FundsQuorumClient.kt) · [AeronSplitOrderDeliveryObservation](../app-api/src/test/kotlin/com/exchange/core/api/trading/infrastructure/aeron/AeronSplitOrderDeliveryObservation.kt) | 실제 factory의 연결을 감싸 B0 세션·정상 poll/keepAlive/redirect를 유지하고 endpoint/시도를 기록. 연결 미확인·수용 후 무응답·실제 reply를 구분 |
 | [시험 Dockerfile](../app-api/src/test/docker/aeron-multi-matching/quorum.Dockerfile) · [시험 compose 추가 설정](../app-api/src/test/docker/aeron-multi-matching/quorum.compose.yml) · [CI 배정표](../.github/ci-test-groups.json) | 동결 backend와 funds/client만의 NET_ADMIN, Q1/Q2는quorum-loss·Q3/Q4는quorum-partition에 배정 |
 
 | 경량 테스트 | 준비 → 실행 → 실제 검증문 |
@@ -62,9 +62,17 @@ no-quorum의 연속10초에는 시작·중간·끝의 새 nonce 관찰과 같은
 | [Network 8개](../app-api/src/test/kotlin/com/exchange/core/api/trading/infrastructure/aeron/FundsQuorumNetworkControlTest.kt) | 수기 규칙·도달 자료를 판정. 단방향 누락·단일포트 차단·client ingress 차단·counter0·허용 경로 실패·사본 누락·외부/중복 주소는 거절 |
 | [Observation 8개](../app-api/src/test/kotlin/com/exchange/core/api/trading/infrastructure/aeron/FundsQuorumObservationTest.kt) | callback 진입/완료·background 진행·nonce 파일을 실행. 반쪽 상태 미준비, 읽기만으로 callback 불변, 새 nonce/current boot 결속, 자료 불변·상한 초과 실패를 확인. 실제 선거의 recorder 비활성과 미식별 누락을 구분하며, runtime 관찰 실패는 같은 nonce의 실패로 남고 새 nonce에서 다시 시도한다 |
 | [Quorum client 3개](../app-api/src/test/kotlin/com/exchange/core/api/trading/infrastructure/aeron/FundsQuorumClientTest.kt) | 연결 대역으로 offer 후 무응답·실제 reply·연결 실패를 실행. 성공을 꾸미지 않는 분류, 최초 receipt/위치·원문 지문 보존, 연결 미확인의 미전송을 확인 |
-| [client 5개](../app-api/src/test/kotlin/com/exchange/core/api/trading/infrastructure/aeron/SplitOrderDeliveryClientTest.kt) | 연결 대역으로 correlation 응답·무응답·연결 만료·정리 실패를 실행. 맞는 응답만 반환하고 미확인·client/연결 시도 자원 정리를 유지. 실제 Aeron channel parser로 같은 tag의 동적 소켓 공유와 다른 tag의 분리를 확인 |
+| [client 6개](../app-api/src/test/kotlin/com/exchange/core/api/trading/infrastructure/aeron/SplitOrderDeliveryClientTest.kt) | 연결 대역으로 correlation 응답·무응답·연결 만료·정리 실패를 실행. 맞는 응답만 반환하고 미확인·client/연결 시도 자원 정리를 유지. 실제 Aeron channel parser로 같은 tag의 동적 소켓 공유와 다른 tag의 분리를 확인. 실제 context가 없는 관찰 연결은 실패하고 시도 자원을 닫음 |
 
-경량 client 검사의 하부 연결과 network 검사의 규칙 자료는 대역이다. 실제 Aeron 합의·redirect·프로세스 생존·peer 분할·동일 Archive 복구를 이31개로 입증하지 않는다. 매칭 진단 cache는 재시작 뒤 비어도 되지만 자금의 전체 결과는 필수이고, 남은 cache 원문은 자금 결과와 SHA까지 같아야 한다.
+경량 client 검사의 하부 연결과 network 검사의 규칙 자료는 대역이다. 실제 Aeron 합의·redirect·프로세스 생존·peer 분할·동일 Archive 복구를 이32개로 입증하지 않는다. 매칭 진단 cache는 재시작 뒤 비어도 되지만 자금의 전체 결과는 필수이고, 남은 cache 원문은 자금 결과와 SHA까지 같아야 한다.
+
+## 시험용 관찰 코드의 위치
+
+노드의 counter 순회·선거 중 recorder 분류·이전 관찰 캐시는 `FundsQuorumRuntimeObservation`에 둔다. 부팅마다 하나를 만들고 witness의 한 스레드에서 조회하므로 `@Synchronized`는 두지 않는다. 실행 노드는 실제 consensus context와 archive ID의 내부 조회 접점만 제공한다.
+
+실제 응답 소켓의 사본·UUID tag·이벤트 해석·접속 경로 map·관찰 자원 정리는 `AeronSplitOrderDeliveryObservation`에 둔다. 시험 decorator가 정상 factory의 실제 연결을 한 번 감싸고, 첫 poll 전 같은 소켓 tag를 설정하며, 업무 응답 소비 전에 현재 경로를 읽는다. 연결 실패·조회 실패·종료 때 자기 관찰 자원도 정리한다. 기본 factory에는 시험 분기·관찰 callback·추가 subscription을 남기지 않고 실제 context/cluster 조회 접점만 제공한다.
+
+일반 실행 배포물은 main 출력만 담고, 장애 시험 배포물은 test 출력을 별도로 포함한다. 실행물에서 두 관찰 구현과 노드의 이전 관찰 캐시·관찰 메서드가 없고, 시험 실행물에 두 구현이 있는지를 컴파일 산출물에서도 대조한다. 실제 Aeron 핸들이 없는 연결을 관찰하려 하면 명시적으로 실패하고 연결 시도 자원을 닫는 회귀 검사도 추가했다.
 
 ## 유지한 계약과 실행 한도
 
@@ -83,7 +91,7 @@ build180초·RDB60초·초기기동90초·client 외부60초·관찰45초·재�
 
 ## 실제 실행 근거
 
-네 사례 모두 기준 `3067b0c2dfb3cf261c1a13c74718c016ea19d6e7`의 동일한 최종 구현에서 실행했다. 각 run의 실행 소스28개 해시는 현재 소스와 일치한다. 시간은 이미지·RDB 준비·기동·의도한 무응답·확인·정리를 포함하며 운영 RTO·TPS가 아니다.
+아래 표는 관찰 코드를 시험 코드로 분리하기 전의 최초 검증 기록이다. 네 사례 모두 기준 `3067b0c2dfb3cf261c1a13c74718c016ea19d6e7` 위의 같은 구현에서 실행했으며, 당시 실행 소스28개 해시를 대조했다. 분리 이후의 재검증 기록은 별도로 구분한다. 시간은 이미지·RDB 준비·기동·의도한 무응답·확인·정리를 포함하며 운영 RTO·TPS가 아니다.
 
 | 사례 | 최종 run ID | 전체 실행 | 결과 |
 | --- | --- | ---: | --- |
@@ -117,9 +125,67 @@ JAVA_HOME=/Users/0chord/Library/Java/JavaVirtualMachines/corretto-25.0.2/Content
 
 초기 컴파일 누락·Kotlin compiler heap OOM은 assertion에 도달하지 않았으므로 행동 수준 TDD Red로 세지 않는다. `gradle.properties`의 compiler daemon1GiB는 거래 노드 heap256MiB와 별개다. 초기 실패 run과 보완 전 Q1/Q2의 성공을 최종 수정본 성공으로 대체하지 않았다.
 
-## 독립 검토와 보장 범위
+## 관찰 분리 후 재검증 · 2026-11-17
 
-작성 대화를 상속하지 않은 별도 에이전트가 기준 소스와 전체 고정 snapshot을 비교하고 지적 수정 뒤 재검토했다. 최종 코드 검토본은 `/tmp/issue138-review-v5`, manifest 파일 SHA는 `863f7e87b7fdb33c39d8edde151f5a8db27172b4f07c7d88f8b8ae8995509f13`이며22개 변경 항목이 모두 일치했다. 선거 recorder·egress socket·과반 진행 뒤 minority 재확인 등의 지적은 수정됐고 최종 검토 범위에서 확인된 미해결 코드 결함은0이다.
+관찰 구현을 `src/test`로 이동한 뒤 실행 코드의 변경은 통합 기준 두 파일의 내부 조회 접점12줄이다. 금융 알고리즘·wire·snapshot은 유지했다. 일반 실행 산출물에는 두 시험 관찰 구현·이전 관찰 캐시·관찰 메서드가 없고, 시험 산출물에는 두 구현이 있음을 `javap`와 실제 클래스 파일로 대조했다.
+
+| 검사 | 실제 결과 |
+| --- | --- |
+| 관련 앱 회귀17클래스 |129건, 실패·오류·skip0. 정상9노드 두 정책과 자금/매칭 리더 장애 네 사례 포함 |
+| 구조·필수 검사 |386건, 실패·오류·skip0. P01~P09와 전체 스타일 통과 |
+| 과반 손실·분할 |Q1~Q4 네 건, 실패·오류·skip0 |
+| 중복 없는 JUnit 합계 |519건. XML의 실제 testcase와 suite 집계·중복 유무를 대조 |
+
+| 사례 | 분리 이후 run ID | 전체 실행 | 결과 |
+| --- | --- | ---: | --- |
+| Q1 | `multi179488990767322908a12` | 98,656ms | 위반0·자원 회수 |
+| Q2 | `multi17948900074474c9d1313` | 122,837ms | 위반0·자원 회수 |
+| Q3 | `multi1794890141929e797ae0a` | 160,508ms | 위반0·자원 회수 |
+| Q4 | `multi1794890302984647b2314` | 228,513ms | 위반0·자원 회수 |
+
+새 장애 네 실행의 소스 지문은 이동한 두 관찰 파일을 포함해 각30개, 기존 회귀 여섯 실행은 각16개다. 모두 최종 작업 소스와 일치하고 `issues=[]`, `runResourcesRemoved=true`다. 소스·산출물 분리·XML·실행 결과 요약은 `/tmp/issue188-extraction-final-summary.json`, 보존 XML은 `/tmp/issue188-extraction-results`다. 로그는 `/tmp/issue188-extraction-regression.log`(10분47초), `issue188-extraction-quorum-loss.log`(3분53초), `issue188-extraction-quorum-partition.log`(6분40초)다. 이 시간은 시험 전체이며 성능 수치나 운영 복구시간이 아니다.
+
+작성 대화를 전달하지 않은 독립 리뷰가 게시분 `0c0b7727d012fc8338c953c667d8e5f50296501d` 이후의8개 소스/시험 파일을 `/tmp/issue188-extraction-review-v1`에서 검토했다. manifest SHA는 `a07de8685173d962a46298ebaeb3b7f814d46bc99d176c57bc9a75bdbb5dbd93`이며 확인된 미해결 결함은0이다. 해당 리뷰는 실제 장애를 재실행한 검토가 아니라 동결 소스·의존성 원문·호출/정리 경로와 기존 관찰 의미의 보존을 확인한 검토다. 실제 실행 결과의 판정과 구분한다.
+
+<details>
+<summary>분리 이후 실제 회귀·장애 실행 명령</summary>
+
+```bash
+cd /Users/0chord/.codex/worktrees/issue148-http-aeron/exchange-core
+export JAVA_HOME=/Users/0chord/Library/Java/JavaVirtualMachines/corretto-25.0.2/Contents/Home
+regression_classes=(
+  DockerMultiMatchingReplicationTest
+  FundsAdmissionReplyControlTest
+  FundsFailoverConvergenceTest
+  FundsLeaderFailoverTest
+  FundsOrderDeliveryAgentTest
+  FundsQuorumClientTest
+  FundsQuorumConvergenceTest
+  FundsQuorumNetworkControlTest
+  FundsQuorumObservationTest
+  MatchingResultDeliveryAgentTest
+  MultiMatchingFailoverConvergenceTest
+  MultiMatchingFailureControlTest
+  MultiMatchingLeaderFailoverTest
+  MultiMatchingRunBudgetTest
+  SplitOrderDeliveryClientTest
+  SplitResultDeliveryClientTest
+  SplitTradingClusterAdapterTest
+)
+regression_args=()
+for regression_class in "${regression_classes[@]}"; do
+  regression_args+=(--tests "com.exchange.core.api.trading.infrastructure.aeron.$regression_class")
+done
+./gradlew :app-api:test --rerun "${regression_args[@]}" :architecture-tests:test --rerun :architecture-tests:verifyArchitectureReport ktlintCheck --no-daemon --max-workers=1 --console=plain
+./gradlew :app-api:test --rerun -PciTestGroup=quorum-loss --no-daemon --max-workers=1 --console=plain
+./gradlew :app-api:test --rerun -PciTestGroup=quorum-partition --no-daemon --max-workers=1 --console=plain
+```
+
+</details>
+
+## 최초 검토 기록과 보장 범위
+
+최초 게시분은 작성 대화를 상속하지 않은 별도 에이전트가 기준 소스와 전체 고정 snapshot을 비교하고 지적 수정 뒤 재검토했다. 최종 코드 검토본은 `/tmp/issue138-review-v5`, manifest 파일 SHA는 `863f7e87b7fdb33c39d8edde151f5a8db27172b4f07c7d88f8b8ae8995509f13`이며22개 변경 항목이 모두 일치했다. 선거 recorder·egress socket·과반 진행 뒤 minority 재확인 등의 지적은 수정됐고 최종 검토 범위에서 확인된 미해결 코드 결함은0이다.
 
 별도 컨텍스트의 수용 근거 감사는 실제 CLI·nonce·scope/규칙·client/service 결정·단계별 금융 상태·사본·회수를 대조한다. 처음 발견한 단계 map alias와 Q1/Q2 최초 결정 결속 누락을 보완했고 최신 손실 그룹에서 해소를 재확인했다. 최신 Q1~Q4의 전체 원자료 감사에서 확인된 미해결 항목은0이며, 후속 실제 회귀5건과 필수 검사도 통과했다. XML·실행 소스 일치·후보 목록 요약은 `/tmp/issue138-local-verification-summary.json`, 이번 실행17개의 최종 자원 부재 대조는 `/tmp/issue138-resource-cleanup-audit.json`에 보존했다. 실행 후 사용 가능 디스크는 약78GiB였다. 코드 리뷰와 실제 실행 근거 감사는 서로 다른 판단이다.
 

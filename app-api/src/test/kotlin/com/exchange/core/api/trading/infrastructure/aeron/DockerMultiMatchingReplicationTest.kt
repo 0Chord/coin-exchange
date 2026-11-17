@@ -1954,6 +1954,8 @@ internal class MultiMatchingRun(
                 } else {
                     listOf(
                         "src/test/kotlin/com/exchange/core/api/trading/infrastructure/aeron/FundsQuorumObservation.kt",
+                        "src/test/kotlin/com/exchange/core/api/trading/infrastructure/aeron/FundsQuorumRuntimeObservation.kt",
+                        "src/test/kotlin/com/exchange/core/api/trading/infrastructure/aeron/AeronSplitOrderDeliveryObservation.kt",
                         "src/test/kotlin/com/exchange/core/api/trading/infrastructure/aeron/FundsQuorumClient.kt",
                         "src/test/kotlin/com/exchange/core/api/trading/infrastructure/aeron/FundsQuorumNetworkControl.kt",
                         "src/test/kotlin/com/exchange/core/api/trading/infrastructure/aeron/FundsQuorumConvergence.kt",

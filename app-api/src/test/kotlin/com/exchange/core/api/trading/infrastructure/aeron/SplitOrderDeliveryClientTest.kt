@@ -66,6 +66,18 @@ class SplitOrderDeliveryClientTest {
         assertTrue(shared.contains("endpoint=127.0.0.1:0"))
     }
 
+    @Test
+    fun `관찰 연결은 실제 Aeron context가 없으면 시도를 닫고 실패한다`() {
+        val delegate = Factory()
+        val factory = ObservedAeronSplitOrderDeliveryConnectionFactory({}, delegate)
+
+        val error = assertFailsWith<IllegalStateException> { factory.begin(endpoint, 1) {} }
+
+        assertEquals("split observation requires the actual Aeron context", error.message)
+        assertTrue(delegate.attemptClosed)
+        assertEquals(0, delegate.connection.offers)
+    }
+
     private class Factory : SplitOrderDeliveryConnectionFactory {
         var connect = true
         var reply = true
