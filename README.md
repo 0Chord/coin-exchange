@@ -18,7 +18,7 @@ flowchart LR
     Funds -.->|"조회 기록 자동 반영은 후속 B"| RDB
 ```
 
-- WAS의 시작점은 [ExchangeCoreApplication](app-api/src/main/kotlin/com/exchange/core/ExchangeCoreApplication.kt) 하나입니다. 주문·조회 Controller와 필요한 설정을 함께 조립합니다.
+- WAS의 시작점은 [ExchangeCoreApplication](app-api/src/main/kotlin/com/exchange/core/ExchangeCoreApplication.kt) 하나입니다. Spring Boot의 기본 컴포넌트 탐색으로 주문·조회 Controller와 설정을 등록합니다. 시작 클래스에 등록 목록을 나열하지 않습니다.
 - WAS는 자금 엔진 한 곳에 연결합니다. 자금 엔진이 예약·순서·중복을 관리하고 기존 전달 작업으로 매칭 담당에 주문을 보냅니다. 매칭 담당별 확장과 복제 구성은 엔진 측의 책임입니다.
 - 금융·매칭 상태의 판단은 도메인 모듈이 담당합니다. WAS가 잔고를 계산하거나 메모리 주문장을 직접 변경하지 않습니다.
 - 조회는 같은 WAS에서 같은 PostgreSQL 접속 설정을 사용합니다. `order_query`는 RDB 안의 조회 테이블 이름 공간이며 별도 서버가 아닙니다.
@@ -87,4 +87,4 @@ JAVA_HOME=/Users/0chord/Library/Java/JavaVirtualMachines/corretto-25.0.2/Content
 JAVA_HOME=/Users/0chord/Library/Java/JavaVirtualMachines/corretto-25.0.2/Contents/Home ./gradlew --no-daemon --max-workers=1 ktlintCheck :architecture-tests:verifyArchitectureReport
 ```
 
-이전 RDB 주문 실행과 이전 통합형 프로토콜은 회귀 테스트의 명시적 조립으로 보존합니다. 이 테스트용 시작점은 제품 WAS의 추가 실행 모드가 아닙니다. 과거 설명은 Git 이력과 각 engineering 검증 기록에 있으며 현재 실행 구조는 이 문서를 기준으로 읽습니다.
+이전 RDB 주문 실행과 이전 통합형 프로토콜의 설정·Controller·공통 오류 처리는 `src/test`로 옮겨 회귀 테스트에서 명시적으로 조립합니다. `@TestConfiguration`·`@TestComponent`로 표시해 제품의 기본 탐색에 섞이지 않게 합니다. 이 테스트용 시작점은 제품 WAS의 추가 실행 모드가 아닙니다. 과거 설명은 Git 이력과 각 engineering 검증 기록에 있으며 현재 실행 구조는 이 문서를 기준으로 읽습니다.

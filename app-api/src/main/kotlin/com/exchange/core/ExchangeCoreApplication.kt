@@ -1,14 +1,7 @@
 package com.exchange.core
 
-import com.exchange.core.api.common.TradingOrderHttpExceptionHandler
-import com.exchange.core.api.config.BoundedTradingGatewayConfig
-import com.exchange.core.api.config.OrderQueryConfig
-import com.exchange.core.api.trading.api.BoundedTradingOrderController
-import com.exchange.core.api.trading.api.OrderQueryController
 import org.springframework.boot.autoconfigure.SpringBootApplication
 import org.springframework.boot.runApplication
-import org.springframework.context.annotation.ComponentScan
-import org.springframework.context.annotation.Import
 
 /**
  * Exchange Core HTTP 애플리케이션의 Spring Boot 구성 진입점.
@@ -21,14 +14,6 @@ import org.springframework.context.annotation.Import
         "org.springframework.boot.hibernate.autoconfigure.HibernateJpaAutoConfiguration",
         "org.springframework.boot.data.jpa.autoconfigure.DataJpaRepositoriesAutoConfiguration",
     ],
-)
-@ComponentScan(useDefaultFilters = false)
-@Import(
-    BoundedTradingGatewayConfig::class,
-    OrderQueryConfig::class,
-    BoundedTradingOrderController::class,
-    OrderQueryController::class,
-    TradingOrderHttpExceptionHandler::class,
 )
 class ExchangeCoreApplication
 

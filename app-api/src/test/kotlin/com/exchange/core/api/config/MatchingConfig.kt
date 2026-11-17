@@ -6,8 +6,8 @@ import com.exchange.core.api.matching.infrastructure.publish.NoOpMatchingEventPu
 import com.exchange.core.matching.InMemoryMarketCommandProcessor
 import com.exchange.core.matching.MarketCommandProcessor
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty
+import org.springframework.boot.test.context.TestConfiguration
 import org.springframework.context.annotation.Bean
-import org.springframework.context.annotation.Configuration
 
 /**
  * DB 영속화 여부와 무관하게 필요한 matching 기본 구성.
@@ -15,7 +15,7 @@ import org.springframework.context.annotation.Configuration
  * 마켓별 실행기와 매칭 조율자를 명시적 Bean으로 등록한다.
  * persistence가 꺼져 있을 때만 event를 저장하지 않는 publisher를 기본값으로 제공한다.
  */
-@Configuration
+@TestConfiguration
 class MatchingConfig {
     /**
      * 같은 market의 command를 한 줄로 처리하는 processor.

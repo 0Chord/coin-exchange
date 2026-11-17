@@ -1,10 +1,14 @@
 package com.exchange.core
 
+import com.exchange.core.api.common.ApiExceptionHandler
+import com.exchange.core.api.config.TradingHttpConfig
 import com.exchange.core.api.matching.application.MatchingCoordinator
+import com.exchange.core.api.order.api.OrderController
 import com.exchange.core.api.order.application.OrderFundingService
 import com.exchange.core.api.order.application.SubmitOrderUseCase
 import com.exchange.core.api.trading.api.BoundedTradingOrderController
 import com.exchange.core.api.trading.api.OrderQueryController
+import com.exchange.core.api.trading.api.TradingOrderController
 import com.exchange.core.api.trading.application.OrderQueryUseCase
 import com.exchange.core.api.trading.infrastructure.aeron.AeronGatewaySettings
 import com.exchange.core.api.trading.infrastructure.aeron.BoundedAeronGateway
@@ -33,7 +37,7 @@ class ExchangeCoreApplicationTests {
     @TempDir lateinit var root: Path
 
     @Test
-    fun `프로필 없이 한 WAS에 주문과 공용 DB 조회만 조립한다`() {
+    fun `자동 탐색으로 현재 주문과 조회만 등록하고 테스트용 이전 실행은 제외한다`() {
         OrderQueryTestDatabase().use { database ->
             BoundedAeronGateway(
                 AeronGatewaySettings(root.resolve("edge"), "0=127.0.0.1:19700", "127.0.0.1:19707"),
@@ -60,6 +64,10 @@ class ExchangeCoreApplicationTests {
                         assertEquals(1, context.getBeansOfType(BoundedTradingOrderController::class.java).size)
                         assertEquals(1, context.getBeansOfType(OrderQueryController::class.java).size)
                         assertEquals(1, context.getBeansOfType(OrderQueryUseCase::class.java).size)
+                        assertEquals(1, context.getBeansOfType(TradingHttpConfig::class.java).size)
+                        assertTrue(context.getBeansOfType(OrderController::class.java).isEmpty())
+                        assertTrue(context.getBeansOfType(TradingOrderController::class.java).isEmpty())
+                        assertTrue(context.getBeansOfType(ApiExceptionHandler::class.java).isEmpty())
                         assertEquals(setOf("dataSource"), context.getBeansOfType(DataSource::class.java).keys)
                         assertEquals(1, context.getBeansOfType(Flyway::class.java).size)
                         assertTrue(context.getBeansOfType(EntityManagerFactory::class.java).isEmpty())

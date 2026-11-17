@@ -6,8 +6,8 @@ import com.exchange.core.api.matching.infrastructure.persistence.JpaMatchingEven
 import com.exchange.core.api.matching.infrastructure.persistence.MatchingEventRepository
 import com.exchange.core.api.matching.infrastructure.persistence.PersistentMatchingEventPublisher
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty
+import org.springframework.boot.test.context.TestConfiguration
 import org.springframework.context.annotation.Bean
-import org.springframework.context.annotation.Configuration
 import tools.jackson.databind.ObjectMapper
 
 /**
@@ -16,7 +16,7 @@ import tools.jackson.databind.ObjectMapper
  * `exchange.matching.persistence.enabled=true`일 때만 활성화되며, 기본 NoOp publisher 대신
  * DB에 event를 append하는 publisher를 제공한다.
  */
-@Configuration
+@TestConfiguration
 @ConditionalOnProperty(
     name = ["exchange.matching.persistence.enabled"],
     havingValue = "true",

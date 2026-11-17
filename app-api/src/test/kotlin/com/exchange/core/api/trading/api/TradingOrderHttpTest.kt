@@ -22,7 +22,6 @@ import org.springframework.boot.test.context.TestConfiguration
 import org.springframework.boot.web.server.servlet.context.ServletWebServerApplicationContext
 import org.springframework.context.ConfigurableApplicationContext
 import org.springframework.context.annotation.Bean
-import org.springframework.context.annotation.ComponentScan
 import org.springframework.context.annotation.Import
 import org.springframework.web.servlet.config.annotation.WebMvcConfigurer
 import tools.jackson.databind.JsonNode
@@ -204,8 +203,6 @@ class TradingOrderHttpTest {
         assertEquals(404, post.statusCode())
         assertEquals(404, delete.statusCode())
         assertTrue(gateway.submissions.isEmpty())
-        val application = ExchangeCoreApplication::class.java.getAnnotation(ComponentScan::class.java)
-        assertFalse(application.useDefaultFilters)
     }
 
     @Test

@@ -1,6 +1,7 @@
 package com.exchange.core.api.common
 
 import com.exchange.core.order.OrderReservationAlreadyExistsException
+import org.springframework.boot.test.context.TestComponent
 import org.springframework.http.HttpStatus
 import org.springframework.http.ResponseEntity
 import org.springframework.web.HttpMediaTypeNotSupportedException
@@ -22,6 +23,7 @@ data class ApiErrorResponse(
  * 입력값·도메인 사전조건 위반과 이미 예약된 주문의 중복 접수는 400으로 변환한다.
  * 그 밖의 예외는 Spring의 기본 500 처리에 맡긴다.
  */
+@TestComponent
 @RestControllerAdvice
 class ApiExceptionHandler {
     /** 본문 형식 오류가 하위 IllegalArgumentException 처리에 잡혀 400으로 바뀌지 않게 한다. */

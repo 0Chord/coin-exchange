@@ -9,6 +9,7 @@ import com.exchange.core.common.Quantity
 import com.exchange.core.common.UserId
 import com.exchange.core.matching.CancelOrderCommand
 import com.exchange.core.matching.SubmitOrderCommand
+import org.springframework.boot.test.context.TestComponent
 import org.springframework.web.bind.annotation.DeleteMapping
 import org.springframework.web.bind.annotation.PathVariable
 import org.springframework.web.bind.annotation.PostMapping
@@ -21,6 +22,7 @@ import org.springframework.web.bind.annotation.RestController
  * 주문 HTTP 요청을 명령으로 변환해 [SubmitOrderUseCase]와 [CancelOrderUseCase]에 위임한다.
  * 반환 이벤트는 같은 순서의 응답 DTO로 변환한다.
  */
+@TestComponent
 @RestController
 @RequestMapping("/api/markets/{marketId}/orders")
 class OrderController(

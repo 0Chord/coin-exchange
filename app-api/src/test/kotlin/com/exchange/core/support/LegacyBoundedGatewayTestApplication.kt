@@ -10,12 +10,14 @@ import com.exchange.core.api.trading.infrastructure.aeron.AeronGatewaySettings
 import com.exchange.core.api.trading.infrastructure.aeron.BoundedAeronGateway
 import org.springframework.boot.autoconfigure.EnableAutoConfiguration
 import org.springframework.boot.builder.SpringApplicationBuilder
+import org.springframework.boot.test.context.TestComponent
 import org.springframework.context.annotation.Bean
 import org.springframework.context.annotation.Configuration
 import org.springframework.context.annotation.Import
 import org.springframework.core.env.Environment
 
 /** 이전 단일 거래 클러스터 wire3의 회귀 검증용이며 제품 실행 경로가 아니다. */
+@TestComponent
 @Configuration(proxyBeanMethods = false)
 @EnableAutoConfiguration(
     excludeName = [

@@ -50,11 +50,11 @@ object ProductionBoundaryInputs {
                 "$TRADING_APPLICATION.OrderQueryOrderState",
             )
 
-    // 기존 공개 진입점의 삭제를 잡는 최소 기대이며, 전체 검사 대상의 등록표가 아니다.
+    // 현재 공개 진입점의 삭제를 잡는 최소 기대이며, 전체 검사 대상의 등록표가 아니다.
     val requiredTypes =
         setOf(
-            "$BASE.api.order.api.OrderController",
-            "$BASE.api.trading.api.TradingOrderController",
+            "$BASE.api.trading.api.OrderQueryController",
+            "$BASE.api.trading.api.BoundedTradingOrderController",
             "${TRADING_APPLICATION}.SubmitTradingOrderUseCase",
             "$BASE.api.market.api.MarketConfigurationController",
             "${ORDER_APPLICATION}.SubmitOrderUseCase",

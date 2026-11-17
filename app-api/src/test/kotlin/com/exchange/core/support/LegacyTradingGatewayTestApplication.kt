@@ -6,10 +6,12 @@ import com.exchange.core.api.config.TradingGatewayHttpWorkerConfig
 import com.exchange.core.api.trading.api.TradingOrderController
 import org.springframework.boot.autoconfigure.EnableAutoConfiguration
 import org.springframework.boot.builder.SpringApplicationBuilder
+import org.springframework.boot.test.context.TestComponent
 import org.springframework.context.annotation.Configuration
 import org.springframework.context.annotation.Import
 
 /** 이전 wire2 HTTP 회귀 검증용이며 제품 배포물에는 포함하지 않는다. */
+@TestComponent
 @Configuration(proxyBeanMethods = false)
 @EnableAutoConfiguration(
     excludeName = [

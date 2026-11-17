@@ -7,10 +7,12 @@ import com.exchange.core.api.config.MatchingPersistenceConfig
 import com.exchange.core.api.config.OrderApplicationConfig
 import com.exchange.core.api.order.api.OrderController
 import org.springframework.boot.autoconfigure.EnableAutoConfiguration
+import org.springframework.boot.test.context.TestComponent
 import org.springframework.context.annotation.Configuration
 import org.springframework.context.annotation.Import
 
 /** 이전 RDB 주문 실행의 회귀 검증을 위한 명시적 test 전용 조립이다. */
+@TestComponent
 @Configuration(proxyBeanMethods = false)
 @EnableAutoConfiguration
 @Import(

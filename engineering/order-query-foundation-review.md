@@ -17,13 +17,14 @@ flowchart LR
 | 이전 구성 | 이번 구성과 이유 |
 | --- | --- |
 | 두 HTTP 시작점, API/설정의 실행 프로필 | [ExchangeCoreApplication](../app-api/src/main/kotlin/com/exchange/core/ExchangeCoreApplication.kt) 하나에서 주문·조회·입력 오류 처리를 함께 조립한다. production의 `@Profile`을 제거한다. |
+| 컴포넌트 탐색 중단과 시작 클래스의 수동 등록 목록 | 기본 `@SpringBootApplication` 탐색을 사용한다. 현재 `@Configuration`과 Controller는 자동 등록하고, 구형 설정·Controller·Advice는 `src/test`로 옮긴다. 테스트 구성은 `@TestConfiguration`·`@TestComponent`로 표시해 자동 등록에서 제외한다. |
 | HTTP가 통합형 거래 클러스터를 호출 | [split 자금 전송](../app-api/src/main/kotlin/com/exchange/core/api/trading/infrastructure/aeron/SplitFundsGatewayTransport.kt)으로 기존 자금 엔진의 Control 계약에 연결한다. 자금 노드의 기존 전달 작업이 매칭 담당에 보낸다. |
 | 별도 조회 Hikari·JDBC·트랜잭션·Flyway·접속 속성 | 표준 `spring.datasource.*`와 Boot 공용 Bean을 사용한다. [조회 설정](../app-api/src/main/kotlin/com/exchange/core/api/config/OrderQueryConfig.kt)에는 조회 범위·저장소·유즈케이스만 남긴다. |
 | `db/order-query/V1`과 별도 이력 테이블 | 공용 `db/migration/V10`으로 이동한다. SQL의 조회 스키마·테이블·제약은 유지한다. 물리 DB 분리와 테이블 이름 공간 구분은 별개다. |
 | namespace/Flyway 문자열 `DependsOn` | 제거한다. Boot의 JDBC 초기화 의존 연결이 migration 이후 JDBC Bean을 주입하도록 한다. |
 | 조회 기본 비활성 route | 같은 WAS에 항상 등록한다. 거래 기록 수집이 없는 새 범위는 INITIALIZING이라 `503 QUERY_NOT_READY`다. 임의 기록·READY 기본값으로 완료를 꾸미지 않는다. |
 
-과거 RDB 주문 실행과 wire2/통합형 wire3 HTTP는 **test 전용 조립**으로 회귀 검증한다. 제품 WAS의 추가 실행 모드가 아니다. `Legacy*TestApplication`은 src/test에만 있다. production의 JPA 자동 설정/저장소는 등록하지 않고, 공용 JDBC/Flyway는 사용한다.
+과거 RDB 주문 실행과 wire2/통합형 wire3 HTTP는 **test 전용 조립**으로 회귀 검증한다. 제품 WAS의 추가 실행 모드가 아니다. `Legacy*TestApplication`과 구형 설정·Controller·Advice는 src/test에만 있다. production의 JPA 자동 설정/저장소는 등록하지 않고, 공용 JDBC/Flyway는 사용한다. `BoundedTradingGatewayConfig` 안의 타입은 import로 표기하고 다른 설정을 수동 import하지 않는다. 원격 보존 확인의 선택 조건과 금융 처리 계약은 유지한다.
 
 ## 보존한 판단과 실패 후 상태
 
@@ -64,4 +65,14 @@ JAVA_HOME=/Users/0chord/Library/Java/JavaVirtualMachines/corretto-25.0.2/Content
 
 이전 HTTP Docker 회귀 2개도 실패0·오류0·skip0으로 통과했다. 수정한 두 migration 테스트와 해당 DB 첫 연결을 재실행한 결과를 반영해, 수행한 범위의 테스트 이름별 최종 관측을 합치면 **272개·실패0·skip0**이다. 272개를 한 번에 실행했다는 의미는 아니다. 각 실행의 XML과 합산 목록은 `/tmp/was-unification-verification-60`에 보존한다. 실제 클러스터 왕복은 native 자금1/매칭1, 이전 Docker 회귀는 기존 통합형3노드로 범위를 구분한다. 전체 컨테이너는 시험 종료 후 정리됐다.
 
-이번 정리는 커밋 `1e16328`(단일 WAS·공용 DB·프로필 제거) → `2b9cc71`(실제 자금 엔진 연결·왕복 테스트) → 문서 순서로 읽는다. 제품 코드·SQL·설정·테스트는 v2 리뷰 사본과 내용이 같다. 이 문서의 실행/리뷰 결과와 커밋 안내만 검토 후 보완했다. 과거 네 커밋은 #60 조회 모델·저장 기반의 작업 이력이며 현재 실행 구성은 최신 WAS 통합 커밋을 기준으로 읽는다.
+자동 탐색 복원 전의 WAS 통합은 커밋 `1e16328`(단일 WAS·공용 DB·프로필 제거) → `2b9cc71`(실제 자금 엔진 연결·왕복 테스트) → 문서 순서로 읽는다. 당시 제품 코드·SQL·설정·테스트는 해당 v2 리뷰 사본과 내용이 같았다. 과거 네 커밋은 #60 조회 모델·저장 기반의 작업 이력이다. 이후 자동 탐색 복원은 아래 기록과 최신 커밋을 기준으로 읽는다.
+
+## 자동 탐색 복원과 타입 표기 정리
+
+2026-11-17 추가 요청으로 시작 클래스의 `@ComponentScan(useDefaultFilters = false)`와 수동 `@Import` 목록을 제거했다. 이제 현재 Controller·Configuration은 기본 탐색으로 등록된다. 구형 실행 조립·Controller·Advice 8개는 본문을 보존해 `src/test`로 옮겼다. 현재 gateway 설정에서도 다른 설정의 수동 import를 제거하고 `ClusterLineage`·파일 API·codec 타입을 import로 짧게 표기했다. 금융 판단·전송·복구 보호의 조건은 변경하지 않았다.
+
+- 실제 제품 조립 + PostgreSQL, HTTP 입력/조회 구성, 원격 보존 확인 및 native 자금1/매칭1 왕복의 1차 검증 27개가 통과했다. 제품 조립 테스트는 현재 Controller와 공용 DB가 한 번 등록되고 구형 Controller·Advice·금융 실행은 제외되는지 확인한다.
+- 구형 DB·주문·마켓 HTTP 회귀 71개 중 15개가 테스트 시작점 문제로 실패했다. `@TestConfiguration`을 단독 시작점으로 주면 Boot가 현재 제품 시작점까지 추가하는 것이 원인이었다. 네 `Legacy*TestApplication`은 `@Configuration + @TestComponent`로 표시해 명시적 시작점 역할과 자동 탐색 제외를 함께 유지했다. 보조 구성은 `@TestConfiguration`을 사용한다.
+- 수정 후 현재 조립·실제 split HTTP·구형 주문 HTTP·잔고 저장·자금 예약·주문 생명주기 68개를 재실행해 실패0·오류0·skip0을 확인했다. 3회 실행의 테스트별 최종 관측을 합치면 98개 통과다. 98개를 한 번에 실행했다는 뜻은 아니다. XML과 테스트별 목록은 `/tmp/exchange-component-scan-verification-60`에 보존한다.
+- 전체 구조 386개, 필수 P01~P09 및 스타일 검사를 확인했다. 옛 실행 클래스가 main에서 빠진 만큼 구조 검사의 최소 기대 목록을 현재 주문·조회 진입점으로 바꿨으며, 전체 main 탐색과 규칙은 유지했다.
+- 작성 대화를 받지 않은 `/root/review_component_scan_independent`가 실제 Boot bootstrapper와 자동 탐색을 독립 실행했다. 기본/local에서 현재 구성만, remote에서 원격 복구 구성이 추가되며 테스트 클래스 경로의 구형 실행은 제외됨을 확인했다. 최종 v2 사본은 `/tmp/exchange-component-scan-review-60-v2`, manifest SHA-256은 `d2f0bd267b9ff5ad6d366d3bd92fbe20f68995370ef4d7378339c4e426f64d94`다. 검토 범위의 확인된 미해결 결함은 0건이다. 최종 코드는 이 사본과 같고 이 검증 결과 문단만 이후 보완했다.

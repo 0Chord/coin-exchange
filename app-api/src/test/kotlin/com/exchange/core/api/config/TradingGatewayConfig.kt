@@ -11,14 +11,14 @@ import io.micrometer.core.instrument.MeterRegistry
 import org.apache.coyote.http11.Http11NioProtocol
 import org.slf4j.LoggerFactory
 import org.springframework.beans.factory.ObjectProvider
+import org.springframework.boot.test.context.TestConfiguration
 import org.springframework.boot.tomcat.servlet.TomcatServletWebServerFactory
 import org.springframework.boot.web.server.WebServerFactoryCustomizer
 import org.springframework.context.annotation.Bean
-import org.springframework.context.annotation.Configuration
 import org.springframework.context.annotation.Import
 
 /** 이전 wire2 HTTP 검증에서 명시적으로 가져오는 구성이다. 제품 WAS에는 등록하지 않는다. */
-@Configuration(proxyBeanMethods = false)
+@TestConfiguration(proxyBeanMethods = false)
 @Import(TradingHttpConfig::class)
 class TradingGatewayConfig {
     @Bean

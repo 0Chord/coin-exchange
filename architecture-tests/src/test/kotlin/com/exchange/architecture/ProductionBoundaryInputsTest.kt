@@ -149,7 +149,7 @@ class ProductionBoundaryInputsTest {
             )
         assertTrue(contracts.all { it in registration.types.getValue(HttpRole.DATA) })
         assertTrue(contracts.all { it in application.applicationTypes })
-        assertTrue("$tradingHttp.TradingOrderController" in httpResult.apiTypes)
+        assertTrue("$tradingHttp.OrderQueryController" in httpResult.apiTypes)
         assertTrue("$tradingHttp.BoundedTradingOrderController" in httpResult.apiTypes)
         assertTrue("$tradingHttp.InspectTradingController" in httpResult.apiTypes)
         assertTrue("$tradingApp.SubmitTradingOrderUseCase" in application.applicationTypes)
@@ -626,8 +626,8 @@ class ProductionBoundaryInputsTest {
         assertTrue(r.evaluated, r.problems.toString())
         assertEquals(emptyList(), r.violations)
         assertTrue("$app.ReserveOrderUseCase" in r.applicationTypes)
-        assertTrue("com.exchange.core.api.config.MatchingConfig" in r.configurationTypes)
-        assertTrue("com.exchange.core.api.config.LedgerPersistenceConfig" in r.configurationTypes)
+        assertTrue("com.exchange.core.api.config.BoundedTradingGatewayConfig" in r.configurationTypes)
+        assertTrue("com.exchange.core.api.config.OrderQueryConfig" in r.configurationTypes)
     }
 
     @Test fun `Controller가 예약 협력자 조율자 저장 발행 포트와 구현을 직접 참조하면 위반이다`() {

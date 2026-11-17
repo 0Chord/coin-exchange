@@ -22,8 +22,8 @@ import com.exchange.core.order.OrderReservationCalculator
 import com.exchange.core.order.OrderReservationStore
 import com.exchange.core.trading.SettlementLedgerTransactions
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty
+import org.springframework.boot.test.context.TestConfiguration
 import org.springframework.context.annotation.Bean
-import org.springframework.context.annotation.Configuration
 import org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate
 import org.springframework.transaction.PlatformTransactionManager
 
@@ -36,7 +36,7 @@ import org.springframework.transaction.PlatformTransactionManager
  * 체결 정산에서는 양쪽 예약·잔고 변경과 수수료를 포함한 원장 기록을 함께 커밋하거나 롤백한다.
  * 주문 예약 생성은 RESERVE 원장까지 함께 기록한다. 취소 해제도 RELEASE 원장과 함께 기록한다.
  */
-@Configuration
+@TestConfiguration
 @ConditionalOnProperty(
     name = ["exchange.ledger.persistence.enabled"],
     havingValue = "true",
