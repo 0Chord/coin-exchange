@@ -48,3 +48,6 @@ out/
 engineering/results/
 __pycache__/
 *.py[cod]
+
+# CI 보고서 검증 스크립트의 실행 캐시
+__pycache__/
