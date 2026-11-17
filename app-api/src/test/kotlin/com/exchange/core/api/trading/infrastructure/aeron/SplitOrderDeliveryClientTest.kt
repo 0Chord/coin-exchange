@@ -5,9 +5,11 @@ import com.exchange.core.api.trading.infrastructure.codec.SplitOrderDeliveryComm
 import com.exchange.core.api.trading.infrastructure.codec.SplitOrderDeliveryReply
 import com.exchange.core.trading.ClusterLineage
 import com.exchange.core.trading.TradingServiceRole
+import io.aeron.driver.media.UdpChannel
 import org.junit.jupiter.api.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
+import kotlin.test.assertNotEquals
 import kotlin.test.assertTrue
 
 class SplitOrderDeliveryClientTest {
@@ -52,6 +54,28 @@ class SplitOrderDeliveryClientTest {
         assertFailsWith<IllegalStateException> { SplitOrderDeliveryClient(endpoint, factory = factory) }
         assertTrue(factory.attemptClosed)
         assertTrue(factory.connection.closed)
+    }
+
+    @Test
+    fun `동적 응답 포트의 관찰 사본은 같은 tag로 실제 client 소켓을 공유하고 다른 연결과 분리된다`() {
+        val dynamic = "aeron:udp?endpoint=127.0.0.1:0"
+        assertNotEquals(UdpChannel.parse(dynamic).canonicalForm(), UdpChannel.parse(dynamic).canonicalForm())
+        val shared = observedSplitEgressChannel(dynamic, 73)
+        assertEquals(UdpChannel.parse(shared).canonicalForm(), UdpChannel.parse(shared).canonicalForm())
+        assertNotEquals(UdpChannel.parse(shared).canonicalForm(), UdpChannel.parse(observedSplitEgressChannel(dynamic, 74)).canonicalForm())
+        assertTrue(shared.contains("endpoint=127.0.0.1:0"))
+    }
+
+    @Test
+    fun `관찰 연결은 실제 Aeron context가 없으면 시도를 닫고 실패한다`() {
+        val delegate = Factory()
+        val factory = ObservedAeronSplitOrderDeliveryConnectionFactory({}, delegate)
+
+        val error = assertFailsWith<IllegalStateException> { factory.begin(endpoint, 1) {} }
+
+        assertEquals("split observation requires the actual Aeron context", error.message)
+        assertTrue(delegate.attemptClosed)
+        assertEquals(0, delegate.connection.offers)
     }
 
     private class Factory : SplitOrderDeliveryConnectionFactory {

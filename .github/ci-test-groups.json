@@ -17,5 +17,11 @@
   "failover": [
     "com.exchange.core.api.trading.infrastructure.aeron.MultiMatchingLeaderFailoverTest",
     "com.exchange.core.api.trading.infrastructure.aeron.FundsLeaderFailoverTest"
+  ],
+  "quorum-loss": [
+    "com.exchange.core.api.trading.infrastructure.aeron.DockerFundsQuorumLossTest"
+  ],
+  "quorum-partition": [
+    "com.exchange.core.api.trading.infrastructure.aeron.DockerFundsQuorumPartitionTest"
   ]
 }

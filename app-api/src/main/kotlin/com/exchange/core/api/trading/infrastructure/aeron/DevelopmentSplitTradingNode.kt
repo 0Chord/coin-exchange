@@ -300,6 +300,9 @@ internal class DevelopmentSplitTradingNode private constructor(
                 checkNotNull(consensus).context().fileSyncLevel(),
             )
 
+    internal val consensusContext: ConsensusModule.Context get() = checkNotNull(consensus).context()
+    internal val archiveId: Long get() = checkNotNull(archive).context().archiveId()
+
     fun requestSnapshot(): Boolean {
         check(service.tradingReady) { "초기화되지 않은 역할의 snapshot은 요청하지 않습니다" }
         return ClusterControl.ToggleState.SNAPSHOT.toggle(checkNotNull(consensus).context().controlToggleCounter())

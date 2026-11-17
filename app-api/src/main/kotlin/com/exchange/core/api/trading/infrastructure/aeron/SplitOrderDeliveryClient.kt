@@ -26,6 +26,9 @@ internal data class SplitOrderDeliveryEndpoint(
 internal interface SplitOrderDeliveryConnection : AutoCloseable {
     val isClosed: Boolean
 
+    /** 실제 Aeron 연결일 때만 현재 전송 핸들을 조회한다. */
+    val aeronCluster: AeronCluster? get() = null
+
     fun offer(bytes: ByteArray): Long
 
     fun poll(): Int
@@ -34,6 +37,9 @@ internal interface SplitOrderDeliveryConnection : AutoCloseable {
 }
 
 internal interface SplitOrderDeliveryConnectAttempt : AutoCloseable {
+    /** 첫 poll 전 연결 설정을 확인할 수 있는 실제 Aeron context다. */
+    val aeronContext: AeronCluster.Context? get() = null
+
     fun poll(): SplitOrderDeliveryConnection?
 }
 
@@ -80,6 +86,8 @@ internal object AeronSplitOrderDeliveryConnectionFactory : SplitOrderDeliveryCon
                 throw error
             }
         return object : SplitOrderDeliveryConnectAttempt {
+            override val aeronContext: AeronCluster.Context get() = context
+
             override fun poll(): SplitOrderDeliveryConnection? {
                 failure.get()?.let { throw IllegalStateException("split connection failed", it) }
                 val cluster = attempt.poll() ?: return null
@@ -97,6 +105,7 @@ internal object AeronSplitOrderDeliveryConnectionFactory : SplitOrderDeliveryCon
                 }
                 return object : SplitOrderDeliveryConnection {
                     override val isClosed: Boolean get() = cluster.isClosed
+                    override val aeronCluster: AeronCluster get() = cluster
 
                     override fun offer(bytes: ByteArray): Long {
                         require(bytes.size <= SplitOrderDeliveryCodec.MAX_MESSAGE_BYTES)

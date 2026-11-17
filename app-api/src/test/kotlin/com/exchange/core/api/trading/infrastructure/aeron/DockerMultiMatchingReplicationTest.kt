@@ -181,6 +181,7 @@ internal class MultiMatchingRun(
     private val scenario: String,
     private val leaderFailover: Boolean = false,
     private val failoverOwner: String = "btc",
+    internal val quorumCase: String? = null,
 ) {
     private val mapper = jacksonObjectMapper()
     private val project = Path.of(checkNotNull(System.getProperty("fundingProjectDirectory")))
@@ -222,7 +223,16 @@ internal class MultiMatchingRun(
     private var latestStates = emptyMap<String, JsonNode>()
     private var sourceHashes = emptyMap<String, String>()
     private var temporaryDataPeak = 0L
-    private var stoppedService: String? = null
+    private val stoppedServices = linkedSetOf<String>()
+    private val stoppedService: String? get() = stoppedServices.singleOrNull()
+    private val recoveredServices = linkedSetOf<String>()
+    private var activeQuorumClient: Pair<JsonNode, Long>? = null
+    private var quorumNetworkControl: FundsQuorumNetworkControl? = null
+    private val quorumEvidence = linkedMapOf<String, Any?>()
+    private var quorumCleaning = false
+    private var quorumNetworkDeadline = Long.MAX_VALUE
+    private var activeQuorumScope: String? = null
+    private var activeQuorumNonce: String? = null
     private var recoveryOverride: Path? = null
     private var probeSequence = 0L
     private val lifecycle = linkedMapOf<String, Any?>()
@@ -243,7 +253,16 @@ internal class MultiMatchingRun(
                     "docker",
                     "build",
                     "-f",
-                    project.resolve("src/test/docker/aeron-order-delivery/Dockerfile").toString(),
+                    project
+                        .resolve(
+                            if (quorumCase ==
+                                null
+                            ) {
+                                "src/test/docker/aeron-order-delivery/Dockerfile"
+                            } else {
+                                "src/test/docker/aeron-multi-matching/quorum.Dockerfile"
+                            },
+                        ).toString(),
                     "-t",
                     image,
                     distribution.toString(),
@@ -260,16 +279,409 @@ internal class MultiMatchingRun(
             compose(listOf("up", "-d", "--no-deps") + SERVICES, 90_000)
             freezeRuntimes()
             tool("prepare")
-            await(MultiMatchingStage.INITIALIZED)
+            if (quorumCase == null) await(MultiMatchingStage.INITIALIZED) else awaitQuorum(FundsQuorumStage.INITIALIZED, emptyMap())
             scenarioBody(this)
             verifyLiveNodes(collectMemory = true)
         } catch (failure: Throwable) {
             issues += "$phase: ${failure.javaClass.simpleName}: ${failure.message}"
+            Files.writeString(reports.resolve("failure.txt"), failure.stackTraceToString().take(16 * 1024))
         } finally {
             cleanup()
             writeReport()
         }
         assertTrue(issues.isEmpty() && resourcesRemoved, "실제9노드 검증 실패: $issues · 보고서 $reports")
+    }
+
+    fun quorumLive(): Set<String> = SERVICES.toSet() - stoppedServices
+
+    fun quorumMark(
+        name: String,
+        evidence: Any,
+    ) {
+        check(quorumCase != null)
+        phase = name
+        quorumEvidence[name] = mapOf("elapsedMs" to elapsedMs(), "evidence" to evidence)
+    }
+
+    fun quorumLeader(states: Map<String, JsonNode>): String =
+        states.entries.single { it.key.startsWith("funds") && it.value.path("clusterRole").asString() == "LEADER" }.key
+
+    fun quorumRecordInitial(states: Map<String, JsonNode>) {
+        lifecycle["initial"] = boundRuntimes(states)
+        quorumMark("initial", boundRuntimes(states))
+        // 선거 전 실제 log recording의 identity를 확보해야 선거 중 정상 해제와 미관측을 구분할 수 있다.
+        val witness = quorumWitness()
+        for ((service, row) in witness) {
+            check(row.path("node").path("appendState").asString() == "ACTIVE") { "$service 장애 전 log recording 미확인" }
+            check(row.path("node").path("role") == states.getValue(service).path("clusterRole")) { "$service 장애 대상 선정 뒤 역할 변경" }
+            check(row.path("node").path("leadershipTermId") == states.getValue(service).path("leadershipTermId")) {
+                "$service 장애 대상 선정 뒤 임기 변경"
+            }
+        }
+        quorumMark("initial-witness", witness)
+    }
+
+    /** 네트워크 작업은 이미 실행 중인 run 소유 namespace에서만 실행한다. */
+    fun quorumNetwork(): FundsQuorumNetworkControl {
+        check(quorumCase != null)
+        return quorumNetworkControl ?: FundsQuorumNetworkControl(
+            runId,
+            (SERVICES + "client").associateWith { service ->
+                val suffix =
+                    when {
+                        service == "client" -> 40
+                        service.startsWith("funds") -> 10 + service.last().digitToInt()
+                        service.startsWith("btc") -> 20 + service.last().digitToInt()
+                        else -> 30 + service.last().digitToInt()
+                    }
+                "${environment.getValue("SPLIT_NETWORK_PREFIX")}.$suffix"
+            },
+            { service, arguments ->
+                val id = if (service == "client") "$runId-client" else containers.getValue(service)
+                val left =
+                    if (quorumNetworkDeadline == Long.MAX_VALUE) {
+                        15_000L
+                    } else {
+                        TimeUnit.NANOSECONDS.toMillis(quorumNetworkDeadline - System.nanoTime())
+                    }
+                check(left > 0) { "네트워크 규칙 작업 전체15초 기한 초과" }
+                command(listOf("docker", "exec", id) + arguments, minOf(15_000, left), quorumCleaning).stdout
+            },
+        ).also { quorumNetworkControl = it }
+    }
+
+    /** 설치/해제와 도달 확인 전체가 같은 15초 예산을 쓴다. 명령마다 기한을 다시 늘리지 않는다. */
+    private fun <T> quorumNetworkStep(action: () -> T): T {
+        check(quorumNetworkDeadline == Long.MAX_VALUE)
+        val startedAt = System.nanoTime()
+        quorumNetworkDeadline = startedAt + TimeUnit.SECONDS.toNanos(15)
+        try {
+            val result = action()
+            check(System.nanoTime() < quorumNetworkDeadline) { "네트워크 규칙 작업 전체15초 기한 초과" }
+            return result
+        } finally {
+            quorumEvidence["network-step-${quorumEvidence.size}"] =
+                mapOf("elapsedMs" to elapsedMs(), "durationMs" to TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - startedAt))
+            quorumNetworkDeadline = Long.MAX_VALUE
+        }
+    }
+
+    fun quorumPartition(pairs: Set<FundsPeerPair>) {
+        val active = quorumLive() + if (activeQuorumClient == null) emptySet() else setOf("client")
+        quorumMark("network-${quorumEvidence.size}", quorumNetworkStep { quorumNetwork().partition(pairs, active) })
+    }
+
+    /** controller가 확인한 실제 종료 집합만 생존 사본에서 뺀다. */
+    fun quorumKill(services: Set<String>) {
+        check(quorumCase != null && activeQuorumClient == null)
+        check(services.isNotEmpty() && services.all { it.startsWith("funds") && it in quorumLive() })
+        val rows = linkedMapOf<String, Any>()
+        for (service in services) {
+            val id = containers.getValue(service)
+            val before = runtimes.getValue(service).deepCopy()
+            command(listOf("docker", "kill", "--signal", "KILL", id), 10_000)
+            check(command(listOf("docker", "wait", id), 10_000).stdout.trim() == "137")
+            val actual = mapper.readTree(command(listOf("docker", "inspect", id), 10_000).stdout).path(0)
+            check(!actual.path("State").path("Running").asBoolean())
+            check(actual.path("State").path("ExitCode").asInt() == 137 && !actual.path("State").path("OOMKilled").asBoolean())
+            stoppedServices.add(service)
+            rows[service] = mapOf("before" to before, "terminated" to actual)
+        }
+        verifyLiveNodes()
+        quorumMark("killed", rows)
+    }
+
+    /** 새 로컬 nonce는 금융 callback을 생성하지 않고 현재 프로세스의 공개 관찰만 읽는다. */
+    fun quorumWitness(services: Set<String> = quorumLive()): Map<String, JsonNode> {
+        check(services.isNotEmpty() && quorumLive().containsAll(services))
+        var nonce = UUID.randomUUID().toString()
+        for (service in services) writeBoundedHttpJson(control.resolve("witness-request-$service.json"), mapOf("nonce" to nonce))
+        val until = minOf(workDeadline, System.nanoTime() + TimeUnit.SECONDS.toNanos(5))
+        while (System.nanoTime() < until) {
+            val rows =
+                services.associateWith { service ->
+                    val file = control.resolve("witness-$service.json")
+                    if (Files.isRegularFile(file)) read(file) else mapper.createObjectNode()
+                }
+            if (rows.all { (service, row) ->
+                    row.path("nonce").asString() == nonce && row.path("bootId") == runtimes.getValue(service).path("bootId")
+                }
+            ) {
+                for ((service, row) in rows) {
+                    val observationFailure = row.path("observationFailure")
+                    check(observationFailure.isMissingNode || observationFailure.isNull) {
+                        "$service witness 관찰 실패: $observationFailure"
+                    }
+                }
+                if (rows.values.any {
+                        !it.path("node").path("counterReadStable").asBoolean() ||
+                            !it.path("serviceObservation").path("ready").asBoolean()
+                    }
+                ) {
+                    nonce = UUID.randomUUID().toString()
+                    for (service in services) {
+                        writeBoundedHttpJson(
+                            control.resolve("witness-request-$service.json"),
+                            mapOf("nonce" to nonce),
+                        )
+                    }
+                    continue
+                }
+                for ((service, row) in rows) {
+                    val runtime = runtimes.getValue(service)
+                    check(row.path("runId").asString() == runId && row.path("service").asString() == service)
+                    check(row.path("memberId") == runtime.path("memberId"))
+                    val node = row.path("node")
+                    check(node.path("driverActive").asBoolean() && !node.path("driverClosed").asBoolean())
+                    check(node.path("driverHeartbeatAgeMs").asLong(-1) in 0..5_000)
+                    check(node.path("counterReadStable").asBoolean() && node.path("commitPosition").asLong(-1) >= 0)
+                    val nodeFailures = fundsQuorumNodeObservationViolations(node)
+                    check(nodeFailures.isEmpty()) { "$service 현재 노드 관찰 오류: $nodeFailures" }
+                    val observation = row.path("serviceObservation")
+                    check(observation.path("ready").asBoolean()) { "$service 서비스 관찰이 반쪽 상태입니다" }
+                    check(observation.path("snapshot").path("bootId") == runtime.path("bootId"))
+                }
+                return rows
+            }
+            Thread.sleep(10)
+        }
+        error("새 nonce의 현재 witness 누락: $services")
+    }
+
+    fun awaitQuorum(
+        stage: FundsQuorumStage,
+        originals: Map<String, JsonNode>,
+        expected: Set<String> = quorumLive(),
+        local: Boolean = false,
+        higherThanTerm: Long? = null,
+    ): Map<String, JsonNode> {
+        check(quorumCase != null && quorumLive().containsAll(expected))
+        phase = "$quorumCase-${stage.name}"
+        val until = minOf(workDeadline, System.nanoTime() + TimeUnit.SECONDS.toNanos(45))
+        var failures = emptyList<String>()
+        var correlation: Long? = null
+        while (System.nanoTime() < until) {
+            budgets()
+            val states =
+                if (local) {
+                    quorumWitness(expected).mapValues { it.value.path("serviceObservation").path("snapshot") }
+                } else {
+                    expected.associateWith { read(control.resolve("state-$it.json")) }
+                }
+            latestStates = states
+            failures = FundsQuorumConvergence.violations(stage, states, originals, expected)
+            if (!local) {
+                for ((service, state) in states) {
+                    if (correlation != null &&
+                        state.path("probe").path("correlationId").asLong() != correlation
+                    ) {
+                        failures += "$service 새 복제 probe 없음"
+                    }
+                    if (state.path("bootId") != runtimes.getValue(service).path("bootId")) failures += "$service 현재 boot 불일치"
+                }
+                val funds = states.filterKeys { it.startsWith("funds") }
+                val terms = funds.values.map { it.path("leadershipTermId").asLong(-1) }
+                val leaders = funds.values.map { it.path("leaderMemberId").asInt(-1) }
+                if (funds.size >= 2 && (
+                        terms.distinct().size != 1 || terms.any { it < 0 } || leaders.distinct().size != 1 ||
+                            funds.values.count { it.path("clusterRole").asString() == "LEADER" } != 1 ||
+                            leaders.any { leader -> funds.keys.none { it.last().digitToInt() == leader } } ||
+                            (higherThanTerm != null && terms.any { it <= higherThanTerm })
+                    )
+                ) {
+                    failures += "자금 과반의 현재 선출 미확인"
+                }
+            }
+            if (failures.isEmpty()) {
+                if (!local && correlation == null) {
+                    check(activeQuorumClient == null)
+                    correlation = 1_000_000_000_000L + ++probeSequence
+                    tool("probe", "all", correlation.toString())
+                    continue
+                }
+                verifyLiveNodes()
+                checkpoints += mapOf("phase" to phase, "states" to states, "originals" to originals.toMap(), "elapsedMs" to elapsedMs())
+                return states
+            }
+            Thread.sleep(100)
+        }
+        error("$stage 과반 검증 수렴 실패: ${failures.take(12)}")
+    }
+
+    /** client의 첫 Java 연결 전에 scope를 설치한다. 별도 client/helper는 동시에 띄우지 않는다. */
+    fun beginQuorumClient(
+        scope: String,
+        baseline: Boolean,
+        allowed: Set<String>,
+    ) {
+        check(quorumCase != null && activeQuorumClient == null && scope.matches(Regex("[a-z0-9-]{1,40}")))
+        val launch = "/control/quorum-launch-$scope"
+        val script =
+            "while [ ! -f $launch ]; do sleep 0.01; done; " +
+                "exec java --add-opens=java.base/jdk.internal.misc=ALL-UNNAMED " +
+                "--add-opens=java.base/java.util.zip=ALL-UNNAMED " +
+                "-cp '/app/test-classes:/app/classes:/app/lib/*' $TOOL " +
+                "quorum-client $scope ${if (baseline) "baseline" else "pending"}"
+        val args = listOf("quorum-client", scope, if (baseline) "baseline" else "pending")
+        activeQuorumScope = scope
+        activeQuorumClient = startClient(args, script)
+        quorumMark("scope-$scope", quorumNetworkStep { quorumNetwork().scope("client", allowed, quorumLive() + "client") })
+        Files.writeString(control.resolve("quorum-launch-$scope"), "launch")
+    }
+
+    fun awaitQuorumClient(phases: Set<String>): JsonNode {
+        val scope = checkNotNull(activeQuorumScope)
+        val until = minOf(checkNotNull(activeQuorumClient).second, System.nanoTime() + TimeUnit.SECONDS.toNanos(35))
+        while (System.nanoTime() < until) {
+            val file = control.resolve("quorum-client-$scope.json")
+            if (Files.isRegularFile(file)) {
+                val row = read(file)
+                check(row.path("scope").asString() == scope)
+                if (row.path("phase").asString() in phases) return row
+            }
+            Thread.sleep(10)
+        }
+        error("$scope client 단계 미관측: $phases")
+    }
+
+    fun submitQuorumPending(): JsonNode {
+        val scope = checkNotNull(activeQuorumScope)
+        val nonce = UUID.randomUUID().toString()
+        activeQuorumNonce = nonce
+        writeBoundedHttpJson(control.resolve("quorum-start-$scope.json"), mapOf("nonce" to nonce))
+        val result = awaitQuorumClient(setOf("COMPLETE"))
+        check(result.path("startNonce").asString() == nonce && result.path("attempts").size() == 2)
+        check(
+            result
+                .path("attempts")
+                .toList()
+                .map { it.path("request").asString() }
+                .toSet() == setOf("pb", "ps"),
+        )
+        quorumMark("attempts-$scope", result)
+        return result
+    }
+
+    /** client의 실제 publication/session과 서비스가 만든 최초 receipt를 같은 요청에 결속한다. */
+    fun quorumDecisions(
+        rows: List<JsonNode>,
+        allowed: Set<String>,
+        higherThanTerm: Long? = null,
+    ) {
+        for (row in rows) {
+            check(row.path("classification").asString() == "REPLIED" && row.path("code").asString() == "ACCEPTED")
+            val route = row.path("routeAtReply")
+            val member = route.path("leaderMemberId").asInt(-1)
+            val service = "funds$member"
+            check(service in allowed && route.path("clusterSessionId").asLong(-1) >= 0)
+            val term = route.path("leadershipTermId").asLong(-1)
+            check(term >= 0 && (higherThanTerm == null || term > higherThanTerm))
+            check(route.path("ingressEndpoint").asString() == "${environment.getValue("SPLIT_NETWORK_PREFIX")}.${10 + member}:19700") {
+                "실제 ingress publication과 승인한 member의 주소가 다릅니다: $route"
+            }
+            val label = row.path("request").asString()
+            check(label in setOf("b0", "pb", "ps"))
+            val file = if (label == "b0") "admission-$service.json" else "admission-$service-$label.json"
+            val committed = read(control.resolve(file))
+            check(committed.path("bootId") == runtimes.getValue(service).path("bootId") && committed.path("runId").asString() == runId)
+            check(committed.path("memberId").asInt() == member && committed.path("leaderMemberId").asInt() == member)
+            check(committed.path("leadershipTermId").asLong() == term && committed.path("clusterRole").asString() == "LEADER")
+            for (field in listOf("requestSha256", "wireSha256", "correlationId", "receipt")) {
+                check(committed.path(field) == row.path(field)) {
+                    "$label client·서비스의 $field 결속 불일치"
+                }
+            }
+            check(committed.path("logPosition").asLong() == row.path("appliedLogPosition").asLong())
+            quorumMark("decision-$label", mapOf("client" to row, "service" to committed))
+        }
+    }
+
+    fun finishQuorumClient(): JsonNode {
+        val scope = checkNotNull(activeQuorumScope)
+        val client = checkNotNull(activeQuorumClient)
+        quorumMark("scope-released-$scope", quorumNetworkStep { quorumNetwork().releaseScope(activeServices = quorumLive() + "client") })
+        writeBoundedHttpJson(control.resolve("quorum-finish-$scope.json"), mapOf("nonce" to checkNotNull(activeQuorumNonce)))
+        val result = finishClient(listOf("quorum-client", scope), client.first, client.second)
+        activeQuorumClient = null
+        activeQuorumScope = null
+        activeQuorumNonce = null
+        budgets()
+        return result
+    }
+
+    /** 과반이 P를 완료한 뒤에도 고립된 구 리더의 늦은 적용이 없었는지 해제 직전에 확인한다. */
+    fun quorumMinorityStillProtected(
+        service: String,
+        originalB0: JsonNode,
+    ) {
+        check(activeQuorumClient == null && service.startsWith("funds"))
+        val selected = setOf(service)
+        val rows = quorumWitness(selected)
+        val states = rows.mapValues { it.value.path("serviceObservation").path("snapshot") }
+        val failures = FundsQuorumConvergence.violations(FundsQuorumStage.PROTECTED, states, mapOf("B0" to originalB0), selected)
+        check(failures.isEmpty()) { "과반 진행 뒤 minority 보호 상태 변경: $failures" }
+        check(
+            rows
+                .getValue(service)
+                .path("serviceObservation")
+                .path("callbacks")
+                .size() == 0,
+        ) { "$service 고립 중 늦은 P callback 진입" }
+        val network = quorumNetwork().inspect(quorumLive())
+        verifyLiveNodes()
+        quorumMark("minority-after-majority", mapOf("witness" to rows, "network" to network))
+    }
+
+    fun observeNoQuorum(
+        funds: Set<String>,
+        originals: Map<String, JsonNode>,
+    ) {
+        check(activeQuorumClient == null && funds.isNotEmpty() && funds.all { it.startsWith("funds") })
+        check(workDeadline - System.nanoTime() > TimeUnit.SECONDS.toNanos(10)) { "no-quorum 연속 관찰10초의 남은 기한이 없습니다" }
+        val selected = funds + SERVICES.filter { !it.startsWith("funds") }
+        val samples = mutableListOf<Map<String, JsonNode>>()
+        val networkSamples = mutableListOf<FundsQuorumNetworkEvidence>()
+        val until = minOf(workDeadline, System.nanoTime() + TimeUnit.SECONDS.toNanos(10))
+        do {
+            val rows = quorumWitness(selected)
+            val states = rows.mapValues { it.value.path("serviceObservation").path("snapshot") }
+            val failures = FundsQuorumConvergence.violations(FundsQuorumStage.PROTECTED, states, originals, selected)
+            check(failures.isEmpty()) { "과반 없는 영역의 보호 상태 변경: ${failures.take(10)}" }
+            for (service in funds) {
+                check(
+                    rows
+                        .getValue(service)
+                        .path("serviceObservation")
+                        .path("callbacks")
+                        .size() == 0,
+                ) {
+                    "$service 과반 없이 P callback 진입"
+                }
+            }
+            samples += rows
+            // witness만 살아 있고 peer 규칙이 풀린 자료를 무과반의 성공 근거로 쓰지 않는다.
+            networkSamples += quorumNetwork().inspect(quorumLive())
+            verifyLiveNodes()
+            if (System.nanoTime() < until) Thread.sleep(5_000)
+        } while (System.nanoTime() < until || samples.size < 3)
+        for (service in selected) {
+            check(
+                samples
+                    .last()
+                    .getValue(service)
+                    .path("serviceObservation")
+                    .path("backgroundWorkCount")
+                    .asLong() >
+                    samples
+                        .first()
+                        .getValue(service)
+                        .path("serviceObservation")
+                        .path("backgroundWorkCount")
+                        .asLong(),
+            ) { "$service 서비스 스레드 진행 없음" }
+        }
+        quorumMark("no-quorum-${quorumEvidence.size}", mapOf("samples" to samples, "network" to networkSamples))
+        budgets()
     }
 
     private fun preflight() {
@@ -376,7 +788,7 @@ internal class MultiMatchingRun(
                         host.path("Memory").asLong() == 512 * MIB && host.path("NanoCpus").asLong() == 500_000_000L &&
                             host.path("PidsLimit").asLong() == 128L,
                     )
-                    val fee = if (scenario == "race") 0 else 10_000
+                    val fee = if (scenario in setOf("race", "quorum")) 0 else 10_000
                     val document =
                         mapper.writeValueAsString(
                             listOf("BTC", "SUI").map { asset ->
@@ -609,9 +1021,21 @@ internal class MultiMatchingRun(
                     .path("com.docker.compose.service")
                     .asString()
             check(node.path("Id").asString() == containers.getValue(service))
+            if (quorumCase != null) {
+                val host = node.path("HostConfig")
+                val expectedCaps = if (service.startsWith("funds")) setOf("NET_ADMIN") else emptySet()
+                check(
+                    host
+                        .path("CapAdd")
+                        .toList()
+                        .map { it.asString().removePrefix("CAP_") }
+                        .toSet() == expectedCaps,
+                )
+                check(!host.path("Privileged").asBoolean() && host.path("NetworkMode").asString() != "host")
+            }
             val state = node.path("State")
             (runtimes.getValue(service) as ObjectNode).set("inspection", node)
-            if (service == stoppedService) {
+            if (service in stoppedServices) {
                 check(
                     !state.path("Running").asBoolean() && !state.path("OOMKilled").asBoolean() &&
                         state.path("ExitCode").asInt() == 137 && state.path("Pid").asLong() == 0L,
@@ -661,7 +1085,8 @@ internal class MultiMatchingRun(
             failures = MultiMatchingConvergence.failures(states, runtimes, stage, originals)
             if (failures.isEmpty()) {
                 verifyLiveNodes()
-                checkpoints += mapOf("phase" to stage.name, "elapsedMs" to elapsedMs(), "states" to states, "originals" to originals)
+                checkpoints +=
+                    mapOf("phase" to stage.name, "elapsedMs" to elapsedMs(), "states" to states, "originals" to originals.toMap())
                 return states
             }
             Thread.sleep(100)
@@ -674,7 +1099,10 @@ internal class MultiMatchingRun(
         return finishClient(args.toList(), inspection, deadline)
     }
 
-    private fun startClient(args: List<String>): Pair<JsonNode, Long> {
+    private fun startClient(
+        args: List<String>,
+        launchScript: String? = null,
+    ): Pair<JsonNode, Long> {
         // 종료 뒤에도 inspect를 남겨 client의 실제 한도를 확인하고, 이 호출이 직접 회수한다.
         val name = "$runId-client"
         val clientDeadline = minOf(workDeadline, System.nanoTime() + TimeUnit.SECONDS.toNanos(60))
@@ -689,9 +1117,7 @@ internal class MultiMatchingRun(
                 name,
                 "--env",
                 "FUNDING_HOST=${environment.getValue("SPLIT_NETWORK_PREFIX")}.40",
-                "client",
-                TOOL,
-            ) + args,
+            ) + (if (launchScript == null) listOf("client", TOOL) + args else listOf("--entrypoint", "sh", "client", "-c", launchScript)),
             left(),
         )
         val inspection = mapper.readTree(command(listOf("docker", "inspect", name), minOf(5_000, left())).stdout).path(0)
@@ -702,6 +1128,27 @@ internal class MultiMatchingRun(
         )
         check(host.path("Tmpfs").path("/tmp").asString() == "size=536870912,mode=1777")
         check(inspection.path("Image").asString() == imageId)
+        if (quorumCase != null) {
+            check(
+                host
+                    .path("CapAdd")
+                    .toList()
+                    .map { it.asString().removePrefix("CAP_") }
+                    .toSet() == setOf("NET_ADMIN"),
+            )
+            check(!host.path("Privileged").asBoolean() && host.path("NetworkMode").asString() != "host")
+            val networks = inspection.path("NetworkSettings").path("Networks")
+            val nodeNetworks =
+                runtimes
+                    .getValue("funds0")
+                    .path("inspection")
+                    .path("NetworkSettings")
+                    .path("Networks")
+            check(
+                networks.isObject && networks.size() == 1 &&
+                    networks.properties().map { it.key } == nodeNetworks.properties().map { it.key },
+            )
+        }
         return inspection to clientDeadline
     }
 
@@ -788,7 +1235,7 @@ internal class MultiMatchingRun(
         var probe: Long? = null
         while (System.nanoTime() < until) {
             budgets()
-            val states = SERVICES.filter { it != stoppedService }.associateWith { read(control.resolve("state-$it.json")) }
+            val states = SERVICES.filter { it !in stoppedServices }.associateWith { read(control.resolve("state-$it.json")) }
             latestStates = states
             failures = violations(states) + currentFailures(states, probe, higherThanTerm)
             if (failures.isEmpty()) {
@@ -798,7 +1245,7 @@ internal class MultiMatchingRun(
                     continue
                 }
                 verifyLiveNodes()
-                checkpoints += mapOf("phase" to stage, "elapsedMs" to elapsedMs(), "states" to states, "originals" to originals)
+                checkpoints += mapOf("phase" to stage, "elapsedMs" to elapsedMs(), "states" to states, "originals" to originals.toMap())
                 return states
             }
             Thread.sleep(100)
@@ -891,7 +1338,7 @@ internal class MultiMatchingRun(
     fun awaitBlocked(): JsonNode {
         val until = minOf(workDeadline, System.nanoTime() + TimeUnit.SECONDS.toNanos(45))
         while (System.nanoTime() < until) {
-            for (service in SERVICES.filter { it != stoppedService }) {
+            for (service in SERVICES.filter { it !in stoppedServices }) {
                 val file = control.resolve("worker-$service.json")
                 if (!Files.isRegularFile(file)) continue
                 val worker = read(file)
@@ -977,7 +1424,7 @@ internal class MultiMatchingRun(
     fun killBtcLeader(states: Map<String, JsonNode>): Long = killLeader(states)
 
     private fun killLeader(states: Map<String, JsonNode>): Long {
-        check(leaderFailover && stoppedService == null)
+        check(leaderFailover && stoppedServices.isEmpty())
         check(
             currentFailures(
                 states,
@@ -1000,7 +1447,7 @@ internal class MultiMatchingRun(
         val inspected = mapper.readTree(command(listOf("docker", "inspect", containers.getValue(target)), 10_000).stdout).path(0)
         val state = inspected.path("State")
         check(!state.path("Running").asBoolean() && state.path("ExitCode").asInt() == 137 && !state.path("OOMKilled").asBoolean())
-        stoppedService = target
+        stoppedServices.add(target)
         mark("killConfirmed")
         lifecycle["stopped"] =
             mapOf(
@@ -1031,8 +1478,11 @@ internal class MultiMatchingRun(
     /** 같은 Archive를 그대로 다시 열되, 이 노드 한 개의 복구 플래그만 바꾼다. */
     fun rejoinBtcLeader() = rejoinLeader()
 
-    fun rejoinLeader() {
-        val target = checkNotNull(stoppedService)
+    fun rejoinLeader() = rejoinService(checkNotNull(stoppedService))
+
+    /** 종료한 대상별로 원래 기록을 다시 열며 생존한 다른 노드는 재생성하지 않는다. */
+    fun rejoinService(target: String) {
+        check(target in stoppedServices)
         val until = minOf(workDeadline, System.nanoTime() + TimeUnit.SECONDS.toNanos(90))
         val previous = runtimes.getValue(target)
         val volume = recordVolume(previous)
@@ -1046,8 +1496,13 @@ internal class MultiMatchingRun(
                 "archiveDirectory" to previous.path("archiveDirectory"),
                 "clusterDirectory" to previous.path("clusterDirectory"),
             )
+        if (quorumCase != null) quorumMark("recovery-before-$target", checkNotNull(lifecycle["recoveryBefore"]))
         val recoveryFile = reports.resolve("recovery.override.yml")
-        Files.writeString(recoveryFile, "services:\n  $target:\n    environment:\n      FUNDING_RECOVER_EXISTING: \"true\"\n")
+        recoveredServices.add(target)
+        Files.writeString(
+            recoveryFile,
+            "services:\n" + recoveredServices.joinToString("") { "  $it:\n    environment:\n      FUNDING_RECOVER_EXISTING: \"true\"\n" },
+        )
         recoveryOverride = recoveryFile
         Files.delete(control.resolve("runtime-$target.json"))
         compose(listOf("up", "-d", "--no-deps", "--force-recreate", target), TimeUnit.NANOSECONDS.toMillis(until - System.nanoTime()))
@@ -1114,10 +1569,16 @@ internal class MultiMatchingRun(
         check(recordVolume(runtime) == volume)
         runtimes[target] = runtime
         containers[target] = id
-        stoppedService = null
+        stoppedServices.remove(target)
+        if (quorumCase != null &&
+            quorumNetworkControl != null
+        ) {
+            quorumMark("rejoined-network-$target", quorumNetworkStep { quorumNetwork().rejoined(target, quorumLive()) })
+        }
         val afterFiles = recoveryFiles(target)
         check(beforeFiles.lineSequence().first() == afterFiles.lineSequence().first()) { "재합류 복구 identity 원문 변경" }
         lifecycle["recoveryAfter"] = mapOf("service" to target, "volume" to volume, "files" to afterFiles)
+        if (quorumCase != null) quorumMark("recovery-after-$target", checkNotNull(lifecycle["recoveryAfter"]))
         verifyLiveNodes()
     }
 
@@ -1225,6 +1686,7 @@ internal class MultiMatchingRun(
         diagnosticPeak = maxOf(diagnosticPeak, MultiMatchingRunBudget.diagnosticBytes(reports))
         check(diagnosticPeak <= 16 * MIB) { "진단 합계16MiB 초과: $diagnosticPeak" }
         if (containers.isNotEmpty()) {
+            if (activeQuorumClient != null) return // 장수 client와 별도 volume helper의 동시 실행을 금지한다.
             if (leaderFailover) {
                 val total =
                     recordsHelper("du -sk /records/*")
@@ -1268,7 +1730,18 @@ internal class MultiMatchingRun(
                 runId,
                 "--file",
                 project.resolve("src/test/docker/aeron-multi-matching/compose.yml").toString(),
-            ) + (recoveryOverride?.let { listOf("--file", it.toString()) } ?: emptyList()) + args,
+            ) +
+                (
+                    if (quorumCase !=
+                        null
+                    ) {
+                        listOf("--file", project.resolve("src/test/docker/aeron-multi-matching/quorum.compose.yml").toString())
+                    } else {
+                        emptyList()
+                    }
+                ) +
+                (recoveryOverride?.let { listOf("--file", it.toString()) } ?: emptyList()) +
+                args,
             timeout,
             cleaning,
         )
@@ -1299,6 +1772,15 @@ internal class MultiMatchingRun(
         fun attempt(block: () -> Unit) {
             runCatching(block).exceptionOrNull()?.let { issues += "정리: ${it.javaClass.simpleName}: ${it.message}" }
         }
+        quorumCleaning = true
+        attempt {
+            try {
+                if (quorumNetworkControl != null) quorumNetworkStep { quorumNetworkControl?.close() }
+            } finally {
+                quorumEvidence["networkRemovals"] = quorumNetworkControl?.removals()
+            }
+            check(quorumNetworkControl?.removals()?.none { it.error != null } != false) { "네트워크 규칙 회수 실패" }
+        }
         commands.closeRunning().forEach { issues += "정리: $it" }
         if (composeAttempted) {
             for (service in SERVICES) {
@@ -1327,6 +1809,16 @@ internal class MultiMatchingRun(
                     true,
                 ).stdout.split(Regex("\\s+")).filter(String::isNotBlank)
             if (ids.isNotEmpty()) command(listOf("docker", "volume", "rm") + ids, 10_000, true)
+        }
+        // custom client를 회수하기 전 compose down이 남긴 이 run의 빈 network도 마지막에 회수한다.
+        attempt {
+            val networks =
+                command(
+                    listOf("docker", "network", "ls", "-q", "--filter", "label=com.docker.compose.project=$runId"),
+                    5_000,
+                    true,
+                ).stdout.split(Regex("\\s+")).filter(String::isNotBlank)
+            if (networks.isNotEmpty()) command(listOf("docker", "network", "rm") + networks, 10_000, true)
         }
         if (imageAttempted) {
             attempt {
@@ -1371,7 +1863,9 @@ internal class MultiMatchingRun(
             mapOf(
                 "runId" to runId,
                 "case" to
-                    if (leaderFailover && failoverOwner == "funds") {
+                    if (quorumCase != null) {
+                        quorumCase
+                    } else if (leaderFailover && failoverOwner == "funds") {
                         if ((lifecycle["admission"] as? JsonNode)?.path("hidden")?.asBoolean() ==
                             true
                         ) {
@@ -1387,7 +1881,11 @@ internal class MultiMatchingRun(
                 "success" to (issues.isEmpty() && resourcesRemoved),
                 "issues" to issues,
                 "baseCommit" to
-                    if (leaderFailover && failoverOwner == "funds") {
+                    if (quorumCase !=
+                        null
+                    ) {
+                        "3067b0c2dfb3cf261c1a13c74718c016ea19d6e7"
+                    } else if (leaderFailover && failoverOwner == "funds") {
                         "26d2013cca94abcdc38a1a55c2d048a68ee7fc3b"
                     } else if (leaderFailover) {
                         "9001e14a5afe96f91aeb461861052dd62c57ef9a"
@@ -1395,6 +1893,7 @@ internal class MultiMatchingRun(
                         "e3656d88e1cd1a10fe670472ca5744a23eb037f9"
                     },
                 "headCommit" to headCommit,
+                "quorumEvidence" to quorumEvidence,
                 "sourceSha256" to sourceHashes,
                 "imageId" to imageId,
                 "manifestSha256" to manifestSha,
@@ -1427,7 +1926,9 @@ internal class MultiMatchingRun(
                     ),
                 "commands" to commands.records,
                 "unverified" to
-                    if (leaderFailover && failoverOwner == "funds") {
+                    if (quorumCase != null) {
+                        listOf("다른 Q 사례는 각자의 별도 실행으로 확인", "전체 볼륨 유실", "서버/AZ 전체 장애", "장기 부하/성능")
+                    } else if (leaderFailover && failoverOwner == "funds") {
                         listOf("BTC 리더 종료/장애 격리", "과반 상실/네트워크 분할", "전체 볼륨 유실", "장기 부하/성능")
                     } else if (leaderFailover) {
                         listOf("자금 리더 종료", "과반 상실/네트워크 분할", "전체 볼륨 유실", "장기 부하/성능")
@@ -1445,7 +1946,30 @@ internal class MultiMatchingRun(
         Files.write(reports.resolve("result.json"), mapper.writeValueAsBytes(finalReport))
     }
 
-    private fun currentSourceHashes() = SOURCES.associateWith { sha(Files.readAllBytes(project.resolve(it))) }
+    private fun currentSourceHashes() =
+        (
+            SOURCES +
+                if (quorumCase == null) {
+                    emptyList()
+                } else {
+                    listOf(
+                        "src/test/kotlin/com/exchange/core/api/trading/infrastructure/aeron/FundsQuorumObservation.kt",
+                        "src/test/kotlin/com/exchange/core/api/trading/infrastructure/aeron/FundsQuorumRuntimeObservation.kt",
+                        "src/test/kotlin/com/exchange/core/api/trading/infrastructure/aeron/AeronSplitOrderDeliveryObservation.kt",
+                        "src/test/kotlin/com/exchange/core/api/trading/infrastructure/aeron/FundsQuorumClient.kt",
+                        "src/test/kotlin/com/exchange/core/api/trading/infrastructure/aeron/FundsQuorumNetworkControl.kt",
+                        "src/test/kotlin/com/exchange/core/api/trading/infrastructure/aeron/FundsQuorumConvergence.kt",
+                        "src/test/kotlin/com/exchange/core/api/trading/infrastructure/aeron/FundsQuorumScenario.kt",
+                        "src/test/kotlin/com/exchange/core/api/trading/infrastructure/aeron/DockerFundsQuorumLossTest.kt",
+                        "src/test/kotlin/com/exchange/core/api/trading/infrastructure/aeron/DockerFundsQuorumPartitionTest.kt",
+                        "src/test/docker/aeron-multi-matching/quorum.Dockerfile",
+                        "src/test/docker/aeron-multi-matching/quorum.compose.yml",
+                        "src/main/kotlin/com/exchange/core/api/trading/infrastructure/aeron/SplitOrderDeliveryClient.kt",
+                        "../.github/ci-test-groups.json",
+                        "../gradle.properties",
+                    )
+                }
+        ).associateWith { sha(Files.readAllBytes(project.resolve(it))) }
 
     private fun elapsedMs() = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - started)
 
