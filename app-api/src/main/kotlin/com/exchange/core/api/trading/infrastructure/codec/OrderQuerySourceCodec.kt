@@ -98,20 +98,40 @@ internal class OrderQuerySourceCodec(
 
     fun decode(bytes: ByteArray): OrderQuerySourceEnvelope =
         read(bytes, COMMAND) {
-            val correlation = readLong().also { require(it > 0) }
+            val correlation = readLong()
+            require(correlation > 0)
             val command =
                 when (readUnsignedByte()) {
-                    0 -> OrderQuerySourceCommand.Describe
-                    1 -> OrderQuerySourceCommand.Read(text(), market(), readLong().also { require(it > 0) })
-                    2 -> OrderQuerySourceCommand.Acknowledge(text(), market(), readLong().also { require(it >= 0) })
-                    else -> throw IllegalArgumentException("unknown query command")
+                    0 -> {
+                        OrderQuerySourceCommand.Describe
+                    }
+
+                    1 -> {
+                        val consumerId = text()
+                        val market = market()
+                        val from = readLong()
+                        require(from > 0)
+                        OrderQuerySourceCommand.Read(consumerId = consumerId, market = market, from = from)
+                    }
+
+                    2 -> {
+                        val consumerId = text()
+                        val market = market()
+                        val through = readLong()
+                        require(through >= 0)
+                        OrderQuerySourceCommand.Acknowledge(consumerId = consumerId, market = market, through = through)
+                    }
+
+                    else -> {
+                        throw IllegalArgumentException("unknown query command")
+                    }
                 }
             OrderQuerySourceEnvelope(correlation, command)
         }
 
     fun encodeReply(reply: OrderQuerySourceReply): ByteArray {
-        reply.admission?.let { return admissionBytes(reply.correlationId, it) }
-        reply.result?.let { return resultBytes(reply.correlationId, it) }
+        reply.admission?.let { admission -> return admissionBytes(reply.correlationId, admission) }
+        reply.result?.let { result -> return resultBytes(reply.correlationId, result) }
         return frame(REPLY) {
             require(reply.correlationId > 0)
             writeLong(reply.correlationId)
@@ -129,9 +149,9 @@ internal class OrderQuerySourceCodec(
                 lineage(stream.fundsLineage)
                 writeLong(stream.ownershipEpoch)
                 writeLong(stream.configurationVersion)
-                val bytes = orders.context(reply.contexts.getValue(market)).toByteArray()
-                writeInt(bytes.size)
-                write(bytes)
+                val contextBytes = orders.context(reply.contexts.getValue(market)).toByteArray()
+                writeInt(contextBytes.size)
+                write(contextBytes)
             }
             require(reply.progress.size <= MAX_MARKETS + 1)
             writeInt(reply.progress.size)
@@ -162,40 +182,59 @@ internal class OrderQuerySourceCodec(
             }
         }
         return read(bytes, REPLY) {
-            val correlation = readLong().also { require(it > 0) }
+            val correlation = readLong()
+            require(correlation > 0)
             val code = text()
             val role = TradingServiceRole.valueOf(text())
             val lineage = lineage()
-            val topology = text().also { require(it.matches(Regex("[a-f0-9]{64}"))) }
-            val consumer = if (readBoolean()) text() else ""
+            val topology = text()
+            require(topology.matches(Regex("[a-f0-9]{64}")))
+            val consumerId = if (readBoolean()) text() else ""
             val streams = linkedMapOf<String, MatchingResultStream>()
             val contexts = linkedMapOf<String, TradingMarketContext>()
             repeat(count(MAX_MARKETS)) {
                 val market = text()
-                val stream = MatchingResultStream(lineage(), lineage(), MarketId(market), readLong(), readLong())
-                require(streams.put(market, stream) == null)
-                val context = orders.context(SplitMarketContext.parseFrom(blob()))
+                val stream =
+                    MatchingResultStream(
+                        matchingLineage = lineage(),
+                        fundsLineage = lineage(),
+                        marketId = MarketId(market),
+                        ownershipEpoch = readLong(),
+                        configurationVersion = readLong(),
+                    )
+                val previousStream = streams.put(market, stream)
+                require(previousStream == null)
+                val contextBytes = blob()
+                val wireContext = SplitMarketContext.parseFrom(contextBytes)
+                val context = orders.context(wireContext)
                 require(context.market.marketId.value == market)
                 contexts[market] = context
             }
             val progress =
                 List(count(MAX_MARKETS + 1)) {
-                    OrderQuerySourceProgress(market(), readLong(), readLong(), readLong()).also {
-                        require(it.retiredThrough in 0..it.issued && it.financialThrough >= 0)
-                    }
+                    val marketProgress =
+                        OrderQuerySourceProgress(
+                            market = market(),
+                            issued = readLong(),
+                            retiredThrough = readLong(),
+                            financialThrough = readLong(),
+                        )
+                    require(marketProgress.retiredThrough in 0..marketProgress.issued && marketProgress.financialThrough >= 0)
+                    marketProgress
                 }
             require(progress.map { it.market }.distinct().size == progress.size)
-            val inputContractVersion = readInt().also { require(it in 1..2) }
+            val inputContractVersion = readInt()
+            require(inputContractVersion in 1..2)
             OrderQuerySourceReply(
-                correlation,
-                code,
-                role,
-                lineage,
-                topology,
-                consumer,
-                streams,
-                contexts,
-                progress,
+                correlationId = correlation,
+                code = code,
+                role = role,
+                lineage = lineage,
+                topologySha256 = topology,
+                consumerId = consumerId,
+                streams = streams,
+                contexts = contexts,
+                progress = progress,
                 inputContractVersion = inputContractVersion,
             )
         }
@@ -216,13 +255,15 @@ internal class OrderQuerySourceCodec(
         block: DataOutputStream.() -> Unit,
     ): ByteArray {
         val bytes = ByteArrayOutputStream()
-        DataOutputStream(bytes).use {
-            it.writeShort(SCHEMA)
-            it.writeByte(1)
-            it.writeByte(kind)
-            it.block()
+        DataOutputStream(bytes).use { output ->
+            output.writeShort(SCHEMA)
+            output.writeByte(1)
+            output.writeByte(kind)
+            output.block()
         }
-        return bytes.toByteArray().also { require(it.size <= MAX_CONTROL_BYTES) }
+        val encodedBytes = bytes.toByteArray()
+        require(encodedBytes.size <= MAX_CONTROL_BYTES)
+        return encodedBytes
     }
 
     private fun <T> read(
@@ -232,9 +273,11 @@ internal class OrderQuerySourceCodec(
     ): T {
         require(bytes.size in 13..MAX_CONTROL_BYTES)
         return try {
-            DataInputStream(ByteArrayInputStream(bytes)).use {
-                require(it.readUnsignedShort() == SCHEMA && it.readUnsignedByte() == 1 && it.readUnsignedByte() == kind)
-                it.block().also { _ -> require(it.read() == -1) }
+            DataInputStream(ByteArrayInputStream(bytes)).use { input ->
+                require(input.readUnsignedShort() == SCHEMA && input.readUnsignedByte() == 1 && input.readUnsignedByte() == kind)
+                val decoded = input.block()
+                require(input.read() == -1)
+                decoded
             }
         } catch (failure: IOException) {
             throw IllegalArgumentException("invalid query frame", failure)
@@ -246,7 +289,11 @@ internal class OrderQuerySourceCodec(
         writeUTF(value)
     }
 
-    private fun DataInputStream.text(): String = readUTF().also { require(it.isNotBlank() && it.toByteArray().size <= 256) }
+    private fun DataInputStream.text(): String {
+        val value = readUTF()
+        require(value.isNotBlank() && value.toByteArray().size <= 256)
+        return value
+    }
 
     private fun DataOutputStream.market(value: String?) {
         writeBoolean(value != null)
@@ -260,11 +307,19 @@ internal class OrderQuerySourceCodec(
         writeLong(value.low)
     }
 
-    private fun DataInputStream.lineage() = ClusterLineage(readLong(), readLong())
+    private fun DataInputStream.lineage() = ClusterLineage(high = readLong(), low = readLong())
 
-    private fun DataInputStream.count(maximum: Int) = readInt().also { require(it in 0..maximum) }
+    private fun DataInputStream.count(maximum: Int): Int {
+        val count = readInt()
+        require(count in 0..maximum)
+        return count
+    }
 
-    private fun DataInputStream.blob(): ByteArray = ByteArray(count(MAX_CONTROL_BYTES)).also(::readFully)
+    private fun DataInputStream.blob(): ByteArray {
+        val bytes = ByteArray(count(MAX_CONTROL_BYTES))
+        readFully(bytes)
+        return bytes
+    }
 
     companion object {
         const val SCHEMA = 90

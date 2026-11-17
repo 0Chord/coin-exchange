@@ -38,12 +38,13 @@ class OrderQueryConfig {
         namespace: OrderQueryNamespace,
         jdbc: NamedParameterJdbcTemplate,
         transactionManager: PlatformTransactionManager,
-    ): OrderQueryStore =
-        PostgresOrderQueryStore(namespace, jdbc, transactionManager).also {
-            it.initialize()
-            // 기존 DB가 READY여도 이 WAS의 원본 재검증 전에는 조회를 열지 않는다.
-            it.suspendSourceReads()
-        }
+    ): OrderQueryStore {
+        val store = PostgresOrderQueryStore(namespace, jdbc, transactionManager)
+        store.initialize()
+        // 기존 DB가 READY여도 이 WAS의 원본 재검증 전에는 조회를 열지 않는다.
+        store.suspendSourceReads()
+        return store
+    }
 
     @Bean
     fun orderQueryUseCase(store: OrderQueryStore): OrderQueryUseCase = OrderQueryUseCase(store)
@@ -62,20 +63,21 @@ class OrderQueryConfig {
         namespace: OrderQueryNamespace,
         environment: Environment,
     ): OrderQueryFeedWorker {
-        val peers =
-            environment.getRequiredProperty("exchange.order-query.matching-ingress").split(';').associate { entry ->
-                require(entry.count { it == '@' } == 1) { "matching query address must be MARKET@ingress" }
-                entry.substringBefore('@') to entry.substringAfter('@')
+        val matchingIngressEntries = environment.getRequiredProperty("exchange.order-query.matching-ingress").split(';')
+        val matchingIngressByMarket =
+            matchingIngressEntries.associate { entry ->
+                require(entry.count { character -> character == '@' } == 1) { "matching query address must be MARKET@ingress" }
+                val market = entry.substringBefore('@')
+                val ingress = entry.substringAfter('@')
+                market to ingress
             }
-        require(
-            peers.size == environment.getRequiredProperty("exchange.order-query.matching-ingress").split(';').size,
-        ) { "duplicate query market" }
+        require(matchingIngressByMarket.size == matchingIngressEntries.size) { "duplicate query market" }
         return OrderQueryFeedWorker(
-            feed,
-            namespace,
-            environment.getRequiredProperty("exchange.order-query.consumer-id"),
-            AeronGatewaySettings.from(boundedGatewayEnvironment(environment)),
-            peers,
+            store = feed,
+            namespace = namespace,
+            consumerId = environment.getRequiredProperty("exchange.order-query.consumer-id"),
+            settings = AeronGatewaySettings.from(boundedGatewayEnvironment(environment)),
+            matchingIngress = matchingIngressByMarket,
         )
     }
 }

@@ -69,7 +69,7 @@ class PostgresOrderQueryFeedStore(
                     """.trimIndent(),
                     parameters + mapOf("consumer" to consumerId, "configuration" to configuration),
                 )
-                val same =
+                val sameConfiguration =
                     jdbc.queryForObject(
                         """
                         select consumer_id = :consumer and configuration_payload = cast(:configuration as jsonb)
@@ -78,7 +78,7 @@ class PostgresOrderQueryFeedStore(
                         parameters + mapOf("consumer" to consumerId, "configuration" to configuration),
                         Boolean::class.java,
                     )
-                require(same == true) { "source identity differs from the durable checkpoint" }
+                require(sameConfiguration == true) { "source identity differs from the durable checkpoint" }
                 streams.keys.forEach { market ->
                     jdbc.update(
                         """
@@ -101,8 +101,8 @@ class PostgresOrderQueryFeedStore(
         expectedBeforeRead: OrderQueryFeedProgress?,
     ): OrderQueryFeedProgress =
         guarded {
-            query
-                .withTransaction {
+            val verifiedProgress =
+                query.withTransaction {
                     val current = lockedProgress()
                     if (current.lifecycle == OrderQueryLifecycle.BLOCKED) return@withTransaction current
                     require(matching.keys == streams.keys) { "source market assignment changed" }
@@ -149,7 +149,9 @@ class PostgresOrderQueryFeedStore(
                     query.observe(maxOf(progress.observedRevision, Math.addExact(progress.appliedRevision, backlog)))
                     query.transitionLifecycle(if (ready) OrderQueryLifecycle.READY else OrderQueryLifecycle.INITIALIZING)
                     lockedProgress()
-                }.also { query.verifySourceReads() }
+                }
+            query.verifySourceReads()
+            verifiedProgress
         }
 
     override fun applyAdmission(
@@ -157,16 +159,16 @@ class PostgresOrderQueryFeedStore(
         canonicalPayload: ByteArray,
     ): Long =
         applySource(
-            "ADMISSION",
-            "funds",
-            fact.admissionSequence,
-            canonicalPayload,
-            fact.order.marketId.value in query.namespace.markets,
+            kind = "ADMISSION",
+            key = "funds",
+            sequence = fact.admissionSequence,
+            payload = canonicalPayload,
+            projected = fact.order.marketId.value in query.namespace.markets,
         ) { current ->
             require(!fact.isCancellation && fact.admissionSequence == Math.addExact(current.admissionThrough, 1))
             requireOrigin(fact)
             val records = if (fact.order.marketId.value in query.namespace.markets) listOf(admissionRecord(fact)) else emptyList()
-            commitBatch(fact.admissionSequence, records)
+            applyBatch(fact.admissionSequence, records)
         }
 
     override fun applyMatching(
@@ -174,11 +176,11 @@ class PostgresOrderQueryFeedStore(
         canonicalPayload: ByteArray,
     ): Long =
         applySource(
-            "MATCHING",
-            fact.stream.marketId.value,
-            fact.resultSequence,
-            canonicalPayload,
-            fact.stream.marketId.value in query.namespace.markets,
+            kind = "MATCHING",
+            key = fact.stream.marketId.value,
+            sequence = fact.resultSequence,
+            payload = canonicalPayload,
+            projected = fact.stream.marketId.value in query.namespace.markets,
         ) { current ->
             val market = fact.stream.marketId.value
             require(fact.stream == streams[market] && fact.input.context == contexts[market]) { "matching source identity changed" }
@@ -203,7 +205,7 @@ class PostgresOrderQueryFeedStore(
                 } else {
                     emptyList()
                 }
-            commitBatch(current.admissionThrough, records)
+            applyBatch(current.admissionThrough, records)
         }
 
     override fun applyFinancial(watermark: MatchingFundsSettledAck): Long =
@@ -226,7 +228,7 @@ class PostgresOrderQueryFeedStore(
                         require(record.resultStream == watermark.stream)
                         record.copy(financialThrough = through)
                     }
-                val revision = commitBatch(current.admissionThrough, records)
+                val revision = applyBatch(current.admissionThrough, records)
                 jdbc.update(
                     "update order_query.feed_stream set financial_through = :through where namespace = :namespace and market_id = :market",
                     parameters + mapOf("market" to market, "through" to through),
@@ -282,9 +284,10 @@ class PostgresOrderQueryFeedStore(
                         ) { rows, _ -> rows.getLong("first_revision") to rows.getBoolean("same_payload") }
                         .singleOrNull()
                 if (duplicate != null) {
-                    require(duplicate.second) { "source receipt has different canonical content" }
-                    require(duplicate.first in 1..current.appliedRevision)
-                    return@withTransaction duplicate.first
+                    val (firstRevision, samePayload) = duplicate
+                    require(samePayload) { "source receipt has different canonical content" }
+                    require(firstRevision in 1..current.appliedRevision)
+                    return@withTransaction firstRevision
                 }
                 require(current.lifecycle != OrderQueryLifecycle.BLOCKED)
                 val revision = apply(current)
@@ -313,14 +316,21 @@ class PostgresOrderQueryFeedStore(
         }
     }
 
-    private fun commitBatch(
-        covered: Long,
+    private fun applyBatch(
+        coveredAdmissionSequence: Long,
         records: List<OrderQueryRecord>,
     ): Long {
         val progress = query.lockedProgress()
-        val next = Math.addExact(progress.appliedRevision, 1)
-        query.observe(maxOf(progress.observedRevision, next))
-        return query.apply(OrderQueryBatch("feed:revision:$next", progress.appliedRevision, covered, records))
+        val nextRevision = Math.addExact(progress.appliedRevision, 1)
+        query.observe(maxOf(progress.observedRevision, nextRevision))
+        val batch =
+            OrderQueryBatch(
+                batchId = "feed:revision:$nextRevision",
+                expectedRevision = progress.appliedRevision,
+                coveredAdmissionSequence = coveredAdmissionSequence,
+                records = records,
+            )
+        return query.apply(batch)
     }
 
     private fun requireOrigin(origin: FundsOrderDispatch) {
@@ -338,21 +348,21 @@ class PostgresOrderQueryFeedStore(
 
     private fun admissionRecord(origin: FundsOrderDispatch): OrderQueryRecord =
         OrderQueryRecord(
-            query.namespace.fundsLineage,
-            origin.order.marketId.value,
-            origin.order.userId.value,
-            origin.order.side,
-            origin.order.orderType,
-            origin.order.timeInForce,
-            origin.order.price.value,
-            origin.order.quantity.value,
-            origin.admissionSequence,
-            origin.marketAdmissionSequence,
-            0,
-            null,
-            0,
-            0,
-            OrderQueryOrderState.MATCHING_PENDING,
+            fundsLineage = query.namespace.fundsLineage,
+            marketId = origin.order.marketId.value,
+            userId = origin.order.userId.value,
+            side = origin.order.side,
+            orderType = origin.order.orderType,
+            timeInForce = origin.order.timeInForce,
+            price = origin.order.price.value,
+            initialQuantity = origin.order.quantity.value,
+            admissionSequence = origin.admissionSequence,
+            marketAdmissionSequence = origin.marketAdmissionSequence,
+            filledQuantity = 0,
+            remainingQuantity = null,
+            cancelledQuantity = 0,
+            notExecutedQuantity = 0,
+            state = OrderQueryOrderState.MATCHING_PENDING,
         )
 
     private fun project(
@@ -363,8 +373,8 @@ class PostgresOrderQueryFeedStore(
         val origin = admissionRecord(effect.origin)
         val previous =
             query.findRecord(origin.marketId, origin.orderId) ?: throw OrderQueryOriginsPendingException(origin.admissionSequence)
-        origin
-            .copy(
+        val originWithPreviousState =
+            origin.copy(
                 filledQuantity = previous.filledQuantity,
                 remainingQuantity = previous.remainingQuantity,
                 cancelledQuantity = previous.cancelledQuantity,
@@ -373,10 +383,11 @@ class PostgresOrderQueryFeedStore(
                 resultStream = previous.resultStream,
                 lastAffectedResultSequence = previous.lastAffectedResultSequence,
                 financialThrough = previous.financialThrough,
-            ).requireSuccessorOf(previous)
-        val before = effect.beforeQuantity.value
-        val after = effect.afterQuantity.value
-        require(before == (previous.remainingQuantity ?: previous.initialQuantity) && after in 0..before)
+            )
+        originWithPreviousState.requireSuccessorOf(previous)
+        val beforeQuantity = effect.beforeQuantity.value
+        val afterQuantity = effect.afterQuantity.value
+        require(beforeQuantity == (previous.remainingQuantity ?: previous.initialQuantity) && afterQuantity in 0..beforeQuantity)
         val filled: Long
         val remaining: Long
         val cancelled: Long
@@ -384,16 +395,19 @@ class PostgresOrderQueryFeedStore(
         val state: OrderQueryOrderState
         when (effect.disposition) {
             MatchingOrderDisposition.CANCELLED -> {
-                require(result.outcome == MatchingOutcome.CANCELLED && after == 0L)
+                require(result.outcome == MatchingOutcome.CANCELLED && afterQuantity == 0L)
                 filled = previous.filledQuantity
                 remaining = 0
-                cancelled = before
+                cancelled = beforeQuantity
                 notExecuted = 0
                 state = OrderQueryOrderState.CANCELLED
             }
 
             MatchingOrderDisposition.NOT_EXECUTED -> {
-                require(result.outcome == MatchingOutcome.NOT_EXECUTED && before == origin.initialQuantity && before == after)
+                require(
+                    result.outcome == MatchingOutcome.NOT_EXECUTED &&
+                        beforeQuantity == origin.initialQuantity && beforeQuantity == afterQuantity,
+                )
                 filled = 0
                 remaining = 0
                 cancelled = 0
@@ -403,14 +417,14 @@ class PostgresOrderQueryFeedStore(
 
             MatchingOrderDisposition.RESTING, MatchingOrderDisposition.TERMINAL -> {
                 require(result.outcome == MatchingOutcome.MATCHED)
-                require((effect.disposition == MatchingOrderDisposition.TERMINAL) == (after == 0L))
-                filled = Math.addExact(previous.filledQuantity, Math.subtractExact(before, after))
-                remaining = after
+                require((effect.disposition == MatchingOrderDisposition.TERMINAL) == (afterQuantity == 0L))
+                filled = Math.addExact(previous.filledQuantity, Math.subtractExact(beforeQuantity, afterQuantity))
+                remaining = afterQuantity
                 cancelled = 0
                 notExecuted = 0
                 state =
                     when {
-                        after == 0L -> OrderQueryOrderState.FILLED
+                        afterQuantity == 0L -> OrderQueryOrderState.FILLED
                         filled > 0L -> OrderQueryOrderState.PARTIALLY_FILLED
                         else -> OrderQueryOrderState.RESTING
                     }
@@ -433,20 +447,25 @@ class PostgresOrderQueryFeedStore(
         val progress = query.lockedProgress()
         val consumer = consumer()
         require(consumer.id == consumerId) { "query consumer identity changed" }
-        val rows =
+        val streamCursors =
             jdbc.query(
                 "select market_id, matching_through, financial_through from order_query.feed_stream where namespace = :namespace",
                 parameters,
-            ) { row, _ -> Triple(row.getString("market_id"), row.getLong("matching_through"), row.getLong("financial_through")) }
-        require(rows.map { it.first }.toSet() == streams.keys)
+            ) { row, _ ->
+                val marketId = row.getString("market_id")
+                val matchingThrough = row.getLong("matching_through")
+                val financialThrough = row.getLong("financial_through")
+                Triple(marketId, matchingThrough, financialThrough)
+            }
+        require(streamCursors.map { (marketId, _, _) -> marketId }.toSet() == streams.keys)
         require(consumer.admission == progress.coveredAdmissionSequence)
         return OrderQueryFeedProgress(
-            consumerId,
-            consumer.admission,
-            rows.associate { it.first to it.second },
-            rows.associate { it.first to it.third },
-            progress.lifecycle,
-            progress.appliedRevision,
+            consumerId = consumerId,
+            admissionThrough = consumer.admission,
+            matchingThrough = streamCursors.associate { (marketId, matchingThrough, _) -> marketId to matchingThrough },
+            financialThrough = streamCursors.associate { (marketId, _, financialThrough) -> marketId to financialThrough },
+            lifecycle = progress.lifecycle,
+            appliedRevision = progress.appliedRevision,
         )
     }
 
@@ -457,10 +476,10 @@ class PostgresOrderQueryFeedStore(
                 parameters,
             ) { row, _ ->
                 Consumer(
-                    row.getString("consumer_id"),
-                    row.getLong("admission_through"),
-                    row.getBoolean("initial_sources_verified"),
-                    row.getBoolean("bootstrap_complete"),
+                    id = row.getString("consumer_id"),
+                    admission = row.getLong("admission_through"),
+                    sourcesVerified = row.getBoolean("initial_sources_verified"),
+                    bootstrapComplete = row.getBoolean("bootstrap_complete"),
                 )
             }.singleOrNull() ?: throw OrderQueryInconsistentException("stored source consumer is missing")
 

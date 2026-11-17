@@ -46,15 +46,15 @@ internal class OrderQueryFeedWorker(
     private fun run() {
         while (running.get()) {
             try {
-                connected()
+                collectFromSources()
             } catch (_: InterruptedException) {
                 Thread.currentThread().interrupt()
                 break
             } catch (failure: Exception) {
-                val permanent =
+                val mustBlockProjection =
                     failure is IllegalArgumentException || failure is SourceConflict ||
                         failure is OrderQueryInconsistentException || failure is OrderQueryWriteConflictException
-                if (permanent) {
+                if (mustBlockProjection) {
                     persistBlock(failure)
                     break
                 }
@@ -94,7 +94,7 @@ internal class OrderQueryFeedWorker(
         }
     }
 
-    private fun connected() {
+    private fun collectFromSources() {
         // 주문 Gateway의 새 실행 폴더를 먼저 만들거나 재사용하지 않는다.
         val parent = checkNotNull(settings.runRoot.parent)
         Files.createDirectories(parent)
@@ -114,92 +114,137 @@ internal class OrderQueryFeedWorker(
                         clients.getOrPut(ingress) {
                             val egress = settings.egressEndpoint.substringBeforeLast(':') + ":0"
                             OrderQuerySourceClient(
-                                SplitOrderDeliveryEndpoint(driver.aeronDirectoryName(), ingress, egress, 0, 2),
+                                SplitOrderDeliveryEndpoint(
+                                    driverDirectory = driver.aeronDirectoryName(),
+                                    ingressEndpoints = ingress,
+                                    egressEndpoint = egress,
+                                    clusterId = 0,
+                                    inputContractVersion = 2,
+                                ),
                                 settings.resultTimeoutMs,
                             )
                         }
                     try {
-                        val funds = client(settings.ingressEndpoints)
-                        val first = described(funds, TradingServiceRole.FUNDS)
-                        require(first.lineage == namespace.fundsLineage && first.streams.keys == matchingIngress.keys) {
+                        val fundsClient = client(settings.ingressEndpoints)
+                        val initialFundsDescription = describeSource(fundsClient, TradingServiceRole.FUNDS)
+                        require(
+                            initialFundsDescription.lineage == namespace.fundsLineage &&
+                                initialFundsDescription.streams.keys == matchingIngress.keys,
+                        ) {
                             "query funds or market assignment differs"
                         }
-                        store.initialize(consumerId, first.streams, first.contexts, first.topologySha256)
+                        store.initialize(
+                            consumerId = consumerId,
+                            streams = initialFundsDescription.streams,
+                            contexts = initialFundsDescription.contexts,
+                            sourceIdentity = initialFundsDescription.topologySha256,
+                        )
                         while (running.get()) {
-                            val beforeRead = store.progress()
-                            val financial = described(funds, TradingServiceRole.FUNDS)
+                            val progressBeforeSourceRead = store.progress()
+                            val currentFundsDescription = describeSource(fundsClient, TradingServiceRole.FUNDS)
                             require(
-                                financial.streams == first.streams && financial.contexts == first.contexts &&
-                                    financial.topologySha256 == first.topologySha256,
+                                currentFundsDescription.streams == initialFundsDescription.streams &&
+                                    currentFundsDescription.contexts == initialFundsDescription.contexts &&
+                                    currentFundsDescription.topologySha256 == initialFundsDescription.topologySha256,
                             )
-                            val matchingDescriptions =
+                            val matchingDescriptionByIngress =
                                 matchingIngress.values.distinct().associateWith { ingress ->
-                                    described(client(ingress), TradingServiceRole.MATCHING)
+                                    describeSource(client(ingress), TradingServiceRole.MATCHING)
                                 }
-                            val descriptions =
+                            val matchingDescriptionByMarket =
                                 matchingIngress.mapValues { (market, ingress) ->
-                                    matchingDescriptions.getValue(ingress).also { matching ->
-                                        require(
-                                            matching.topologySha256 == first.topologySha256 &&
-                                                matching.lineage == first.streams.getValue(market).matchingLineage,
-                                        )
-                                        require(
-                                            matching.streams[market] == first.streams.getValue(market) &&
-                                                matching.contexts[market] == first.contexts.getValue(market),
-                                        )
-                                    }
+                                    val matchingDescription = matchingDescriptionByIngress.getValue(ingress)
+                                    require(
+                                        matchingDescription.topologySha256 == initialFundsDescription.topologySha256 &&
+                                            matchingDescription.lineage == initialFundsDescription.streams.getValue(market).matchingLineage,
+                                    )
+                                    require(
+                                        matchingDescription.streams[market] == initialFundsDescription.streams.getValue(market) &&
+                                            matchingDescription.contexts[market] == initialFundsDescription.contexts.getValue(market),
+                                    )
+                                    matchingDescription
                                 }
-                            val admissionBounds = financial.progress.single { it.market == null }
-                            val matchingBounds = descriptions.mapValues { (market, reply) -> reply.progress.single { it.market == market } }
-                            val financialHeads =
-                                financial.progress.filter { it.market != null }.associate {
-                                    checkNotNull(it.market) to
-                                        it.financialThrough
+                            val admissionBounds = currentFundsDescription.progress.single { it.market == null }
+                            val matchingBounds =
+                                matchingDescriptionByMarket.mapValues { (market, description) ->
+                                    description.progress.single { sourceProgress -> sourceProgress.market == market }
                                 }
-                            val checked =
+                            val financialThroughByMarket =
+                                currentFundsDescription.progress.filter { it.market != null }.associate { sourceProgress ->
+                                    checkNotNull(sourceProgress.market) to sourceProgress.financialThrough
+                                }
+                            val verifiedProgress =
                                 store.verifySources(
-                                    OrderQuerySourceBounds(admissionBounds.issued, admissionBounds.retiredThrough, true),
-                                    matchingBounds.mapValues { (_, value) ->
-                                        OrderQuerySourceBounds(value.issued, value.retiredThrough, true)
-                                    },
-                                    financialHeads,
-                                    beforeRead,
+                                    admission =
+                                        OrderQuerySourceBounds(
+                                            issued = admissionBounds.issued,
+                                            retiredThrough = admissionBounds.retiredThrough,
+                                            completeFromGenesis = true,
+                                        ),
+                                    matching =
+                                        matchingBounds.mapValues { (_, bounds) ->
+                                            OrderQuerySourceBounds(
+                                                issued = bounds.issued,
+                                                retiredThrough = bounds.retiredThrough,
+                                                completeFromGenesis = true,
+                                            )
+                                        },
+                                    financial = financialThroughByMarket,
+                                    expectedBeforeRead = progressBeforeSourceRead,
                                 )
-                            if (checked.lifecycle == OrderQueryLifecycle.BLOCKED) throw SourceConflict("query checkpoint is blocked")
-                            var work = 0
-                            for (attempt in 0 until 32) {
-                                val current = store.progress().admissionThrough
-                                if (current >= admissionBounds.issued) break
-                                val reply = funds.request(OrderQuerySourceCommand.Read(consumerId, null, Math.addExact(current, 1)))
-                                val fact = reply.admission
-                                if (fact == null) {
-                                    if (reply.code == "NOT_READY") throw IllegalStateException("query source is not ready")
-                                    if (reply.code == "PRUNED" && store.progress().admissionThrough > current) continue
-                                    throw SourceConflict("admission source returned ${reply.code}")
-                                }
-                                require(fact.stream.fundsLineage == namespace.fundsLineage && fact.admissionSequence == current + 1)
-                                store.applyAdmission(fact, codec.admissionBytes(0, fact))
-                                work++
+                            if (verifiedProgress.lifecycle == OrderQueryLifecycle.BLOCKED) {
+                                throw SourceConflict("query checkpoint is blocked")
                             }
-                            for ((market, bound) in matchingBounds) {
-                                val peer = client(matchingIngress.getValue(market))
+                            var appliedFactCount = 0
+                            for (attempt in 0 until 32) {
+                                val admissionThrough = store.progress().admissionThrough
+                                if (admissionThrough >= admissionBounds.issued) break
+                                val admissionReply =
+                                    fundsClient.request(
+                                        OrderQuerySourceCommand.Read(consumerId, null, Math.addExact(admissionThrough, 1)),
+                                    )
+                                val admissionFact = admissionReply.admission
+                                if (admissionFact == null) {
+                                    if (admissionReply.code == "NOT_READY") throw IllegalStateException("query source is not ready")
+                                    if (admissionReply.code == "PRUNED" && store.progress().admissionThrough > admissionThrough) continue
+                                    throw SourceConflict("admission source returned ${admissionReply.code}")
+                                }
+                                require(
+                                    admissionFact.stream.fundsLineage == namespace.fundsLineage &&
+                                        admissionFact.admissionSequence == admissionThrough + 1,
+                                )
+                                val admissionPayload = codec.admissionBytes(0, admissionFact)
+                                store.applyAdmission(admissionFact, admissionPayload)
+                                appliedFactCount++
+                            }
+                            for ((market, bounds) in matchingBounds) {
+                                val matchingClient = client(matchingIngress.getValue(market))
                                 for (attempt in 0 until 32) {
-                                    val current = store.progress().matchingThrough.getValue(market)
-                                    if (current >= bound.issued) break
-                                    val reply =
-                                        peer.request(
-                                            OrderQuerySourceCommand.Read(consumerId, market, Math.addExact(current, 1)),
+                                    val matchingThrough = store.progress().matchingThrough.getValue(market)
+                                    if (matchingThrough >= bounds.issued) break
+                                    val matchingReply =
+                                        matchingClient.request(
+                                            OrderQuerySourceCommand.Read(consumerId, market, Math.addExact(matchingThrough, 1)),
                                         )
-                                    val fact = reply.result
-                                    if (fact == null) {
-                                        if (reply.code == "NOT_READY") throw IllegalStateException("query source is not ready")
-                                        if (reply.code == "PRUNED" && store.progress().matchingThrough.getValue(market) > current) continue
-                                        throw SourceConflict("matching source returned ${reply.code}")
+                                    val matchingFact = matchingReply.result
+                                    if (matchingFact == null) {
+                                        if (matchingReply.code == "NOT_READY") throw IllegalStateException("query source is not ready")
+                                        if (
+                                            matchingReply.code == "PRUNED" &&
+                                            store.progress().matchingThrough.getValue(market) > matchingThrough
+                                        ) {
+                                            continue
+                                        }
+                                        throw SourceConflict("matching source returned ${matchingReply.code}")
                                     }
-                                    require(fact.stream == first.streams.getValue(market) && fact.resultSequence == current + 1)
+                                    require(
+                                        matchingFact.stream == initialFundsDescription.streams.getValue(market) &&
+                                            matchingFact.resultSequence == matchingThrough + 1,
+                                    )
                                     try {
-                                        store.applyMatching(fact, codec.resultBytes(0, fact))
-                                        work++
+                                        val matchingPayload = codec.resultBytes(0, matchingFact)
+                                        store.applyMatching(matchingFact, matchingPayload)
+                                        appliedFactCount++
                                     } catch (
                                         _: OrderQueryOriginsPendingException,
                                     ) {
@@ -208,35 +253,43 @@ internal class OrderQueryFeedWorker(
                                 }
                                 for (attempt in 0 until 32) {
                                     val progress = store.progress()
-                                    val next = progress.financialThrough.getValue(market)
-                                    if (next >= minOf(financialHeads.getValue(market), progress.matchingThrough.getValue(market))) break
+                                    val financialThrough = progress.financialThrough.getValue(market)
+                                    if (
+                                        financialThrough >=
+                                        minOf(financialThroughByMarket.getValue(market), progress.matchingThrough.getValue(market))
+                                    ) {
+                                        break
+                                    }
                                     store.applyFinancial(
                                         MatchingFundsSettledAck(
-                                            first.streams.getValue(market),
-                                            Math.addExact(next, 1),
-                                            first.contexts.getValue(market),
+                                            stream = initialFundsDescription.streams.getValue(market),
+                                            through = Math.addExact(financialThrough, 1),
+                                            context = initialFundsDescription.contexts.getValue(market),
                                         ),
                                     )
-                                    work++
+                                    appliedFactCount++
                                 }
                             }
                             // 결과를 모르는 커밋에는 도달하지 않는다. 재연결 시 DB cursor부터 먼저 읽는다.
-                            val committed = store.progress()
-                            if (committed.admissionThrough > admissionBounds.retiredThrough) {
-                                acknowledged(
-                                    funds.request(OrderQuerySourceCommand.Acknowledge(consumerId, null, committed.admissionThrough)),
-                                )
+                            val committedProgress = store.progress()
+                            if (committedProgress.admissionThrough > admissionBounds.retiredThrough) {
+                                val admissionAck =
+                                    fundsClient.request(
+                                        OrderQuerySourceCommand.Acknowledge(consumerId, null, committedProgress.admissionThrough),
+                                    )
+                                requireAcknowledged(admissionAck)
                             }
-                            for ((market, through) in committed.matchingThrough) {
+                            for ((market, through) in committedProgress.matchingThrough) {
                                 if (through <= matchingBounds.getValue(market).retiredThrough) continue
-                                acknowledged(
-                                    client(
-                                        matchingIngress.getValue(market),
-                                    ).request(OrderQuerySourceCommand.Acknowledge(consumerId, market, through)),
-                                )
+                                val matchingClient = client(matchingIngress.getValue(market))
+                                val matchingAck =
+                                    matchingClient.request(
+                                        OrderQuerySourceCommand.Acknowledge(consumerId, market, through),
+                                    )
+                                requireAcknowledged(matchingAck)
                             }
                             clients.values.forEach { it.poll() }
-                            if (work == 0) Thread.sleep(25)
+                            if (appliedFactCount == 0) Thread.sleep(25)
                         }
                     } finally {
                         clients.values.forEach { it.close() }
@@ -247,7 +300,7 @@ internal class OrderQueryFeedWorker(
         }
     }
 
-    private fun described(
+    private fun describeSource(
         client: OrderQuerySourceClient,
         role: TradingServiceRole,
     ): OrderQuerySourceReply {
@@ -261,7 +314,7 @@ internal class OrderQueryFeedWorker(
         return reply
     }
 
-    private fun acknowledged(reply: OrderQuerySourceReply) {
+    private fun requireAcknowledged(reply: OrderQuerySourceReply) {
         if (reply.code == "NOT_READY") throw IllegalStateException("query source is not ready")
         require(reply.code == "ACKNOWLEDGED") { "query source acknowledgement differs" }
     }
