@@ -2,349 +2,89 @@
 
 [![PR Build and Test](https://github.com/0Chord/coin-exchange/actions/workflows/build-and-test.yml/badge.svg?event=pull_request)](https://github.com/0Chord/coin-exchange/actions/workflows/build-and-test.yml?query=event%3Apull_request)
 
-매수·매도 주문을 받아 가격과 접수 순서에 따라 체결하고, 잔고와 수수료를 정산하는 현물 거래 백엔드입니다.
-매칭 엔진은 Kotlin으로 직접 구현했습니다. Spring Boot는 HTTP 요청과 트랜잭션을 담당하고, PostgreSQL에는 잔고·주문 예약·매칭 이벤트·체결 원장을 저장합니다.
+Kotlin으로 구현한 현물 거래 백엔드입니다. **HTTP 요청을 받는 WAS는 하나**이며, 주문은 공통 자금 엔진에 보내고 주문 조회는 공용 PostgreSQL을 읽습니다. WAS 안의 주문·조회 API를 실행 프로필로 나누지 않습니다.
 
-현재 LIMIT/GTC 주문의 접수·체결·취소가 연결되어 있습니다. 같은 주문이 여러 번 나뉘어 체결되어도 수수료의 소수 나머지를 이어 계산하고, 체결 한 건의 양쪽 잔고와 원장을 같은 DB 트랜잭션에서 변경합니다.
-아직 배포된 거래소는 아닙니다. 실제 동작은 아래 통합 테스트로 확인할 수 있고, IOC/MARKET 주문과 장애 후 주문장 복구는 남은 작업입니다.
+사용 기술: Kotlin 2.3.21 · Java 25 · Spring Boot 4.1.0 · Aeron Cluster 1.53.3 · PostgreSQL 16 · Flyway · JUnit Jupiter · Testcontainers
 
-사용 기술: Kotlin 2.3.21 · Java 25 · Spring Boot 4.1.0 · PostgreSQL 16 · Flyway · JUnit Jupiter · Testcontainers · JMH 1.37
-
-[거래 예시](#주문-한-건-따라가기) · [처리 흐름](#주문-처리-흐름) · [설계](#핵심-설계) · [개발 기준](#개발-기준과-검사-상태) · [실행](#빠르게-검증하기) · [코드 안내](#코드-읽는-순서) · [성능 측정](#성능-측정) · [남은 작업](#현재-경계와-다음-작업)
-
-## 주문 한 건 따라가기
-
-[OrderLifecycleE2ETest](app-api/src/test/kotlin/com/exchange/core/api/order/application/OrderLifecycleE2ETest.kt)의 전량 체결 시나리오입니다.
-실제 BTC 시세가 아니라 계산을 확인하기 위한 테스트 값입니다. 이 테스트는 BTC 수량의 소수 자릿수를 0으로 두며, maker 수수료는 0.5%, taker 수수료는 1%입니다.
-
-BTC-KRW에서 BTC는 사고파는 자산(`base`), KRW는 대금을 지불하는 자산(`quote`)입니다.
-`available`은 주문에 쓸 수 있는 잔고, `hold`는 이미 주문에 묶인 잔고입니다.
-
-1. 판매자는 BTC 10개 중 **2개를 90,000원에 매도**합니다. 상대 주문이 없으므로 주문장에 대기하고, BTC 잔고는 `available 8 / hold 2`가 됩니다.
-2. KRW 1,000,000원을 가진 구매자가 **2개를 100,000원에 매수**합니다. 지정가 대금 200,000원과 최대 수수료 2,000원을 예약합니다. 매칭 전 KRW 잔고는 `available 798,000 / hold 202,000`입니다.
-3. 먼저 대기한 매도 주문의 가격인 **90,000원에 2개가 체결**됩니다. 실제 대금은 180,000원입니다. 대기한 판매자가 maker, 들어와서 체결한 구매자가 taker가 됩니다.
-4. 구매자는 대금과 수수료 1,800원을 지불합니다. 예약한 202,000원 중 사용하지 않은 **20,200원은 즉시 반환**합니다. 판매자는 대금에서 수수료 900원을 뺀 179,100원을 받습니다.
-
-| 정산 후 | KRW | BTC |
-| --- | ---: | ---: |
-| 구매자 잔고 | 818,200원 | 2개 |
-| 판매자 잔고 | 179,100원 | 8개 |
-| 거래소 수수료 수익 원장 | 2,700원 | — |
-
-양쪽 주문의 hold와 남은 예약액은 모두 0이 됩니다. KRW는 `818,200 + 179,100 + 2,700 = 1,000,000`, BTC는 `2 + 8 = 10`으로 이동 전후 합계가 같습니다.
-거래소 수수료는 사용자 잔고에서 사라지는 금액이 아니라 별도 수익 계정의 원장 기록으로 남습니다. 다만 이 테스트의 초기 잔고는 SQL로 준비하므로, 이것이 입금부터 전체 잔고를 원장으로 재구성했다는 뜻은 아닙니다.
-
-## 주문 처리 흐름
+## 현재 실행 구조
 
 ```mermaid
-flowchart TD
-    API["HTTP 주문 접수"] --> Submission["SubmitOrderUseCase"]
-    Submission --> Worker["마켓별 single-writer 작업 스레드"]
-    Worker --> Funding["1. 자금 예약<br/>OrderFundingService<br/>DB 트랜잭션"]
-    Funding --> Matching["2. 가격·시간 우선순위 매칭<br/>메모리 주문장"]
-    Matching --> Events["3. 매칭 이벤트 저장"]
-    Events --> Settlement["4. 체결별 정산<br/>TradeSettlementService<br/>DB 트랜잭션"]
-    Settlement --> Reservations["BUY·SELL 예약과 소수 나머지"]
-    Settlement --> Balances["잔고 소비 · 반환 · 지급"]
-    Settlement --> Ledger["체결 원장 · 수수료 수익 분개"]
+flowchart LR
+    Client["클라이언트"] --> WAS["단일 Spring Boot WAS"]
+    WAS -->|"주문 접수·요청 결과 확인"| Funds["공통 자금 엔진"]
+    Funds -->|"예약한 주문 전달"| Matching["마켓 담당 매칭 엔진"]
+    Matching -->|"확정된 매칭 결과"| Funds
+    WAS -->|"주문 단건 조회"| RDB["공용 PostgreSQL"]
+    Funds -.->|"조회 기록 자동 반영은 후속 B"| RDB
 ```
 
-정산 트랜잭션은 체결 한 건을 묶습니다. 같은 체결의 양쪽 예약·잔고·원장은 함께 커밋하거나 롤백합니다.
-자금 예약, 매칭 이벤트 저장, 체결 정산은 각각 별도 단계이므로 주문 접수 전체가 하나의 DB 트랜잭션인 것은 아닙니다.
-따라서 정산 DB가 롤백되어도 앞서 바뀐 메모리 주문장이나 저장된 매칭 이벤트까지 되돌아가지는 않습니다. 이런 실패가 나면 해당 마켓의 추가 처리를 막으며, 상태 복구는 아직 구현하지 않았습니다.
+- WAS의 시작점은 [ExchangeCoreApplication](app-api/src/main/kotlin/com/exchange/core/ExchangeCoreApplication.kt) 하나입니다. Spring Boot의 기본 컴포넌트 탐색으로 주문·조회 Controller와 설정을 등록합니다. 시작 클래스에 등록 목록을 나열하지 않습니다.
+- WAS는 자금 엔진 한 곳에 연결합니다. 자금 엔진이 예약·순서·중복을 관리하고 기존 전달 작업으로 매칭 담당에 주문을 보냅니다. 매칭 담당별 확장과 복제 구성은 엔진 측의 책임입니다.
+- 금융·매칭 상태의 판단은 도메인 모듈이 담당합니다. WAS가 잔고를 계산하거나 메모리 주문장을 직접 변경하지 않습니다.
+- 조회는 같은 WAS에서 같은 PostgreSQL 접속 설정을 사용합니다. `order_query`는 RDB 안의 조회 테이블 이름 공간이며 별도 서버가 아닙니다.
+- **실제 거래 기록의 RDB 자동 반영은 아직 없습니다.** 현재 조회 저장·GET 기반을 검증했고 후속 B에서 기록 연결을 붙입니다. 새 조회 범위는 준비 전이므로 GET에 `503 QUERY_NOT_READY`를 반환합니다.
 
-취소는 매칭 엔진에서 주문 제거에 성공한 뒤 남은 예약을 해제합니다. BUY는 남은 거래대금·수수료 예약액을, SELL은 남은 base 자산을 반환합니다.
+프로필별 WAS, 별도 조회 WAS, 조회용 DB 연결 풀·Flyway를 따로 만들지 않습니다. Spring Boot의 공용 DataSource·JDBC·트랜잭션·Flyway를 사용하며 SQL은 `app-api/src/main/resources/db/migration`에서 관리합니다.
 
-## 핵심 설계
+## 주문 한 건의 흐름
 
-### 1. 가격·시간 우선순위와 마켓별 직렬 처리
+1. WAS가 사용자·요청 세대·순번과 주문 내용을 검증해 자금 엔진에 보냅니다.
+2. 자금 엔진이 같은 요청의 중복 여부와 사용 가능한 자금을 확인합니다. 예약이 확정되면 접수 결과를 반환합니다.
+3. 자금 리더의 전달 작업이 매칭 담당에 주문을 보냅니다. 매칭 엔진은 가격·시간 순서에 따라 체결·대기·최종 거절을 확정합니다.
+4. 매칭 결과가 자금 엔진에 돌아오면 잔고·예약·수수료를 정산합니다. 접수 응답과 정산 완료는 서로 다른 시점입니다.
+5. 같은 요청을 재전송하면 기존 접수 결과를 재사용합니다. 응답을 받지 못했다고 새 요청 번호로 바꿔 재접수하지 않습니다.
 
-- 가격 레벨은 `TreeMap`, 같은 가격 안의 주문은 `LinkedHashMap`으로 관리해 가격 우선순위와 FIFO를 표현합니다.
-- 마켓별 단일 작업 스레드에서 사전 예약 → 매칭 → 후속 저장·정산을 순서대로 실행합니다.
-- 예약 이후 엔진 처리나 후속 저장에 실패하면 해당 마켓의 추가 명령을 차단합니다. 이 차단은 자동 복구를 의미하지 않습니다.
+[실제 HTTP 검증](app-api/src/test/kotlin/com/exchange/core/api/trading/infrastructure/aeron/SplitFundsTradingHttpTest.kt)은 판매 자산 3개와 구매 대금 1,000을 준비하고, 매도 3·매수 3을 HTTP로 접수합니다. 실제 자금·매칭 엔진을 거친 뒤 구매자의 대금 700/자산 3, 판매자의 대금 300/자산 0, 종료된 예약과 hold 0을 대조합니다. 이 사례의 수수료는 0으로 고정하며 수수료 계산의 일반 검증은 별도 도메인 테스트에 있습니다.
 
-관련 코드: [OrderBook](domain-matching/src/main/kotlin/com/exchange/core/matching/OrderBook.kt), [PriceLevel](domain-matching/src/main/kotlin/com/exchange/core/matching/PriceLevel.kt), [MarketCommandProcessor](domain-matching/src/main/kotlin/com/exchange/core/matching/MarketCommandProcessor.kt)
-
-### 2. 잔고와 주문별 예약을 따로 두는 이유
-
-- `Balance`는 사용자·자산별 `available`과 `hold`를 관리합니다.
-- `OrderReservation`은 전체 hold 중 특정 주문에 속한 거래대금·수수료 예약액을 추적합니다.
-- 예를 들어 두 주문이 같은 KRW 잔고를 예약하면 `Balance.hold`에는 합계가 들어갑니다. 한 주문만 취소할 때 얼마를 풀어야 하는지는 해당 `OrderReservation`으로 판단합니다.
-- BUY는 거래대금과 최대 maker/taker 수수료를 미리 예약하고, SELL은 base 수량을 예약한 뒤 판매대금에서 수수료를 차감합니다.
-- 조건부 잔고 UPDATE와 예약 행의 `FOR UPDATE` 잠금을 사용합니다. 자금 예약·예약 해제·체결 정산마다 필요한 변경을 같은 트랜잭션에 묶습니다.
-
-관련 코드: [OrderFundingService](app-api/src/main/kotlin/com/exchange/core/api/order/application/OrderFundingService.kt), [OrderReservation](domain-order/src/main/kotlin/com/exchange/core/order/OrderReservation.kt), [PostgresBalanceStore](app-api/src/main/kotlin/com/exchange/core/api/ledger/infrastructure/persistence/PostgresBalanceStore.kt)
-
-### 3. 수수료는 체결마다 버리지 않고 주문별로 누적
-
-금액·수량은 정수 최소 단위로, 수수료율은 백만분율 정수로 표현합니다. 수수료 중간 연산에는 `BigInteger`를 사용하고 소수 부분은 `FeeRemainder`에 보관합니다.
-
-```text
-이번 수수료 분자 = 이번 체결대금 × 이번 maker/taker 요율 정수 + 이전 나머지 분자
-이번 청구 수수료 = 분자 ÷ 1,000,000의 몫
-다음 소수 나머지 = 분자 ÷ 1,000,000의 나머지
-```
-
-예를 들어 최소 금액 단위가 1원일 때, 255원을 1% 요율로 한 번에 체결하든 `51 + 51 + 51 + 102`원으로 나누어 체결하든 청구 수수료는 총 2원입니다.
-나누어 체결하면 청구액은 `0 → 1 → 0 → 1`원이 되고, 최종 소수 나머지는 0.55원입니다. 나머지는 실제 동결 잔고와 구분합니다.
-
-BUY는 부분 체결 후에도 `올림(남은 지정가 대금 × 최대 요율 + 새 소수 나머지)`를 유지하고 초과분만 반환합니다. 전량 체결되면 미사용 예약액을 모두 반환합니다.
-수수료 정책은 주문 접수 시 스냅샷으로 고정하지만 maker/taker 역할은 체결마다 정해집니다. 처음에는 taker로 일부 체결되고, 잔량이 주문장에 남아 다음에는 maker가 될 수 있습니다.
-이때 각 체결의 역할에 맞는 요율을 적용하며, 이미 계산한 나머지에 새 요율을 다시 곱하지 않습니다.
-
-관련 코드: [TradingFeeCalculator](domain-fee/src/main/kotlin/com/exchange/core/fee/TradingFeeCalculator.kt), [TradingFeeReserveCalculator](domain-fee/src/main/kotlin/com/exchange/core/fee/TradingFeeReserveCalculator.kt), [OrderFillSettlementCalculator](domain-order/src/main/kotlin/com/exchange/core/order/OrderFillSettlementCalculator.kt)
-
-### 4. 체결 원장과 수수료 수익 기록
-
-- 체결별 `LedgerTransaction`에 양쪽 주문의 분개를 함께 기록합니다.
-- 거래별·자산별 DEBIT/CREDIT 합계가 일치하는지 검증합니다. 서로 다른 자산의 금액을 합쳐 균형을 판단하지 않습니다.
-- 구매자와 판매자에게 청구한 수수료는 `SYSTEM:{asset}:FEE_REVENUE` 계정에 기록합니다.
-- 원장 저장 후 잔고 지급에 실패해도 원장·예약·잔고·소수 나머지가 함께 롤백되는지 실제 DB에서 확인합니다.
-
-관련 코드: [LedgerTransaction](domain-ledger/src/main/kotlin/com/exchange/core/ledger/LedgerTransaction.kt), [TradeSettlementService](app-api/src/main/kotlin/com/exchange/core/api/order/application/TradeSettlementService.kt)
-
-## 모듈 구성
-
-| 모듈 | 책임 |
-| --- | --- |
-| [`domain-common`](domain-common) | 식별자와 가격·수량·금액 value class |
-| [`domain-matching`](domain-matching) | 주문장, 매칭 엔진, 마켓별 명령 처리 |
-| [`domain-order`](domain-order) | 주문 예산·예약과 체결 정산 계획 |
-| [`domain-fee`](domain-fee) | 등급·상품별 maker/taker 정책, 누적 수수료와 예약액 계산 |
-| [`domain-ledger`](domain-ledger) | 잔고, 자산별 균형을 검증하는 원장 모델, 저장소 포트 |
-| [`app-api`](app-api) | Spring Bean 조립, HTTP API, 트랜잭션, PostgreSQL 어댑터 |
-| [`benchmark-jmh`](benchmark-jmh) | 명령 생성·매칭·마켓 프로세서용 JMH 벤치마크 |
-| [`architecture-tests`](architecture-tests) | 운영 코드를 읽는 구조 검사와 정상·고의 위반·누락 예제. 거래 실행 코드가 아님 |
-
-도메인 모듈의 계산은 Spring이나 DB 없이 실행할 수 있습니다. `app-api`에서 주문 유즈케이스와 매칭 조율자를 명시적인 `@Bean`으로 조립하고, 저장소 인터페이스에 PostgreSQL 구현체를 연결합니다.
-매칭 이벤트는 JPA로, 잔고·예약·원장은 JDBC로 저장합니다. 잔고의 조건부 UPDATE와 예약 행 잠금은 [PostgresBalanceStore](app-api/src/main/kotlin/com/exchange/core/api/ledger/infrastructure/persistence/PostgresBalanceStore.kt), [PostgresOrderReservationStore](app-api/src/main/kotlin/com/exchange/core/api/order/infrastructure/persistence/PostgresOrderReservationStore.kt)에서 직접 확인할 수 있습니다.
-스키마 변경은 [Flyway migration](app-api/src/main/resources/db/migration)으로 관리합니다.
-
-## 공통 Kotlin 린트
-
-ktlint Gradle 플러그인 14.2.0과 ktlint 1.8.0을 고정해 사용합니다. [공식 플러그인](https://github.com/JLLeitschuh/ktlint-gradle)의 `ktlintCheck`·`ktlintFormat`을 그대로 사용하며, 별도 검사기를 만들지 않습니다.
-
-[.editorconfig](.editorconfig)에 공통 기준을 둡니다. 공백 4칸, 줄바꿈·마지막 개행, import 순서와 명시 import, trailing comma 등 `ktlint_official` 규칙을 사용합니다. 운영 코드·테스트·JMH 코드와 루트·모듈·보조 Gradle Kotlin 스크립트가 대상이며, 생성된 `build` 폴더는 제외합니다. 일부러 부적절한 이름을 만든 ArchUnit 예제 한 선언은 클래스 이름 규칙만 억제하고 나머지 형식 검사는 유지합니다.
-
-저장소 루트에서 `./gradlew ktlintCheck --continue`로 검사하고 `./gradlew ktlintFormat`으로 자동 정리합니다. 자동으로 고치지 못하는 위반은 파일·줄·규칙을 보고 직접 수정한 뒤 다시 검사합니다. 형식 통과가 업무 규칙이나 설계의 정확성을 뜻하지는 않습니다.
-
-현재 플러그인은 위반 파일을 삭제했을 때 이전 오류가 남는 증분 검사 문제가 있습니다. 검사·포맷 작업의 입력에 파일 목록을 추가해 추가·삭제 때 전체를 재검사합니다. 내용 수정은 증분 검사하고, 동일 입력은 재사용합니다. 오류를 무시하거나 검사 대상을 줄이지 않습니다.
-
-일반 `build`·`check`에도 린트가 포함됩니다. PR CI는 제품 검사를 `general`·`transport`·`settlement`·`multi-market`·`failover`의 독립 머신으로 나눕니다. `general`에서 **Kotlin formatting → Docker 준비 → 전체 빌드·일반/DB 테스트**를 실행하고, 나머지 네 그룹이 무거운 클러스터 테스트를 맡습니다. 린트가 실패하면 `general`의 뒤 단계는 실행하지 않습니다. 구조 테스트는 별도 필수 작업인 **Architecture checks**에서 강제 실행하고 P01~P09 보고서를 확인하므로 제품 빌드에서는 중복 실행하지 않습니다. 필수 **Build and test**는 모든 제품 그룹의 성공과 실제 후보·XML 보고서를 확인하는 마지막 관문입니다. 로컬 `build`는 기존대로 린트·구조·제품 테스트를 포함하며 `ciTestGroup`을 지정하지 않으면 필터링하지 않습니다.
-
-보고서는 모듈별 `build/reports/ktlint/`의 텍스트와 Checkstyle XML입니다. CI에서는 `general`의 **Check Kotlin formatting** 로그와 `test-reports-general` artifact에서 확인합니다. CI는 자동 수정이나 commit을 하지 않습니다. 소스가 없는 작업은 `NO-SOURCE`·`SKIPPED`가 될 수 있고 이전 로컬 보고서가 남을 수 있으므로, 보고서만 보지 말고 이번 실행 로그와 생성 시각을 함께 확인합니다.
-
-## 빠르게 검증하기
-
-아래 명령은 해당 변경을 포함한 저장소 루트에서 실행합니다. 별도 작업 폴더에서 개발 중이라면 먼저 그 폴더로 이동합니다. `verifyArchitectureReport`를 찾을 수 없다는 오류는 현재 폴더·브랜치에 작업 정의가 없다는 뜻이며, 테스트 실행 결과가 아닙니다. 브랜치 이름 변경만으로 다른 작업 폴더의 코드가 복사되지는 않습니다.
-
-**구조 검사만 실행:** JDK 25와 저장소의 Gradle Wrapper를 사용합니다. 서버·DB·Docker를 시작하지 않습니다.
-
-```bash
-./gradlew :architecture-tests:test --no-daemon --console=plain
-```
-
-결과는 `architecture-tests/build/reports/tests/test/index.html`과 `architecture-tests/build/test-results/test/TEST-*.xml`에서 확인합니다. 실제 재실행이 필요한 경우 `--rerun-tasks`를 붙이며, `UP-TO-DATE` 결과를 이번 실행으로 기록하지 않습니다.
-
-CI와 같은 재실행·필수 운영 검사 확인:
-
-```bash
-./gradlew :architecture-tests:test --no-daemon --console=plain --rerun-tasks
-./gradlew :architecture-tests:verifyArchitectureReport --no-daemon --console=plain
-```
-
-두 번째 명령은 같은 모듈의 Kotlin 확인 코드를 실행해 현재 필수 운영 검사 P01~P09의 XML을 읽습니다. 보고서 누락·검사 누락·중복·skip·실패가 있으면 실패로 끝납니다. 테스트에 의존하는 작업이므로 테스트 실패를 무시하고 진행하지 않습니다. CI에서는 직전 단계가 만든 결과를 재사용합니다.
-
-로컬에서 테스트 재실행과 보고서 확인을 한 번에 하려면 다음 명령을 사용합니다. `--rerun-tasks`를 생략하면 변경이 없는 테스트는 `UP-TO-DATE`로 재사용되므로 새로운 실행 증거라고 기록하지 않습니다. 별도 Python이나 추가 라이브러리는 필요 없습니다.
-
-```bash
-./gradlew :architecture-tests:verifyArchitectureReport --no-daemon --console=plain --rerun-tasks
-```
-
-**전체 검증 준비:** JDK 25, 실행 중인 Docker. Gradle은 저장소의 Wrapper를 사용합니다.
-PostgreSQL은 Testcontainers가 생성·종료하므로 테스트용 DB를 따로 설치하거나 연결 정보를 입력할 필요가 없습니다.
-
-```bash
-git clone --branch feature/phase-2/integration https://github.com/0Chord/coin-exchange.git
-cd coin-exchange
-
-# 전체 모듈 린트·빌드·테스트 — CI와 같은 검증 범위
-./gradlew build --no-daemon --continue --stacktrace --rerun-tasks
-```
-
-처음 실행할 때는 Gradle 의존성과 PostgreSQL 컨테이너 이미지 다운로드가 필요합니다.
-
-<details>
-<summary>시나리오별 테스트 실행 명령</summary>
-
-```bash
-# 주문 HTTP 접수 → 예약 → 매칭 → 정산 → 원장, 미체결 BUY/SELL 취소
-./gradlew :app-api:test \
-  --tests 'com.exchange.core.api.order.OrderLifecycleE2ETest' \
-  --no-daemon --rerun-tasks
-
-# 분할 체결, maker/taker 전환, 부분 체결 후 예약 해제, 정산 실패와 롤백
-./gradlew :app-api:test \
-  --tests 'com.exchange.core.api.order.TradeSettlementServiceTest' \
-  --no-daemon --rerun-tasks
-
-# DB 없이 금액·수수료·예약 계산 검증
-./gradlew :domain-fee:test :domain-order:test --no-daemon --rerun-tasks
-```
-
-</details>
-
-검증 기준 시점인 **2026-09-12**에 전체 **243개 테스트**가 통과했습니다. 상단 CI 배지는 PR 이벤트의 상태를 보여줍니다. 검토 중인 변경의 결과는 해당 PR의 Checks와 [Actions](https://github.com/0Chord/coin-exchange/actions/workflows/build-and-test.yml)에서 커밋을 대조해 확인합니다.
-로컬 HTML 결과는 각 모듈의 `build/reports/tests/test/index.html`에 생성됩니다.
-
-| 검증 계층 | 확인하는 내용 | 대표 테스트 |
-| --- | --- | --- |
-| 구조 | 기술·직접 의존·포트 계약·테스트 역의존·Bean 조립 선언 | [운영 검사](architecture-tests/src/test/kotlin/com/exchange/architecture/ProductionArchitectureTest.kt) · [적용 상태와 근거](engineering/architecture-check-spec.md) |
-| 순수 도메인 | 가격·시간 우선순위, 금액 경계, 수수료 누적, 예약 유지 | [매칭](domain-matching/src/test/kotlin/com/exchange/core/matching/MatchingEngineTest.kt) · [정산 계산](domain-order/src/test/kotlin/com/exchange/core/order/OrderFillSettlementCalculatorTest.kt) |
-| PostgreSQL 통합 | 동결·정산의 원자성, 소수 나머지 저장, 수수료 원장, 실패 시 롤백 | [정산 통합 테스트](app-api/src/test/kotlin/com/exchange/core/api/order/application/TradeSettlementServiceTest.kt) |
-| HTTP 경계 E2E | 주문 접수부터 예약·매칭·정산, 미체결 주문 취소와 반환 | [주문 E2E 테스트](app-api/src/test/kotlin/com/exchange/core/api/order/application/OrderLifecycleE2ETest.kt) |
-
-HTTP 경계는 MockMvc로 호출하지만 서비스나 저장소를 mock으로 대체하지 않습니다. 실제 Spring Bean과 PostgreSQL을 사용합니다. 분할 체결·역할 전환·실패 후 재시도는 정산 서비스 통합 테스트의 검증 범위입니다.
-
-### CI 실행 시점
-
-CI는 Draft·일반 PR을 열거나, 열린 PR에 새 커밋을 올리거나, 닫힌 PR을 다시 열 때 실행합니다. PR을 열기 전의 push와 병합 후 통합 브랜치의 push에는 실행하지 않습니다. PR 전에는 로컬로 검사하거나 Draft PR을 먼저 열어 CI를 확인합니다.
-
-열린 PR에 커밋을 올리면 `pull_request` 이벤트로 검사하며 별도의 `push` 실행은 만들지 않습니다. 같은 PR의 이전 검사가 진행 중이면 기존 동시 실행 설정에 따라 취소될 수 있으므로 최신 커밋의 결과를 확인합니다. 다른 PR의 검사는 유지합니다.
-
-PR에서는 병합 후보를 검사하며, 실제 병합 커밋을 별도로 다시 검사하지 않습니다. 두 필수 검사와 브랜치 보호 설정은 유지합니다. 이전 workflow가 남아 있는 작업 브랜치는 최신 통합의 변경을 반영하기 전까지 push 검사도 실행될 수 있습니다.
-
-### CI 실패 이유와 보고서 읽기
-
-[Actions](https://github.com/0Chord/coin-exchange/actions/workflows/build-and-test.yml)의 **해당 커밋 실행**을 고른 다음, 실행 요약의 **첫 실패 단계**와 그 단계의 실제 오류 메시지부터 읽습니다. 파일명이나 빨간 표시만으로 원인을 추정하지 않습니다.
-
-| 작업 | 실행 범위 | 내려받을 보고서 |
-| --- | --- | --- |
-| Architecture checks | Docker 없이 구조 검사와 필수 운영 검사 실행 확인 | `architecture-test-reports` |
-| Test partition plan | 한 배치표에서 실행 그룹 생성·검증 스크립트 자체 검사 | 해당 단계 로그 |
-| Product tests (general) | 전체 빌드·린트·일반 제품/DB 테스트 | `test-reports-general` |
-| Product tests (transport/settlement/multi-market/failover/quorum-loss/quorum-partition) | 그룹별 실제 클러스터 테스트 | `test-reports-그룹명` |
-| Build and test | 모든 제품 그룹 성공·후보의 누락/중복·실제 XML 대조 | 그룹별 artifact와 최종 요약 |
-
-구조 검사와 제품 검사는 독립 실행합니다. 구조만 성공하고 제품 그룹의 Docker 준비가 실패했다면 **구조 통과 / 해당 제품 검사 미실행 / 전체 CI 실패**입니다. 제품 그룹은 각자 30분 한도이며, 한 그룹이 실패해도 다른 그룹의 진단 보고서는 수집합니다. 마지막 **Build and test**는 실패·취소·미실행·보고서 부재를 통과시키지 않습니다. 두 필수 검사 이름은 유지하며 한쪽의 성공을 다른 쪽의 성공으로 간주하지 않습니다.
-
-클러스터 클래스의 배정은 [`.github/ci-test-groups.json`](.github/ci-test-groups.json) 한 곳에서 관리합니다. 새 테스트는 명시적으로 배정하지 않으면 `general`에 포함됩니다. 컴파일된 전체 후보와 실제 Gradle 선택 후보를 기록해 그룹별 합집합·중복을 확인하며, 내부 클래스도 원래 클래스와 함께 실행합니다. 후보 개수는 실제 테스트 실행 개수와 다릅니다. 실제 성공·skip은 XML로 따로 집계합니다. 특정 그룹 재현은 해당 작업 폴더에서 다음처럼 실행합니다.
-
-```bash
-cd /path/to/exchange-core
-./gradlew :app-api:test --rerun -PciTestGroup=failover --no-daemon --console=plain
-```
-
-1. 실행의 **커밋·시도 번호·두 작업 상태**를 확인합니다. PR head와 검사 대상인 PR merge ref를 구분하고, PR 검사를 병합 후 통합 커밋의 검사로 읽지 않습니다. 과거 push 실행은 당시 기록입니다. 실패한 작업의 **첫 실패 단계 → 실제 로그 메시지**를 읽습니다. 준비·컴파일에서 멈췄다면 뒤의 검사는 미실행입니다.
-2. 구조/제품 테스트가 실행됐다면 해당 artifact를 내려받아 ZIP을 풉니다. 압축 안에서 `reports/tests/test/index.html`로 끝나는 HTML을 CSS·JS와 함께 열고 **실패한 테스트**를 선택합니다. 최상위 폴더는 업로드 경로에 따라 달라질 수 있습니다.
-3. HTML에 원인이 부족하면 같은 모듈의 `test-results/test/TEST-*.xml`에서 실패 메시지·출력을 읽습니다. 구조 보고서의 `ProductionArchitectureTest`에는 **P01~P09가 각각 한 번**, 실패·오류·skip 없이 있어야 합니다. 합계 9개라도 하나가 빠지고 다른 하나가 중복되면 실패입니다. 아래 표에서 첫 수정 위치를 찾습니다.
-4. **구조 결과·제품 결과·보고서 전달**을 각각 기록합니다. 검사 성공과 업로드 성공은 다르며, 취소·skip·보고서 부재를 성공으로 해석하지 않습니다. XML은 커밋을 인증하지 않으므로 같은 실행에서 내려받은 자료인지도 대조합니다.
-5. 커밋·실행 ID/시도·명령·실제 오류와 수정 위치를 기록하고 해당 검사부터 다시 실행합니다. 보고서는 **7일** 보관이므로 만료 전 필요한 근거를 기록합니다. 오래된 보고서 링크만으로 근거가 영구 보존되는 것은 아닙니다.
-
-| 실제 오류·상황 | 먼저 확인할 곳 |
-| --- | --- |
-| `ARCH-* 위반`, Bean 금지 참조 | 오류의 운영 타입·직접 의존·Bean 선언 |
-| `검사 준비 실패`, `not evaluated`, `MISSING_REQUIRED_TYPE`, `READ_FAILURE` | 모듈·컴파일 출력·누락/손상 입력. 해당 규칙은 미평가 |
-| 정상·위반 예제의 기대값 불일치 | 검사기와 예제 테스트. 운영 코드 위반이라고 단정하지 않음 |
-| Docker/Testcontainers 기동 실패 | Docker·컨테이너 준비 로그. 실제 제품 테스트 실행 여부도 확인 |
-| 컴파일 오류 | 컴파일러가 가리킨 소스·의존 선언 |
-| `P09: 정확히 한 번 실행되어야 합니다` 등 필수 검사 실행 확인 실패 | 운영 XML의 빠진/중복 검사, 잘못된 classname·실행 필터. 운영 클래스 수집 누락과 구분. skip·failure·error도 실패이며 실행 0개를 통과로 인정하지 않음 |
-| 업로드 실패·보고서 없음·취소 | 원래 실패 단계와 남은 자료. 보고서 없음은 위반 0개나 성공이 아님 |
-
-위반 예제를 제대로 거절해 **예제 테스트가 통과한 경우는 정상**입니다. 실제 운영 준수 테스트 실패와 구분합니다. 자동으로 오류의 업무 의미를 분류하지 않으며, 이유가 불분명하면 미분류로 두고 확인할 위치를 남깁니다. 현재 운영 적용 범위는 아래 개발 기준을 따릅니다.
-
-실행 기록과 현재 검사별 한계는 [#25 최종 확인](engineering/ci-result-reading-review.md)에서 확인합니다. **구조 9개 통과는 거래·DB 테스트 성공을 대신하지 않습니다.** P09는 직접 참조 경계이며 상태 변경·콜백·시간 초과는 별도 컴파일/동작 테스트에서 다룹니다.
-
-## 개발 기준과 검사 상태
-
-- [공통 개발 컨벤션](engineering/conventions-design.md): 역할별 이름, 목표 폴더, config의 명시적 Bean 조립, 도메인·저장 경계와 주석 기준.
-- [개발·주문 흐름과 검증 범위](engineering/flow-and-scope-contract.md): 제출·정산·취소의 순서, 트랜잭션·부분 실패·timeout, 대표 테스트와 검증 한계.
-- [#19 마무리 명세와 완료 근거](engineering/architecture-check-spec.md): 운영 적용·예제 검증·후속 작업, 병합·실행 근거와 로컬/원격 완료 상태.
-- [#25 최종 확인 명세](engineering/ci-result-reading-spec.md): P01~P09 적용표·같은 커밋의 보고서 대조·실패 이유 읽기와 완료 기준. 초기 설계는 이력으로 보존합니다.
-- [#25 결과 읽기와 실행 근거](engineering/ci-result-reading-review.md): 최신 통합 CI·실제 HTML/XML과 기존 실패 근거의 연결. 현재 확인과 초기 구현, 게시·병합 상태를 구분합니다.
-- [#20 상세 명세](engineering/order-usecases-spec.md): 주문 UseCase·MatchingCoordinator·OrderController의 이름/배치/Bean 연결과 ARCH-03·04·05 운영 적용 범위와 제외 사항입니다.
-- [#21 저장 경계 상세 명세](engineering/storage-boundaries-spec.md): 저장 포트·구현의 목표 위치, 설정별 Bean 연결, SQL·트랜잭션 보존과 ARCH-05 전체 활성화의 세 구현 단위. [구현·검증 기록](engineering/storage-boundaries-review.md)에 단위별 결과를 남깁니다.
-- [#23 상태·실행 경계 상세 명세](engineering/state-access-boundaries-spec.md): 내부 참조 유지와 외부 접근 제한, 콜백 실패·시간 초과·종료의 계약. [구현 읽기](engineering/state-access-boundaries-review.md)에 실제 코드·테스트와 실행 결과를 연결합니다.
-- [#22 불변 상태·DB 계약 상세 명세](engineering/immutable-db-contracts-spec.md): 기존 테스트와 원본 보존·정확한 한도·경쟁·트랜잭션 롤백의 보강 사례를 구분합니다. 기존 SQL·처리 정책을 유지하며 HTTP 부분 체결 후 취소의 대표 사례도 포함합니다.
-- [#22 원본 보존·DB 실패의 구현과 검증](engineering/immutable-db-contracts-review.md): 입력·판단·실패 후 상태를 실제 테스트와 실행 결과로 연결합니다.
-- [#24 주석·흐름 문서 명세와 구현 기록](engineering/comments-and-flow-spec.md): 핵심 계약·필요한 숫자 예시는 코드에 남기고 긴 정산·주문장·실행 설명은 흐름 문서에 모았습니다. 대표 전후 사례와 검증 결과·남은 한계를 구분합니다.
-- [#43 LIMIT/GTC 접수와 복구 계약](engineering/gtc-recovery-contract.md): 접수 확정, 중단 뒤 재개 순서, 원장 보완과 잔고 대조의 설계입니다. 현재 동작과 후속 구현을 구분하며, 복구 기능 구현 완료를 뜻하지 않습니다.
-- [#166 예약 주문의 매칭 적용·결과 보관](engineering/reserved-matching-review.md): 세 모듈의 역할, 후보/반영 분리, 단일 스레드·결과 수명, 복원·검증 근거와 후속 연결.
-- [#167 매칭 결과의 순차 정산 상세 명세](engineering/funds-result-settlement-spec.md): 전체 결과 검증·금융 반영, 두 ACK의 차이, 제한된 중복 비교 자료·전용 복원과 수용 사례. [구현·검증 기록](engineering/funds-result-settlement-review.md)에 실제 흐름·테스트·독립 리뷰와 남은 연결을 정리합니다.
-- [#168 실제 Aeron 예약 주문 전달 상세 명세](engineering/funds-order-delivery-spec.md): 자금 리더 JVM의 전송 작업, 별도 3+3노드의 주문 적용·자금 로그 ACK, 제한 조회·재전송·기본 복원과 수용 사례를 합의한 기록입니다. 작성 당시의 구현 전 명세이며 정산 역연결·일반 HTTP 전환·보안 구현은 제외합니다.
-- [#168 예약 주문 전달 구현·검증](engineering/funds-order-delivery-review.md): 실제 두 클러스터 연결, ACK 유실·기본 로그/snapshot 복원, 매칭 중단 중 자금 진행, 전체 새 테스트의 준비·실행·기대값과 독립 리뷰 근거입니다. 금융 정산 역연결은 #169입니다.
-- [#169 매칭 결과 전달·정산 확인 상세 명세](engineering/matching-result-delivery-spec.md): 매칭 리더의 결과 전송, 자금 정산과 매칭 로그 ACK, 유한 보관·재전송·복원 수용 사례입니다. [구현·검증 기록](engineering/matching-result-delivery-review.md)에서 실제 흐름·테스트와 실행 상태를 구분합니다.
-- [#133 취소 요청 기록의 스냅샷 저장·복원 설계·검증](engineering/cancel-inbox-snapshot-spec.md): #177·#178 다음 작은 PR의 구현입니다. 최초 취소 응답·요청 세대·ACK 정리 경계의 저장과 기존 v2 호환을 검증했습니다. 바이트·서비스 콜백 검증의 근거와 한계를 기록하며 실제 취소 전달·자금 반환은 후속입니다.
-- [#133 취소 접수·매칭 취소·잔여 예약 반환 상세 명세](engineering/split-order-cancellation-spec.md): #179 이후 남은 연결입니다. 첫 PR은 실제 코어의 취소·반환 완주와 기본 저장·복원, 다음 PR은 두 클러스터 실제 송수신으로 구분합니다. 업무 흐름·완료 기준을 먼저 설명하고 구현·수용 사례는 접어 분리했습니다. 코어 단위를2550154로 커밋했고, 실제 취소 전송·양쪽 Archive 복구도 검증했고, 문서15절에서3+3노드 실행·독립 리뷰·남은 범위를 구분합니다.
-- [#134 복합 장애 뒤 취소·반환·후속 주문의 재개 명세·로컬 검증](engineering/split-delivery-failure-verification-spec.md): #133 기본 복구를 제외하고 서로 다른 snapshot의 역할별 재시작, 결과 포화·ACK 유실·재연결을 실제 3+3노드의 두 사례로 검사했습니다. 9절에서 경량13개·실제 두 사례의 준비/실행/검증문, 실행 근거·독립 리뷰 수정과 남은 범위를 구분합니다. 이 기록의 로컬 검증과 원격 PR·CI·병합 상태는 구분합니다.
-- [#135 여러 매칭 담당과 공통 자금 연결 명세·구현](engineering/multi-matching-shared-funds-spec.md): A의 두 담당 실행 연결과 Adapter 경량 검증·기존 6노드 회귀 검증을 완료했으며, 실제 3+3+3노드 검증은 다음 PR입니다. 누가·언제·왜 판단하는지 먼저 설명하고 설정·호환성·수용 사례와 실제 검사 근거는 분리했습니다.
-- [#138 자금 과반 상실·분할 검증](engineering/funds-quorum-failure-verification.md): 실제9노드 Q1~Q4·경량31개·기존 장애 회귀·구조/스타일 검사, 최초 결정과 복구·정리 원자료 및 독립 검토.
-
-현재 운영에 적용한 것은 ARCH-01·02·03·04·06·08, 업무 자동 등록 금지·config Bean 선언, 저장·발행을 포함한 이름 17개 규칙과 전체 main 파일 폴더 검사입니다. 필수 운영 기록은 P01~P09입니다. 네 이행 폴더는 종료했으며 새 저장·발행 위치에 기존 의존·포트 계약 검사를 유지합니다. P09는 운영 app-api의 매칭 엔진·내부 주문 직접 참조와 config 밖 실행기 구현 참조를 금지합니다. #23에서 내부 타입·잔량 변경 경로를 제한하고 콜백·실패·시간 초과·종료 계약을 검증합니다. DB·불변 상태 계약은 #22의 별도 범위입니다.
-
-구조 검사 통과는 금액·처리 순서·DB 원자성·실제 Spring 주입 성공을 증명하지 않습니다. 불량 예제를 탐지해서 테스트가 통과하는 것과 운영 코드의 준수 검사는 구분합니다. 전체 클래스의 업무 역할을 추론하거나 새 클래스마다 이름을 등록하는 방식도 아닙니다.
-
-- [#20 구현 흐름과 검증](engineering/order-usecases-review.md): 정상·거절·실패 후 상태, 실제 변경 파일과 테스트 근거.
-
-## 코드 읽는 순서
-
-1. [OrderLifecycleE2ETest](app-api/src/test/kotlin/com/exchange/core/api/order/application/OrderLifecycleE2ETest.kt): 요청을 넣었을 때 무엇이 바뀌는지 확인합니다.
-2. [SubmitOrderUseCase](app-api/src/main/kotlin/com/exchange/core/api/order/application/SubmitOrderUseCase.kt): 예약·매칭·정산을 연결하는 흐름을 봅니다.
-3. [MatchingEngine](domain-matching/src/main/kotlin/com/exchange/core/matching/MatchingEngine.kt): 체결과 잔량 처리 규칙을 봅니다.
-4. [OrderFillSettlementCalculator](domain-order/src/main/kotlin/com/exchange/core/order/OrderFillSettlementCalculator.kt): 실제 사용액·반환액·다음 예약액을 계산합니다.
-5. [TradeSettlementServiceTest](app-api/src/test/kotlin/com/exchange/core/api/order/application/TradeSettlementServiceTest.kt): 분할 체결과 실패 상황에서 DB 정합성을 확인합니다.
-
-테스트 환경의 DB·마켓·수수료 정책과 초기화 방식은 [`support`](app-api/src/test/kotlin/com/exchange/core/support)에서 확인할 수 있습니다.
-
-### HTTP 계약
+## API와 조회 기준
 
 | 요청 | 역할 |
 | --- | --- |
-| `POST /api/markets/{marketId}/orders` | LIMIT/GTC 주문 접수와 체결 결과 반환 |
-| `DELETE /api/markets/{marketId}/orders/{orderId}?userId=...` | 미체결 잔량 취소와 예약 해제 |
+| `POST /api/trading/v3/channels/{channel}/epoch` | 요청 세대 발급·전환 |
+| `POST /api/trading/v3/markets/{marketId}/orders` | 자금 엔진에 주문 접수 |
+| `POST /api/trading/v3/channels/{channel}/ack` | 확인한 접수 결과의 연속 순번 알림 |
+| `GET /api/trading/v3/markets/{marketId}/orders/{orderId}` | RDB에 반영된 주문 상태·수량·금융 처리 상태 조회 |
 
-요청·응답 구조는 [MatchingDtos](app-api/src/main/kotlin/com/exchange/core/api/order/api/MatchingDtos.kt), 호출 예시는 위 E2E 테스트에 있습니다.
-테스트 마켓은 계산을 읽기 쉽게 `baseAssetScale = 0`으로 설정합니다. 가격·수량은 항상 마켓의 최소 단위 규칙과 함께 해석해야 합니다.
+조회에는 `minAdmissionSequence`를 0 이상의 값으로 전달할 수 있습니다. 해당 접수 위치가 아직 반영되지 않았으면 `202 QUERY_CATCHING_UP`으로 응답합니다. 준비된 관찰 기준까지 반영했는데 주문이 없을 때만 `404 ORDER_NOT_FOUND_AS_OF`를 반환합니다. DB 오류·손상은 `503`이며 주문 부재로 바꾸지 않습니다. `CAUGHT_UP`은 마지막 관찰 기준까지 반영됐다는 의미입니다.
 
-## 성능 측정
+사용자 인증·인가는 아직 구현하지 않았습니다. 조회 기록 수집·사용자 화면·새 취소 HTTP API는 이 WAS 정리의 범위에 추가하지 않습니다.
 
-### 개발 환경의 합성 입력 벤치마크 — 실사용 처리량 아님
+## 설정과 실행
 
-> 아래 숫자는 코드로 만든 주문 묶음을 메모리 매칭 코어에 넣은 JMH 측정값입니다.
-> Spring 서버와 DB는 실행하지 않았습니다. **HTTP 요청 → 자금 예약 → 매칭 → 수수료 정산 → 원장 저장의 전체 처리량이 아닙니다.**
+Java 25를 사용합니다. 실행 전에 PostgreSQL과 초기화된 자금·매칭 엔진이 준비돼야 합니다. WAS가 거래 엔진 노드나 개발 잔고를 자동 생성하지 않습니다.
 
-2026-09-12, 개발용 Apple M1 Pro 8코어 / 메모리 16 GiB / macOS / Corretto JDK 25.0.2에서 실행했습니다.
-벤치마크마다 JVM을 3번 띄우고, 각 JVM에서 워밍업 5회 × 1초, 측정 5회 × 1초를 진행했습니다. 힙은 1 GiB, JMH 호출 스레드는 1개이며 GC 할당량도 함께 수집했습니다.
-
-입력은 SELL 묶음 뒤에 BUY 묶음을 넣는 고정 패턴입니다. 실제 거래소 주문 로그, 여러 클라이언트의 동시 요청, 지속적인 요청 유입, 취소가 섞인 부하는 재현하지 않았습니다.
-
-| 합성 입력 측정 경로 | 단일 마켓 환산 명령/초 | 3개 마켓 합계 환산 명령/초 |
-| --- | ---: | ---: |
-| 엔진 직접 호출 | 4,835,853 ± 255,806 | 5,431,570 ± 424,358 |
-| 프로세서 생성 포함 | 1,430,726 ± 161,684 | 2,672,956 ± 259,857 |
-| 프로세서 재사용 | 1,199,967 ± 198,416 | 2,141,241 ± 399,465 |
-
-`±`는 JMH가 보고한 평균의 99.9% 신뢰구간 반폭입니다.
-JMH 원본의 `1 op`는 주문 한 건이 아니라 배치 한 번이므로 단일 마켓은 1,000, 다중 마켓은 1,200을 곱해 환산했습니다.
-
-직접 호출은 배치마다 엔진을 새로 만들고, 3개 마켓도 한 스레드에서 순서대로 처리합니다. 프로세서 생성 포함 경로는 작업 스레드 생성·큐 제출·완료 대기·종료 요청까지 측정합니다.
-재사용 경로는 기존 작업 스레드를 사용하지만, 입력 생성도 포함되고 체결 패턴이 달라 다른 행과 단순 속도 비교는 어렵습니다. 중복 방지용 주문 ID는 계속 남으므로 장시간 메모리 사용량도 별도 검증이 필요합니다.
-
-저장소의 JMH 기본값은 `fork 1 / 워밍업 1회 × 0.5초 / 측정 3회 × 0.5초`로 빠른 실행 확인용입니다. 위 결과는 이 기본값이 아니라 별도의 측정 옵션을 적용한 값입니다.
-현재 결과는 이 입력과 환경에 대한 초기 기준값입니다. 실사용 부하를 검증하려면 별도로 HTTP·DB 경로에 동시 주문과 취소를 넣고, 처리량·지연시간·실패율을 함께 측정해야 합니다.
-
-전체 입력 구성, 결과 해석, 실행 명령은 [JMH 측정 문서](benchmark-jmh/README.md)에 있습니다. [원본 JSON](benchmark-jmh/results/2026-09-12-core-engine.json)과 [실행 로그](benchmark-jmh/results/2026-09-12-core-engine.log)도 보관했습니다.
-
-## 현재 경계와 다음 작업
-
-| 항목 | 현재 상태 / 다음 작업 |
+| 설정 | 의미 |
 | --- | --- |
-| 주문 유형 | LIMIT/GTC 지원. IOC와 MARKET 주문은 다음 범위 |
-| 거래대금 최소 단위 | 표현할 수 없는 소수 대금은 거절. 부분 체결도 안전하도록 가격·수량 단위 정책과 사전 검증 보완 필요 |
-| 독립 서버 실행 | 통합 테스트에서 DB·마켓·수수료 정책을 구성. 기본 `application.yaml`만으로 운영 서버를 기동하는 구성은 미완성 |
-| 원장·대사 | 체결과 수수료를 기록. 입금·초기 잔고·예약·해제까지 포함한 잔고 재구성과 자동 대사는 미구현 |
-| 장애·중복 요청 | 실패 시 마켓 중단과 체결 DB 롤백 검증. 주문장 재시작 복구·자동 재시도·이미 커밋된 정산의 멱등 응답은 별도 과제 |
-| 처리량·운영 | 메모리 매칭 경로의 JMH 결과만 측정. HTTP·DB 포함 부하 테스트, 큐 크기 제한과 과부하 제어, 인증·조회 API는 남은 작업 |
-| 수수료 정책 확장 | 등급·상품별 정책 모델 보유. 월간 거래량 집계에 따른 VIP 자동 적용과 선물 거래 연결은 미구현 |
+| `SPRING_DATASOURCE_URL`, `SPRING_DATASOURCE_USERNAME`, `SPRING_DATASOURCE_PASSWORD` | 기존 공용 PostgreSQL 접속 정보 |
+| `exchange.order-query.funds-lineage-high/low` | 연결할 자금 엔진의 계보. 임의 기본값을 만들지 않습니다 |
+| `exchange.order-query.supported-markets` | 해당 조회 범위의 지원 마켓, 쉼표 구분 |
+| 기존 `TRADING_GATEWAY_*` 연결 설정 | 자금 클러스터의 ingress와 WAS의 egress·전송 한도 |
 
-`V6`는 기존 주문 예약의 수수료 나머지를 0으로 초기화하며 과거 체결의 나머지를 복원하지 않습니다. 기존 활성 주문이 있는 환경에서는 별도 전환 정책이 필요합니다.
+IntelliJ에서는 `/Users/0chord/Desktop/exchange-core`를 열고 Gradle의 `:app-api:bootRun`을 실행합니다. 프로필을 선택하지 않습니다. main을 직접 실행하려면 `ExchangeCoreApplicationKt` 실행 설정의 VM options에 다음 두 옵션을 넣습니다. Aeron이 Java 25의 내부 메모리 기능을 사용하는 데 필요하며 `bootRun`에는 이미 적용돼 있습니다.
+
+```text
+--add-opens=java.base/jdk.internal.misc=ALL-UNNAMED --add-opens=java.base/java.util.zip=ALL-UNNAMED
+```
+
+```sh
+cd /Users/0chord/Desktop/exchange-core
+JAVA_HOME=/Users/0chord/Library/Java/JavaVirtualMachines/corretto-25.0.2/Contents/Home ./gradlew :app-api:bootRun
+```
+
+공용 Flyway는 기존 V1~V9 뒤에 `V10__create_order_query.sql`을 적용합니다. 실제 배포 DB에 예전 실험용 별도 query V1을 이미 적용했다면 그대로 업그레이드할 수 있는 것으로 가정하지 말고 이력을 확인해야 합니다. 이 작업은 테스트 DB에서만 migration을 실행합니다.
+
+## 코드와 검증 읽는 순서
+
+1. [WAS 조립](app-api/src/main/kotlin/com/exchange/core/ExchangeCoreApplication.kt) — 한 서버에 어떤 API가 올라오는지 확인합니다.
+2. [주문 HTTP](app-api/src/main/kotlin/com/exchange/core/api/trading/api/BoundedTradingOrderController.kt)와 [자금 연결](app-api/src/main/kotlin/com/exchange/core/api/trading/infrastructure/aeron/SplitFundsGatewayTransport.kt) — 요청을 어떤 엔진에 보내는지 확인합니다.
+3. `domain-trading`·`domain-matching`·`domain-ledger`·`domain-fee` — 자금·매칭·정산 판단과 불변식을 확인합니다.
+4. [조회 판단](app-api/src/main/kotlin/com/exchange/core/api/trading/application/OrderQueryUseCase.kt)과 [조회 저장소](app-api/src/main/kotlin/com/exchange/core/api/trading/infrastructure/persistence/PostgresOrderQueryStore.kt) — 지연·부재·오류와 DB 원자성을 확인합니다.
+5. [변경·테스트 기록](engineering/order-query-foundation-review.md) — 실제 실행 결과와 남은 자동 반영 범위를 확인합니다.
+
+```sh
+cd /Users/0chord/Desktop/exchange-core
+JAVA_HOME=/Users/0chord/Library/Java/JavaVirtualMachines/corretto-25.0.2/Contents/Home ./gradlew --no-daemon --max-workers=1 :app-api:test --tests '*SplitFundsTradingHttpTest' --tests '*ExchangeCoreApplicationTests' --tests '*OrderQuery*Test'
+JAVA_HOME=/Users/0chord/Library/Java/JavaVirtualMachines/corretto-25.0.2/Contents/Home ./gradlew --no-daemon --max-workers=1 ktlintCheck :architecture-tests:verifyArchitectureReport
+```
+
+이전 RDB 주문 실행과 이전 통합형 프로토콜의 설정·Controller·공통 오류 처리는 `src/test`로 옮겨 회귀 테스트에서 명시적으로 조립합니다. `@TestConfiguration`·`@TestComponent`로 표시해 제품의 기본 탐색에 섞이지 않게 합니다. 이 테스트용 시작점은 제품 WAS의 추가 실행 모드가 아닙니다. 과거 설명은 Git 이력과 각 engineering 검증 기록에 있으며 현재 실행 구조는 이 문서를 기준으로 읽습니다.

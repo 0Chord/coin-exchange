@@ -16,6 +16,7 @@ import com.exchange.core.ledger.OpeningBalanceRequestConflictException
 import com.exchange.core.ledger.OpeningBalanceResult
 import com.exchange.core.ledger.OpeningBalanceStateException
 import com.exchange.core.ledger.OpeningBalanceUnconfirmedException
+import com.exchange.core.support.LegacyPersistenceTestApplication
 import com.exchange.core.support.PostgresTestConfiguration
 import org.flywaydb.core.Flyway
 import org.junit.jupiter.api.BeforeEach
@@ -28,6 +29,7 @@ import org.springframework.dao.DuplicateKeyException
 import org.springframework.jdbc.core.JdbcTemplate
 import org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate
 import org.springframework.test.annotation.DirtiesContext
+import org.springframework.test.context.ContextConfiguration
 import org.springframework.transaction.PlatformTransactionManager
 import org.springframework.transaction.TransactionDefinition
 import org.springframework.transaction.TransactionStatus
@@ -47,6 +49,7 @@ import kotlin.test.assertIs
 import kotlin.test.assertSame
 import kotlin.test.assertTrue
 
+@ContextConfiguration(classes = [LegacyPersistenceTestApplication::class])
 @DataJpaTest(
     properties = ["spring.jpa.hibernate.ddl-auto=validate", "spring.flyway.enabled=true", "exchange.ledger.persistence.enabled=true"],
 )
@@ -382,11 +385,13 @@ class PostgresDevelopmentBalanceStoreTest {
                 )
             }
             jdbc.update("insert into $schema.balance_projection(user_id,asset_id,available,hold) values ('old','KRW',7,3)")
+            // V6→V7만 검증한다. 이후 마이그레이션이 공용 스키마까지 다시 만들지 않게 범위를 고정한다.
             Flyway
                 .configure()
                 .dataSource(dataSource)
                 .defaultSchema(schema)
                 .schemas(schema)
+                .target("7")
                 .load()
                 .migrate()
             assertEquals(

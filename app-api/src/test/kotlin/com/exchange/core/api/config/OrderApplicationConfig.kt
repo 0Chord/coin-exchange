@@ -8,8 +8,8 @@ import com.exchange.core.api.order.application.SubmitOrderUseCase
 import com.exchange.core.api.order.application.TradeSettlementService
 import com.exchange.core.fee.TradingFeePolicySnapshot
 import com.exchange.core.order.MarketDefinition
+import org.springframework.boot.test.context.TestConfiguration
 import org.springframework.context.annotation.Bean
-import org.springframework.context.annotation.Configuration
 
 /**
  * 주문 제출·취소 유즈케이스를 명시적 Bean으로 조립한다.
@@ -17,7 +17,7 @@ import org.springframework.context.annotation.Configuration
  * 자금 예약·반환·정산 서비스와 매칭 조율자, 주문에 적용할 마켓·수수료 정책 Bean이 필요하다.
  * 마켓과 정책 자체는 이 구성에서 만들지 않으며, E2E에서는 테스트 구성으로 제공한다.
  */
-@Configuration
+@TestConfiguration
 class OrderApplicationConfig {
     /**
      * 주문 접수부터 예약·매칭·체결 정산까지 연결하는 유즈케이스를 등록한다.

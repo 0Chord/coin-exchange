@@ -1,6 +1,5 @@
 package com.exchange.core.support
 
-import com.exchange.core.ExchangeCoreApplication
 import org.springframework.boot.test.context.SpringBootTest
 import org.springframework.context.annotation.Import
 import org.springframework.test.annotation.DirtiesContext
@@ -13,7 +12,7 @@ import org.springframework.test.annotation.DirtiesContext
  * context와 컨테이너를 다시 만드는 비용이 있어 순수 도메인 단위 테스트에는 적용하지 않는다.
  */
 @SpringBootTest(
-    classes = [ExchangeCoreApplication::class],
+    classes = [LegacyRdbTestApplication::class],
     properties = [
         "exchange.matching.persistence.enabled=true",
         "exchange.ledger.persistence.enabled=true",

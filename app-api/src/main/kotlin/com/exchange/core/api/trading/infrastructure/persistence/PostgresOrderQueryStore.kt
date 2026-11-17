@@ -1,0 +1,344 @@
+package com.exchange.core.api.trading.infrastructure.persistence
+
+import com.exchange.core.api.trading.application.OrderQueryBatch
+import com.exchange.core.api.trading.application.OrderQueryLifecycle
+import com.exchange.core.api.trading.application.OrderQueryNamespace
+import com.exchange.core.api.trading.application.OrderQueryProgress
+import com.exchange.core.api.trading.application.OrderQueryRecord
+import com.exchange.core.api.trading.application.OrderQuerySnapshot
+import com.exchange.core.api.trading.application.port.OrderQueryInconsistentException
+import com.exchange.core.api.trading.application.port.OrderQueryStore
+import com.exchange.core.api.trading.application.port.OrderQueryUnavailableException
+import com.exchange.core.api.trading.application.port.OrderQueryWriteConflictException
+import org.springframework.dao.DataAccessException
+import org.springframework.dao.DataIntegrityViolationException
+import org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate
+import org.springframework.transaction.PlatformTransactionManager
+import org.springframework.transaction.support.TransactionTemplate
+import tools.jackson.databind.DeserializationFeature
+import tools.jackson.databind.MapperFeature
+import tools.jackson.databind.cfg.CoercionAction
+import tools.jackson.databind.cfg.CoercionInputShape
+import tools.jackson.databind.json.JsonMapper
+import tools.jackson.databind.type.LogicalType
+import tools.jackson.module.kotlin.KotlinModule
+import java.sql.ResultSet
+
+/** 공용 RDB의 조회 테이블만 사용하며 금융·매칭 상태를 계산하거나 갱신하지 않는다. */
+class PostgresOrderQueryStore(
+    override val namespace: OrderQueryNamespace,
+    private val jdbc: NamedParameterJdbcTemplate,
+    transactionManager: PlatformTransactionManager,
+) : OrderQueryStore {
+    private val transaction = TransactionTemplate(transactionManager)
+    private val mapper =
+        JsonMapper
+            .builder()
+            .addModule(KotlinModule.Builder().build())
+            .enable(
+                DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES,
+                DeserializationFeature.FAIL_ON_MISSING_CREATOR_PROPERTIES,
+                DeserializationFeature.FAIL_ON_NULL_FOR_PRIMITIVES,
+            ).disable(DeserializationFeature.ACCEPT_FLOAT_AS_INT)
+            .disable(MapperFeature.ALLOW_COERCION_OF_SCALARS)
+            .withCoercionConfig(LogicalType.Textual) { config ->
+                listOf(CoercionInputShape.Integer, CoercionInputShape.Float, CoercionInputShape.Boolean)
+                    .forEach { config.setCoercion(it, CoercionAction.Fail) }
+            }.build()
+    private val namespaceKey = "${namespace.fundsLineage.high}:${namespace.fundsLineage.low}"
+    private val namespaceParameters = mapOf("namespace" to namespaceKey)
+    private val marketsPayload = mapper.writeValueAsString(namespace.markets.sorted())
+
+    override fun initialize() {
+        write {
+            jdbc.update(
+                """
+                insert into order_query.query_progress
+                    (namespace, supported_markets, lifecycle, applied_revision, observed_revision, covered_admission_sequence)
+                values (:namespace, cast(:markets as jsonb), 'INITIALIZING', 0, 0, 0)
+                on conflict (namespace) do nothing
+                """.trimIndent(),
+                namespaceParameters + ("markets" to marketsPayload),
+            )
+            lockedProgress()
+        }
+    }
+
+    override fun observe(observedRevision: Long) {
+        write {
+            val progress = lockedProgress()
+            require(observedRevision >= progress.observedRevision && observedRevision >= progress.appliedRevision)
+            if (observedRevision != progress.observedRevision) {
+                jdbc.update(
+                    """
+                    update order_query.query_progress set observed_revision = :observed, updated_at = current_timestamp
+                    where namespace = :namespace
+                    """.trimIndent(),
+                    namespaceParameters + ("observed" to observedRevision),
+                )
+            }
+        }
+    }
+
+    override fun transitionLifecycle(lifecycle: OrderQueryLifecycle) {
+        write {
+            val progress = lockedProgress()
+            require(progress.lifecycle != OrderQueryLifecycle.BLOCKED || lifecycle != OrderQueryLifecycle.READY)
+            if (lifecycle != progress.lifecycle) {
+                jdbc.update(
+                    """
+                    update order_query.query_progress set lifecycle = :lifecycle, updated_at = current_timestamp
+                    where namespace = :namespace
+                    """.trimIndent(),
+                    namespaceParameters + ("lifecycle" to lifecycle.name),
+                )
+            }
+        }
+    }
+
+    override fun apply(batch: OrderQueryBatch): Long =
+        write {
+            val progress = lockedProgress()
+            val payload = batchPayload(batch)
+            // 잠금 뒤 중복을 먼저 확인하므로 최초 적용 이후의 재시도도 같은 결과를 받는다.
+            val repeated =
+                jdbc
+                    .query(
+                        """
+                        select first_revision, batch_payload = cast(:payload as jsonb) as same_payload
+                        from order_query.applied_batch where namespace = :namespace and batch_id = :batchId
+                        """.trimIndent(),
+                        namespaceParameters + mapOf("batchId" to batch.batchId, "payload" to payload),
+                    ) { rows, _ -> rows.getLong("first_revision") to rows.getBoolean("same_payload") }
+                    .singleOrNull()
+            if (repeated != null) {
+                require(repeated.second) { "batch identity already has different content" }
+                if (repeated.first !in 1..progress.appliedRevision) inconsistent()
+                return@write repeated.first
+            }
+            require(progress.lifecycle != OrderQueryLifecycle.BLOCKED)
+            require(batch.expectedRevision == progress.appliedRevision)
+            val nextRevision = Math.addExact(progress.appliedRevision, 1)
+            require(nextRevision <= progress.observedRevision)
+            require(batch.coveredAdmissionSequence >= progress.coveredAdmissionSequence)
+            batch.records.forEach { record ->
+                namespace.requireRecord(record)
+                require(record.admissionSequence <= batch.coveredAdmissionSequence)
+                findRecord(record.marketId, record.orderId)?.let { previous -> record.requireSuccessorOf(previous) }
+                save(record)
+            }
+            jdbc.update(
+                """
+                insert into order_query.applied_batch(namespace, batch_id, batch_payload, first_revision)
+                values (:namespace, :batchId, cast(:payload as jsonb), :revision)
+                """.trimIndent(),
+                namespaceParameters + mapOf("batchId" to batch.batchId, "payload" to payload, "revision" to nextRevision),
+            )
+            check(
+                jdbc.update(
+                    """
+                    update order_query.query_progress
+                    set applied_revision = :revision, covered_admission_sequence = :covered, updated_at = current_timestamp
+                    where namespace = :namespace and applied_revision = :expected
+                    """.trimIndent(),
+                    namespaceParameters +
+                        mapOf(
+                            "revision" to nextRevision,
+                            "covered" to batch.coveredAdmissionSequence,
+                            "expected" to batch.expectedRevision,
+                        ),
+                ) == 1,
+            )
+            nextRevision
+        }
+
+    override fun read(
+        marketId: String,
+        orderId: String,
+    ): OrderQuerySnapshot =
+        try {
+            // 한 SQL의 snapshot에서 진행 위치와 주문을 함께 관찰한다. 읽기는 어떤 행도 갱신하지 않는다.
+            jdbc
+                .query(
+                    """
+                    select p.*, r.market_id, r.order_id, r.admission_sequence, r.market_admission_sequence, r.record_payload
+                    from order_query.query_progress p
+                    left join order_query.order_record r
+                        on r.namespace = p.namespace and r.market_id = :marketId and r.order_id = :orderId
+                    where p.namespace = :namespace
+                    """.trimIndent(),
+                    namespaceParameters + mapOf("marketId" to marketId, "orderId" to orderId),
+                ) { rows, _ ->
+                    val progress = progress(rows)
+                    val record = if (rows.getString("record_payload") == null) null else record(rows)
+                    if (record != null && record.admissionSequence > progress.coveredAdmissionSequence) inconsistent()
+                    OrderQuerySnapshot(progress, record)
+                }.singleOrNull() ?: OrderQuerySnapshot(null, null)
+        } catch (error: OrderQueryInconsistentException) {
+            throw error
+        } catch (_: DataAccessException) {
+            throw OrderQueryUnavailableException("order query database read failed")
+        } catch (_: Exception) {
+            throw OrderQueryInconsistentException("stored order query state is inconsistent")
+        }
+
+    private fun lockedProgress(): OrderQueryProgress =
+        jdbc
+            .query(
+                "select * from order_query.query_progress where namespace = :namespace for update",
+                namespaceParameters,
+            ) { rows, _ -> progress(rows) }
+            .singleOrNull()
+            ?: throw OrderQueryWriteConflictException("order query namespace is not initialized")
+
+    private fun progress(rows: ResultSet): OrderQueryProgress =
+        stored {
+            require(rows.getString("namespace") == namespaceKey)
+            require(mapper.readTree(rows.getString("supported_markets")) == mapper.readTree(marketsPayload))
+            OrderQueryProgress(
+                OrderQueryLifecycle.valueOf(rows.getString("lifecycle")),
+                rows.getLong("applied_revision"),
+                rows.getLong("observed_revision"),
+                rows.getLong("covered_admission_sequence"),
+                rows.getTimestamp("updated_at").toInstant(),
+            )
+        }
+
+    private fun findRecord(
+        marketId: String,
+        orderId: String,
+    ): OrderQueryRecord? =
+        jdbc
+            .query(
+                "select * from order_query.order_record where namespace = :namespace and market_id = :marketId and order_id = :orderId",
+                namespaceParameters + mapOf("marketId" to marketId, "orderId" to orderId),
+            ) { rows, _ -> record(rows) }
+            .singleOrNull()
+
+    private fun record(rows: ResultSet): OrderQueryRecord =
+        stored {
+            val payload = mapper.readTree(rows.getString("record_payload"))
+            require(payload.isObject && payload.propertyNames().toSet() == RECORD_FIELDS)
+            val stream = payload.path("resultStream")
+            if (!stream.isNull) require(stream.isObject && stream.propertyNames().toSet() == STREAM_FIELDS)
+            val record = mapper.treeToValue(payload, OrderQueryRecord::class.java)
+            namespace.requireRecord(record)
+            require(record.marketId == rows.getString("market_id"))
+            require(record.orderId == rows.getString("order_id"))
+            require(record.admissionSequence == rows.getLong("admission_sequence"))
+            require(record.marketAdmissionSequence == rows.getLong("market_admission_sequence"))
+            record
+        }
+
+    private fun save(record: OrderQueryRecord) {
+        jdbc.update(
+            """
+            insert into order_query.order_record
+                (namespace, market_id, order_id, admission_sequence, market_admission_sequence, record_payload)
+            values (:namespace, :marketId, :orderId, :admission, :marketAdmission, cast(:payload as jsonb))
+            on conflict (namespace, market_id, order_id)
+            do update set record_payload = excluded.record_payload, updated_at = current_timestamp
+            """.trimIndent(),
+            namespaceParameters +
+                mapOf(
+                    "marketId" to record.marketId,
+                    "orderId" to record.orderId,
+                    "admission" to record.admissionSequence,
+                    "marketAdmission" to record.marketAdmissionSequence,
+                    "payload" to mapper.writeValueAsString(recordPayload(record)),
+                ),
+        )
+    }
+
+    private fun batchPayload(batch: OrderQueryBatch): String =
+        mapper.writeValueAsString(
+            mapOf(
+                "expectedRevision" to batch.expectedRevision,
+                "coveredAdmissionSequence" to batch.coveredAdmissionSequence,
+                "records" to batch.records.sortedWith(compareBy({ it.marketId }, { it.orderId })).map(::recordPayload),
+            ),
+        )
+
+    // 생성자 필드만 저장한다. orderId·금전 상태 같은 파생 getter를 역직렬화하며 무시하지 않는다.
+    private fun recordPayload(record: OrderQueryRecord): Map<String, Any?> =
+        mapOf(
+            "fundsLineage" to record.fundsLineage,
+            "marketId" to record.marketId,
+            "userId" to record.userId,
+            "side" to record.side,
+            "orderType" to record.orderType,
+            "timeInForce" to record.timeInForce,
+            "price" to record.price,
+            "initialQuantity" to record.initialQuantity,
+            "admissionSequence" to record.admissionSequence,
+            "marketAdmissionSequence" to record.marketAdmissionSequence,
+            "filledQuantity" to record.filledQuantity,
+            "remainingQuantity" to record.remainingQuantity,
+            "cancelledQuantity" to record.cancelledQuantity,
+            "notExecutedQuantity" to record.notExecutedQuantity,
+            "state" to record.state,
+            "resultStream" to
+                record.resultStream?.let {
+                    mapOf(
+                        "matchingLineage" to it.matchingLineage,
+                        "fundsLineage" to it.fundsLineage,
+                        "marketId" to it.marketId.value,
+                        "ownershipEpoch" to it.ownershipEpoch,
+                        "configurationVersion" to it.configurationVersion,
+                    )
+                },
+            "lastAffectedResultSequence" to record.lastAffectedResultSequence,
+            "financialThrough" to record.financialThrough,
+        )
+
+    private fun <T> write(action: () -> T): T =
+        try {
+            transaction.execute { action() }!!
+        } catch (error: OrderQueryWriteConflictException) {
+            throw error
+        } catch (error: OrderQueryInconsistentException) {
+            throw error
+        } catch (_: DataIntegrityViolationException) {
+            throw OrderQueryWriteConflictException("order query identity conflicts with stored data")
+        } catch (_: DataAccessException) {
+            throw OrderQueryUnavailableException("order query database write failed")
+        } catch (_: IllegalArgumentException) {
+            throw OrderQueryWriteConflictException("order query batch violates stored state")
+        } catch (_: ArithmeticException) {
+            throw OrderQueryWriteConflictException("order query revision exceeds its range")
+        }
+
+    private fun <T> stored(action: () -> T): T =
+        try {
+            action()
+        } catch (_: Exception) {
+            inconsistent()
+        }
+
+    private fun inconsistent(): Nothing = throw OrderQueryInconsistentException("stored order query state is inconsistent")
+
+    private companion object {
+        val RECORD_FIELDS =
+            setOf(
+                "fundsLineage",
+                "marketId",
+                "userId",
+                "side",
+                "orderType",
+                "timeInForce",
+                "price",
+                "initialQuantity",
+                "admissionSequence",
+                "marketAdmissionSequence",
+                "filledQuantity",
+                "remainingQuantity",
+                "cancelledQuantity",
+                "notExecutedQuantity",
+                "state",
+                "resultStream",
+                "lastAffectedResultSequence",
+                "financialThrough",
+            )
+        val STREAM_FIELDS = setOf("matchingLineage", "fundsLineage", "marketId", "ownershipEpoch", "configurationVersion")
+    }
+}

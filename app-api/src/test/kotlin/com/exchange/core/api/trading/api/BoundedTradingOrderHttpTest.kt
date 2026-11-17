@@ -1,7 +1,7 @@
 package com.exchange.core.api.trading.api
 
 import com.exchange.core.api.common.TradingOrderHttpExceptionHandler
-import com.exchange.core.api.config.TradingGatewayConfig
+import com.exchange.core.api.config.TradingHttpConfig
 import com.exchange.core.api.trading.application.BoundedTradingOrderGateway
 import com.exchange.core.api.trading.application.BoundedTradingOrderUseCase
 import com.exchange.core.api.trading.infrastructure.aeron.AeronGatewaySettings
@@ -49,7 +49,6 @@ class BoundedTradingOrderHttpTest {
     @BeforeAll fun start() {
         context =
             SpringApplicationBuilder(BoundedTradingHttpConfig::class.java)
-                .profiles("aeron-bounded-gateway")
                 .run("--server.port=0", "--spring.main.banner-mode=off", "--logging.level.root=ERROR")
         root = context.getBean("boundedHttpRoot", Path::class.java)
         url = "http://127.0.0.1:${checkNotNull((context as ServletWebServerApplicationContext).webServer).port}"
@@ -129,9 +128,9 @@ internal class BoundedTradingHttpConfig {
         AeronGatewaySettings(boundedHttpRoot.resolve("edge"), "0=127.0.0.1:19700", "127.0.0.1:19707"),
     ) { receive -> probe.open(receive) }
 
-    @Bean fun boundedJson() = TradingGatewayConfig().tradingJsonMapperBuilderCustomizer()
+    @Bean fun boundedJson() = TradingHttpConfig().tradingJsonMapperBuilderCustomizer()
 
-    @Bean fun boundedAsync() = TradingGatewayConfig().tradingAsyncSupport()
+    @Bean fun boundedAsync() = TradingHttpConfig().tradingAsyncSupport()
 }
 
 internal class BoundedHttpProbe {

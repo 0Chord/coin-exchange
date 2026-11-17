@@ -31,6 +31,7 @@ import com.exchange.core.ledger.ReconciliationStatus
 import com.exchange.core.matching.TradeExecuted
 import com.exchange.core.order.MarketDefinition
 import com.exchange.core.order.Side
+import com.exchange.core.support.LegacyPersistenceTestApplication
 import com.exchange.core.support.PostgresTestConfiguration
 import org.junit.jupiter.api.BeforeEach
 import org.springframework.beans.factory.annotation.Autowired
@@ -41,6 +42,7 @@ import org.springframework.jdbc.core.JdbcTemplate
 import org.springframework.jdbc.core.RowMapper
 import org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate
 import org.springframework.test.annotation.DirtiesContext
+import org.springframework.test.context.ContextConfiguration
 import org.springframework.transaction.PlatformTransactionManager
 import org.springframework.transaction.TransactionStatus
 import org.springframework.transaction.TransactionSystemException
@@ -59,6 +61,7 @@ import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
+@ContextConfiguration(classes = [LegacyPersistenceTestApplication::class])
 @DataJpaTest(
     properties = ["spring.jpa.hibernate.ddl-auto=validate", "spring.flyway.enabled=true", "exchange.ledger.persistence.enabled=true"],
 )

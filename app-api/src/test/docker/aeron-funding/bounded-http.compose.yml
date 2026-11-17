@@ -39,8 +39,7 @@ services:
   gateway:
     mem_limit: 768m
     cpus: 2
+    command: [com.exchange.core.support.LegacyBoundedGatewayTestApplicationKt]
     environment:
-      TRADING_GATEWAY_PROTOCOL: bounded
-      SPRING_PROFILES_ACTIVE: aeron-bounded-gateway
       TRADING_GATEWAY_PROTECTION: local
       JAVA_TOOL_OPTIONS: "-Xms128m -Xmx384m -XX:+UseG1GC"

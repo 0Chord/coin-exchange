@@ -35,6 +35,7 @@ object ProductionScope {
                     "com.exchange.core.api.matching.application.port.MatchingEventStore",
                     "com.exchange.core.api.matching.application.port.MatchingEventPublisher",
                     "com.exchange.core.api.market.application.port.MarketConfigurationStore",
+                    "com.exchange.core.api.trading.application.port.OrderQueryStore",
                 ),
             executors =
                 setOf(

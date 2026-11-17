@@ -7,7 +7,6 @@ import com.exchange.core.api.trading.infrastructure.recovery.RemoteRecoveryFiles
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty
 import org.springframework.context.annotation.Bean
 import org.springframework.context.annotation.Configuration
-import org.springframework.context.annotation.Profile
 import org.springframework.core.env.Environment
 import java.nio.file.Files
 import java.nio.file.LinkOption.NOFOLLOW_LINKS
@@ -17,7 +16,6 @@ import java.nio.file.Path
  * 이 reader는 쓰기 API가 없으며, 공유 경로에서 인증서를 생성하거나 복구하지 않는다.
  */
 @Configuration(proxyBeanMethods = false)
-@Profile("aeron-bounded-gateway")
 @ConditionalOnProperty(name = ["TRADING_GATEWAY_PROTECTION"], havingValue = "remote")
 class RemoteRecoveryGateConfig {
     @Bean(destroyMethod = "close")

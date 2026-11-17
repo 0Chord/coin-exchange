@@ -17,7 +17,7 @@ import java.util.concurrent.TimeUnit
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 
-/** 제품 HTTP main과 실제 wire3 세 노드를 검증한다. Docker 미준비도 실패로 남긴다. */
+/** 이전 단일 거래 클러스터의 HTTP·wire3 세 노드 회귀 검증이다. 제품 WAS는 split 연결을 사용한다. */
 class BoundedHttpTradingClusterTest {
     @Test
     @Timeout(540)
@@ -123,15 +123,22 @@ private class BoundedHttpTradingVerification : AutoCloseable {
                     .single()
             assertEquals("127.0.0.1", binding.path("HostIp").asString())
             port = binding.path("HostPort").asString().toInt()
-            val profiles =
+            val gatewayEnvironment =
                 gateway
                     .path("Config")
                     .path("Env")
                     .toList()
                     .map { it.asString() }
-            assertTrue("SPRING_PROFILES_ACTIVE=aeron-bounded-gateway" in profiles)
-            assertTrue("TRADING_GATEWAY_PROTOCOL=bounded" in profiles)
-            await("제품 HTTP 서버 준비") {
+            assertTrue(gatewayEnvironment.none { it.startsWith("SPRING_PROFILES_ACTIVE=") || it.startsWith("TRADING_GATEWAY_PROTOCOL=") })
+            assertEquals(
+                listOf("com.exchange.core.support.LegacyBoundedGatewayTestApplicationKt"),
+                gateway
+                    .path("Config")
+                    .path("Cmd")
+                    .toList()
+                    .map { it.asString() },
+            )
+            await("이전 거래 클러스터 HTTP 서버 준비") {
                 runCatching {
                     http
                         .send(

@@ -20,6 +20,7 @@ import com.exchange.core.order.OrderReservationNotFoundException
 import com.exchange.core.order.OrderReservationStore
 import com.exchange.core.order.ReservationRequirement
 import com.exchange.core.order.Side
+import com.exchange.core.support.LegacyPersistenceTestApplication
 import com.exchange.core.support.PostgresTestConfiguration
 import org.flywaydb.core.Flyway
 import org.junit.jupiter.api.BeforeEach
@@ -30,6 +31,7 @@ import org.springframework.context.annotation.Import
 import org.springframework.dao.DataIntegrityViolationException
 import org.springframework.jdbc.core.JdbcTemplate
 import org.springframework.test.annotation.DirtiesContext
+import org.springframework.test.context.ContextConfiguration
 import org.springframework.transaction.annotation.Propagation
 import org.springframework.transaction.annotation.Transactional
 import javax.sql.DataSource
@@ -45,6 +47,7 @@ import kotlin.test.assertNull
  *
  * 공통 PostgreSQL 설정을 사용하되, 클래스 종료 시 context와 컨테이너를 닫아 다른 클래스와 격리한다.
  */
+@ContextConfiguration(classes = [LegacyPersistenceTestApplication::class])
 @DataJpaTest(
     properties = [
         "spring.jpa.hibernate.ddl-auto=validate",
@@ -112,11 +115,13 @@ class PostgresOrderReservationStoreTest {
                 )
             }
             val before = jdbcTemplate.queryForList("select * from $schema.order_reservations order by order_id")
+            // V7→V8만 검증한다. 이후 마이그레이션이 공용 스키마까지 다시 만들지 않게 범위를 고정한다.
             Flyway
                 .configure()
                 .dataSource(dataSource)
                 .schemas(schema)
                 .defaultSchema(schema)
+                .target("8")
                 .load()
                 .migrate()
             val after = jdbcTemplate.queryForList("select * from $schema.order_reservations order by order_id")
