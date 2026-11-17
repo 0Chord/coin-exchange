@@ -25,6 +25,7 @@ class BoundedFundingState(
     private var bounded: BoundedTradingData? = null
     private var dispatch: FundsDispatchData? = dispatchConfiguration?.let(::FundsDispatchData)
     private var results: FundsResultData? = dispatchConfiguration?.let { FundsResultData(it, resultLimits) }
+    private var queryAdmissions: QueryFactRetention<FundsOrderDispatch>? = newQueryAdmissions()
     private val assetTotals = linkedMapOf<AssetId, Long>()
     private val approvalInputs = linkedMapOf<Pair<MarketId, OrderId>, FundsOrderDispatch>()
     private val cancellations = linkedMapOf<Pair<MarketId, OrderId>, FundsCancellationSnapshot>()
@@ -146,6 +147,9 @@ class BoundedFundingState(
                 intent.price,
                 intent.quantity,
             )
+        if (queryAdmissions?.canRecord(input.marketId, FundsDispatchCharge.dispatch(input, context)) == false) {
+            return AdmissionReply.Refused("RETRYABLE_CAPACITY")
+        }
         if (dispatch?.canAdmit(input) == false) return AdmissionReply.Refused("RETRYABLE_CAPACITY")
         val reservedKey = if (intent.side == Side.BUY) quoteKey else baseKey
         val balance = current.balances[reservedKey] ?: Balance(token.userId, reservedKey.assetId, Amount.ZERO, Amount.ZERO)
@@ -184,6 +188,7 @@ class BoundedFundingState(
             current.inbox.remember(token, intent, receipt)
             delivery?.let {
                 checkNotNull(dispatch).record(it)
+                queryAdmissions?.record(it)
                 approvalInputs[input.marketId to input.orderId] = it
             }
         }
@@ -323,6 +328,42 @@ class BoundedFundingState(
     }
 
     /** 조회는 전달 자료를 소비하거나 예약을 해제하지 않는다. */
+    val queryRetentionConfiguration: QueryRetentionConfiguration? get() = dispatchConfiguration?.queryRetention
+
+    fun readQueryAdmissions(
+        fromSequence: Long,
+        maxEntries: Int,
+        maxBytes: Long,
+    ): QueryFactsRead<FundsOrderDispatch> {
+        runningBounded()
+        return queryAdmissions?.read(null, fromSequence, maxEntries, maxBytes) ?: QueryFactsRead(QueryFactsReadStatus.DISABLED)
+    }
+
+    fun queryAdmissionsProgress(): QueryFactsProgress? {
+        runningBounded()
+        return queryAdmissions?.progress()
+    }
+
+    fun acknowledgeQueryAdmissions(
+        consumerId: String,
+        through: Long,
+    ): QueryFactsAck {
+        runningBounded()
+        val retained = queryAdmissions ?: return QueryFactsAck(QueryFactsAckStatus.DISABLED, 0)
+        return boundedMutation { retained.acknowledge(consumerId, null, through) }
+    }
+
+    private fun newQueryAdmissions(): QueryFactRetention<FundsOrderDispatch>? =
+        dispatchConfiguration?.queryRetention?.let {
+            QueryFactRetention(
+                it,
+                false,
+                { fact -> fact.order.marketId },
+                { fact -> fact.admissionSequence },
+                { fact -> fact.dispatchCanonicalBytes },
+            )
+        }
+
     fun pendingDispatch(
         stream: FundsDispatchStream,
         fromSequence: Long,
@@ -669,6 +710,7 @@ class BoundedFundingState(
             if (checkNotNull(dispatchConfiguration).inputContractVersion == 2) approvalInputs.values.toList() else emptyList(),
             cancellations.values.toList(),
             lastCancellationSequence,
+            queryAdmissions?.snapshot(),
         )
     }
 
@@ -717,9 +759,54 @@ class BoundedFundingState(
             } else {
                 require(saved.approvalInputs.isEmpty() && saved.cancellations.isEmpty() && saved.lastCancellationSequence == 0L)
             }
+            val restoredQuery = newQueryAdmissions()
+            require((restoredQuery == null) == (saved.queryAdmissions == null)) { "funds query recovery capability differs" }
+            saved.queryAdmissions?.let { retained ->
+                require(retained.issued == financial.lastAdmissionSequence) { "query admission frontier differs" }
+                val dispatchStreams = saved.dispatch.streams.associateBy { it.stream.marketId }
+                val financialMarkets = financial.markets.associateBy { it.marketId }
+                val financialLive = financial.liveOrders.associateBy { it.admissionSequence }
+                val retainedCounts = retained.entries.groupingBy { it.order.marketId }.eachCount()
+                val marketAdmissions =
+                    financialMarkets
+                        .mapValues { (marketId, progress) ->
+                            Math.subtractExact(progress.lastAssigned, retainedCounts[marketId]?.toLong() ?: 0L).also { require(it >= 0) }
+                        }.toMutableMap()
+                val marketDispatches = mutableMapOf<MarketId, Long>()
+                checkNotNull(restoredQuery).restore(null, retained) { fact ->
+                    require(!fact.isCancellation) { "query admission cannot be a cancellation" }
+                    val context = configuration.context(fact.order.marketId)
+                    MatchingInputValidation.requireValid(
+                        configuration.manifest,
+                        context,
+                        configuration.stream(fact.order.marketId),
+                        fact,
+                        configuration.inputContractVersion,
+                    )
+                    financialLive[fact.admissionSequence]?.let { requireFundsOriginal(fact, it) }
+                    require(fact.dispatchSequence <= dispatchStreams.getValue(fact.order.marketId).issued)
+                    val previousAdmission = marketAdmissions.getValue(fact.order.marketId)
+                    require(fact.marketAdmissionSequence == Math.addExact(previousAdmission, 1L)) {
+                        "query admission market suffix differs"
+                    }
+                    require(fact.dispatchSequence > (marketDispatches[fact.order.marketId] ?: 0L)) {
+                        "query admission dispatch order differs"
+                    }
+                    marketAdmissions[fact.order.marketId] = fact.marketAdmissionSequence
+                    marketDispatches[fact.order.marketId] = fact.dispatchSequence
+                    saved.approvalInputs.firstOrNull { it.admissionSequence == fact.admissionSequence }?.let { require(it == fact) }
+                    dispatchStreams
+                        .getValue(fact.order.marketId)
+                        .outstanding
+                        .firstOrNull {
+                            it.dispatchSequence == fact.dispatchSequence
+                        }?.let { require(it == fact) }
+                }
+            }
             bounded = candidate.bounded
             dispatch = restoredDispatch
             results = restoredResults
+            queryAdmissions = restoredQuery
             assetTotals.putAll(reconstructed)
             saved.approvalInputs.forEach { approvalInputs[it.order.marketId to it.order.orderId] = it }
             saved.cancellations.forEach { cancellations[it.input.order.marketId to it.input.order.orderId] = it }

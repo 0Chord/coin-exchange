@@ -76,6 +76,7 @@ class FundsDispatchConfiguration(
     topology: TradingRoleTopology,
     val limits: FundsDispatchLimits = FundsDispatchLimits.defaults(topology.fundsManifest),
     val inputContractVersion: Int = 1,
+    val queryRetention: QueryRetentionConfiguration? = null,
 ) {
     val manifest: TradingClusterManifest = topology.fundsManifest
     val assignments: List<TradingMarketAssignment> =
@@ -95,6 +96,9 @@ class FundsDispatchConfiguration(
     init {
         require(inputContractVersion in 1..2) { "unsupported funds input contract" }
         require(limits.marketLimits.keys == contexts.keys) { "dispatch limits must cover exactly the registered markets" }
+        queryRetention?.let {
+            require(it.marketLimits.keys == contexts.keys) { "query limits must cover exactly the registered markets" }
+        }
         for (context in manifest.markets) {
             val minimum =
                 OrderAdmissionInput(
@@ -110,6 +114,22 @@ class FundsDispatchConfiguration(
                     com.exchange.core.common
                         .Quantity(context.market.quantityStep),
                 )
+            queryRetention?.let { query ->
+                val maximal =
+                    minimum.copy(
+                        userId =
+                            com.exchange.core.common
+                                .UserId("u".repeat(manifest.limits.maxIdentifierBytes)),
+                    )
+                val maximumCharge =
+                    maxOf(
+                        FundsDispatchCharge.dispatch(maximal, context),
+                        FundsDispatchCharge.dispatch(maximal.copy(side = Side.SELL), context),
+                    )
+                require(maximumCharge <= minOf(query.maxBytes, query.marketLimits.getValue(context.market.marketId).maxBytes)) {
+                    "query admission budget cannot retain the largest admission"
+                }
+            }
             val local = limits.marketLimits.getValue(context.market.marketId)
             val minimumActive =
                 minOf(FundsDispatchCharge.active(minimum, context), FundsDispatchCharge.active(minimum.copy(side = Side.SELL), context))
@@ -128,7 +148,10 @@ class FundsDispatchConfiguration(
         }
         snapshotByteUpperBound =
             try {
-                snapshotBound(manifest.limits, limits, inputContractVersion)
+                Math.addExact(
+                    snapshotBound(manifest.limits, limits, inputContractVersion),
+                    queryRetention?.let { Math.multiplyExact(it.maxBytes, 4L) } ?: 0L,
+                )
             } catch (failure: ArithmeticException) {
                 throw IllegalArgumentException("funds limits overflow the snapshot size bound", failure)
             }
@@ -143,9 +166,9 @@ class FundsDispatchConfiguration(
 
     override fun equals(other: Any?): Boolean =
         other is FundsDispatchConfiguration && manifest == other.manifest && assignments == other.assignments && limits == other.limits &&
-            inputContractVersion == other.inputContractVersion
+            inputContractVersion == other.inputContractVersion && queryRetention == other.queryRetention
 
-    override fun hashCode(): Int = listOf(manifest, assignments, limits, inputContractVersion).hashCode()
+    override fun hashCode(): Int = listOf(manifest, assignments, limits, inputContractVersion, queryRetention).hashCode()
 
     companion object {
         const val MAX_SNAPSHOT_BYTES: Long = 128L * 1_024 * 1_024
