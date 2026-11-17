@@ -23,6 +23,7 @@ import com.exchange.core.order.OrderReservationStatus
 import com.exchange.core.order.OrderReservationStore
 import com.exchange.core.order.ReservationRequirement
 import com.exchange.core.order.Side
+import com.exchange.core.support.LegacyPersistenceTestApplication
 import com.exchange.core.support.PostgresTestConfiguration
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.params.ParameterizedTest
@@ -34,6 +35,7 @@ import org.springframework.context.annotation.Import
 import org.springframework.dao.DuplicateKeyException
 import org.springframework.jdbc.core.JdbcTemplate
 import org.springframework.test.annotation.DirtiesContext
+import org.springframework.test.context.ContextConfiguration
 import org.springframework.transaction.annotation.Propagation
 import org.springframework.transaction.annotation.Transactional
 import java.sql.SQLException
@@ -52,6 +54,7 @@ import kotlin.test.assertTrue
  *
  * 공통 PostgreSQL 설정을 사용하되, 클래스 종료 시 context와 컨테이너를 닫아 다른 클래스와 격리한다.
  */
+@ContextConfiguration(classes = [LegacyPersistenceTestApplication::class])
 @DataJpaTest(
     properties = [
         "spring.jpa.hibernate.ddl-auto=validate",

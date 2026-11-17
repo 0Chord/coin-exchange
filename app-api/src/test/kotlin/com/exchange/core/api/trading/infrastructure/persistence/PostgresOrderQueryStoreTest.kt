@@ -22,6 +22,7 @@ import org.junit.jupiter.api.AfterAll
 import org.junit.jupiter.api.BeforeAll
 import org.junit.jupiter.api.TestInstance
 import org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate
+import org.springframework.jdbc.datasource.DataSourceTransactionManager
 import org.springframework.jdbc.datasource.DriverManagerDataSource
 import org.testcontainers.postgresql.PostgreSQLContainer
 import java.util.concurrent.Callable
@@ -38,7 +39,7 @@ import kotlin.test.assertTrue
 
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
 class PostgresOrderQueryStoreTest {
-    private val database = PostgreSQLContainer("postgres:17-alpine")
+    private val database = PostgreSQLContainer("postgres:16-alpine")
     private val namespaces = AtomicLong()
     private lateinit var dataSource: DriverManagerDataSource
     private lateinit var jdbc: NamedParameterJdbcTemplate
@@ -51,10 +52,7 @@ class PostgresOrderQueryStoreTest {
         Flyway
             .configure()
             .dataSource(dataSource)
-            .schemas("order_query")
-            .defaultSchema("order_query")
-            .table("flyway_order_query_history")
-            .locations("classpath:db/order-query")
+            .locations("classpath:db/migration")
             .load()
             .migrate()
     }
@@ -81,7 +79,7 @@ class PostgresOrderQueryStoreTest {
         assertEquals(4L, store.apply(batch("released", 3, 1, cancelled.copy(financialThrough = 2))))
         store.transitionLifecycle(OrderQueryLifecycle.READY)
 
-        val reopened = PostgresOrderQueryStore(newDataSource(), store.namespace)
+        val reopened = newStore(newDataSource(), store.namespace)
         reopened.initialize()
         val saved = reopened.read(BTC, pending.orderId)
         assertEquals(3L, saved.record!!.initialQuantity)
@@ -123,7 +121,7 @@ class PostgresOrderQueryStoreTest {
         assertEquals(2L, store.read(BTC, taker.orderId).progress!!.appliedRevision)
         val filled = matched(makerPartial, OrderQueryOrderState.FILLED, filled = 3, result = 3).copy(financialThrough = 3)
         store.apply(batch("filled", 2, 2, filled))
-        val reopened = PostgresOrderQueryStore(newDataSource(), store.namespace)
+        val reopened = newStore(newDataSource(), store.namespace)
         assertEquals(filled, reopened.read(BTC, maker.orderId).record)
     }
 
@@ -179,7 +177,7 @@ class PostgresOrderQueryStoreTest {
                             Callable {
                                 ready.countDown()
                                 check(start.await(5, TimeUnit.SECONDS))
-                                runCatching { PostgresOrderQueryStore(newDataSource(), store.namespace).apply(input) }
+                                runCatching { newStore(newDataSource(), store.namespace).apply(input) }
                             },
                         )
                     }
@@ -277,7 +275,7 @@ class PostgresOrderQueryStoreTest {
     fun `조회 연결 실패는 부재가 아닌 unavailable이다`() {
         val unavailable =
             DriverManagerDataSource("jdbc:postgresql://127.0.0.1:1/missing?connectTimeout=1", "private-user", "private-password")
-        val store = PostgresOrderQueryStore(unavailable, OrderQueryNamespace(ClusterLineage(99, 1), setOf(BTC)))
+        val store = newStore(unavailable, OrderQueryNamespace(ClusterLineage(99, 1), setOf(BTC)))
         val error = assertFailsWith<OrderQueryUnavailableException> { store.read(BTC, "unknown") }
         assertNull(error.cause)
         assertFalse(error.message!!.contains("private"))
@@ -296,7 +294,7 @@ class PostgresOrderQueryStoreTest {
         assertFailsWith<OrderQueryWriteConflictException> { store.transitionLifecycle(OrderQueryLifecycle.READY) }
         assertFailsWith<OrderQueryWriteConflictException> { store.apply(batch("blocked", 1, 1)) }
         assertEquals(saved, rawState(store))
-        val otherMarkets = PostgresOrderQueryStore(newDataSource(), OrderQueryNamespace(store.namespace.fundsLineage, setOf(BTC)))
+        val otherMarkets = newStore(newDataSource(), OrderQueryNamespace(store.namespace.fundsLineage, setOf(BTC)))
         assertFailsWith<OrderQueryInconsistentException> { otherMarkets.initialize() }
         store.transitionLifecycle(OrderQueryLifecycle.INITIALIZING)
         store.transitionLifecycle(OrderQueryLifecycle.READY)
@@ -367,7 +365,7 @@ class PostgresOrderQueryStoreTest {
     fun `모델의 최대 길이 마켓과 batch 식별자는 실제 DB에서도 저장된다`() {
         val market = "M".repeat(256)
         val store =
-            PostgresOrderQueryStore(
+            newStore(
                 dataSource,
                 OrderQueryNamespace(ClusterLineage(60, namespaces.incrementAndGet()), setOf(market)),
             )
@@ -381,8 +379,14 @@ class PostgresOrderQueryStoreTest {
     }
 
     private fun store(): PostgresOrderQueryStore =
-        PostgresOrderQueryStore(dataSource, OrderQueryNamespace(ClusterLineage(60, namespaces.incrementAndGet()), setOf(BTC, SUI)))
+        newStore(dataSource, OrderQueryNamespace(ClusterLineage(60, namespaces.incrementAndGet()), setOf(BTC, SUI)))
             .also { it.initialize() }
+
+    private fun newStore(
+        source: DriverManagerDataSource,
+        namespace: OrderQueryNamespace,
+    ): PostgresOrderQueryStore =
+        PostgresOrderQueryStore(namespace, NamedParameterJdbcTemplate(source), DataSourceTransactionManager(source))
 
     private fun newDataSource(): DriverManagerDataSource =
         DriverManagerDataSource(

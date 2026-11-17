@@ -6,7 +6,6 @@ import jakarta.validation.Valid
 import jakarta.validation.constraints.NotBlank
 import jakarta.validation.constraints.PositiveOrZero
 import jakarta.validation.constraints.Size
-import org.springframework.context.annotation.Profile
 import org.springframework.http.MediaType
 import org.springframework.http.ResponseEntity
 import org.springframework.web.bind.annotation.PathVariable
@@ -17,7 +16,6 @@ import org.springframework.web.bind.annotation.RestController
 import java.util.concurrent.CompletableFuture
 
 @RestController
-@Profile("aeron-bounded-gateway")
 @RequestMapping("/api/trading/v3")
 internal class BoundedTradingOrderController(
     private val useCase: BoundedTradingOrderUseCase,

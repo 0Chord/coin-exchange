@@ -46,7 +46,7 @@ class TradingGatewayHttpWorkerPrestartTest {
     private fun threads(vararg overrides: Pair<String, String>): TomcatServerProperties.Threads {
         val environment = MockEnvironment()
         YamlPropertySourceLoader()
-            .load("gateway", ClassPathResource("application-aeron-gateway.yaml"))
+            .load("gateway", ClassPathResource("application.yaml"))
             .forEach { environment.propertySources.addLast(it) }
         overrides.forEach { (name, value) -> environment.setProperty(name, value) }
         return checkNotNull(

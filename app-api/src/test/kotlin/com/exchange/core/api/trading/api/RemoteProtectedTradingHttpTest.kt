@@ -2,7 +2,7 @@ package com.exchange.core.api.trading.api
 
 import com.exchange.core.api.common.TradingOrderHttpExceptionHandler
 import com.exchange.core.api.config.RemoteRecoveryGateConfig
-import com.exchange.core.api.config.TradingGatewayConfig
+import com.exchange.core.api.config.TradingHttpConfig
 import com.exchange.core.api.trading.application.BoundedTradingOrderGateway
 import com.exchange.core.api.trading.application.BoundedTradingOrderUseCase
 import com.exchange.core.api.trading.infrastructure.aeron.AeronGatewaySettings
@@ -52,7 +52,7 @@ class RemoteProtectedTradingHttpTest {
         val execution = RemoteRecoveryFiles.sha256(manifestBytes)
         RemoteRecoveryFiles.publish(shared, remoteTestProof(manifest.lineage, 1, 608, execution), manifest.lineage, 1, 608, execution)
         val context =
-            SpringApplicationBuilder(RemoteProtectedHttpConfig::class.java).profiles("aeron-bounded-gateway").run(
+            SpringApplicationBuilder(RemoteProtectedHttpConfig::class.java).run(
                 "--server.port=0",
                 "--spring.main.banner-mode=off",
                 "--logging.level.root=ERROR",
@@ -149,9 +149,9 @@ internal class RemoteProtectedHttpConfig {
         return BoundedAeronGateway(settings, haBoundedProbeManifest().lineage, gate) { receive -> probe.open(receive) }
     }
 
-    @Bean fun remoteJson() = TradingGatewayConfig().tradingJsonMapperBuilderCustomizer()
+    @Bean fun remoteJson() = TradingHttpConfig().tradingJsonMapperBuilderCustomizer()
 
-    @Bean fun remoteAsync() = TradingGatewayConfig().tradingAsyncSupport()
+    @Bean fun remoteAsync() = TradingHttpConfig().tradingAsyncSupport()
 }
 
 internal class RemoteHttpProbe {

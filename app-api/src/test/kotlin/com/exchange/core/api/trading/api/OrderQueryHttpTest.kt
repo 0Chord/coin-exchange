@@ -266,37 +266,23 @@ class OrderQueryHttpTest {
     }
 
     @Test
-    fun `default disabled HTTP has no query route or database resources even with unusable database properties`() {
-        val args =
-            arrayOf(
-                "--server.port=0",
-                "--spring.main.banner-mode=off",
-                "--logging.level.root=ERROR",
-                "--exchange.order-query.jdbc-url=invalid",
-                "--exchange.order-query.funds-lineage-high=invalid",
-            )
-        SpringApplicationBuilder(OrderQueryHttpTestConfig::class.java).profiles("aeron-bounded-gateway").run(*args).use { disabled ->
-            val port = (disabled as ServletWebServerApplicationContext).webServer!!.port
-            val response =
-                client.send(
-                    HttpRequest
-                        .newBuilder(
-                            URI.create("http://127.0.0.1:$port/api/trading/v3/markets/BTC-USDT/orders/${orderId(1)}"),
-                        ).GET()
-                        .build(),
-                    HttpResponse.BodyHandlers.ofString(),
-                )
-            assertEquals(404, response.statusCode())
-            assertTrue(disabled.getBeansOfType(OrderQueryController::class.java).isEmpty())
-            assertTrue(disabled.getBeansOfType(DataSource::class.java).isEmpty())
-        }
+    fun `same WAS exposes submission and query without a profile or separate query database`() {
+        assertTrue(context.environment.activeProfiles.isEmpty())
+        assertEquals(1, context.getBeansOfType(OrderQueryController::class.java).size)
+        assertEquals(1, context.getBeansOfType(BoundedTradingOrderController::class.java).size)
+        assertEquals(setOf("dataSource"), context.getBeansOfType(DataSource::class.java).keys)
+        assertEquals(
+            "V10__create_order_query.sql",
+            database.jdbc().queryForObject("select script from flyway_schema_history where version = '10'", String::class.java),
+        )
+        assertResponse(503, "QUERY_NOT_READY", get(orderId(1)), hideOrder = true)
     }
 
     private fun openContext() {
         val args =
             database.properties.map { (key, value) -> "--$key=$value" } +
                 listOf("--server.port=0", "--spring.main.banner-mode=off", "--logging.level.root=ERROR")
-        context = SpringApplicationBuilder(OrderQueryHttpTestConfig::class.java).profiles("aeron-bounded-gateway").run(*args.toTypedArray())
+        context = SpringApplicationBuilder(OrderQueryHttpTestConfig::class.java).run(*args.toTypedArray())
         store = context.getBean(OrderQueryStore::class.java)
         url = "http://127.0.0.1:${(context as ServletWebServerApplicationContext).webServer!!.port}"
     }
@@ -417,10 +403,8 @@ class OrderQueryHttpTest {
 @TestConfiguration(proxyBeanMethods = false)
 @EnableAutoConfiguration(
     excludeName = [
-        "org.springframework.boot.jdbc.autoconfigure.DataSourceAutoConfiguration",
         "org.springframework.boot.hibernate.autoconfigure.HibernateJpaAutoConfiguration",
         "org.springframework.boot.data.jpa.autoconfigure.DataJpaRepositoriesAutoConfiguration",
-        "org.springframework.boot.flyway.autoconfigure.FlywayAutoConfiguration",
     ],
 )
 @Import(OrderQueryConfig::class, OrderQueryController::class, BoundedTradingOrderController::class, TradingOrderHttpExceptionHandler::class)

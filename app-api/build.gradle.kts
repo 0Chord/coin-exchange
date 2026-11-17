@@ -254,6 +254,10 @@ springBoot {
     mainClass.set("com.exchange.core.ExchangeCoreApplicationKt")
 }
 
+tasks.named<org.springframework.boot.gradle.tasks.run.BootRun>("bootRun") {
+    jvmArgs("--add-opens=java.base/jdk.internal.misc=ALL-UNNAMED", "--add-opens=java.base/java.util.zip=ALL-UNNAMED")
+}
+
 listOf("Node", "Client").forEach { entry ->
     tasks.register<JavaExec>("runDevelopmentFunding$entry") {
         group = "application"
@@ -284,9 +288,9 @@ tasks.register<JavaExec>("runDevelopmentMarketRegistration") {
 
 tasks.register<JavaExec>("runTradingGateway") {
     group = "application"
-    description = "RDB 마켓 설정을 확인하고 Aeron 주문 접수 전용 HTTP 서버를 실행한다."
+    description = "자금 엔진 주문 접수와 공용 RDB 조회를 제공하는 단일 HTTP 서버를 실행한다."
     classpath = sourceSets["main"].runtimeClasspath
-    mainClass.set("com.exchange.core.TradingGatewayApplicationKt")
+    mainClass.set("com.exchange.core.ExchangeCoreApplicationKt")
     javaLauncher.set(javaToolchains.launcherFor(java.toolchain))
     jvmArgs("-XX:+UseG1GC", "--add-opens=java.base/jdk.internal.misc=ALL-UNNAMED", "--add-opens=java.base/java.util.zip=ALL-UNNAMED")
 }

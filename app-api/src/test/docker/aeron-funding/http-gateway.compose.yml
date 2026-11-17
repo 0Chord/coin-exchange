@@ -11,7 +11,6 @@ services:
     ports:
       - "127.0.0.1::8080"
     environment:
-      SPRING_PROFILES_ACTIVE: aeron-gateway
       SERVER_PORT: "8080"
       JAVA_TOOL_OPTIONS: "-XX:+UseG1GC"
       TRADING_GATEWAY_RUN_ROOT: /tmp/${FUNDING_RUN_ID}-gateway
@@ -24,7 +23,7 @@ services:
       FUNDING_MARKET_CONFIG_VERSION:
       FUNDING_MARKET_CONFIG_SHA256:
     command:
-      - com.exchange.core.TradingGatewayApplicationKt
+      - com.exchange.core.support.LegacyTradingGatewayTestApplicationKt
 
 networks:
   gateway-http:

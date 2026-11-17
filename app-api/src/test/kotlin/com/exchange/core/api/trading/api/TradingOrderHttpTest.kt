@@ -1,9 +1,9 @@
 package com.exchange.core.api.trading.api
 
 import com.exchange.core.ExchangeCoreApplication
-import com.exchange.core.TradingGatewayApplication
 import com.exchange.core.api.common.TradingOrderHttpExceptionHandler
 import com.exchange.core.api.config.TradingGatewayConfig
+import com.exchange.core.api.config.TradingHttpConfig
 import com.exchange.core.api.trading.application.SubmitTradingOrderUseCase
 import com.exchange.core.api.trading.application.TradingAdmissionResult
 import com.exchange.core.api.trading.application.TradingOrderGateway
@@ -15,7 +15,6 @@ import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.TestInstance
 import org.springframework.boot.SpringBootConfiguration
 import org.springframework.boot.autoconfigure.EnableAutoConfiguration
-import org.springframework.boot.autoconfigure.SpringBootApplication
 import org.springframework.boot.builder.SpringApplicationBuilder
 import org.springframework.boot.jackson.autoconfigure.JsonMapperBuilderCustomizer
 import org.springframework.boot.test.context.AnnotatedClassFinder
@@ -23,6 +22,7 @@ import org.springframework.boot.test.context.TestConfiguration
 import org.springframework.boot.web.server.servlet.context.ServletWebServerApplicationContext
 import org.springframework.context.ConfigurableApplicationContext
 import org.springframework.context.annotation.Bean
+import org.springframework.context.annotation.ComponentScan
 import org.springframework.context.annotation.Import
 import org.springframework.web.servlet.config.annotation.WebMvcConfigurer
 import tools.jackson.databind.JsonNode
@@ -53,7 +53,6 @@ class TradingOrderHttpTest {
     fun startHttpServer() {
         context =
             SpringApplicationBuilder(TradingOrderHttpConfig::class.java)
-                .profiles("aeron-gateway")
                 .run("--server.port=0", "--spring.main.banner-mode=off", "--logging.level.root=ERROR")
         gateway = context.getBean(HttpContractTradingGateway::class.java)
         val port = requireNotNull((context as ServletWebServerApplicationContext).webServer).port
@@ -205,12 +204,12 @@ class TradingOrderHttpTest {
         assertEquals(404, post.statusCode())
         assertEquals(404, delete.statusCode())
         assertTrue(gateway.submissions.isEmpty())
-        val application = TradingGatewayApplication::class.java.getAnnotation(SpringBootApplication::class.java)
-        assertEquals(listOf("com.exchange.core.api.trading.api"), application.scanBasePackages.toList())
+        val application = ExchangeCoreApplication::class.java.getAnnotation(ComponentScan::class.java)
+        assertFalse(application.useDefaultFilters)
     }
 
     @Test
-    fun `기본 프로필의 기존 Boot 테스트는 원래 애플리케이션을 계속 발견한다`() {
+    fun `Boot 테스트는 단일 제품 애플리케이션을 발견한다`() {
         val application = AnnotatedClassFinder(SpringBootConfiguration::class.java).findFromPackage("com.exchange.core")
         assertEquals(ExchangeCoreApplication::class.java, application)
     }
@@ -271,10 +270,10 @@ class TradingOrderHttpConfig {
         TradingGatewayConfig().submitTradingOrderUseCase(gateway)
 
     @Bean
-    fun tradingJsonMapperBuilderCustomizer(): JsonMapperBuilderCustomizer = TradingGatewayConfig().tradingJsonMapperBuilderCustomizer()
+    fun tradingJsonMapperBuilderCustomizer(): JsonMapperBuilderCustomizer = TradingHttpConfig().tradingJsonMapperBuilderCustomizer()
 
     @Bean
-    fun tradingAsyncSupport(): WebMvcConfigurer = TradingGatewayConfig().tradingAsyncSupport()
+    fun tradingAsyncSupport(): WebMvcConfigurer = TradingHttpConfig().tradingAsyncSupport()
 }
 
 class HttpContractTradingGateway : TradingOrderGateway {

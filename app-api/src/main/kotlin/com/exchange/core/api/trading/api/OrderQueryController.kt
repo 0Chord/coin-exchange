@@ -7,8 +7,6 @@ import jakarta.validation.constraints.NotBlank
 import jakarta.validation.constraints.Pattern
 import jakarta.validation.constraints.PositiveOrZero
 import jakarta.validation.constraints.Size
-import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty
-import org.springframework.context.annotation.Profile
 import org.springframework.http.MediaType
 import org.springframework.http.ResponseEntity
 import org.springframework.web.bind.annotation.GetMapping
@@ -18,8 +16,6 @@ import org.springframework.web.bind.annotation.RequestParam
 import org.springframework.web.bind.annotation.RestController
 
 @RestController
-@Profile("aeron-bounded-gateway")
-@ConditionalOnProperty(name = ["exchange.order-query.enabled"], havingValue = "true")
 @RequestMapping("/api/trading/v3")
 internal class OrderQueryController(
     private val useCase: OrderQueryUseCase,

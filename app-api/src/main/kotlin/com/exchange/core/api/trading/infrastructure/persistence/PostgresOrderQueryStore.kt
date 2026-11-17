@@ -13,7 +13,6 @@ import com.exchange.core.api.trading.application.port.OrderQueryWriteConflictExc
 import org.springframework.dao.DataAccessException
 import org.springframework.dao.DataIntegrityViolationException
 import org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate
-import org.springframework.jdbc.datasource.DataSourceTransactionManager
 import org.springframework.transaction.PlatformTransactionManager
 import org.springframework.transaction.support.TransactionTemplate
 import tools.jackson.databind.DeserializationFeature
@@ -24,14 +23,12 @@ import tools.jackson.databind.json.JsonMapper
 import tools.jackson.databind.type.LogicalType
 import tools.jackson.module.kotlin.KotlinModule
 import java.sql.ResultSet
-import javax.sql.DataSource
 
-/** 조회 전용 DB다. 금융·매칭 상태를 계산하거나 갱신하지 않는다. */
+/** 공용 RDB의 조회 테이블만 사용하며 금융·매칭 상태를 계산하거나 갱신하지 않는다. */
 class PostgresOrderQueryStore(
-    dataSource: DataSource,
     override val namespace: OrderQueryNamespace,
-    private val jdbc: NamedParameterJdbcTemplate = NamedParameterJdbcTemplate(dataSource),
-    transactionManager: PlatformTransactionManager = DataSourceTransactionManager(dataSource),
+    private val jdbc: NamedParameterJdbcTemplate,
+    transactionManager: PlatformTransactionManager,
 ) : OrderQueryStore {
     private val transaction = TransactionTemplate(transactionManager)
     private val mapper =
