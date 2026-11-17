@@ -70,7 +70,12 @@ class OrderQueryHttpTest {
 
     @BeforeEach
     fun resetProjection() {
-        database.jdbc().execute("truncate order_query.applied_batch, order_query.order_record, order_query.query_progress")
+        database.jdbc().execute(
+            """
+            truncate order_query.source_receipt, order_query.feed_stream, order_query.feed_consumer,
+                order_query.applied_batch, order_query.order_record, order_query.query_progress
+            """.trimIndent(),
+        )
         store.initialize()
     }
 
@@ -169,7 +174,12 @@ class OrderQueryHttpTest {
         store.transitionLifecycle(OrderQueryLifecycle.BLOCKED)
         assertResponse(503, "QUERY_NOT_READY", get(record.orderId), hideOrder = true)
         assertResponse(503, "QUERY_NOT_READY", get(orderId(99)), hideOrder = true)
-        database.jdbc().execute("truncate order_query.applied_batch, order_query.order_record, order_query.query_progress")
+        database.jdbc().execute(
+            """
+            truncate order_query.source_receipt, order_query.feed_stream, order_query.feed_consumer,
+                order_query.applied_batch, order_query.order_record, order_query.query_progress
+            """.trimIndent(),
+        )
         assertResponse(503, "QUERY_NOT_READY", get(orderId(99)), hideOrder = true)
     }
 

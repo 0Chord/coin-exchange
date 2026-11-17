@@ -1,0 +1,71 @@
+package com.exchange.core.api.trading.application.port
+
+import com.exchange.core.api.trading.application.OrderQueryLifecycle
+import com.exchange.core.trading.FundsOrderDispatch
+import com.exchange.core.trading.MatchingFundsSettledAck
+import com.exchange.core.trading.MatchingResultEnvelope
+import com.exchange.core.trading.MatchingResultStream
+import com.exchange.core.trading.TradingMarketContext
+
+/** 소스가 보존한 범위다. genesis 증명 없이 빈 DB를 과거 전체 조회로 활성화하지 않는다. */
+data class OrderQuerySourceBounds(
+    val issued: Long,
+    val retiredThrough: Long,
+    val completeFromGenesis: Boolean,
+) {
+    init {
+        require(retiredThrough >= 0 && issued >= retiredThrough)
+    }
+}
+
+data class OrderQueryFeedProgress(
+    val consumerId: String,
+    val admissionThrough: Long,
+    val matchingThrough: Map<String, Long>,
+    val financialThrough: Map<String, Long>,
+    val lifecycle: OrderQueryLifecycle,
+    val appliedRevision: Long,
+)
+
+/** 같은 WAS의 확정 사실 수집 전용이며 사용자 HTTP에 노출하지 않는다. */
+interface OrderQueryFeedStore {
+    fun initialize(
+        consumerId: String,
+        streams: Map<String, MatchingResultStream>,
+        contexts: Map<String, TradingMarketContext>,
+        sourceIdentity: String? = null,
+    )
+
+    fun progress(): OrderQueryFeedProgress
+
+    /** 초기 전체 수집이 끝나야 READY다. 이미 READY인 범위의 backlog는 LAGGING으로 표현한다. */
+    fun verifySources(
+        admission: OrderQuerySourceBounds,
+        matching: Map<String, OrderQuerySourceBounds>,
+        financial: Map<String, Long> = emptyMap(),
+        expectedBeforeRead: OrderQueryFeedProgress? = null,
+    ): OrderQueryFeedProgress
+
+    /** canonical 원문 중복을 먼저 판정한 뒤 행·revision·cursor와 함께 커밋한다. */
+    fun applyAdmission(
+        fact: FundsOrderDispatch,
+        canonicalPayload: ByteArray,
+    ): Long
+
+    fun applyMatching(
+        fact: MatchingResultEnvelope,
+        canonicalPayload: ByteArray,
+    ): Long
+
+    /** 기존 미정산 결과는 한 순번씩 반영한다. 매칭보다 앞선 watermark는 원문 없이 보존할 수 있다. */
+    fun applyFinancial(watermark: MatchingFundsSettledAck): Long
+
+    fun suspendProjection()
+
+    fun block(reason: String)
+}
+
+/** 접수 원문을 먼저 가져온 뒤 같은 매칭 원문을 다시 적용한다. 조회 주문을 추정해 만들지 않는다. */
+class OrderQueryOriginsPendingException(
+    val admissionSequence: Long,
+) : RuntimeException("matching result requires admission $admissionSequence")
