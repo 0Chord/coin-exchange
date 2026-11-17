@@ -18,8 +18,16 @@ object ProductionBoundaryInputs {
     private val apiPackages = setOf("$BASE.api.order.api", "$BASE.api.market.api", "$BASE.api.trading.api", "$BASE.api.common")
     private const val CONFIGURATION_PACKAGE = "$BASE.api.config"
     private const val EXECUTOR_CONTRACT = "$BASE.matching.MarketCommandProcessor"
-    private val httpContracts = setOf("$BASE.matching.MatchingCommand", "$BASE.matching.MatchingEvent", "$BASE.trading.OrderAdmissionInput")
-    private val httpEnums = setOf("$BASE.order.Side", "$BASE.order.OrderType", "$BASE.order.TimeInForce")
+    private val httpContracts =
+        setOf(
+            "$BASE.matching.MatchingCommand",
+            "$BASE.matching.MatchingEvent",
+            "$BASE.trading.OrderAdmissionInput",
+            "$BASE.trading.ClusterLineage",
+            "$BASE.trading.MatchingResultStream",
+        )
+    private val httpEnums =
+        setOf("$BASE.order.Side", "$BASE.order.OrderType", "$BASE.order.TimeInForce", "$BASE.trading.MatchingResultDirection")
 
     // HTTP에서 읽는 마켓 결과·오류만 허용한다. 일반 application 작업 타입까지 DATA로 넓히지 않는다.
     private val applicationHttpData =
@@ -31,6 +39,15 @@ object ProductionBoundaryInputs {
                 "$TRADING_APPLICATION.TradingOrderSubmission",
                 "$TRADING_APPLICATION.BoundedTradingResult",
                 "$TRADING_APPLICATION.BoundedTradingOrderSubmission",
+                "$TRADING_APPLICATION.OrderQueryCode",
+                "$TRADING_APPLICATION.OrderQueryResult",
+                "$TRADING_APPLICATION.OrderQueryRecord",
+                "$TRADING_APPLICATION.OrderQueryProgress",
+                "$TRADING_APPLICATION.OrderQueryLifecycle",
+                "$TRADING_APPLICATION.OrderQueryFreshness",
+                "$TRADING_APPLICATION.OrderQueryFinancialStatus",
+                "$TRADING_APPLICATION.OrderQueryPendingReason",
+                "$TRADING_APPLICATION.OrderQueryOrderState",
             )
 
     // 기존 공개 진입점의 삭제를 잡는 최소 기대이며, 전체 검사 대상의 등록표가 아니다.

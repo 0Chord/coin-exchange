@@ -312,6 +312,7 @@ object NamingRules {
                                 "domain-trading",
                                 "matching-ports",
                                 "market-ports",
+                                "trading-ports",
                             ).map { area(policy, it) },
                         )
                 },
@@ -377,6 +378,7 @@ object NamingRules {
                                     "domain-trading",
                                     "matching-ports",
                                     "market-ports",
+                                    "trading-ports",
                                 ).map { area(policy, it) }
                             if (allowedPort.any { it.module == input.modules.getValue(port.name) && it.packageName == port.packageName }) {
                                 throw PolicyInputError(port.name, "필요한 Store 영역 매핑 누락")

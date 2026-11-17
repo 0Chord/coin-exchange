@@ -367,7 +367,7 @@ class ProductionBoundaryInputsTest {
         )
     }
 
-    @Test fun `마켓 저장 포트 공개 계약을 ARCH06으로 검사한다`() {
+    @Test fun `마켓과 주문 조회 저장 포트 공개 계약을 ARCH06으로 검사한다`() {
         val result =
             PortContractIndependence.inspect(
                 scope(),
@@ -377,6 +377,7 @@ class ProductionBoundaryInputsTest {
             )
         assertTrue(result.evaluated, result.problems.toString())
         assertTrue(marketStore in ProductionScope.roles.externalPorts)
+        assertTrue("$tradingApp.port.OrderQueryStore" in result.ports)
         assertEquals(emptyList(), result.violations)
     }
 
