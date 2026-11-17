@@ -2,23 +2,25 @@ package com.exchange.core
 
 import com.exchange.core.api.common.TradingOrderHttpExceptionHandler
 import com.exchange.core.api.config.BoundedTradingGatewayConfig
+import com.exchange.core.api.config.OrderQueryConfig
 import com.exchange.core.api.config.TradingGatewayConfig
 import org.springframework.boot.autoconfigure.SpringBootApplication
 import org.springframework.boot.builder.SpringApplicationBuilder
 import org.springframework.context.annotation.Import
 import org.springframework.context.annotation.Profile
 
-/** Aeron 접수 API만 열며 기존 RDB 주문·취소 조립과 실행을 분리한다. */
+/** Aeron 접수와 선택적 조회 API를 열며 기존 RDB 주문·취소 실행을 분리한다. */
 @SpringBootApplication(
     scanBasePackages = ["com.exchange.core.api.trading.api"],
     excludeName = [
         "org.springframework.boot.jdbc.autoconfigure.DataSourceAutoConfiguration",
         "org.springframework.boot.hibernate.autoconfigure.HibernateJpaAutoConfiguration",
+        "org.springframework.boot.data.jpa.autoconfigure.DataJpaRepositoriesAutoConfiguration",
         "org.springframework.boot.flyway.autoconfigure.FlywayAutoConfiguration",
     ],
 )
 @Profile("aeron-gateway | aeron-bounded-gateway")
-@Import(TradingGatewayConfig::class, BoundedTradingGatewayConfig::class, TradingOrderHttpExceptionHandler::class)
+@Import(TradingGatewayConfig::class, BoundedTradingGatewayConfig::class, OrderQueryConfig::class, TradingOrderHttpExceptionHandler::class)
 class TradingGatewayApplication
 
 fun main(args: Array<String>) {
