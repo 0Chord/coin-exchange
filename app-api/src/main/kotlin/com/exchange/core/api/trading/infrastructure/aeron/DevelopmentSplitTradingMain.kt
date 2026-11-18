@@ -160,6 +160,7 @@ internal fun splitTradingConfiguration(
         inputContractVersion = inputContractVersion,
         matchingDeclarations = matchingDeclarations,
         matchingLimitsByLineage = matchingLimitsByLineage,
+        queryRetention = splitQueryRetentionConfiguration(topology, environment, dispatchLimits, inputContractVersion),
     )
 }
 

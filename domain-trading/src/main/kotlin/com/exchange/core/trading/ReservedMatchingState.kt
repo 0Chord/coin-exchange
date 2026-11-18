@@ -35,6 +35,16 @@ class ReservedMatchingState(
         val engine = MatchingEngine()
         val markets = configuration.markets.associate { it.market.marketId to Progress() }
         val active = linkedMapOf<Pair<MarketId, OrderId>, FundsOrderDispatch>()
+        val queryResults =
+            configuration.queryRetention?.let {
+                QueryFactRetention(
+                    it,
+                    true,
+                    { fact: MatchingResultEnvelope -> fact.stream.marketId },
+                    { fact -> fact.resultSequence },
+                    { fact -> fact.canonicalBytes },
+                )
+            }
         var resultEntries = 0
         var resultBytes = 0L
         var activeBytes = 0L
@@ -161,6 +171,9 @@ class ReservedMatchingState(
         ) {
             return MatchingIntakeReply(MatchingIntakeStatus.BUSY)
         }
+        if (state.queryResults?.canRecord(input.stream.marketId, bytes) == false) {
+            return MatchingIntakeReply(MatchingIntakeStatus.BUSY)
+        }
         MatchingInputValidation.requireResult(configuration, result)
         val newActiveBytes = activeBytesAfter()
         val newLocalBytes = localBytesAfter()
@@ -174,6 +187,7 @@ class ReservedMatchingState(
             for (effect in removed) state.active.remove(input.stream.marketId to effect.orderId)
             if (add) check(state.active.put(input.stream.marketId to input.order.orderId, input) == null)
             check(progress.outstanding.put(result.resultSequence, result) == null)
+            state.queryResults?.record(result)
             progress.appliedThrough = input.dispatchSequence
             progress.lastSourceAdmissionSequence = input.admissionSequence
             progress.lastSourceMarketAdmissionSequence = input.marketAdmissionSequence
@@ -235,6 +249,9 @@ class ReservedMatchingState(
         ) {
             return MatchingIntakeReply(MatchingIntakeStatus.BUSY)
         }
+        if (state.queryResults?.canRecord(input.stream.marketId, bytes) == false) {
+            return MatchingIntakeReply(MatchingIntakeStatus.BUSY)
+        }
         val releasedBytes = if (effects.isEmpty()) 0L else MatchingResultCharge.active(checkNotNull(origin))
         val activeBytes = Math.subtractExact(state.activeBytes, releasedBytes)
         val localActiveBytes = Math.subtractExact(progress.activeBytes, releasedBytes)
@@ -249,6 +266,7 @@ class ReservedMatchingState(
                 state.engine.releaseTerminalOrderIdentity(input.stream.marketId, input.order.orderId)
             }
             check(progress.outstanding.put(result.resultSequence, result) == null)
+            state.queryResults?.record(result)
             progress.appliedThrough = input.dispatchSequence
             progress.resultIssued = result.resultSequence
             progress.resultBytes = localResultBytes
@@ -262,6 +280,39 @@ class ReservedMatchingState(
             result,
             FundsMatchingAppliedAck(input.stream, progress.appliedThrough, configuration.context(input.stream.marketId)),
         )
+    }
+
+    val queryRetentionConfiguration: QueryRetentionConfiguration? get() = configuration.queryRetention
+
+    fun readQueryResults(
+        stream: MatchingResultStream,
+        fromSequence: Long,
+        maxEntries: Int,
+        maxBytes: Long,
+    ): QueryFactsRead<MatchingResultEnvelope> {
+        val state = usable()
+        if (!configuration.matches(stream)) return QueryFactsRead(QueryFactsReadStatus.INVALID_STREAM)
+        return state.queryResults?.read(stream.marketId, fromSequence, maxEntries, maxBytes)
+            ?: QueryFactsRead(QueryFactsReadStatus.DISABLED)
+    }
+
+    fun queryResultsProgress(stream: MatchingResultStream): QueryFactsProgress? {
+        val state = usable()
+        if (!configuration.matches(stream)) return null
+        return state.queryResults?.progress(stream.marketId)
+    }
+
+    fun acknowledgeQueryResults(
+        consumerId: String,
+        stream: MatchingResultStream,
+        through: Long,
+    ): QueryFactsAck {
+        val state = usable()
+        if (!configuration.matches(stream)) return QueryFactsAck(QueryFactsAckStatus.INVALID_STREAM, 0)
+        val retained = state.queryResults ?: return QueryFactsAck(QueryFactsAckStatus.DISABLED, 0)
+        var reply: QueryFactsAck? = null
+        mutate { reply = retained.acknowledge(consumerId, stream.marketId, through) }
+        return checkNotNull(reply)
     }
 
     fun readResults(
@@ -401,6 +452,9 @@ class ReservedMatchingState(
             state.resultBytes,
             state.active.size,
             state.activeBytes,
+            state.queryResults?.let { retained ->
+                configuration.markets.associate { it.market.marketId to retained.snapshot(it.market.marketId) }
+            } ?: emptyMap(),
         )
     }
 
@@ -413,10 +467,83 @@ class ReservedMatchingState(
             }
             val restored = Data(configuration)
             validateRecovery(saved, restored)
+            restoreQueryResults(saved, restored)
             data = restored
         } catch (failure: Throwable) {
             isBlocked = true
             throw failure
+        }
+    }
+
+    private fun restoreQueryResults(
+        saved: MatchingRoleRecoveryState,
+        restored: Data,
+    ) {
+        val retained = restored.queryResults
+        if (retained == null) {
+            require(saved.queryResults.isEmpty()) { "matching query recovery capability differs" }
+            return
+        }
+        require(saved.queryResults.keys == configuration.markets.map { it.market.marketId }.toSet()) {
+            "matching query recovery stream coverage differs"
+        }
+        for (row in saved.streams) {
+            val query = saved.queryResults.getValue(row.stream.marketId)
+            require(query.issued == row.resultIssued) { "matching query result frontier differs" }
+            var engine: Long? = null
+            var sourceAdmission = 0L
+            var marketAdmission =
+                Math.subtractExact(
+                    row.lastSourceMarketAdmissionSequence,
+                    query.entries.count { !it.input.isCancellation }.toLong(),
+                )
+            require(marketAdmission in 0..query.retiredThrough) { "query result source market frontier differs" }
+            if (query.retiredThrough == 0L) {
+                require(query.entries.isEmpty() || query.entries.first().engineSequenceBefore == 0L) {
+                    "initial query result frontier contains past matching events"
+                }
+            }
+            retained.restore(row.stream.marketId, query) { result ->
+                MatchingInputValidation.requireResult(configuration, result)
+                require(result.stream == configuration.resultStream(row.stream.marketId))
+                engine?.let { require(result.engineSequenceBefore == it) { "query result engine prefix differs" } }
+                engine = result.engineSequenceAfter
+                row.outstanding.firstOrNull { it.resultSequence == result.resultSequence }?.let { require(it == result) }
+                require(result.input.admissionSequence <= row.lastSourceAdmissionSequence)
+                if (result.input.isCancellation) {
+                    require(result.input.marketAdmissionSequence <= marketAdmission)
+                    if (sourceAdmission > 0L) require(result.input.admissionSequence <= sourceAdmission)
+                } else {
+                    require(result.input.admissionSequence > sourceAdmission) { "query result source admission does not advance" }
+                    require(result.input.marketAdmissionSequence == Math.addExact(marketAdmission, 1L)) {
+                        "query result source market admission does not advance"
+                    }
+                    sourceAdmission = result.input.admissionSequence
+                    marketAdmission = result.input.marketAdmissionSequence
+                }
+            }
+            require(sourceAdmission == 0L || sourceAdmission == row.lastSourceAdmissionSequence)
+            require(marketAdmission == row.lastSourceMarketAdmissionSequence)
+            engine?.let { require(it == restored.engine.lastEngineSequence(row.stream.marketId)) }
+            if (query.entries.isNotEmpty()) {
+                validateSuffix(
+                    MatchingStreamRecovery(
+                        row.stream,
+                        row.appliedThrough,
+                        row.lastSourceAdmissionSequence,
+                        row.resultIssued,
+                        query.retiredThrough,
+                        query.entries.first().engineSequenceBefore,
+                        query.entries,
+                        query.retainedBytes,
+                        row.activeOrders,
+                        row.activeBytes,
+                        row.lastSourceMarketAdmissionSequence,
+                    ),
+                    restored.engine.restingOrders(row.stream.marketId),
+                    restored.active,
+                )
+            }
         }
     }
 

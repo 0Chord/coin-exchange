@@ -23,6 +23,7 @@ import tools.jackson.databind.json.JsonMapper
 import tools.jackson.databind.type.LogicalType
 import tools.jackson.module.kotlin.KotlinModule
 import java.sql.ResultSet
+import java.util.concurrent.atomic.AtomicReference
 
 /** 공용 RDB의 조회 테이블만 사용하며 금융·매칭 상태를 계산하거나 갱신하지 않는다. */
 class PostgresOrderQueryStore(
@@ -31,6 +32,22 @@ class PostgresOrderQueryStore(
     transactionManager: PlatformTransactionManager,
 ) : OrderQueryStore {
     private val transaction = TransactionTemplate(transactionManager)
+
+    // DB 장애 중 준비/차단 상태를 저장하지 못해도 같은 WAS가 낡은 READY를 노출하지 않는다.
+    private val sourceReadGate = AtomicReference<OrderQueryLifecycle?>(null)
+
+    internal fun suspendSourceReads() {
+        sourceReadGate.compareAndSet(null, OrderQueryLifecycle.INITIALIZING)
+    }
+
+    internal fun blockSourceReads() {
+        sourceReadGate.set(OrderQueryLifecycle.BLOCKED)
+    }
+
+    internal fun verifySourceReads() {
+        sourceReadGate.compareAndSet(OrderQueryLifecycle.INITIALIZING, null)
+    }
+
     private val mapper =
         JsonMapper
             .builder()
@@ -172,7 +189,14 @@ class PostgresOrderQueryStore(
                     val progress = progress(rows)
                     val record = if (rows.getString("record_payload") == null) null else record(rows)
                     if (record != null && record.admissionSequence > progress.coveredAdmissionSequence) inconsistent()
-                    OrderQuerySnapshot(progress, record)
+                    val gate = sourceReadGate.get()
+                    val readable =
+                        if (gate != null && progress.lifecycle != OrderQueryLifecycle.BLOCKED) {
+                            progress.copy(lifecycle = gate)
+                        } else {
+                            progress
+                        }
+                    OrderQuerySnapshot(readable, record)
                 }.singleOrNull() ?: OrderQuerySnapshot(null, null)
         } catch (error: OrderQueryInconsistentException) {
             throw error
@@ -182,7 +206,7 @@ class PostgresOrderQueryStore(
             throw OrderQueryInconsistentException("stored order query state is inconsistent")
         }
 
-    private fun lockedProgress(): OrderQueryProgress =
+    internal fun lockedProgress(): OrderQueryProgress =
         jdbc
             .query(
                 "select * from order_query.query_progress where namespace = :namespace for update",
@@ -204,7 +228,7 @@ class PostgresOrderQueryStore(
             )
         }
 
-    private fun findRecord(
+    internal fun findRecord(
         marketId: String,
         orderId: String,
     ): OrderQueryRecord? =
@@ -229,6 +253,25 @@ class PostgresOrderQueryStore(
             require(record.marketAdmissionSequence == rows.getLong("market_admission_sequence"))
             record
         }
+
+    /** 원본 receipt·cursor와 기존 정규화 batch를 같은 공용 JDBC 트랜잭션에 참여시킨다. */
+    internal fun <T> withTransaction(action: () -> T): T = write(action)
+
+    internal fun recordsAwaitingFinancial(
+        marketId: String,
+        through: Long,
+    ): List<OrderQueryRecord> =
+        jdbc.query(
+            """
+            select * from order_query.order_record
+            where namespace = :namespace and market_id = :marketId
+                and record_payload ->> 'state' <> 'MATCHING_PENDING'
+                and cast(record_payload ->> 'financialThrough' as bigint) <
+                    cast(record_payload ->> 'lastAffectedResultSequence' as bigint)
+                and cast(record_payload ->> 'lastAffectedResultSequence' as bigint) <= :through
+            """.trimIndent(),
+            namespaceParameters + mapOf("marketId" to marketId, "through" to through),
+        ) { rows, _ -> record(rows) }
 
     private fun save(record: OrderQueryRecord) {
         jdbc.update(

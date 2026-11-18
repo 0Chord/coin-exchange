@@ -1,0 +1,752 @@
+package com.exchange.core.api.trading.infrastructure.persistence
+
+import com.exchange.core.api.trading.application.OrderQueryCode
+import com.exchange.core.api.trading.application.OrderQueryFinancialStatus
+import com.exchange.core.api.trading.application.OrderQueryFreshness
+import com.exchange.core.api.trading.application.OrderQueryLifecycle
+import com.exchange.core.api.trading.application.OrderQueryNamespace
+import com.exchange.core.api.trading.application.OrderQueryOrderState
+import com.exchange.core.api.trading.application.OrderQueryUseCase
+import com.exchange.core.api.trading.application.port.OrderQueryOriginsPendingException
+import com.exchange.core.api.trading.application.port.OrderQuerySourceBounds
+import com.exchange.core.api.trading.application.port.OrderQueryUnavailableException
+import com.exchange.core.api.trading.application.port.OrderQueryWriteConflictException
+import com.exchange.core.api.trading.infrastructure.codec.SplitOrderDeliveryCodec
+import com.exchange.core.api.trading.infrastructure.codec.SplitOrderDeliveryCommand
+import com.exchange.core.api.trading.infrastructure.codec.SplitResultDeliveryCodec
+import com.exchange.core.api.trading.infrastructure.codec.SplitResultDeliveryCommand
+import com.exchange.core.common.AssetId
+import com.exchange.core.common.MarketId
+import com.exchange.core.common.Price
+import com.exchange.core.common.Quantity
+import com.exchange.core.common.UserId
+import com.exchange.core.fee.FeeProductType
+import com.exchange.core.fee.FeeRate
+import com.exchange.core.fee.FeeTier
+import com.exchange.core.fee.MakerTakerFeeRates
+import com.exchange.core.fee.TradingFeePolicySnapshot
+import com.exchange.core.fee.TradingFeeReserveCalculator
+import com.exchange.core.order.BuyOrderFundingQuoteCalculator
+import com.exchange.core.order.MarketDefinition
+import com.exchange.core.order.OrderReservation
+import com.exchange.core.order.OrderReservationCalculator
+import com.exchange.core.order.OrderType
+import com.exchange.core.order.Side
+import com.exchange.core.order.TimeInForce
+import com.exchange.core.trading.ClusterLineage
+import com.exchange.core.trading.FundsCancelDispatch
+import com.exchange.core.trading.FundsDispatchStream
+import com.exchange.core.trading.FundsOrderDispatch
+import com.exchange.core.trading.MatchingFundsSettledAck
+import com.exchange.core.trading.MatchingIntakeConfiguration
+import com.exchange.core.trading.MatchingResultEnvelope
+import com.exchange.core.trading.MatchingResultStream
+import com.exchange.core.trading.OrderAdmissionInput
+import com.exchange.core.trading.RequestToken
+import com.exchange.core.trading.ReservedMatchingState
+import com.exchange.core.trading.TradingClusterManifest
+import com.exchange.core.trading.TradingIdentifiers
+import com.exchange.core.trading.TradingMarketAssignment
+import com.exchange.core.trading.TradingMarketContext
+import com.exchange.core.trading.TradingResourceLimits
+import com.exchange.core.trading.TradingRoleDeclaration
+import com.exchange.core.trading.TradingRoleTopology
+import com.exchange.core.trading.TradingServiceRole
+import org.flywaydb.core.Flyway
+import org.junit.jupiter.api.AfterAll
+import org.junit.jupiter.api.BeforeAll
+import org.junit.jupiter.api.TestInstance
+import org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate
+import org.springframework.jdbc.datasource.DataSourceTransactionManager
+import org.springframework.jdbc.datasource.DriverManagerDataSource
+import org.testcontainers.postgresql.PostgreSQLContainer
+import java.time.Instant
+import java.util.concurrent.Callable
+import java.util.concurrent.Executors
+import java.util.concurrent.atomic.AtomicLong
+import kotlin.test.Test
+import kotlin.test.assertContentEquals
+import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
+import kotlin.test.assertNull
+
+@TestInstance(TestInstance.Lifecycle.PER_CLASS)
+class PostgresOrderQueryFeedStoreTest {
+    private val database = PostgreSQLContainer("postgres:16-alpine")
+    private val identities = AtomicLong(1_000)
+    private lateinit var jdbc: NamedParameterJdbcTemplate
+
+    @BeforeAll
+    fun start() {
+        database.start()
+        jdbc = NamedParameterJdbcTemplate(dataSource())
+        Flyway
+            .configure()
+            .dataSource(dataSource())
+            .locations("classpath:db/migration")
+            .load()
+            .migrate()
+    }
+
+    @AfterAll
+    fun stop() = database.stop()
+
+    @Test
+    fun `실제 매칭 원문으로 양쪽 주문과 취소 반환을 저장하고 재개방 중복에도 최초 결과를 보존한다`() {
+        val f = fixture()
+        val maker = f.input(1, side = Side.SELL)
+        val taker = f.input(2, quantity = 1)
+        f.verify(2, 3)
+        assertEquals(1L, f.admit(maker))
+        assertNull(f.read(maker).record!!.remainingQuantity)
+        assertEquals(2L, f.match(f.owner.apply(maker).result!!))
+        assertEquals(3L, f.admit(taker))
+        val partial = f.owner.apply(taker).result!!
+        assertEquals(4L, f.match(partial))
+        assertEquals(1L, f.read(maker).record!!.filledQuantity)
+        assertEquals(2L, f.read(maker).record!!.remainingQuantity)
+        assertEquals(OrderQueryOrderState.FILLED, f.read(taker).record!!.state)
+        val cancelled = f.owner.apply(f.cancel(maker, 3)).result!!
+        assertEquals(5L, f.match(cancelled))
+        val before = f.read(maker).record!!
+        assertEquals(OrderQueryOrderState.CANCELLED, before.state)
+        assertEquals(1L, before.filledQuantity)
+        assertEquals(0L, before.remainingQuantity)
+        assertEquals(2L, before.cancelledQuantity)
+        assertEquals(OrderQueryFinancialStatus.PENDING, before.financialStatus)
+        assertEquals(6L, f.feed.applyFinancial(f.watermark(3)))
+        assertEquals(
+            1L,
+            f.feed
+                .progress()
+                .financialThrough
+                .getValue(f.a.market.marketId.value),
+        )
+        assertEquals(7L, f.feed.applyFinancial(f.watermark(3)))
+        assertEquals(8L, f.feed.applyFinancial(f.watermark(3)))
+        f.verify(2, 3)
+        val saved = f.read(maker)
+        assertEquals(OrderQueryLifecycle.READY, saved.progress!!.lifecycle)
+        assertEquals(OrderQueryFreshness.CAUGHT_UP, saved.progress!!.freshness)
+        assertEquals(OrderQueryFinancialStatus.APPLIED, saved.record!!.financialStatus)
+        val reopened = f.reopen()
+        assertEquals(saved, reopened.read(maker))
+        assertEquals(1L, reopened.admit(maker))
+        assertEquals(4L, reopened.match(partial))
+        assertEquals(5L, reopened.match(cancelled))
+        assertEquals(saved, reopened.read(maker))
+        assertEquals(
+            3L,
+            reopened.feed
+                .progress()
+                .matchingThrough
+                .getValue(f.a.market.marketId.value),
+        )
+        assertContentEquals(f.resultBytes(partial), f.raw("MATCHING", f.a.market.marketId.value, 2))
+        assertContentEquals(f.admissionBytes(maker), f.raw("ADMISSION", "funds", 1))
+    }
+
+    @Test
+    fun `먼저 받은 정산 위치는 주문을 만들지 않고 늦은 매칭의 금융 상태를 되돌리지 않는다`() {
+        val f = fixture()
+        f.verify(1, 1)
+        f.feed.applyFinancial(f.watermark(1))
+        val input = f.input(1)
+        assertNull(f.read(input).record)
+        f.admit(input)
+        assertEquals(OrderQueryOrderState.MATCHING_PENDING, f.read(input).record!!.state)
+        f.match(f.owner.apply(input).result!!)
+        val saved = f.read(input)
+        assertEquals(OrderQueryFinancialStatus.APPLIED, saved.record!!.financialStatus)
+        assertEquals(1L, saved.record!!.financialThrough)
+        assertEquals(3L, saved.progress!!.appliedRevision)
+        assertEquals(3L, f.feed.applyFinancial(f.watermark(0)))
+        assertEquals(saved, f.read(input))
+    }
+
+    @Test
+    fun `정산 cursor 뒤의 같은 결과 주문만 갱신하고 이미 완료된 과거 행은 다시 쓰지 않는다`() {
+        val f = fixture()
+        f.verify(2, 2)
+        val maker = f.input(1, side = Side.SELL)
+        val taker = f.input(2)
+        f.admit(maker)
+        f.match(f.owner.apply(maker).result!!)
+        f.admit(taker)
+        f.match(f.owner.apply(taker).result!!)
+        f.feed.applyFinancial(f.watermark(2))
+        assertEquals(
+            1L,
+            f.feed
+                .progress()
+                .financialThrough
+                .getValue(f.a.market.marketId.value),
+        )
+        assertEquals(OrderQueryFinancialStatus.PENDING, f.read(maker).record!!.financialStatus)
+        assertEquals(OrderQueryFinancialStatus.PENDING, f.read(taker).record!!.financialStatus)
+        f.feed.applyFinancial(f.watermark(2))
+        val makerApplied = f.read(maker).record
+        val takerApplied = f.read(taker).record
+        val makerUpdated = f.updatedAt(maker)
+        val takerUpdated = f.updatedAt(taker)
+        assertEquals(OrderQueryFinancialStatus.APPLIED, makerApplied!!.financialStatus)
+        assertEquals(OrderQueryFinancialStatus.APPLIED, takerApplied!!.financialStatus)
+        val later = f.input(3)
+        f.admit(later)
+        f.match(f.owner.apply(later).result!!)
+        f.feed.applyFinancial(f.watermark(3))
+        assertEquals(OrderQueryFinancialStatus.APPLIED, f.read(later).record!!.financialStatus)
+        assertEquals(makerApplied, f.read(maker).record)
+        assertEquals(takerApplied, f.read(taker).record)
+        assertEquals(makerUpdated, f.updatedAt(maker))
+        assertEquals(takerUpdated, f.updatedAt(taker))
+        assertEquals(
+            3L,
+            f.feed
+                .progress()
+                .financialThrough
+                .getValue(f.a.market.marketId.value),
+        )
+    }
+
+    @Test
+    fun `접수와 매칭을 따라잡아도 확인된 정산 backlog가 남으면 LAGGING을 유지한다`() {
+        val f = fixture()
+        f.verify(0, 0)
+        val input = f.input(1)
+        f.admit(input)
+        f.match(f.owner.apply(input).result!!)
+        val heads = f.streams.mapValues { if (it.key == f.a.market.marketId.value) 1L else 0L }
+        f.feed.verifySources(bounds(1), f.streams.mapValues { bounds(heads.getValue(it.key)) }, heads)
+        val lagging = f.read(input)
+        assertEquals(OrderQueryLifecycle.READY, lagging.progress!!.lifecycle)
+        assertEquals(OrderQueryFreshness.LAGGING, lagging.progress!!.freshness)
+        assertEquals(3L, lagging.progress!!.observedRevision)
+        f.feed.applyFinancial(f.watermark(1))
+        f.feed.verifySources(bounds(1), f.streams.mapValues { bounds(heads.getValue(it.key)) }, heads)
+        assertEquals(OrderQueryFreshness.CAUGHT_UP, f.read(input).progress!!.freshness)
+    }
+
+    @Test
+    fun `매칭의 접수 원문이 없으면 전체 결과와 cursor를 저장하지 않고 같은 원문으로 재개한다`() {
+        val f = fixture()
+        f.verify(2, 2)
+        val maker = f.input(1, side = Side.SELL)
+        val taker = f.input(2, quantity = 1)
+        f.admit(maker)
+        f.match(f.owner.apply(maker).result!!)
+        val partial = f.owner.apply(taker).result!!
+        val previous = f.feed.progress()
+        val waiting = assertFailsWith<OrderQueryOriginsPendingException> { f.match(partial) }
+        assertEquals(2L, waiting.admissionSequence)
+        assertEquals(previous, f.feed.progress())
+        assertEquals(3L, f.read(maker).record!!.remainingQuantity)
+        assertEquals(0L, f.receiptCount("MATCHING", 2))
+        f.admit(taker)
+        f.match(partial)
+        assertEquals(2L, f.read(maker).record!!.remainingQuantity)
+        assertEquals(1L, f.read(taker).record!!.filledQuantity)
+    }
+
+    @Test
+    fun `중간 SQL 실패는 maker taker 원문 revision cursor를 모두 롤백하고 재시도로 한 번만 반영한다`() {
+        val f = fixture()
+        f.verify(2, 2)
+        val maker = f.input(1, side = Side.SELL)
+        val taker = f.input(2, quantity = 1)
+        f.admit(maker)
+        f.admit(taker)
+        f.match(f.owner.apply(maker).result!!)
+        val partial = f.owner.apply(taker).result!!
+        val previousMaker = f.read(maker)
+        val previousTaker = f.read(taker)
+        val previous = f.feed.progress()
+        // 주문 행 저장 뒤 실제 PostgreSQL 오류가 나면 원본 트랜잭션 전체가 롤백돼야 한다.
+        jdbc.jdbcTemplate.execute(
+            """
+            create function order_query.reject_feed_receipt() returns trigger language plpgsql as '
+            begin raise exception ''injected source receipt failure''; end';
+            """.trimIndent(),
+        )
+        jdbc.jdbcTemplate.execute(
+            "create trigger reject_feed_receipt before insert on order_query.source_receipt " +
+                "for each row execute function order_query.reject_feed_receipt()",
+        )
+        try {
+            assertFailsWith<OrderQueryUnavailableException> { f.match(partial) }
+        } finally {
+            jdbc.jdbcTemplate.execute("drop trigger reject_feed_receipt on order_query.source_receipt")
+            jdbc.jdbcTemplate.execute("drop function order_query.reject_feed_receipt()")
+        }
+        assertEquals(previous, f.feed.progress())
+        assertEquals(previousMaker, f.read(maker))
+        assertEquals(previousTaker, f.read(taker))
+        assertEquals(0L, f.receiptCount("MATCHING", 2))
+        assertEquals(previous.appliedRevision + 1, f.match(partial))
+        assertEquals(2L, f.read(maker).record!!.remainingQuantity)
+        assertEquals(1L, f.read(taker).record!!.filledQuantity)
+    }
+
+    @Test
+    fun `동일 원문 동시 재시도는 최초 revision 하나를 공유하고 다른 원문은 지속적으로 차단한다`() {
+        val f = fixture()
+        f.verify(1, 0)
+        val input = f.input(1)
+        val revisions =
+            Executors.newFixedThreadPool(2).use { pool ->
+                List(2) { pool.submit(Callable { f.reopen().admit(input) }) }.map { it.get() }
+            }
+        assertEquals(listOf(1L, 1L), revisions)
+        val saved = f.read(input).record
+        assertEquals(1L, f.receiptCount("ADMISSION", 1))
+        assertFailsWith<OrderQueryWriteConflictException> {
+            f.feed.applyAdmission(input, f.admissionBytes(input) + byteArrayOf(1))
+        }
+        assertEquals(OrderQueryLifecycle.BLOCKED, f.feed.progress().lifecycle)
+        assertEquals(saved, f.read(input).record)
+        assertEquals(1L, f.reopen().admit(input))
+        assertEquals(
+            OrderQueryLifecycle.BLOCKED,
+            f
+                .reopen()
+                .feed
+                .progress()
+                .lifecycle,
+        )
+    }
+
+    @Test
+    fun `새 DB에서 genesis 없는 원본과 이미 회수된 공백은 준비 완료로 바꾸지 않는다`() {
+        val absent = fixture()
+        assertFailsWith<OrderQueryWriteConflictException> {
+            absent.feed.verifySources(bounds(0, genesis = false), absent.streams.mapValues { bounds(0, genesis = false) })
+        }
+        assertEquals(OrderQueryLifecycle.BLOCKED, absent.feed.progress().lifecycle)
+        val pruned = fixture()
+        assertFailsWith<OrderQueryWriteConflictException> {
+            pruned.feed.verifySources(bounds(2, retired = 1), pruned.streams.mapValues { bounds(0) })
+        }
+        assertEquals(OrderQueryLifecycle.BLOCKED, pruned.feed.progress().lifecycle)
+        val proven = fixture()
+        proven.verify(0, 0)
+        assertEquals(OrderQueryLifecycle.READY, proven.feed.progress().lifecycle)
+        proven.feed.suspendProjection()
+        proven.verify(0, 0)
+        assertEquals(OrderQueryLifecycle.READY, proven.feed.progress().lifecycle)
+    }
+
+    @Test
+    fun `지원 밖 마켓도 원본 manifest에서 분류해 전역 접수 prefix를 연속 저장한다`() {
+        val f = fixture(supportedOnlyA = true)
+        f.verify(3, 0)
+        f.admit(f.input(1))
+        val unsupported = f.input(2, market = f.b, marketAdmission = 1)
+        f.admit(unsupported)
+        f.admit(f.input(3, dispatch = 2, marketAdmission = 2))
+        assertEquals(3L, f.feed.progress().admissionThrough)
+        assertEquals(3L, f.read(f.input(1)).progress!!.coveredAdmissionSequence)
+        assertNull(f.query.read(f.b.market.marketId.value, unsupported.order.orderId.value).record)
+        assertEquals(
+            "UNSUPPORTED_QUERY_MARKET",
+            jdbc.queryForObject(
+                """
+                select classification from order_query.source_receipt
+                where namespace = :namespace and source_kind = 'ADMISSION' and source_sequence = 2
+                """.trimIndent(),
+                f.parameters,
+                String::class.java,
+            ),
+        )
+    }
+
+    @Test
+    fun `source 관찰 중 다른 WAS의 cursor 전진은 허용하고 관찰 전 cursor보다 뒤인 head만 차단한다`() {
+        for (regressed in listOf("admission", "matching", "financial")) {
+            val f = fixture()
+            val beforeRead = f.feed.progress()
+            val writer = f.reopen()
+            val input = f.input(1)
+            writer.admit(input)
+            writer.match(f.owner.apply(input).result!!)
+            writer.feed.applyFinancial(f.watermark(1))
+            val staleMatching = f.streams.mapValues { bounds(0) }
+            val staleFinancial = f.streams.mapValues { 0L }
+            val verified = f.feed.verifySources(bounds(0), staleMatching, staleFinancial, beforeRead)
+            assertEquals(OrderQueryLifecycle.READY, verified.lifecycle)
+            assertEquals(1L, verified.admissionThrough)
+            assertEquals(1L, verified.matchingThrough.getValue(f.a.market.marketId.value))
+            assertEquals(1L, verified.financialThrough.getValue(f.a.market.marketId.value))
+            val current = f.feed.progress()
+            val matching =
+                f.streams.mapValues { (market, _) ->
+                    bounds(if (market == f.a.market.marketId.value && regressed != "matching") 1 else 0)
+                }
+            val financial =
+                f.streams.mapValues { (market, _) ->
+                    if (market == f.a.market.marketId.value && regressed != "financial") 1L else 0L
+                }
+            assertFailsWith<OrderQueryWriteConflictException>(regressed) {
+                f.feed.verifySources(bounds(if (regressed == "admission") 0 else 1), matching, financial, current)
+            }
+            assertEquals(OrderQueryLifecycle.BLOCKED, f.feed.progress().lifecycle)
+            assertEquals(OrderQueryFinancialStatus.APPLIED, f.read(input).record!!.financialStatus)
+        }
+    }
+
+    @Test
+    fun `같은 consumer의 소스 lineage 정책 변경은 기존 cursor와 주문을 유지한 채 차단한다`() {
+        val f = fixture()
+        f.verify(1, 0)
+        val input = f.input(1)
+        f.admit(input)
+        val saved = f.read(input).record
+        assertFailsWith<OrderQueryWriteConflictException> {
+            f.feed.initialize("query-was", f.streams.mapValues { it.value.copy(ownershipEpoch = 2) }, f.contexts)
+        }
+        assertEquals(OrderQueryLifecycle.BLOCKED, f.read(input).progress!!.lifecycle)
+        assertEquals(saved, f.read(input).record)
+        assertEquals(
+            1L,
+            f
+                .reopen()
+                .feed
+                .progress()
+                .admissionThrough,
+        )
+    }
+
+    @Test
+    fun `최대 길이 마켓도 접수 매칭 정산과 재개방 중복의 batch 식별자 상한을 넘지 않는다`() {
+        for (length in listOf(239, 240, 256)) {
+            val f = fixture(aMarketName = "A".repeat(length))
+            val input = f.input(1)
+            f.verify(1, 1)
+            assertEquals(1L, f.admit(input))
+            val result = f.owner.apply(input).result!!
+            assertEquals(2L, f.match(result))
+            assertEquals(3L, f.feed.applyFinancial(f.watermark(1)))
+            f.verify(1, 1)
+            val saved = f.read(input)
+            assertEquals(OrderQueryLifecycle.READY, saved.progress!!.lifecycle)
+            assertEquals(OrderQueryFinancialStatus.APPLIED, saved.record!!.financialStatus)
+            val reopened = f.reopen()
+            assertEquals(1L, reopened.admit(input))
+            assertEquals(2L, reopened.match(result))
+            assertEquals(3L, reopened.feed.applyFinancial(f.watermark(1)))
+            assertEquals(saved, reopened.read(input))
+            assertContentEquals(f.resultBytes(result), reopened.raw("MATCHING", f.a.market.marketId.value, 1))
+        }
+    }
+
+    @Test
+    fun `같은 원본 지문으로 재개방하고 다른 배치표 지문은 영구 차단한다`() {
+        val f = fixture(sourceIdentity = "a".repeat(64))
+        f.verify(1, 0)
+        val input = f.input(1)
+        f.admit(input)
+        val before = f.read(input)
+        assertEquals(before, f.reopen().read(input))
+        assertFailsWith<OrderQueryWriteConflictException> {
+            f.feed.initialize("query-was", f.streams, f.contexts, "b".repeat(64))
+        }
+        assertEquals(OrderQueryLifecycle.BLOCKED, f.feed.progress().lifecycle)
+        assertEquals(before.record, f.read(input).record)
+        assertEquals(1L, f.feed.progress().admissionThrough)
+    }
+
+    @Test
+    fun `준비 상태 저장이 실패해도 같은 WAS 조회는 원본 재검증 전까지 503을 유지한다`() {
+        val f = fixture()
+        f.verify(0, 0)
+        assertEquals(
+            OrderQueryLifecycle.READY,
+            f.query
+                .read(f.a.market.marketId.value, "absent")
+                .progress!!
+                .lifecycle,
+        )
+        rejectLifecycleWrites {
+            assertFailsWith<OrderQueryUnavailableException> { f.feed.suspendProjection() }
+            assertEquals("READY", durableLifecycle(f))
+            assertEquals(
+                OrderQueryLifecycle.INITIALIZING,
+                f.query
+                    .read(f.a.market.marketId.value, "absent")
+                    .progress!!
+                    .lifecycle,
+            )
+            val result =
+                OrderQueryUseCase(f.query).get(
+                    f.a.market.marketId.value,
+                    f
+                        .input(1)
+                        .order.orderId.value,
+                )
+            assertEquals(OrderQueryCode.QUERY_NOT_READY, result.code)
+        }
+        f.verify(0, 0)
+        assertEquals(
+            OrderQueryLifecycle.READY,
+            f.query
+                .read(f.a.market.marketId.value, "absent")
+                .progress!!
+                .lifecycle,
+        )
+    }
+
+    @Test
+    fun `영구 차단 저장이 실패해도 조회는 닫히고 같은 이유의 재시도로 DB 차단을 남긴다`() {
+        val f = fixture()
+        f.verify(0, 0)
+        rejectLifecycleWrites {
+            assertFailsWith<OrderQueryUnavailableException> { f.feed.block("source identity differs") }
+            assertEquals("READY", durableLifecycle(f))
+            assertEquals(
+                OrderQueryLifecycle.BLOCKED,
+                f.query
+                    .read(f.a.market.marketId.value, "absent")
+                    .progress!!
+                    .lifecycle,
+            )
+            val result =
+                OrderQueryUseCase(f.query).get(
+                    f.a.market.marketId.value,
+                    f
+                        .input(1)
+                        .order.orderId.value,
+                )
+            assertEquals(OrderQueryCode.QUERY_NOT_READY, result.code)
+        }
+        f.feed.block("source identity differs")
+        assertEquals("BLOCKED", durableLifecycle(f))
+        assertEquals(
+            OrderQueryLifecycle.BLOCKED,
+            f
+                .reopen()
+                .query
+                .read(f.a.market.marketId.value, "absent")
+                .progress!!
+                .lifecycle,
+        )
+        assertEquals(0L, f.feed.progress().admissionThrough)
+    }
+
+    private fun durableLifecycle(f: Fixture): String =
+        jdbc.queryForObject(
+            "select lifecycle from order_query.query_progress where namespace = :namespace",
+            f.parameters,
+            String::class.java,
+        )!!
+
+    private fun rejectLifecycleWrites(action: () -> Unit) {
+        jdbc.jdbcTemplate.execute(
+            """
+            create function order_query.reject_lifecycle() returns trigger language plpgsql as '
+            begin raise exception ''injected lifecycle failure''; end';
+            """.trimIndent(),
+        )
+        jdbc.jdbcTemplate.execute(
+            "create trigger reject_lifecycle before update of lifecycle on order_query.query_progress " +
+                "for each row execute function order_query.reject_lifecycle()",
+        )
+        try {
+            action()
+        } finally {
+            jdbc.jdbcTemplate.execute("drop trigger reject_lifecycle on order_query.query_progress")
+            jdbc.jdbcTemplate.execute("drop function order_query.reject_lifecycle()")
+        }
+    }
+
+    private fun fixture(
+        supportedOnlyA: Boolean = false,
+        aMarketName: String = "A-QUOTE",
+        sourceIdentity: String? = null,
+    ): Fixture {
+        val funds = ClusterLineage(identities.incrementAndGet(), 42)
+        val matching = ClusterLineage(43, 44)
+        val fees = TradingFeePolicySnapshot(FeeProductType.SPOT, FeeTier.NORMAL, 1, MakerTakerFeeRates(FeeRate.ZERO, FeeRate.ZERO))
+        val a = TradingMarketContext(MarketDefinition(MarketId(aMarketName), AssetId("A"), AssetId("QUOTE"), 0, 1, 1), fees, 0)
+        val b = TradingMarketContext(MarketDefinition(MarketId("B-QUOTE"), AssetId("B"), AssetId("QUOTE"), 0, 1, 1), fees, 1)
+        val contexts = listOf(a, b)
+        val manifest =
+            TradingClusterManifest(funds, "query-feed-test", "0".repeat(64), "1".repeat(64), 7, contexts, TradingResourceLimits())
+        val topology = TradingRoleTopology(manifest, contexts.map { TradingMarketAssignment(it.market.marketId, matching, 1) })
+        val declaration =
+            TradingRoleDeclaration(
+                TradingServiceRole.MATCHING,
+                matching,
+                7,
+                contexts,
+                contexts.associate {
+                    it.market.marketId to
+                        1L
+                },
+            )
+        val configuration = MatchingIntakeConfiguration(topology, declaration, inputContractVersion = 2)
+        val owner = ReservedMatchingState(configuration).also { it.initialize() }
+        val namespace = OrderQueryNamespace(funds, (if (supportedOnlyA) listOf(a) else contexts).map { it.market.marketId.value }.toSet())
+        return Fixture(
+            namespace,
+            contexts.associateBy { it.market.marketId.value },
+            contexts.associate {
+                it.market.marketId.value to
+                    configuration.resultStream(it.market.marketId)
+            },
+            owner,
+            sourceIdentity,
+        )
+    }
+
+    private inner class Fixture(
+        val namespace: OrderQueryNamespace,
+        val contexts: Map<String, TradingMarketContext>,
+        val streams: Map<String, MatchingResultStream>,
+        val owner: ReservedMatchingState,
+        val sourceIdentity: String?,
+    ) {
+        val a = contexts.values.single { it.ordinal == 0 }
+        val b = contexts.values.single { it.ordinal == 1 }
+        val parameters = mapOf("namespace" to "${namespace.fundsLineage.high}:${namespace.fundsLineage.low}")
+        val query =
+            PostgresOrderQueryStore(
+                namespace,
+                jdbc,
+                DataSourceTransactionManager(jdbc.jdbcTemplate.dataSource!!),
+            ).also { it.initialize() }
+        val feed = PostgresOrderQueryFeedStore(query, jdbc).also { it.initialize("query-was", streams, contexts, sourceIdentity) }
+
+        fun reopen() = Fixture(namespace, contexts, streams, owner, sourceIdentity)
+
+        fun verify(
+            admissions: Long,
+            resultsA: Long,
+        ) = feed.verifySources(
+            bounds(admissions),
+            streams.mapValues { bounds(if (it.key == a.market.marketId.value) resultsA else 0) },
+        )
+
+        fun input(
+            admission: Long,
+            side: Side = Side.BUY,
+            quantity: Long = 3,
+            market: TradingMarketContext = a,
+            dispatch: Long = admission,
+            marketAdmission: Long = dispatch,
+        ): FundsOrderDispatch {
+            val order =
+                OrderAdmissionInput(
+                    market.market.marketId,
+                    TradingIdentifiers.order(namespace.fundsLineage, admission),
+                    UserId("u$admission"),
+                    side,
+                    OrderType.LIMIT,
+                    TimeInForce.GTC,
+                    Price(100),
+                    Quantity(quantity),
+                )
+            val requirement =
+                OrderReservationCalculator(BuyOrderFundingQuoteCalculator(TradingFeeReserveCalculator())).calculate(
+                    market.market,
+                    side,
+                    order.price,
+                    order.quantity,
+                    market.feePolicySnapshot,
+                )
+            val reservation =
+                OrderReservation.create(
+                    order.marketId,
+                    order.orderId,
+                    order.userId,
+                    side,
+                    order.price,
+                    order.quantity,
+                    requirement,
+                    market.feePolicySnapshot,
+                )
+            val stream = streams.getValue(market.market.marketId.value)
+            return FundsOrderDispatch(
+                FundsDispatchStream(
+                    stream.fundsLineage,
+                    stream.matchingLineage,
+                    stream.marketId,
+                    stream.ownershipEpoch,
+                    stream.configurationVersion,
+                ),
+                dispatch,
+                admission,
+                marketAdmission,
+                order,
+                reservation,
+                market,
+                inputContractVersion = 2,
+            )
+        }
+
+        fun cancel(
+            original: FundsOrderDispatch,
+            sequence: Long,
+        ) = original.copy(
+            dispatchSequence = sequence,
+            cancel =
+                FundsCancelDispatch(
+                    TradingIdentifiers.cancel(namespace.fundsLineage, 1),
+                    RequestToken(original.order.userId, 0, 1, 1),
+                    1,
+                    original.dispatchSequence,
+                ),
+        )
+
+        fun watermark(through: Long) = MatchingFundsSettledAck(streams.getValue(a.market.marketId.value), through, a)
+
+        fun admit(input: FundsOrderDispatch) = feed.applyAdmission(input, admissionBytes(input))
+
+        fun match(result: MatchingResultEnvelope) = feed.applyMatching(result, resultBytes(result))
+
+        fun admissionBytes(input: FundsOrderDispatch) = SplitOrderDeliveryCodec(2).encode(0, SplitOrderDeliveryCommand.Apply(input))
+
+        fun resultBytes(result: MatchingResultEnvelope) = SplitResultDeliveryCodec(2).encode(0, SplitResultDeliveryCommand.Apply(result))
+
+        fun read(input: FundsOrderDispatch) = query.read(input.order.marketId.value, input.order.orderId.value)
+
+        fun updatedAt(input: FundsOrderDispatch): Instant =
+            jdbc.queryForObject(
+                "select updated_at from order_query.order_record where namespace = :namespace and order_id = :orderId",
+                parameters + ("orderId" to input.order.orderId.value),
+            ) { row, _ -> row.getTimestamp("updated_at").toInstant() }!!
+
+        fun receiptCount(
+            kind: String,
+            sequence: Long,
+        ): Long =
+            jdbc.queryForObject(
+                """
+                select count(*) from order_query.source_receipt
+                where namespace = :namespace and source_kind = :kind and source_sequence = :sequence
+                """.trimIndent(),
+                parameters + mapOf("kind" to kind, "sequence" to sequence),
+                Long::class.java,
+            )!!
+
+        fun raw(
+            kind: String,
+            key: String,
+            sequence: Long,
+        ): ByteArray =
+            jdbc.queryForObject(
+                """
+                select canonical_payload from order_query.source_receipt
+                where namespace = :namespace and source_kind = :kind and source_key = :key and source_sequence = :sequence
+                """.trimIndent(),
+                parameters + mapOf("kind" to kind, "key" to key, "sequence" to sequence),
+                ByteArray::class.java,
+            )!!
+    }
+
+    private fun dataSource() = DriverManagerDataSource(database.jdbcUrl, database.username, database.password)
+
+    private fun bounds(
+        issued: Long,
+        retired: Long = 0,
+        genesis: Boolean = true,
+    ) = OrderQuerySourceBounds(issued, retired, genesis)
+}

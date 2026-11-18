@@ -9,6 +9,7 @@ import com.exchange.core.api.trading.application.OrderQueryLifecycle
 import com.exchange.core.api.trading.application.OrderQueryOrderState
 import com.exchange.core.api.trading.application.OrderQueryRecord
 import com.exchange.core.api.trading.application.port.OrderQueryStore
+import com.exchange.core.api.trading.infrastructure.persistence.PostgresOrderQueryStore
 import com.exchange.core.common.MarketId
 import com.exchange.core.order.OrderType
 import com.exchange.core.order.Side
@@ -70,8 +71,14 @@ class OrderQueryHttpTest {
 
     @BeforeEach
     fun resetProjection() {
-        database.jdbc().execute("truncate order_query.applied_batch, order_query.order_record, order_query.query_progress")
+        database.jdbc().execute(
+            """
+            truncate order_query.source_receipt, order_query.feed_stream, order_query.feed_consumer,
+                order_query.applied_batch, order_query.order_record, order_query.query_progress
+            """.trimIndent(),
+        )
         store.initialize()
+        (store as PostgresOrderQueryStore).verifySourceReads()
     }
 
     @Test
@@ -169,7 +176,12 @@ class OrderQueryHttpTest {
         store.transitionLifecycle(OrderQueryLifecycle.BLOCKED)
         assertResponse(503, "QUERY_NOT_READY", get(record.orderId), hideOrder = true)
         assertResponse(503, "QUERY_NOT_READY", get(orderId(99)), hideOrder = true)
-        database.jdbc().execute("truncate order_query.applied_batch, order_query.order_record, order_query.query_progress")
+        database.jdbc().execute(
+            """
+            truncate order_query.source_receipt, order_query.feed_stream, order_query.feed_consumer,
+                order_query.applied_batch, order_query.order_record, order_query.query_progress
+            """.trimIndent(),
+        )
         assertResponse(503, "QUERY_NOT_READY", get(orderId(99)), hideOrder = true)
     }
 
@@ -278,12 +290,32 @@ class OrderQueryHttpTest {
         assertResponse(503, "QUERY_NOT_READY", get(orderId(1)), hideOrder = true)
     }
 
-    private fun openContext() {
+    @Test
+    fun `소비자 설정 없이 재시작하면 이전 READY와 종료 주문을 보존해도 원본 재검증 전까지 503이다`() {
+        val record = record(1, OrderQueryOrderState.CANCELLED).copy(financialThrough = 1)
+        apply(listOf(record))
+        store.transitionLifecycle(OrderQueryLifecycle.READY)
+        val before = databaseRows()
+        assertResponse(200, "ORDER_FOUND", get(record.orderId))
+        context.close()
+        openContext(sourceVerified = false)
+        assertFalse(context.containsBean("orderQueryFeedWorker"))
+        assertResponse(503, "QUERY_NOT_READY", get(record.orderId), hideOrder = true)
+        assertResponse(503, "QUERY_NOT_READY", get(orderId(99)), hideOrder = true)
+        assertEquals(before, databaseRows())
+        verifyNoInteractions(context.getBean(BoundedTradingOrderGateway::class.java))
+    }
+
+    private fun openContext(sourceVerified: Boolean = true) {
         val args =
             database.properties.map { (key, value) -> "--$key=$value" } +
                 listOf("--server.port=0", "--spring.main.banner-mode=off", "--logging.level.root=ERROR")
         context = SpringApplicationBuilder(OrderQueryHttpTestConfig::class.java).run(*args.toTypedArray())
         store = context.getBean(OrderQueryStore::class.java)
+        if (sourceVerified) {
+            // 이 기반 검사는 직접 준비한 검증된 원본을 전제로 GET·DB를 검사한다. 실제 수집은 native 검사에서 다룬다.
+            (store as PostgresOrderQueryStore).verifySourceReads()
+        }
         url = "http://127.0.0.1:${(context as ServletWebServerApplicationContext).webServer!!.port}"
     }
 

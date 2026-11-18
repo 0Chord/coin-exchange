@@ -9,6 +9,7 @@ import com.exchange.core.fee.MakerTakerFeeRates
 import com.exchange.core.fee.TradingFeePolicySnapshot
 import com.exchange.core.order.MarketDefinition
 import com.exchange.core.trading.ClusterLineage
+import com.exchange.core.trading.FundsDispatchConfiguration
 import com.exchange.core.trading.FundsDispatchLimits
 import com.exchange.core.trading.FundsResultLimits
 import com.exchange.core.trading.MatchingIntakeLimits
@@ -30,10 +31,92 @@ import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertNotEquals
+import kotlin.test.assertNotNull
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 /** 잘못된 설정·복구 기록은 Driver·Archive를 열기 전에 거절한다. 기존 일반 진입 차단도 별도로 회귀한다. */
 class SplitTradingRoleStartupTest {
+    @Test
+    fun `기본 자금 예산의 남은 snapshot 공간에서 조회 기본 한도를 정하고 실제 양쪽 역할을 초기화한다`() {
+        val manifest = configuration().topology.fundsManifest
+        val base =
+            mapOf(
+                "SPLIT_MATCHING_LINEAGE_HIGH" to matchingLineage.high.toString(),
+                "SPLIT_MATCHING_LINEAGE_LOW" to matchingLineage.low.toString(),
+                "SPLIT_OWNERSHIP_EPOCH" to "1",
+            )
+        val legacy = splitTradingConfiguration(manifest, base)
+        assertEquals(1, legacy.inputContractVersion)
+        val baseSnapshot = FundsResultLimits().snapshotByteUpperBound(legacy.dispatchConfiguration)
+        val room = (FundsDispatchConfiguration.MAX_SNAPSHOT_BYTES - baseSnapshot) / 4L
+        val environment = base + ("EXCHANGE_ORDER_QUERY_CONSUMER_ID" to "default-budget-was")
+        val enabled = splitTradingConfiguration(manifest, environment)
+        val retained = assertNotNull(enabled.queryRetention)
+        assertEquals(minOf(4L * 1_024 * 1_024, room), retained.maxBytes)
+        assertTrue(retained.maxBytes < 4L * 1_024 * 1_024, "기존 기본 자금·receipt 예산에는 고정 4MiB를 추가할 수 없다")
+        assertEquals(minOf(2L * 1_024 * 1_024, retained.maxBytes), retained.marketLimits.getValue(market.marketId).maxBytes)
+        assertTrue(retained.maxBytes >= enabled.matchingLimits.maxSingleResultBytes)
+        assertTrue(
+            FundsResultLimits().snapshotByteUpperBound(enabled.dispatchConfiguration) <= FundsDispatchConfiguration.MAX_SNAPSHOT_BYTES,
+        )
+        val funds = enabled.funds().also { it.initialize(manifest) }
+        val matching = enabled.matching().also { it.initialize() }
+        assertEquals(retained, funds.queryRetentionConfiguration)
+        assertEquals(retained, matching.queryRetentionConfiguration)
+        assertEquals(0L, assertNotNull(funds.queryAdmissionsProgress()).issued)
+        assertEquals(0L, assertNotNull(matching.queryResultsProgress(enabled.matchingConfiguration.resultStream(market.marketId))).issued)
+        assertFailsWith<IllegalArgumentException> {
+            splitTradingConfiguration(manifest, environment + ("EXCHANGE_ORDER_QUERY_MAX_BYTES" to "4194304"))
+        }
+    }
+
+    @Test
+    fun `조회 원본은 고정 소비자 환경 설정으로 활성화하고 두 역할과 실행 지문에 함께 결속한다`() {
+        val manifest = configuration().topology.fundsManifest
+        val base =
+            mapOf(
+                "SPLIT_MATCHING_LINEAGE_HIGH" to matchingLineage.high.toString(),
+                "SPLIT_MATCHING_LINEAGE_LOW" to matchingLineage.low.toString(),
+                "SPLIT_OWNERSHIP_EPOCH" to "1",
+                "SPLIT_MAX_FUNDS_DISPATCH_BYTES" to "65536",
+                "SPLIT_MAX_FUNDS_ACTIVE_BYTES" to "65536",
+            )
+        val legacy = splitTradingConfiguration(manifest, base)
+        assertNull(legacy.queryRetention)
+        val environment = base + ("EXCHANGE_ORDER_QUERY_CONSUMER_ID" to "same-was")
+        val enabled = splitTradingConfiguration(manifest, environment)
+        val retained = assertNotNull(enabled.queryRetention)
+        assertEquals("same-was", retained.consumerId)
+        assertEquals(4_096, retained.maxEntries)
+        assertEquals(4L * 1_024 * 1_024, retained.maxBytes)
+        assertEquals(retained, enabled.dispatchConfiguration.queryRetention)
+        assertEquals(retained, enabled.matchingConfiguration.queryRetention)
+        assertEquals(retained, enabled.forMatching(matchingLineage).queryRetention)
+        assertNotEquals(legacy.topologySha256, enabled.topologySha256)
+        assertNotEquals(legacy.resultTopologySha256, enabled.resultTopologySha256)
+        val variants =
+            listOf(
+                environment + ("EXCHANGE_ORDER_QUERY_CONSUMER_ID" to "other-was"),
+                environment + ("EXCHANGE_ORDER_QUERY_MAX_ENTRIES" to "4095"),
+                environment + ("EXCHANGE_ORDER_QUERY_MAX_BYTES" to "4194303"),
+                environment + ("EXCHANGE_ORDER_QUERY_MAX_MARKET_ENTRIES" to "2047"),
+                environment + ("EXCHANGE_ORDER_QUERY_MAX_MARKET_BYTES" to "2097151"),
+            )
+        for (variant in variants) {
+            val different = splitTradingConfiguration(manifest, variant)
+            assertNotEquals(enabled.topologySha256, different.topologySha256)
+            assertNotEquals(enabled.resultTopologySha256, different.resultTopologySha256)
+        }
+        for (invalid in listOf(
+            environment + ("EXCHANGE_ORDER_QUERY_CONSUMER_ID" to ""),
+            environment + ("EXCHANGE_ORDER_QUERY_MAX_ENTRIES" to "0"),
+            environment + ("EXCHANGE_ORDER_QUERY_MAX_MARKET_BYTES" to "1"),
+        )) {
+            assertFailsWith<IllegalArgumentException> { splitTradingConfiguration(manifest, invalid) }
+        }
+    }
+
     @Test
     fun `취소 계약은 양방향 정산 모드에서만 선택하며 기존 root를 자동 승격하지 않는다`() {
         val original = configuration().dispatchLimits

@@ -80,6 +80,7 @@ class MatchingIntakeConfiguration(
     val declaration: TradingRoleDeclaration,
     val limits: MatchingIntakeLimits = MatchingIntakeLimits.defaults(topology, declaration),
     val inputContractVersion: Int = 1,
+    val queryRetention: QueryRetentionConfiguration? = null,
 ) {
     val manifest: TradingClusterManifest = topology.fundsManifest
     val assignments: List<TradingMarketAssignment> =
@@ -117,6 +118,18 @@ class MatchingIntakeConfiguration(
     init {
         require(inputContractVersion in 1..2) { "unsupported matching input contract" }
         topology.validate(declaration, TradingServiceRole.MATCHING)
+        queryRetention?.let { query ->
+            require(query.marketLimits.keys == manifest.markets.map { it.market.marketId }.toSet()) {
+                "query limits must cover exactly the registered markets"
+            }
+            for (context in markets) {
+                require(
+                    limits.maxSingleResultBytes <= minOf(query.maxBytes, query.marketLimits.getValue(context.market.marketId).maxBytes),
+                ) {
+                    "query budget cannot retain the largest matching result"
+                }
+            }
+        }
         require(limits.marketLimits.keys == streams.keys) { "matching limits must cover exactly the owned markets" }
         require(manifest.markets.size <= 128 && manifest.limits.maxIdentifierBytes >= 34)
         require(manifest.markets.size <= manifest.limits.maxMarkets)
@@ -217,7 +230,10 @@ class MatchingIntakeConfiguration(
             try {
                 Math.addExact(
                     256L * 1_024 + Math.multiplyExact(manifest.markets.size.toLong(), 16_384),
-                    Math.multiplyExact(Math.addExact(limits.maxResultBytes, limits.maxActiveBytes), 8),
+                    Math.addExact(
+                        Math.multiplyExact(Math.addExact(limits.maxResultBytes, limits.maxActiveBytes), 8),
+                        queryRetention?.let { Math.multiplyExact(it.maxBytes, 4L) } ?: 0L,
+                    ),
                 )
             } catch (failure: ArithmeticException) {
                 throw IllegalArgumentException("matching snapshot bound overflow", failure)
@@ -286,7 +302,8 @@ class MatchingIntakeConfiguration(
             declaration.serviceRole == other.declaration.serviceRole && declaration.lineage == other.declaration.lineage &&
             declaration.configurationVersion == other.declaration.configurationVersion &&
             declaration.markets == other.declaration.markets &&
-            declaration.ownershipEpochs == other.declaration.ownershipEpochs && inputContractVersion == other.inputContractVersion
+            declaration.ownershipEpochs == other.declaration.ownershipEpochs && inputContractVersion == other.inputContractVersion &&
+            queryRetention == other.queryRetention
 
     override fun hashCode(): Int =
         listOf(
@@ -297,6 +314,7 @@ class MatchingIntakeConfiguration(
             declaration.markets,
             declaration.ownershipEpochs,
             inputContractVersion,
+            queryRetention,
         ).hashCode()
 
     companion object {
@@ -478,7 +496,9 @@ class MatchingRoleRecoveryState(
     val resultBytes: Long,
     val activeOrders: Int,
     val activeBytes: Long,
+    queryResults: Map<MarketId, QueryFactsRecovery<MatchingResultEnvelope>> = emptyMap(),
 ) {
+    val queryResults: Map<MarketId, QueryFactsRecovery<MatchingResultEnvelope>> = Collections.unmodifiableMap(LinkedHashMap(queryResults))
     val active: List<FundsOrderDispatch> = Collections.unmodifiableList(active.toList())
     val streams: List<MatchingStreamRecovery> = Collections.unmodifiableList(streams.toList())
 }

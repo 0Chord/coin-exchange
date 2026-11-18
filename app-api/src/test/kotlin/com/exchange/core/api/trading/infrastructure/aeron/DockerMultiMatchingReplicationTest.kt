@@ -1634,31 +1634,42 @@ internal class MultiMatchingRun(
             SERVICES.flatMap { service ->
                 listOf("--mount", "type=volume,src=${recordVolume(runtimes.getValue(service))},dst=/records/$service,readonly")
             }
-        return command(
-            listOf(
-                "docker",
-                "run",
-                "--rm",
-                "--name",
-                "$runId-records",
-                "--network",
-                "none",
-                "--read-only",
-                "--memory",
-                "768m",
-                "--cpus",
-                "1",
-                "--shm-size",
-                "256m",
-                "--pids-limit",
-                "128",
-                "--label",
-                "com.exchange.multi.run=$runId",
-                "--entrypoint",
-                "sh",
-            ) + mounts + listOf(image, "-c", script),
-            15_000,
-        ).stdout
+        val helperName = "$runId-records"
+        return try {
+            command(
+                listOf(
+                    "docker",
+                    "run",
+                    "--rm",
+                    "--name",
+                    helperName,
+                    "--network",
+                    "none",
+                    "--read-only",
+                    "--memory",
+                    "768m",
+                    "--cpus",
+                    "1",
+                    "--shm-size",
+                    "256m",
+                    "--pids-limit",
+                    "128",
+                    "--label",
+                    "com.exchange.multi.run=$runId",
+                    "--entrypoint",
+                    "sh",
+                ) + mounts + listOf(image, "-c", script),
+                15_000,
+            ).stdout
+        } catch (failure: Exception) {
+            // Docker CLI만 종료돼도 컨테이너는 남을 수 있다. 이 실행의 보조 컨테이너부터 회수한다.
+            try {
+                command(listOf("docker", "rm", "-f", "-v", helperName), 10_000, true)
+            } catch (cleanup: Exception) {
+                failure.addSuppressed(cleanup)
+            }
+            throw failure
+        }
     }
 
     fun sameBusiness(
@@ -1687,7 +1698,8 @@ internal class MultiMatchingRun(
         check(diagnosticPeak <= 16 * MIB) { "진단 합계16MiB 초과: $diagnosticPeak" }
         if (containers.isNotEmpty()) {
             if (activeQuorumClient != null) return // 장수 client와 별도 volume helper의 동시 실행을 금지한다.
-            if (leaderFailover) {
+            // 중단된 사본의 볼륨만 별도 접근이 필요하다. 모두 살아 있으면 기존 노드에서 직접 잰다.
+            if (stoppedServices.isNotEmpty()) {
                 val total =
                     recordsHelper("du -sk /records/*")
                         .lineSequence()
