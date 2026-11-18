@@ -1709,20 +1709,28 @@ internal class MultiMatchingRun(
                 check(total <= 2 * GIB) { "죽은 볼륨 포함9개 기록 합계2GiB 초과: $total" }
                 return
             }
-            val result = compose(listOf("exec", "-T", "funds0", "du", "-sk", "/records"), 5_000)
-            // 각 named volume은 컨테이너별로 확인한다. 첫 볼륨을9배한 값으로 대신하지 않는다.
-            var total =
-                result.stdout
-                    .trim()
-                    .split(Regex("\\s+"))[0]
-                    .toLong() * 1024
-            for (service in SERVICES.drop(1)) {
-                total +=
-                    compose(listOf("exec", "-T", service, "du", "-sk", "/records"), 5_000)
-                        .stdout
-                        .trim()
-                        .split(Regex("\\s+"))[0]
-                        .toLong() * 1024
+            // 이미 확인한 컨테이너에서 볼륨별 명령을 먼저 시작하고 하나의 기한 안에서 모두 회수한다.
+            val until = minOf(workDeadline, System.nanoTime() + TimeUnit.SECONDS.toNanos(5))
+            val measurements =
+                SERVICES.associateWith { service ->
+                    check(!Thread.currentThread().isInterrupted && System.nanoTime() < until) {
+                        "기록 용량 측정 시작 기한 초과: $service"
+                    }
+                    val args = listOf("docker", "exec", containers.getValue(service), "du", "-sk", "/records")
+                    commands.start(args, outputLimitBytes = MIB)
+                }
+            var total = 0L
+            for ((service, measurement) in measurements) {
+                val left = TimeUnit.NANOSECONDS.toMillis(until - System.nanoTime())
+                check(left > 0) { "기록 용량 측정 기한 초과: $service" }
+                val result = measurement.await(left)
+                check(result.succeeded) { "$service 기록 용량 측정 실패: ${result.failure()}" }
+                val sizeAndPath = result.stdout.trim().split(Regex("\\s+"))
+                val sizeKiB = sizeAndPath.first().toLongOrNull()
+                check(sizeAndPath.size == 2 && sizeAndPath[1] == "/records" && sizeKiB != null && sizeKiB >= 0) {
+                    "$service 기록 용량 출력 오류: ${result.stdout.take(200)}"
+                }
+                total = Math.addExact(total, Math.multiplyExact(sizeKiB, 1024))
             }
             recordsPeak = maxOf(recordsPeak, total)
             check(total <= 2 * GIB) { "9개 기록 합계2GiB 초과: $total" }
