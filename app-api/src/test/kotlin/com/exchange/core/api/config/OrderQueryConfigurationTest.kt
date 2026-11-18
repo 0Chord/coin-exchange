@@ -55,8 +55,9 @@ class OrderQueryConfigurationTest {
         if (database.jdbc().queryForObject("select to_regclass('order_query.query_progress') is not null", Boolean::class.java)!!) {
             database.jdbc().execute(
                 """
-                truncate order_query.source_receipt, order_query.feed_stream, order_query.feed_consumer,
-                    order_query.applied_batch, order_query.order_record, order_query.query_progress
+                truncate order_query.settlement_posting, order_query.settlement_transaction, order_query.source_receipt,
+                    order_query.feed_stream, order_query.feed_consumer, order_query.applied_batch,
+                    order_query.order_record, order_query.query_progress
                 """.trimIndent(),
             )
         }
@@ -90,9 +91,21 @@ class OrderQueryConfigurationTest {
                         "select tablename from pg_tables where schemaname = 'order_query'",
                         String::class.java,
                     ).toSet()
-            assertEquals(setOf("query_progress", "order_record", "applied_batch", "feed_consumer", "feed_stream", "source_receipt"), tables)
             assertEquals(
-                listOf("1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11"),
+                setOf(
+                    "query_progress",
+                    "order_record",
+                    "applied_batch",
+                    "feed_consumer",
+                    "feed_stream",
+                    "source_receipt",
+                    "settlement_transaction",
+                    "settlement_posting",
+                ),
+                tables,
+            )
+            assertEquals(
+                (1..12).map(Int::toString),
                 database.jdbc().queryForList(
                     "select version from flyway_schema_history where success order by installed_rank",
                     String::class.java,
@@ -121,7 +134,7 @@ class OrderQueryConfigurationTest {
     }
 
     @Test
-    fun `기존 V9 RDB에 조회 V10을 추가해도 마켓 설정 원문은 보존된다`() {
+    fun `기존 V9 RDB에 주문 조회와 정산 원장을 추가해도 마켓 설정 원문은 보존된다`() {
         OrderQueryTestDatabase().use { existing ->
             Flyway
                 .configure()
@@ -138,7 +151,7 @@ class OrderQueryConfigurationTest {
             queryContext(existing.properties).use { context ->
                 assertEquals(before, existing.jdbc().queryForMap("select * from market_configuration_release where config_version = 7"))
                 assertEquals(
-                    11,
+                    12,
                     existing.jdbc().queryForObject("select count(*) from flyway_schema_history where success", Int::class.java),
                 )
                 val orderId = TradingIdentifiers.order(ClusterLineage(41, 42), 1).value

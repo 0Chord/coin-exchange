@@ -306,11 +306,18 @@ internal fun splitQueryRetentionConfiguration(
     dispatchLimits: FundsDispatchLimits,
     inputContractVersion: Int,
 ): QueryRetentionConfiguration? {
-    val consumerId = environment["EXCHANGE_ORDER_QUERY_CONSUMER_ID"] ?: return null
+    val persistSettlements = environment["EXCHANGE_ORDER_QUERY_PERSIST_SETTLEMENTS"]?.toBooleanStrict() ?: false
+    require(!persistSettlements || inputContractVersion == 2) { "정산 기록 저장에는 분리 입력 계약 2가 필요합니다" }
+    val consumerId = environment["EXCHANGE_ORDER_QUERY_CONSUMER_ID"]
+    if (consumerId == null) {
+        require(!persistSettlements) { "정산 기록 저장에는 EXCHANGE_ORDER_QUERY_CONSUMER_ID 설정이 필요합니다" }
+        return null
+    }
     require(consumerId.isNotBlank()) { "EXCHANGE_ORDER_QUERY_CONSUMER_ID 설정이 비어 있습니다" }
     val baseBytes =
         FundsResultLimits().snapshotByteUpperBound(FundsDispatchConfiguration(topology, dispatchLimits, inputContractVersion))
-    val room = (FundsDispatchConfiguration.MAX_SNAPSHOT_BYTES - baseBytes) / 4L
+    val sourceCount = if (persistSettlements) 1 + topology.fundsManifest.markets.size else 1
+    val room = (FundsDispatchConfiguration.MAX_SNAPSHOT_BYTES - baseBytes) / (4L * sourceCount)
     val defaultBytes = minOf(4L * 1_024 * 1_024, room)
     require(defaultBytes > 0) { "자금 snapshot 예산에 조회 원본을 보관할 여유가 없습니다" }
     val marketEntries = environment["EXCHANGE_ORDER_QUERY_MAX_MARKET_ENTRIES"]?.toInt() ?: 2_048
@@ -320,5 +327,6 @@ internal fun splitQueryRetentionConfiguration(
         topology.fundsManifest.markets.associate { it.market.marketId to QueryRetentionLimits(marketEntries, marketBytes) },
         environment["EXCHANGE_ORDER_QUERY_MAX_ENTRIES"]?.toInt() ?: 4_096,
         environment["EXCHANGE_ORDER_QUERY_MAX_BYTES"]?.toLong() ?: defaultBytes,
+        capabilityVersion = if (persistSettlements) 2 else 1,
     )
 }

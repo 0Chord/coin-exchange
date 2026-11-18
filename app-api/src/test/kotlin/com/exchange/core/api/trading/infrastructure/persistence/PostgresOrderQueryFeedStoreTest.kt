@@ -15,6 +15,7 @@ import com.exchange.core.api.trading.infrastructure.codec.SplitOrderDeliveryCode
 import com.exchange.core.api.trading.infrastructure.codec.SplitOrderDeliveryCommand
 import com.exchange.core.api.trading.infrastructure.codec.SplitResultDeliveryCodec
 import com.exchange.core.api.trading.infrastructure.codec.SplitResultDeliveryCommand
+import com.exchange.core.common.Amount
 import com.exchange.core.common.AssetId
 import com.exchange.core.common.MarketId
 import com.exchange.core.common.Price
@@ -26,6 +27,12 @@ import com.exchange.core.fee.FeeTier
 import com.exchange.core.fee.MakerTakerFeeRates
 import com.exchange.core.fee.TradingFeePolicySnapshot
 import com.exchange.core.fee.TradingFeeReserveCalculator
+import com.exchange.core.ledger.LedgerPosting
+import com.exchange.core.ledger.LedgerPostingSide.CREDIT
+import com.exchange.core.ledger.LedgerPostingSide.DEBIT
+import com.exchange.core.ledger.LedgerTransaction
+import com.exchange.core.ledger.LedgerTransactionType
+import com.exchange.core.matching.TradeExecuted
 import com.exchange.core.order.BuyOrderFundingQuoteCalculator
 import com.exchange.core.order.MarketDefinition
 import com.exchange.core.order.OrderReservation
@@ -44,6 +51,8 @@ import com.exchange.core.trading.MatchingResultStream
 import com.exchange.core.trading.OrderAdmissionInput
 import com.exchange.core.trading.RequestToken
 import com.exchange.core.trading.ReservedMatchingState
+import com.exchange.core.trading.SettledTrade
+import com.exchange.core.trading.SettlementFact
 import com.exchange.core.trading.TradingClusterManifest
 import com.exchange.core.trading.TradingIdentifiers
 import com.exchange.core.trading.TradingMarketAssignment
@@ -285,6 +294,83 @@ class PostgresOrderQueryFeedStoreTest {
         assertEquals(previous.appliedRevision + 1, f.match(partial))
         assertEquals(2L, f.read(maker).record!!.remainingQuantity)
         assertEquals(1L, f.read(taker).record!!.filledQuantity)
+    }
+
+    @Test
+    fun `두 번째 체결의 분개 저장 실패는 두 체결과 저장 위치를 함께 롤백한다`() {
+        val f = fixture(settlementEnabled = true)
+        val firstMaker = f.owner.apply(f.input(1, side = Side.SELL, quantity = 1)).result!!
+        val secondMaker = f.owner.apply(f.input(2, side = Side.SELL, quantity = 1)).result!!
+        val result = f.owner.apply(f.input(3, quantity = 2)).result!!
+        val market = result.stream.marketId.value
+
+        f.feed.applySettlement(SettlementFact(firstMaker.stream, firstMaker.resultSequence, emptyList()))
+        f.feed.applySettlement(SettlementFact(secondMaker.stream, secondMaker.resultSequence, emptyList()))
+        val progressBeforeWrite = f.feed.progress()
+        assertEquals(2L, progressBeforeWrite.settlementThrough.getValue(market))
+        assertEquals(0L, f.settlementTransactionCount())
+
+        val settled = f.settlement(result)
+        assertEquals(2, settled.fills.size)
+        val secondFill = settled.fills.last()
+        val secondSettlementId = secondFill.transaction.ledgerTransactionId
+        jdbc.jdbcTemplate.execute(
+            """
+            create function order_query.reject_settlement_posting() returns trigger language plpgsql as '
+            begin raise exception ''injected settlement posting failure''; end';
+            """.trimIndent(),
+        )
+        jdbc.jdbcTemplate.execute(
+            """
+            create trigger reject_settlement_posting before insert on order_query.settlement_posting
+            for each row when (new.settlement_id = '$secondSettlementId' and new.posting_sequence = 2)
+            execute function order_query.reject_settlement_posting()
+            """.trimIndent(),
+        )
+        try {
+            assertFailsWith<OrderQueryUnavailableException> { f.feed.applySettlement(settled) }
+        } finally {
+            jdbc.jdbcTemplate.execute("drop trigger reject_settlement_posting on order_query.settlement_posting")
+            jdbc.jdbcTemplate.execute("drop function order_query.reject_settlement_posting()")
+        }
+        val progressAfterFailure = f.feed.progress()
+        assertEquals(2L, progressAfterFailure.settlementThrough.getValue(market))
+        assertEquals(0L, f.settlementTransactionCount())
+        assertEquals(0L, f.settlementPostingCount())
+
+        assertEquals(3L, f.feed.applySettlement(settled))
+        val reopened = f.reopen()
+        val progressAfterRetry = reopened.feed.progress()
+        assertEquals(3L, progressAfterRetry.settlementThrough.getValue(market))
+        assertEquals(2L, f.settlementTransactionCount())
+        assertEquals(8L, f.settlementPostingCount())
+        assertEquals(0L, progressAfterRetry.financialThrough.getValue(market))
+    }
+
+    @Test
+    fun `같은 정산 원문의 동시 재시도는 한 건을 남기고 최초 시각이 바뀌면 차단한다`() {
+        val f = fixture(settlementEnabled = true)
+        val maker = f.owner.apply(f.input(1, side = Side.SELL, quantity = 1)).result!!
+        val result = f.owner.apply(f.input(2, quantity = 1)).result!!
+        f.feed.applySettlement(SettlementFact(maker.stream, maker.resultSequence, emptyList()))
+        val settled = f.settlement(result)
+        val sameSequence =
+            Executors.newFixedThreadPool(2).use { pool ->
+                List(2) { pool.submit(Callable { f.reopen().feed.applySettlement(settled) }) }.map { it.get() }
+            }
+        assertEquals(listOf(2L, 2L), sameSequence)
+        assertEquals(1L, f.settlementTransactionCount())
+        assertEquals(4L, f.settlementPostingCount())
+
+        val fill = settled.fills.single()
+        val conflicting = f.settlement(result, occurredAt = fill.transaction.occurredAt.plusMillis(1))
+        assertFailsWith<OrderQueryWriteConflictException> { f.reopen().feed.applySettlement(conflicting) }
+        val blockedProgress = f.feed.progress()
+        val market = result.stream.marketId.value
+        assertEquals(OrderQueryLifecycle.BLOCKED, blockedProgress.lifecycle)
+        assertEquals(2L, blockedProgress.settlementThrough.getValue(market))
+        assertEquals(1L, f.settlementTransactionCount())
+        assertEquals(4L, f.settlementPostingCount())
     }
 
     @Test
@@ -561,6 +647,7 @@ class PostgresOrderQueryFeedStoreTest {
         supportedOnlyA: Boolean = false,
         aMarketName: String = "A-QUOTE",
         sourceIdentity: String? = null,
+        settlementEnabled: Boolean = false,
     ): Fixture {
         val funds = ClusterLineage(identities.incrementAndGet(), 42)
         val matching = ClusterLineage(43, 44)
@@ -594,6 +681,7 @@ class PostgresOrderQueryFeedStoreTest {
             },
             owner,
             sourceIdentity,
+            settlementEnabled,
         )
     }
 
@@ -603,6 +691,7 @@ class PostgresOrderQueryFeedStoreTest {
         val streams: Map<String, MatchingResultStream>,
         val owner: ReservedMatchingState,
         val sourceIdentity: String?,
+        val settlementEnabled: Boolean,
     ) {
         val a = contexts.values.single { it.ordinal == 0 }
         val b = contexts.values.single { it.ordinal == 1 }
@@ -613,9 +702,12 @@ class PostgresOrderQueryFeedStoreTest {
                 jdbc,
                 DataSourceTransactionManager(jdbc.jdbcTemplate.dataSource!!),
             ).also { it.initialize() }
-        val feed = PostgresOrderQueryFeedStore(query, jdbc).also { it.initialize("query-was", streams, contexts, sourceIdentity) }
+        val feed =
+            PostgresOrderQueryFeedStore(query, jdbc).also {
+                it.initialize("query-was", streams, contexts, sourceIdentity, settlementEnabled)
+            }
 
-        fun reopen() = Fixture(namespace, contexts, streams, owner, sourceIdentity)
+        fun reopen() = Fixture(namespace, contexts, streams, owner, sourceIdentity, settlementEnabled)
 
         fun verify(
             admissions: Long,
@@ -705,6 +797,51 @@ class PostgresOrderQueryFeedStoreTest {
         fun admissionBytes(input: FundsOrderDispatch) = SplitOrderDeliveryCodec(2).encode(0, SplitOrderDeliveryCommand.Apply(input))
 
         fun resultBytes(result: MatchingResultEnvelope) = SplitResultDeliveryCodec(2).encode(0, SplitResultDeliveryCommand.Apply(result))
+
+        fun settlement(
+            result: MatchingResultEnvelope,
+            occurredAt: Instant = Instant.ofEpochMilli(1_765_000_000_123),
+        ): SettlementFact {
+            val market = contexts.getValue(result.stream.marketId.value)
+            val base = market.market.baseAssetId
+            val quote = market.market.quoteAssetId
+            val fills =
+                result.events.filterIsInstance<TradeExecuted>().map { trade ->
+                    val taker = trade.takerUserId.value
+                    val maker = trade.makerUserId.value
+                    val price = Amount(trade.price.value)
+                    val quantity = Amount(trade.quantity.value)
+                    val transaction =
+                        LedgerTransaction(
+                            TradingIdentifiers.settlement(namespace.fundsLineage, market.ordinal, trade.engineSequence),
+                            "MATCHING:${trade.marketId.value}:${trade.engineSequence}",
+                            LedgerTransactionType.SETTLEMENT,
+                            occurredAt,
+                            listOf(
+                                LedgerPosting("USER:$maker:${base.value}:HOLD", base, DEBIT, quantity),
+                                LedgerPosting("USER:$maker:${quote.value}:AVAILABLE", quote, CREDIT, price),
+                                LedgerPosting("USER:$taker:${quote.value}:HOLD", quote, DEBIT, price),
+                                LedgerPosting("USER:$taker:${base.value}:AVAILABLE", base, CREDIT, quantity),
+                            ),
+                        )
+                    SettledTrade(trade, transaction, Amount(0), Amount(0))
+                }
+            return SettlementFact(result.stream, result.resultSequence, fills)
+        }
+
+        fun settlementTransactionCount(): Long =
+            jdbc.queryForObject(
+                "select count(*) from order_query.settlement_transaction where namespace = :namespace",
+                parameters,
+                Long::class.java,
+            )!!
+
+        fun settlementPostingCount(): Long =
+            jdbc.queryForObject(
+                "select count(*) from order_query.settlement_posting where namespace = :namespace",
+                parameters,
+                Long::class.java,
+            )!!
 
         fun read(input: FundsOrderDispatch) = query.read(input.order.marketId.value, input.order.orderId.value)
 
