@@ -1,5 +1,6 @@
 package com.exchange.core.api.trading.infrastructure.persistence
 
+import com.exchange.core.api.trading.application.OrderChargedFee
 import com.exchange.core.api.trading.application.OrderFillCursor
 import com.exchange.core.api.trading.application.OrderFillQuerySnapshot
 import com.exchange.core.api.trading.application.OrderFillRole
@@ -116,7 +117,7 @@ class PostgresOrderQueryFeedStoreTest {
     fun stop() = database.stop()
 
     @Test
-    fun `V13 적용 뒤 기존 원문에서 같은 결과의 체결을 순서대로 조회한다`() {
+    fun `조회 인덱스 추가 뒤 기존 원문에서 같은 결과의 체결을 순서대로 조회한다`() {
         val f = migratedFillFixture.reopen()
         val firstMaker = f.input(1, side = Side.SELL, quantity = 1)
         val secondMaker = f.input(2, side = Side.SELL)
@@ -141,7 +142,14 @@ class PostgresOrderQueryFeedStoreTest {
         assertEquals(OrderFillSettlementStatus.COMPLETED, first.settlementStatus)
         assertEquals(100L, first.price)
         assertEquals(1L, first.quantity)
-        assertEquals(first.copy(role = OrderFillRole.MAKER), f.readFills(firstMaker).fills.single())
+        val makerFee = OrderChargedFee(amount = "1", assetId = "QUOTE")
+        val takerFee = OrderChargedFee(amount = "2", assetId = "QUOTE")
+        val total = OrderChargedFee(amount = "4", assetId = "QUOTE")
+        assertEquals(takerFee, first.chargedFee)
+        assertEquals(total, firstPage.settledFeeTotal)
+        val makerPage = f.readFills(firstMaker)
+        assertEquals(first.copy(role = OrderFillRole.MAKER, chargedFee = makerFee), makerPage.fills.single())
+        assertEquals(makerFee, makerPage.settledFeeTotal)
 
         val secondPage = f.readFills(taker, limit = 1, after = next)
         val second = secondPage.fills.single()
@@ -150,9 +158,15 @@ class PostgresOrderQueryFeedStoreTest {
         assertEquals(OrderFillSettlementStatus.COMPLETED, second.settlementStatus)
         assertEquals(100L, second.price)
         assertEquals(1L, second.quantity)
-        assertEquals(second.copy(role = OrderFillRole.MAKER), f.readFills(secondMaker).fills.single())
-        assertEquals(OrderQueryOrderState.CANCELLED, f.read(secondMaker).record?.state)
-        assertEquals(listOf(first, second), f.readFills(taker).fills)
+        assertEquals(takerFee, second.chargedFee)
+        assertEquals(total, secondPage.settledFeeTotal)
+        val cancelledMakerPage = f.readFills(secondMaker)
+        assertEquals(OrderQueryOrderState.CANCELLED, cancelledMakerPage.order.record?.state)
+        assertEquals(second.copy(role = OrderFillRole.MAKER, chargedFee = makerFee), cancelledMakerPage.fills.single())
+        assertEquals(makerFee, cancelledMakerPage.settledFeeTotal)
+        val allFills = f.readFills(taker)
+        assertEquals(listOf(first, second), allFills.fills)
+        assertEquals(total, allFills.settledFeeTotal)
 
         val ledgerIds =
             jdbc.queryForList(
@@ -163,6 +177,141 @@ class PostgresOrderQueryFeedStoreTest {
         assertEquals(2, ledgerIds.distinct().size)
         assertEquals(ledgerIds, listOf(first.tradeId, second.tradeId))
         assertEquals(progressBeforeRead, f.feed.progress())
+    }
+
+    @Test
+    fun `기존 매칭 범위보다 앞서 저장된 체결은 조회에 반영된 뒤 합계에 들어간다`() {
+        val f = fixture(settlementEnabled = true, fees = MakerTakerFeeRates(FeeRate(10_000), FeeRate(20_000)))
+        val firstMaker = f.input(1, side = Side.SELL, quantity = 1)
+        val buy = f.input(2, quantity = 4)
+        f.admit(firstMaker)
+        val resting = assertNotNull(f.owner.apply(firstMaker).result)
+        f.match(resting)
+        f.feed.applySettlement(f.settlement(resting))
+        f.admit(buy)
+        val partial = assertNotNull(f.owner.apply(buy).result)
+        f.match(partial)
+        f.feed.applySettlement(f.settlement(partial, makerFee = 1, takerFee = 2))
+        f.verify(admissions = 2, resultsA = 2)
+
+        val followUpSale = f.input(3, side = Side.SELL, quantity = 2)
+        f.admit(followUpSale)
+        val followUpMatch = assertNotNull(f.owner.apply(followUpSale).result)
+        f.feed.applySettlement(f.settlement(followUpMatch, makerFee = 2, takerFee = 4))
+        val beforeProjection = f.readFills(buy)
+        assertEquals(1, beforeProjection.fills.size)
+        assertEquals(OrderChargedFee(amount = "2", assetId = "QUOTE"), beforeProjection.settledFeeTotal)
+        val pendingSale = f.readFills(followUpSale)
+        assertTrue(pendingSale.fills.isEmpty())
+        assertNull(pendingSale.settledFeeTotal)
+
+        f.match(followUpMatch)
+        val firstPage = f.readFills(buy, limit = 1)
+        assertNotNull(firstPage.nextCursor)
+        assertEquals(OrderChargedFee(amount = "4", assetId = "QUOTE"), firstPage.settledFeeTotal)
+        assertEquals(OrderChargedFee(amount = "4", assetId = "QUOTE"), f.readFills(followUpSale).settledFeeTotal)
+
+        val lastSale = f.input(4, side = Side.SELL, quantity = 1)
+        f.admit(lastSale)
+        val lastMatch = assertNotNull(f.owner.apply(lastSale).result)
+        f.match(lastMatch)
+        val withPendingFill = f.readFills(buy)
+        assertEquals(3, withPendingFill.fills.size)
+        assertEquals(OrderFillSettlementStatus.PENDING, withPendingFill.fills.last().settlementStatus)
+        assertEquals(firstPage.settledFeeTotal, withPendingFill.settledFeeTotal)
+
+        val resultParameters = f.parameters + ("result" to followUpMatch.resultSequence)
+        val transaction = TransactionTemplate(DataSourceTransactionManager(requireNotNull(jdbc.jdbcTemplate.dataSource)))
+        transaction.executeWithoutResult { status ->
+            val removed =
+                jdbc.update(
+                    """
+                    delete from order_query.applied_batch b
+                    using order_query.source_receipt r
+                    where b.namespace = r.namespace and b.first_revision = r.first_revision
+                        and r.namespace = :namespace and r.source_kind = 'MATCHING' and r.source_sequence = :result
+                    """.trimIndent(),
+                    resultParameters,
+                )
+            assertEquals(1, removed)
+            assertFailsWith<OrderQueryInconsistentException> { f.readFills(buy, limit = 1) }
+            status.setRollbackOnly()
+        }
+        transaction.executeWithoutResult { status ->
+            val removed =
+                jdbc.update(
+                    """
+                    delete from order_query.source_receipt
+                    where namespace = :namespace and source_kind = 'MATCHING' and source_sequence = :result
+                    """.trimIndent(),
+                    resultParameters,
+                )
+            assertEquals(1, removed)
+            assertFailsWith<OrderQueryInconsistentException> { f.readFills(buy, limit = 1) }
+            status.setRollbackOnly()
+        }
+        assertEquals(firstPage.settledFeeTotal, f.readFills(buy, limit = 1).settledFeeTotal)
+
+        val followUpTrade = followUpMatch.events.filterIsInstance<TradeExecuted>().single()
+        val tradeId = TradingIdentifiers.settlement(f.namespace.fundsLineage, f.a.ordinal, followUpTrade.engineSequence)
+        val parameters = f.parameters + ("tradeId" to tradeId)
+        jdbc.update("delete from order_query.settlement_posting where namespace = :namespace and settlement_id = :tradeId", parameters)
+        jdbc.update("delete from order_query.settlement_transaction where namespace = :namespace and settlement_id = :tradeId", parameters)
+        // 세 번째 체결이 정산 대기 중이어도 저장 순번에 포함된 두 번째 체결은 합계에 필요하다.
+        assertFailsWith<OrderQueryInconsistentException> { f.readFills(buy, limit = 1) }
+    }
+
+    @Test
+    fun `한 사용자의 별도 주문 사이에서 페이지 밖 정산 귀속이 바뀌면 합계를 거절한다`() {
+        val f = fixture(settlementEnabled = true, fees = MakerTakerFeeRates(FeeRate(10_000), FeeRate(20_000)))
+        val owner = UserId("same-buyer")
+        val firstSale = f.input(1, side = Side.SELL, quantity = 1)
+        val firstBuy = f.input(2, quantity = 2, userId = owner)
+        val otherBuy = f.input(3, quantity = 1, userId = owner)
+        for (order in listOf(firstSale, firstBuy, otherBuy)) {
+            f.admit(order)
+            val result = assertNotNull(f.owner.apply(order).result)
+            f.match(result)
+            f.feed.applySettlement(f.settlement(result, makerFee = 1, takerFee = 2))
+        }
+
+        val crossingSale = f.input(4, side = Side.SELL, quantity = 2)
+        f.admit(crossingSale)
+        val crossed = assertNotNull(f.owner.apply(crossingSale).result)
+        f.match(crossed)
+        val firstFeeFact = f.settlement(crossed, makerFee = 1, takerFee = 2)
+        val otherFeeFact = f.settlement(crossed, makerFee = 2, takerFee = 2)
+        val firstFill = firstFeeFact.fills.single { it.trade.makerOrderId == firstBuy.order.orderId }
+        val otherFill = otherFeeFact.fills.single { it.trade.makerOrderId == otherBuy.order.orderId }
+        assertEquals(1L, firstFill.trade.quantity.value)
+        assertEquals(1L, otherFill.trade.quantity.value)
+        f.feed.applySettlement(SettlementFact(crossed.stream, crossed.resultSequence, listOf(firstFill, otherFill)))
+        f.verify(admissions = 4, resultsA = 4)
+
+        val firstPage = f.readFills(firstBuy, limit = 1)
+        assertEquals(OrderFillRole.TAKER, firstPage.fills.single().role)
+        assertNotNull(firstPage.nextCursor)
+        assertEquals(OrderChargedFee(amount = "3", assetId = "QUOTE"), firstPage.settledFeeTotal)
+        assertEquals(OrderChargedFee(amount = "2", assetId = "QUOTE"), f.readFills(otherBuy).settledFeeTotal)
+
+        val exchangedOrders =
+            jdbc.update(
+                """
+                update order_query.settlement_transaction
+                set maker_order_id = case when maker_order_id = :firstBuy then :otherBuy else :firstBuy end
+                where namespace = :namespace and result_sequence = :resultSequence
+                    and maker_order_id in (:firstBuy, :otherBuy)
+                """.trimIndent(),
+                f.parameters +
+                    mapOf(
+                        "firstBuy" to firstBuy.order.orderId.value,
+                        "otherBuy" to otherBuy.order.orderId.value,
+                        "resultSequence" to crossed.resultSequence,
+                    ),
+            )
+        assertEquals(2, exchangedOrders)
+        // 두 정산의 사용자·수량은 같으므로 체결별 원본에서 주문 귀속을 대조해야 한다.
+        assertFailsWith<OrderQueryInconsistentException> { f.readFills(firstBuy, limit = 1) }
     }
 
     @Test
@@ -232,15 +381,19 @@ class PostgresOrderQueryFeedStoreTest {
                 val result = useCase.getFills(marketId, orderId, minAdmissionSequence = 0, limit = 50, after = null)
                 assertEquals(before, jdbc.jdbcTemplate.queryForMap(settings))
                 assertEquals(OrderQueryCode.ORDER_FOUND, result.code)
+                assertNull(result.settledFeeTotal)
                 result.fills.single()
             }
         val pending = assertNotNull(firstRead)
         assertEquals(OrderFillSettlementStatus.PENDING, pending.settlementStatus)
+        assertNull(pending.chargedFee)
 
         val useCase = advisedQuery(f.query)
         val afterCommit = useCase.getFills(marketId, orderId, minAdmissionSequence = 0, limit = 50, after = null)
         assertEquals(OrderQueryCode.ORDER_FOUND, afterCommit.code)
-        assertEquals(pending.copy(settlementStatus = OrderFillSettlementStatus.COMPLETED), afterCommit.fills.single())
+        val zero = OrderChargedFee(amount = "0", assetId = "QUOTE")
+        assertEquals(pending.copy(settlementStatus = OrderFillSettlementStatus.COMPLETED, chargedFee = zero), afterCommit.fills.single())
+        assertEquals(zero, afterCommit.settledFeeTotal)
     }
 
     @Test
@@ -277,6 +430,10 @@ class PostgresOrderQueryFeedStoreTest {
             "update order_query.settlement_transaction set source_event_id = :sourceEventId where namespace = :namespace",
             f.parameters + ("sourceEventId" to settledTrade.transaction.sourceEventId),
         )
+        val changeAsset = "update order_query.settlement_transaction set quote_asset_id = :asset where namespace = :namespace"
+        jdbc.update(changeAsset, f.parameters + ("asset" to "WRONG"))
+        assertFailsWith<OrderQueryInconsistentException> { f.readFills(taker) }
+        jdbc.update(changeAsset, f.parameters + ("asset" to "QUOTE"))
         jdbc.update("update order_query.settlement_transaction set quantity = 2 where namespace = :namespace", f.parameters)
         assertFailsWith<OrderQueryInconsistentException> { f.readFills(taker) }
         jdbc.update("delete from order_query.settlement_posting where namespace = :namespace", f.parameters)
@@ -854,12 +1011,13 @@ class PostgresOrderQueryFeedStoreTest {
         aMarketName: String = "A-QUOTE",
         sourceIdentity: String? = null,
         settlementEnabled: Boolean = false,
+        fees: MakerTakerFeeRates = MakerTakerFeeRates(FeeRate.ZERO, FeeRate.ZERO),
     ): Fixture {
         val funds = ClusterLineage(identities.incrementAndGet(), 42)
         val matching = ClusterLineage(43, 44)
-        val fees = TradingFeePolicySnapshot(FeeProductType.SPOT, FeeTier.NORMAL, 1, MakerTakerFeeRates(FeeRate.ZERO, FeeRate.ZERO))
-        val a = TradingMarketContext(MarketDefinition(MarketId(aMarketName), AssetId("A"), AssetId("QUOTE"), 0, 1, 1), fees, 0)
-        val b = TradingMarketContext(MarketDefinition(MarketId("B-QUOTE"), AssetId("B"), AssetId("QUOTE"), 0, 1, 1), fees, 1)
+        val feePolicy = TradingFeePolicySnapshot(FeeProductType.SPOT, FeeTier.NORMAL, 1, fees)
+        val a = TradingMarketContext(MarketDefinition(MarketId(aMarketName), AssetId("A"), AssetId("QUOTE"), 0, 1, 1), feePolicy, 0)
+        val b = TradingMarketContext(MarketDefinition(MarketId("B-QUOTE"), AssetId("B"), AssetId("QUOTE"), 0, 1, 1), feePolicy, 1)
         val contexts = listOf(a, b)
         val manifest =
             TradingClusterManifest(funds, "query-feed-test", "0".repeat(64), "1".repeat(64), 7, contexts, TradingResourceLimits())
@@ -892,7 +1050,7 @@ class PostgresOrderQueryFeedStoreTest {
     }
 
     private fun storeFillHistoryBeforeUpgrade(): Fixture {
-        val f = fixture(settlementEnabled = true)
+        val f = fixture(settlementEnabled = true, fees = MakerTakerFeeRates(FeeRate(10_000), FeeRate(20_000)))
         val firstMaker = f.input(1, side = Side.SELL, quantity = 1)
         val secondMaker = f.input(2, side = Side.SELL)
         val taker = f.input(3, quantity = 2)
@@ -900,7 +1058,9 @@ class PostgresOrderQueryFeedStoreTest {
             f.admit(input)
             val result = assertNotNull(f.owner.apply(input).result)
             f.match(result)
-            f.feed.applySettlement(f.settlement(result))
+            val settlement = f.settlement(result, makerFee = 1, takerFee = 2)
+            f.feed.applySettlement(settlement)
+            assertEquals(result.resultSequence, f.reopen().feed.applySettlement(settlement))
         }
         val cancel = assertNotNull(f.owner.apply(f.cancel(secondMaker, 4)).result)
         f.match(cancel)
@@ -948,12 +1108,13 @@ class PostgresOrderQueryFeedStoreTest {
             market: TradingMarketContext = a,
             dispatch: Long = admission,
             marketAdmission: Long = dispatch,
+            userId: UserId = UserId("u$admission"),
         ): FundsOrderDispatch {
             val order =
                 OrderAdmissionInput(
                     market.market.marketId,
                     TradingIdentifiers.order(namespace.fundsLineage, admission),
-                    UserId("u$admission"),
+                    userId,
                     side,
                     OrderType.LIMIT,
                     TimeInForce.GTC,
@@ -1025,6 +1186,8 @@ class PostgresOrderQueryFeedStoreTest {
         fun settlement(
             result: MatchingResultEnvelope,
             occurredAt: Instant = Instant.ofEpochMilli(1_765_000_000_123),
+            makerFee: Long = 0,
+            takerFee: Long = 0,
         ): SettlementFact {
             val market = contexts.getValue(result.stream.marketId.value)
             val base = market.market.baseAssetId
@@ -1033,22 +1196,32 @@ class PostgresOrderQueryFeedStoreTest {
                 result.events.filterIsInstance<TradeExecuted>().map { trade ->
                     val taker = trade.takerUserId.value
                     val maker = trade.makerUserId.value
-                    val price = Amount(trade.price.value)
+                    val buyer = if (trade.side == Side.BUY) taker else maker
+                    val seller = if (trade.side == Side.BUY) maker else taker
+                    val buyFee = if (trade.side == Side.BUY) takerFee else makerFee
+                    val sellFee = if (trade.side == Side.BUY) makerFee else takerFee
+                    val notional = trade.price.value * trade.quantity.value
                     val quantity = Amount(trade.quantity.value)
+                    val postings =
+                        mutableListOf(
+                            LedgerPosting("USER:$seller:${base.value}:HOLD", base, DEBIT, quantity),
+                            LedgerPosting("USER:$seller:${quote.value}:AVAILABLE", quote, CREDIT, Amount(notional - sellFee)),
+                            LedgerPosting("USER:$buyer:${quote.value}:HOLD", quote, DEBIT, Amount(notional + buyFee)),
+                            LedgerPosting("USER:$buyer:${base.value}:AVAILABLE", base, CREDIT, quantity),
+                        )
+                    val revenue = buyFee + sellFee
+                    if (revenue > 0) {
+                        postings.add(LedgerPosting("SYSTEM:${quote.value}:FEE_REVENUE", quote, CREDIT, Amount(revenue)))
+                    }
                     val transaction =
                         LedgerTransaction(
                             TradingIdentifiers.settlement(namespace.fundsLineage, market.ordinal, trade.engineSequence),
                             "MATCHING:${trade.marketId.value}:${trade.engineSequence}",
                             LedgerTransactionType.SETTLEMENT,
                             occurredAt,
-                            listOf(
-                                LedgerPosting("USER:$maker:${base.value}:HOLD", base, DEBIT, quantity),
-                                LedgerPosting("USER:$maker:${quote.value}:AVAILABLE", quote, CREDIT, price),
-                                LedgerPosting("USER:$taker:${quote.value}:HOLD", quote, DEBIT, price),
-                                LedgerPosting("USER:$taker:${base.value}:AVAILABLE", base, CREDIT, quantity),
-                            ),
+                            postings,
                         )
-                    SettledTrade(trade, transaction, Amount(0), Amount(0))
+                    SettledTrade(trade, transaction, Amount(makerFee), Amount(takerFee))
                 }
             return SettlementFact(result.stream, result.resultSequence, fills)
         }

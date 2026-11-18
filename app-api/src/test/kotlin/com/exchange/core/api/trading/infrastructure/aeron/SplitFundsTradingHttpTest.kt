@@ -67,6 +67,7 @@ import org.springframework.beans.factory.support.AbstractBeanDefinition
 import org.springframework.boot.builder.SpringApplicationBuilder
 import org.springframework.boot.web.server.servlet.context.ServletWebServerApplicationContext
 import org.springframework.context.ConfigurableApplicationContext
+import tools.jackson.databind.JsonNode
 import tools.jackson.databind.json.JsonMapper
 import java.math.BigInteger
 import java.net.DatagramSocket
@@ -567,8 +568,34 @@ class SplitFundsTradingHttpTest {
     }
 
     @Test
-    fun `주문별 체결 조회는 양쪽 주문과 정산 저장 상태를 연결한다`() {
-        withTradingNodes("query-test", feeRate = FeeRate(10_000), takerFeeRate = FeeRate(20_000), persistSettlements = true) { harness ->
+    fun `주문별 체결 조회는 양쪽 주문과 정산 저장 상태를 연결한다`() =
+        verifyFillFees(
+            makerFeeRate = FeeRate(10_000),
+            takerFeeRate = FeeRate(20_000),
+            first = FillFees(buyer = 2, seller = 1),
+            followUp = FillFees(buyer = 2, seller = 4),
+            buyerTotal = 4,
+        )
+
+    @Test
+    fun `주문별 체결 수수료는 확정 0과 수수료 이월을 표시한다`() =
+        verifyFillFees(
+            makerFeeRate = FeeRate(4_000),
+            takerFeeRate = FeeRate(6_000),
+            first = FillFees(buyer = 0, seller = 0),
+            // 매수의 첫 0.6이 후속 0.8로 이월되어 1을 실제 청구한다.
+            followUp = FillFees(buyer = 1, seller = 1),
+            buyerTotal = 1,
+        )
+
+    private fun verifyFillFees(
+        makerFeeRate: FeeRate,
+        takerFeeRate: FeeRate,
+        first: FillFees,
+        followUp: FillFees,
+        buyerTotal: Long,
+    ) {
+        withTradingNodes("query-test", feeRate = makerFeeRate, takerFeeRate = takerFeeRate, persistSettlements = true) { harness ->
             val firstCommit = CallbackGate()
             val followUpCommit = CallbackGate()
             queryWas(harness, decorate = { store ->
@@ -601,12 +628,49 @@ class SplitFundsTradingHttpTest {
                         assertEquals(storedIds.toList(), jdbc.queryForList(settlementIds, String::class.java))
                     }
 
+                    fun assertStoredFees(
+                        tradeId: String,
+                        makerFee: Long,
+                        takerFee: Long,
+                    ) {
+                        val settlement =
+                            jdbc.queryForMap(
+                                "select maker_fee, taker_fee, quote_asset_id from order_query.settlement_transaction where settlement_id = ?",
+                                tradeId,
+                            )
+                        assertEquals(makerFee, settlement["maker_fee"])
+                        assertEquals(takerFee, settlement["taker_fee"])
+                        assertEquals("USDT", settlement["quote_asset_id"])
+                        val postedFees =
+                            jdbc.queryForList(
+                                """
+                                select amount from order_query.settlement_posting where settlement_id = ?
+                                    and account_id = 'SYSTEM:USDT:FEE_REVENUE' and asset_id = 'USDT' and side = 'CREDIT'
+                                order by amount
+                                """.trimIndent(),
+                                Long::class.java,
+                                tradeId,
+                            )
+                        assertEquals(listOf(makerFee, takerFee).filter { it > 0 }.sorted(), postedFees)
+                    }
+
                     HttpClient.newHttpClient().use { http ->
+                        fun assertFills(
+                            orderId: String,
+                            settledTotal: JsonNode?,
+                            vararg expectedFills: HttpOrderFill,
+                        ) {
+                            val actual = readOrderFills(http, url, orderId)
+                            assertEquals(expectedFills.toList(), actual.fills)
+                            assertEquals(settledTotal, actual.settledFeeTotal)
+                            assertTrue(actual.nextCursor.isNull)
+                        }
+
                         awaitEmptyReady(harness, http, url)
                         val firstSale = submitSeller(http, url, quantity = 1)
                         val firstSaleId = json.readTree(firstSale.body()).path("orderId").asString()
                         awaitQuery(harness, http, url, firstSaleId, "RESTING", filled = 0, remaining = 1, cancelled = 0)
-                        assertTrue(readOrderFills(http, url, firstSaleId).isEmpty())
+                        assertFills(firstSaleId, settledTotal = null)
                         assertTrue(jdbc.queryForList(settlementIds, String::class.java).isEmpty())
 
                         val buyerEpoch = post(http, url, "/channels/0/epoch", """{"userId":"buyer","expectedEpoch":0}""")
@@ -618,39 +682,64 @@ class SplitFundsTradingHttpTest {
                         awaitQuery(harness, http, url, buyId, "PARTIALLY_FILLED", filled = 1, remaining = 2, cancelled = 0)
                         assertStoredProgress(appliedThrough = 2, storedThrough = 1)
 
-                        val firstPending = readOrderFills(http, url, buyId).single()
+                        val firstPendingResponse = readOrderFills(http, url, buyId)
+                        assertNull(firstPendingResponse.settledFeeTotal)
+                        val firstPending = firstPendingResponse.fills.single()
                         assertEquals(HttpOrderFill(firstPending.tradeId, 100, 1, "TAKER", "PENDING"), firstPending)
-                        assertEquals(listOf(firstPending.copy(role = "MAKER")), readOrderFills(http, url, firstSaleId))
+                        assertFills(firstSaleId, null, firstPending.copy(role = "MAKER"))
 
                         firstCommit.release.countDown()
                         await("첫 체결의 정산 분개 커밋") { jdbc.queryForMap(positions)["settlement_through"] == 2L }
-                        val firstCompleted = firstPending.copy(settlementStatus = "COMPLETED")
+                        val firstBuyerFee = usdtFee(first.buyer)
+                        val firstSellerFee = usdtFee(first.seller)
+                        val firstCompleted = firstPending.copy(settlementStatus = "COMPLETED", chargedFee = firstBuyerFee)
                         assertStoredProgress(2, 2, firstCompleted.tradeId)
-                        assertEquals(listOf(firstCompleted), readOrderFills(http, url, buyId))
-                        assertEquals(listOf(firstCompleted.copy(role = "MAKER")), readOrderFills(http, url, firstSaleId))
+                        assertStoredFees(firstCompleted.tradeId, makerFee = first.seller, takerFee = first.buyer)
+                        assertFills(buyId, firstBuyerFee, firstCompleted)
+                        assertFills(firstSaleId, firstSellerFee, firstCompleted.copy(role = "MAKER", chargedFee = firstSellerFee))
 
-                        val followUp = post(http, url, "/markets/BTC-USDT/orders", orderBody("seller", "SELL", quantity = 2, sequence = 2))
-                        assertEquals(202, followUp.statusCode(), followUp.body())
-                        val followUpSaleId = json.readTree(followUp.body()).path("orderId").asString()
+                        val followUpOrder = orderBody("seller", "SELL", quantity = 2, sequence = 2)
+                        val followUpSale = post(http, url, "/markets/BTC-USDT/orders", followUpOrder)
+                        assertEquals(202, followUpSale.statusCode(), followUpSale.body())
+                        val followUpSaleId = json.readTree(followUpSale.body()).path("orderId").asString()
                         assertTrue(followUpCommit.reached.await(10, TimeUnit.SECONDS), "후속 체결이 정산 분개 저장 직전까지 진행해야 한다")
                         awaitQuery(harness, http, url, buyId, "FILLED", filled = 3, remaining = 0, cancelled = 0)
                         assertStoredProgress(3, 2, firstCompleted.tradeId)
 
-                        val pendingFills = readOrderFills(http, url, buyId)
+                        val pendingResponse = readOrderFills(http, url, buyId)
+                        assertEquals(firstBuyerFee, pendingResponse.settledFeeTotal)
+                        val pendingFills = pendingResponse.fills
                         assertEquals(2, pendingFills.size)
                         assertEquals(firstCompleted, pendingFills.first())
                         val followUpPending = pendingFills.last()
                         assertTrue(followUpPending.tradeId != firstCompleted.tradeId)
                         assertEquals(HttpOrderFill(followUpPending.tradeId, 100, 2, "MAKER", "PENDING"), followUpPending)
-                        assertEquals(listOf(followUpPending.copy(role = "TAKER")), readOrderFills(http, url, followUpSaleId))
+                        assertFills(followUpSaleId, null, followUpPending.copy(role = "TAKER"))
 
                         followUpCommit.release.countDown()
                         await("후속 체결의 정산 분개 커밋") { jdbc.queryForMap(positions)["settlement_through"] == 3L }
-                        val followUpCompleted = followUpPending.copy(settlementStatus = "COMPLETED")
+                        val followUpBuyerFee = usdtFee(followUp.buyer)
+                        val followUpSellerFee = usdtFee(followUp.seller)
+                        val buyerSettledTotal = usdtFee(buyerTotal)
+                        val followUpCompleted = followUpPending.copy(settlementStatus = "COMPLETED", chargedFee = followUpBuyerFee)
                         assertStoredProgress(3, 3, firstCompleted.tradeId, followUpCompleted.tradeId)
-                        assertEquals(listOf(firstCompleted, followUpCompleted), readOrderFills(http, url, buyId))
-                        assertEquals(listOf(firstCompleted.copy(role = "MAKER")), readOrderFills(http, url, firstSaleId))
-                        assertEquals(listOf(followUpCompleted.copy(role = "TAKER")), readOrderFills(http, url, followUpSaleId))
+                        assertStoredFees(followUpCompleted.tradeId, makerFee = followUp.buyer, takerFee = followUp.seller)
+                        assertFills(buyId, buyerSettledTotal, firstCompleted, followUpCompleted)
+                        assertFills(firstSaleId, firstSellerFee, firstCompleted.copy(role = "MAKER", chargedFee = firstSellerFee))
+                        val followUpSellerFill = followUpCompleted.copy(role = "TAKER", chargedFee = followUpSellerFee)
+                        assertFills(followUpSaleId, followUpSellerFee, followUpSellerFill)
+
+                        val firstPage = readOrderFills(http, url, buyId, "?limit=1")
+                        assertEquals(listOf(firstCompleted), firstPage.fills)
+                        assertEquals(buyerSettledTotal, firstPage.settledFeeTotal)
+                        assertTrue(firstPage.nextCursor.isObject)
+                        val resultSequence = firstPage.nextCursor.path("resultSequence").longValue()
+                        val engineSequence = firstPage.nextCursor.path("engineSequence").longValue()
+                        val cursorQuery = "?limit=1&afterResultSequence=$resultSequence&afterEngineSequence=$engineSequence"
+                        val nextPage = readOrderFills(http, url, buyId, cursorQuery)
+                        assertEquals(listOf(followUpCompleted), nextPage.fills)
+                        assertEquals(buyerSettledTotal, nextPage.settledFeeTotal)
+                        assertTrue(nextPage.nextCursor.isNull)
 
                         val sourceEventId =
                             jdbc.queryForObject(
@@ -677,7 +766,7 @@ class SplitFundsTradingHttpTest {
                         } finally {
                             jdbc.execute("alter table order_query.unavailable_settlement_transaction rename to settlement_transaction")
                         }
-                        assertEquals(listOf(firstCompleted, followUpCompleted), readOrderFills(http, url, buyId))
+                        assertFills(buyId, buyerSettledTotal, firstCompleted, followUpCompleted)
                     }
                 } finally {
                     firstCommit.release.countDown()
@@ -687,48 +776,76 @@ class SplitFundsTradingHttpTest {
         }
     }
 
+    private data class FillFees(
+        val buyer: Long,
+        val seller: Long,
+    )
+
     private data class HttpOrderFill(
         val tradeId: String,
         val price: Long,
         val quantity: Long,
         val role: String,
         val settlementStatus: String,
+        val chargedFee: JsonNode? = null,
+    )
+
+    private data class HttpFillPage(
+        val fills: List<HttpOrderFill>,
+        val settledFeeTotal: JsonNode?,
+        val nextCursor: JsonNode,
     )
 
     private fun readOrderFills(
         http: HttpClient,
         url: String,
         orderId: String,
-    ): List<HttpOrderFill> {
-        val response = getOrderFills(http, url, orderId)
+        query: String = "",
+    ): HttpFillPage {
+        val response = getOrderFills(http, url, orderId, query)
         assertEquals(200, response.statusCode(), response.body())
         val body = json.readTree(response.body())
         assertEquals(orderId, body.path("orderId").asString(), response.body())
         assertEquals("BTC-USDT", body.path("marketId").asString(), response.body())
         val fills = body.path("fills")
         assertTrue(fills.isArray, response.body())
-        return List(fills.size()) { index ->
-            val fill = fills.path(index)
-            val tradeId = fill.path("tradeId").asString()
-            assertTrue(tradeId.isNotBlank(), response.body())
-            HttpOrderFill(
-                tradeId = tradeId,
-                price = fill.path("price").longValue(),
-                quantity = fill.path("quantity").longValue(),
-                role = fill.path("role").asString(),
-                settlementStatus = fill.path("settlementStatus").asString(),
-            )
-        }
+        val entries =
+            List(fills.size()) { index ->
+                val fill = fills.path(index)
+                val tradeId = fill.path("tradeId").asString()
+                assertTrue(tradeId.isNotBlank(), response.body())
+                HttpOrderFill(
+                    tradeId = tradeId,
+                    price = fill.path("price").longValue(),
+                    quantity = fill.path("quantity").longValue(),
+                    role = fill.path("role").asString(),
+                    settlementStatus = fill.path("settlementStatus").asString(),
+                    chargedFee = feeField(fill, "chargedFee"),
+                )
+            }
+        return HttpFillPage(entries, feeField(body, "settledFeeTotal"), body.path("nextCursor"))
     }
+
+    private fun feeField(
+        body: JsonNode,
+        name: String,
+    ): JsonNode? {
+        val fee = body.path(name)
+        assertFalse(fee.isMissingNode, "응답에 $name 필드가 있어야 한다")
+        return fee.takeUnless { it.isNull }
+    }
+
+    private fun usdtFee(amount: Long): JsonNode = json.readTree("""{"amount":"$amount","assetId":"USDT"}""")
 
     private fun getOrderFills(
         http: HttpClient,
         url: String,
         orderId: String,
+        query: String = "",
     ): HttpResponse<String> {
         val request =
             HttpRequest
-                .newBuilder(URI.create("$url/api/trading/v3/markets/BTC-USDT/orders/$orderId/fills"))
+                .newBuilder(URI.create("$url/api/trading/v3/markets/BTC-USDT/orders/$orderId/fills$query"))
                 .timeout(Duration.ofSeconds(3))
                 .GET()
                 .build()

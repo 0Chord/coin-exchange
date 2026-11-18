@@ -105,7 +105,7 @@ class OrderQueryConfigurationTest {
                 tables,
             )
             assertEquals(
-                (1..13).map(Int::toString),
+                (1..14).map(Int::toString),
                 database.jdbc().queryForList(
                     "select version from flyway_schema_history where success order by installed_rank",
                     String::class.java,
@@ -123,6 +123,13 @@ class OrderQueryConfigurationTest {
                     Boolean::class.java,
                 )!!,
             )
+            val feeIndexes =
+                database.jdbc().queryForList(
+                    "select indexname from pg_indexes where schemaname = 'order_query' and tablename = 'settlement_transaction'",
+                    String::class.java,
+                )
+            assertTrue("settlement_transaction_maker_order_idx" in feeIndexes)
+            assertTrue("settlement_transaction_taker_order_idx" in feeIndexes)
         }
     }
 
@@ -157,7 +164,7 @@ class OrderQueryConfigurationTest {
             queryContext(existing.properties).use { context ->
                 assertEquals(before, existing.jdbc().queryForMap("select * from market_configuration_release where config_version = 7"))
                 assertEquals(
-                    13,
+                    14,
                     existing.jdbc().queryForObject("select count(*) from flyway_schema_history where success", Int::class.java),
                 )
                 val orderId = TradingIdentifiers.order(ClusterLineage(41, 42), 1).value

@@ -1,5 +1,6 @@
 package com.exchange.core.api.trading.api
 
+import com.exchange.core.api.trading.application.OrderChargedFee
 import com.exchange.core.api.trading.application.OrderFill
 import com.exchange.core.api.trading.application.OrderFillCursor
 import java.time.Instant
@@ -53,4 +54,5 @@ data class OrderFillQueryResponse(
     val fills: List<OrderFill>?,
     val nextCursor: OrderFillCursor?,
     val coveredAdmissionSequence: Long?,
+    val settledFeeTotal: OrderChargedFee?,
 )

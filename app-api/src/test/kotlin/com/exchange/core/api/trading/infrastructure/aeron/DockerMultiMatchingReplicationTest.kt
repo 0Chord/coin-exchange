@@ -282,6 +282,7 @@ internal class MultiMatchingRun(
             if (quorumCase == null) await(MultiMatchingStage.INITIALIZED) else awaitQuorum(FundsQuorumStage.INITIALIZED, emptyMap())
             scenarioBody(this)
             verifyLiveNodes(collectMemory = true)
+            budgets()
         } catch (failure: Throwable) {
             issues += "$phase: ${failure.javaClass.simpleName}: ${failure.message}"
             Files.writeString(reports.resolve("failure.txt"), failure.stackTraceToString().take(16 * 1024))
@@ -461,7 +462,7 @@ internal class MultiMatchingRun(
         var failures = emptyList<String>()
         var correlation: Long? = null
         while (System.nanoTime() < until) {
-            budgets()
+            checkDiagnosticBudget()
             val states =
                 if (local) {
                     quorumWitness(expected).mapValues { it.value.path("serviceObservation").path("snapshot") }
@@ -1079,7 +1080,7 @@ internal class MultiMatchingRun(
         val until = minOf(workDeadline, System.nanoTime() + TimeUnit.SECONDS.toNanos(45))
         var failures = emptyList<String>()
         while (System.nanoTime() < until) {
-            budgets()
+            checkDiagnosticBudget()
             val states = SERVICES.associateWith { read(control.resolve("state-$it.json")) }
             latestStates = states
             failures = MultiMatchingConvergence.failures(states, runtimes, stage, originals)
@@ -1173,7 +1174,8 @@ internal class MultiMatchingRun(
         )
         command(listOf("docker", "rm", "-v", name), minOf(5_000, left()))
         checkpoints += mapOf("phase" to "client", "arguments" to args.toList(), "inspection" to inspection)
-        budgets()
+        // 수렴 probe와 장애 진행 중에는 Docker 기록 측정을 기다리지 않는다.
+        if (args.first() == "probe" || stoppedServices.isNotEmpty()) checkDiagnosticBudget() else budgets()
         return mapper.readTree(result.stdout.lineSequence().last { it.trim().startsWith("{") })
     }
 
@@ -1234,7 +1236,7 @@ internal class MultiMatchingRun(
         var failures = emptyList<String>()
         var probe: Long? = null
         while (System.nanoTime() < until) {
-            budgets()
+            checkDiagnosticBudget()
             val states = SERVICES.filter { it !in stoppedServices }.associateWith { read(control.resolve("state-$it.json")) }
             latestStates = states
             failures = violations(states) + currentFailures(states, probe, higherThanTerm)
@@ -1483,6 +1485,8 @@ internal class MultiMatchingRun(
     /** 종료한 대상별로 원래 기록을 다시 열며 생존한 다른 노드는 재생성하지 않는다. */
     fun rejoinService(target: String) {
         check(target in stoppedServices)
+        // 새 리더의 진행을 확인한 뒤, 재합류 전에 중단된 노드의 볼륨을 포함해 기록 한도를 검사한다.
+        budgets()
         val until = minOf(workDeadline, System.nanoTime() + TimeUnit.SECONDS.toNanos(90))
         val previous = runtimes.getValue(target)
         val volume = recordVolume(previous)
@@ -1617,6 +1621,7 @@ internal class MultiMatchingRun(
         check(listOf(root, archive, cluster).all { it.matches(Regex("[a-zA-Z0-9/_.-]+")) })
         return recordsHelper(
             "sha256sum $root/split-recovery-identity.bin && stat -c '%n %s' $archive/archive.catalog $cluster/recording.log",
+            services = listOf(service),
         ).also { output ->
             check(
                 output.lineSequence().filter(String::isNotBlank).count() == 3 &&
@@ -1629,47 +1634,53 @@ internal class MultiMatchingRun(
         }
     }
 
-    private fun recordsHelper(script: String): String {
+    private fun recordsHelper(
+        script: String,
+        services: Collection<String> = SERVICES,
+    ): String {
         val mounts =
-            SERVICES.flatMap { service ->
+            services.flatMap { service ->
                 listOf("--mount", "type=volume,src=${recordVolume(runtimes.getValue(service))},dst=/records/$service,readonly")
             }
         val helperName = "$runId-records"
-        return try {
-            command(
-                listOf(
-                    "docker",
-                    "run",
-                    "--rm",
-                    "--name",
-                    helperName,
-                    "--network",
-                    "none",
-                    "--read-only",
-                    "--memory",
-                    "768m",
-                    "--cpus",
-                    "1",
-                    "--shm-size",
-                    "256m",
-                    "--pids-limit",
-                    "128",
-                    "--label",
-                    "com.exchange.multi.run=$runId",
-                    "--entrypoint",
-                    "sh",
-                ) + mounts + listOf(image, "-c", script),
-                15_000,
-            ).stdout
-        } catch (failure: Exception) {
-            // Docker CLI만 종료돼도 컨테이너는 남을 수 있다. 이 실행의 보조 컨테이너부터 회수한다.
-            try {
-                command(listOf("docker", "rm", "-f", "-v", helperName), 10_000, true)
-            } catch (cleanup: Exception) {
-                failure.addSuppressed(cleanup)
+        val result =
+            runCatching {
+                val id =
+                    command(
+                        listOf(
+                            "docker",
+                            "create",
+                            "--name",
+                            helperName,
+                            "--network",
+                            "none",
+                            "--read-only",
+                            "--memory",
+                            "768m",
+                            "--cpus",
+                            "1",
+                            "--shm-size",
+                            "256m",
+                            "--pids-limit",
+                            "128",
+                            "--label",
+                            "com.exchange.multi.run=$runId",
+                            "--entrypoint",
+                            "sh",
+                        ) + mounts + listOf(image, "-c", script),
+                        15_000,
+                    ).stdout.trim()
+                check(id.matches(Regex("[0-9a-f]{64}"))) { "기록 확인 컨테이너 ID 누락" }
+                command(listOf("docker", "start", "--attach", id), 15_000).stdout
             }
-            throw failure
+        // 자동 삭제와 경쟁하지 않도록 시험이 삭제하고, 볼륨을 쓰는 컨테이너가 사라졌는지 확인한다.
+        val removal = runCatching { removeRunContainers(helperName) }
+        result.exceptionOrNull()?.let { failed ->
+            removal.exceptionOrNull()?.let(failed::addSuppressed)
+            throw failed
         }
+        removal.getOrThrow()
+        return result.getOrThrow()
     }
 
     fun sameBusiness(
@@ -1693,9 +1704,13 @@ internal class MultiMatchingRun(
         return mapper.readTree(Files.readString(file))
     }
 
-    private fun budgets() {
+    private fun checkDiagnosticBudget() {
         diagnosticPeak = maxOf(diagnosticPeak, MultiMatchingRunBudget.diagnosticBytes(reports))
         check(diagnosticPeak <= 16 * MIB) { "진단 합계16MiB 초과: $diagnosticPeak" }
+    }
+
+    private fun budgets() {
+        checkDiagnosticBudget()
         if (containers.isNotEmpty()) {
             if (activeQuorumClient != null) return // 장수 client와 별도 volume helper의 동시 실행을 금지한다.
             // 중단된 사본의 볼륨만 별도 접근이 필요하다. 모두 살아 있으면 기존 노드에서 직접 잰다.
@@ -1788,6 +1803,36 @@ internal class MultiMatchingRun(
         return minOf(maximum, left)
     }
 
+    private fun removeRunContainers(name: String? = null) {
+        val list = listOf("docker", "ps", "-aq", "--filter", "label=com.exchange.multi.run=$runId")
+        val args = if (name == null) list else list + listOf("--filter", "name=^/$name$")
+        val until = minOf(deadline, System.nanoTime() + TimeUnit.SECONDS.toNanos(15))
+        var lastFailure: Exception? = null
+        var remainingIds = emptyList<String>()
+        while (System.nanoTime() < until) {
+            val left = TimeUnit.NANOSECONDS.toMillis(until - System.nanoTime())
+            if (left <= 0) break
+            remainingIds =
+                command(args, minOf(3_000, left), cleaning = true)
+                    .stdout
+                    .lineSequence()
+                    .filter(String::isNotBlank)
+                    .toList()
+            if (remainingIds.isEmpty()) return
+
+            val removalTime = TimeUnit.NANOSECONDS.toMillis(until - System.nanoTime()).coerceAtMost(5_000)
+            if (removalTime <= 0) break
+            try {
+                command(listOf("docker", "rm", "-f", "-v") + remainingIds, removalTime, cleaning = true)
+            } catch (failure: IllegalStateException) {
+                // 삭제 요청이 늦게 반영될 수 있으므로 다음 조회로 사라졌는지 판단한다.
+                lastFailure = failure
+                Thread.sleep(100)
+            }
+        }
+        throw IllegalStateException("컨테이너 삭제 미확인: $remainingIds", lastFailure)
+    }
+
     private fun cleanup() {
         fun attempt(block: () -> Unit) {
             runCatching(block).exceptionOrNull()?.let { issues += "정리: ${it.javaClass.simpleName}: ${it.message}" }
@@ -1810,25 +1855,23 @@ internal class MultiMatchingRun(
                     Files.writeString(reports.resolve("$service.log"), log)
                 }
             }
-            attempt { compose(listOf("down", "--volumes", "--remove-orphans", "--timeout", "10"), 25_000, true) }
+            attempt { compose(listOf("down", "--remove-orphans", "--timeout", "10"), 25_000, true) }
         }
+        var containersRemoved = false
         attempt {
-            val ids =
-                command(
-                    listOf("docker", "ps", "-aq", "--filter", "label=com.exchange.multi.run=$runId"),
-                    5_000,
-                    true,
-                ).stdout.split(Regex("\\s+")).filter(String::isNotBlank)
-            if (ids.isNotEmpty()) command(listOf("docker", "rm", "-f", "-v") + ids, 10_000, true)
+            removeRunContainers()
+            containersRemoved = true
         }
-        attempt {
-            val ids =
-                command(
-                    listOf("docker", "volume", "ls", "-q", "--filter", "label=com.exchange.multi.run=$runId"),
-                    5_000,
-                    true,
-                ).stdout.split(Regex("\\s+")).filter(String::isNotBlank)
-            if (ids.isNotEmpty()) command(listOf("docker", "volume", "rm") + ids, 10_000, true)
+        if (containersRemoved) {
+            attempt {
+                val ids =
+                    command(
+                        listOf("docker", "volume", "ls", "-q", "--filter", "label=com.exchange.multi.run=$runId"),
+                        5_000,
+                        true,
+                    ).stdout.lineSequence().filter(String::isNotBlank).toList()
+                if (ids.isNotEmpty()) command(listOf("docker", "volume", "rm") + ids, 10_000, true)
+            }
         }
         // custom client를 회수하기 전 compose down이 남긴 이 run의 빈 network도 마지막에 회수한다.
         attempt {

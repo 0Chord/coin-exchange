@@ -54,6 +54,7 @@ object ProductionBoundaryInputs {
                 "$TRADING_APPLICATION.OrderFillCursor",
                 "$TRADING_APPLICATION.OrderFillRole",
                 "$TRADING_APPLICATION.OrderFillSettlementStatus",
+                "$TRADING_APPLICATION.OrderChargedFee",
             )
 
     // 현재 공개 진입점의 삭제를 잡는 최소 기대이며, 전체 검사 대상의 등록표가 아니다.
