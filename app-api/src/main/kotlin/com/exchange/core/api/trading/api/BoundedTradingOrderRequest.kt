@@ -1,10 +1,12 @@
 package com.exchange.core.api.trading.api
 
+import com.exchange.core.api.trading.application.BoundedTradingCancellation
 import com.exchange.core.api.trading.application.BoundedTradingOrderSubmission
 import com.exchange.core.order.OrderType
 import com.exchange.core.order.Side
 import com.exchange.core.order.TimeInForce
 import jakarta.validation.constraints.NotBlank
+import jakarta.validation.constraints.NotNull
 import jakarta.validation.constraints.Positive
 import jakarta.validation.constraints.PositiveOrZero
 import jakarta.validation.constraints.Size
@@ -41,6 +43,41 @@ data class BoundedReceiptAcknowledgementRequest(
     @field:NotBlank @field:Size(max = 256) val userId: String,
     @field:Positive val epoch: Long,
     @field:PositiveOrZero val through: Long,
+)
+
+data class BoundedTradingCancellationRequest(
+    @field:NotBlank @field:Size(max = 256) val userId: String,
+    @field:NotNull @field:PositiveOrZero val channel: Int?,
+    @field:Positive val epoch: Long,
+    @field:Positive val sequence: Long,
+    @field:Positive val expectedConfigurationVersion: Long,
+) {
+    fun toCancellation(
+        marketId: String,
+        orderId: String,
+    ) = BoundedTradingCancellation(
+        userId = userId,
+        channel = requireNotNull(channel),
+        epoch = epoch,
+        sequence = sequence,
+        expectedConfigurationVersion = expectedConfigurationVersion,
+        marketId = marketId,
+        orderId = orderId,
+    )
+}
+
+data class BoundedTradingCancellationResponse(
+    val status: String,
+    val userId: String,
+    val channel: Int,
+    val epoch: Long,
+    val sequence: Long,
+    val marketId: String,
+    val orderId: String,
+    val cancelId: String?,
+    val reason: String?,
+    val appliedLogPosition: Long?,
+    val protection: String,
 )
 
 data class BoundedEpochRequest(

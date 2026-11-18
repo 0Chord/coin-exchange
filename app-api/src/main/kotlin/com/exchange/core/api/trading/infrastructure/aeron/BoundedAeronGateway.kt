@@ -1,16 +1,21 @@
 package com.exchange.core.api.trading.infrastructure.aeron
 
+import com.exchange.core.api.trading.application.BoundedTradingCancellation
 import com.exchange.core.api.trading.application.BoundedTradingOrderGateway
 import com.exchange.core.api.trading.application.BoundedTradingOrderSubmission
 import com.exchange.core.api.trading.application.BoundedTradingResult
 import com.exchange.core.api.trading.infrastructure.codec.BoundedTradingCodec
 import com.exchange.core.api.trading.infrastructure.codec.BoundedTradingCommand
 import com.exchange.core.api.trading.infrastructure.codec.BoundedTradingReply
+import com.exchange.core.api.trading.infrastructure.codec.SplitOrderDeliveryCommand
+import com.exchange.core.api.trading.infrastructure.codec.SplitOrderDeliveryReply
 import com.exchange.core.api.trading.infrastructure.recovery.RecoveryDurabilityGate
 import com.exchange.core.common.MarketId
+import com.exchange.core.common.OrderId
 import com.exchange.core.common.Price
 import com.exchange.core.common.Quantity
 import com.exchange.core.common.UserId
+import com.exchange.core.trading.CancelIntent
 import com.exchange.core.trading.ClusterLineage
 import com.exchange.core.trading.OrderIntent
 import com.exchange.core.trading.RequestToken
@@ -42,12 +47,21 @@ internal interface BoundedGatewayTransport : AutoCloseable {
     fun poll(): Int
 }
 
+/** 분리 취소 응답과 기존 제어 응답은 각자의 계약으로 대기 요청과 대조한다. */
+internal class BoundedGatewayReplies(
+    private val control: (BoundedTradingReply) -> Unit,
+    val cancellation: (SplitOrderDeliveryReply) -> Unit,
+) : (BoundedTradingReply) -> Unit {
+    override fun invoke(reply: BoundedTradingReply) = control(reply)
+}
+
 internal class BoundedAeronGateway(
     private val settings: AeronGatewaySettings,
     private val protectedLineage: ClusterLineage? = null,
     private val durabilityGate: RecoveryDurabilityGate? = null,
     private val commandEncoder: (Long, BoundedTradingCommand) -> ByteArray = BoundedTradingCodec()::encode,
-    private val openTransport: ((BoundedTradingReply) -> Unit) -> BoundedGatewayTransport = { receive ->
+    private val cancelEncoder: ((Long, SplitOrderDeliveryCommand.Cancel) -> ByteArray)? = null,
+    private val openTransport: (BoundedGatewayReplies) -> BoundedGatewayTransport = { receive ->
         val client = BoundedAeronClient(settings, receive)
         object : BoundedGatewayTransport {
             override fun offer(bytes: ByteArray): Long = client.connection.offer(UnsafeBuffer(bytes), 0, bytes.size)
@@ -59,19 +73,30 @@ internal class BoundedAeronGateway(
     },
 ) : AutoCloseable,
     BoundedTradingOrderGateway {
-    private class Pending(
-        val command: BoundedTradingCommand,
+    private sealed class Pending<T>(
         val deadline: Long,
     ) {
-        val result = CompletableFuture<BoundedTradingReply>()
+        val result = CompletableFuture<T>()
         var correlation = 0L
         var bytes: ByteArray? = null
         val terminal = AtomicBoolean()
+
+        fun isExpired(): Boolean = System.nanoTime() - deadline >= 0
+
+        class Control(
+            val command: BoundedTradingCommand,
+            deadline: Long,
+        ) : Pending<BoundedTradingReply>(deadline)
+
+        class Cancellation(
+            val command: SplitOrderDeliveryCommand.Cancel,
+            deadline: Long,
+        ) : Pending<SplitOrderDeliveryReply>(deadline)
     }
 
-    private val queue = ArrayBlockingQueue<Pending>(settings.queueCapacity)
-    private val inFlight = linkedMapOf<Long, Pending>()
-    private val protectionWaiting = ConcurrentHashMap<Long, Pending>()
+    private val queue = ArrayBlockingQueue<Pending<*>>(settings.queueCapacity)
+    private val inFlight = linkedMapOf<Long, Pending<*>>()
+    private val protectionWaiting = ConcurrentHashMap<Long, Pending<*>>()
     private val startup = CountDownLatch(1)
     private val startupFailure = AtomicReference<Throwable?>()
     private val shutdownFailure = AtomicReference<Throwable?>()
@@ -124,6 +149,30 @@ internal class BoundedAeronGateway(
             ),
         ).handle(::applicationResult)
 
+    override fun cancel(cancellation: BoundedTradingCancellation): CompletableFuture<BoundedTradingResult> {
+        val token = RequestToken(UserId(cancellation.userId), cancellation.channel, cancellation.epoch, cancellation.sequence)
+        val intent = CancelIntent(MarketId(cancellation.marketId), OrderId(cancellation.orderId), cancellation.expectedConfigurationVersion)
+        if (cancelEncoder == null) {
+            return CompletableFuture.completedFuture(
+                BoundedTradingResult("UNSUPPORTED_COMMAND", reason = "UNSUPPORTED_COMMAND", protection = protectionProfile),
+            )
+        }
+        val command = SplitOrderDeliveryCommand.Cancel(token, intent)
+        return enqueue(Pending.Cancellation(command, requestDeadline())).handle { reply, failure ->
+            if (failure != null) return@handle failedResult(failure)
+            val response = checkNotNull(reply)
+            val receipt = response.cancellation
+            BoundedTradingResult(
+                code = response.code,
+                reason = if (receipt == null) response.code else receipt.reason,
+                appliedLogPosition = response.appliedLogPosition,
+                protection = protectionProfile,
+                cancellationCode = receipt?.code?.name,
+                cancelId = receipt?.cancelId,
+            )
+        }
+    }
+
     override fun acknowledge(
         userId: String,
         channel: Int,
@@ -143,17 +192,7 @@ internal class BoundedAeronGateway(
         reply: BoundedTradingReply?,
         failure: Throwable?,
     ): BoundedTradingResult {
-        if (failure != null) {
-            val cause = if (failure is CompletionException) failure.cause else failure
-            val gatewayError = cause as? BoundedGatewayException
-            return BoundedTradingResult(
-                code = if (gatewayError?.possiblySubmitted == true) "OUTCOME_UNKNOWN" else "NOT_SUBMITTED",
-                reason = gatewayError?.code ?: "GATEWAY_UNAVAILABLE",
-                protection = protectionProfile,
-                failureCode = gatewayError?.code ?: "GATEWAY_UNAVAILABLE",
-                possiblySubmitted = gatewayError?.possiblySubmitted == true,
-            )
-        }
+        if (failure != null) return failedResult(failure)
         val value = checkNotNull(reply)
         val receipt = value.admission
         return BoundedTradingResult(
@@ -173,6 +212,20 @@ internal class BoundedAeronGateway(
         )
     }
 
+    private fun failedResult(failure: Throwable): BoundedTradingResult {
+        val cause = if (failure is CompletionException) failure.cause else failure
+        val gatewayError = cause as? BoundedGatewayException
+        val possiblySubmitted = gatewayError?.possiblySubmitted == true
+        val failureCode = gatewayError?.code ?: "GATEWAY_UNAVAILABLE"
+        return BoundedTradingResult(
+            code = if (possiblySubmitted) "OUTCOME_UNKNOWN" else "NOT_SUBMITTED",
+            reason = failureCode,
+            protection = protectionProfile,
+            failureCode = failureCode,
+            possiblySubmitted = possiblySubmitted,
+        )
+    }
+
     fun submit(command: BoundedTradingCommand): CompletableFuture<BoundedTradingReply> {
         require(
             command is BoundedTradingCommand.Admit || command is BoundedTradingCommand.Acknowledge ||
@@ -180,7 +233,12 @@ internal class BoundedAeronGateway(
         ) {
             "HTTP gateway does not expose cluster initialization, execution or quarantine controls"
         }
-        val pending = Pending(command, System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(settings.resultTimeoutMs))
+        return enqueue(Pending.Control(command, requestDeadline()))
+    }
+
+    private fun requestDeadline(): Long = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(settings.resultTimeoutMs)
+
+    private fun <T> enqueue(pending: Pending<T>): CompletableFuture<T> {
         synchronized(admissionLock) {
             if (closing || !available) {
                 pending.result.completeExceptionally(BoundedGatewayException("GATEWAY_UNAVAILABLE", false))
@@ -194,44 +252,64 @@ internal class BoundedAeronGateway(
         return pending.result
     }
 
+    private fun receiveControl(response: BoundedTradingReply) {
+        val pending = inFlight[response.correlationId] as? Pending.Control ?: return
+        receiveReply(pending, response.lineage, response.appliedLogPosition, response)
+    }
+
+    private fun receiveCancellation(response: SplitOrderDeliveryReply) {
+        val pending = inFlight[response.correlationId] as? Pending.Cancellation ?: return
+        val receipt = response.cancellation
+        if (receipt != null && receipt.targetOrderId != pending.command.intent.targetOrderId) return
+        receiveReply(pending, response.lineage, response.appliedLogPosition, response)
+    }
+
+    private fun <T> receiveReply(
+        pending: Pending<T>,
+        lineage: ClusterLineage?,
+        logPosition: Long,
+        response: T,
+    ) {
+        val correlation = pending.correlation
+        inFlight.remove(correlation)
+        if (pending.isExpired()) {
+            complete(pending, null, BoundedGatewayException("RESULT_UNCONFIRMED", true))
+            return
+        }
+        if (durabilityGate == null) {
+            complete(pending, response, null)
+            return
+        }
+        if (lineage != protectedLineage) {
+            complete(pending, null, BoundedGatewayException("PROTECTION_LINEAGE_MISMATCH", true))
+            return
+        }
+        protectionWaiting[correlation] = pending
+        try {
+            durabilityGate
+                .awaitProtected(checkNotNull(protectedLineage), logPosition)
+                .thenApply { Unit }
+                .toCompletableFuture()
+                .orTimeout(maxOf(0L, pending.deadline - System.nanoTime()), TimeUnit.NANOSECONDS)
+                .whenComplete { _, failure ->
+                    protectionWaiting.remove(correlation, pending)
+                    if (failure == null && !pending.isExpired()) {
+                        complete(pending, response, null)
+                    } else {
+                        complete(pending, null, BoundedGatewayException("REMOTE_PROTECTION_UNCONFIRMED", true))
+                    }
+                }
+        } catch (_: Exception) {
+            protectionWaiting.remove(correlation, pending)
+            complete(pending, null, BoundedGatewayException("REMOTE_PROTECTION_UNCONFIRMED", true))
+        }
+    }
+
     private fun run() {
         var client: BoundedGatewayTransport? = null
         val idle = TradingAeronRuntime.idleStrategy()
         try {
-            client =
-                openTransport { response ->
-                    inFlight.remove(response.correlationId)?.let { pending ->
-                        if (durabilityGate == null) {
-                            complete(pending, response, null)
-                        } else if (response.lineage !=
-                            protectedLineage
-                        ) {
-                            complete(pending, null, BoundedGatewayException("PROTECTION_LINEAGE_MISMATCH", true))
-                        } else {
-                            protectionWaiting[response.correlationId] = pending
-                            try {
-                                durabilityGate
-                                    .awaitProtected(checkNotNull(protectedLineage), response.appliedLogPosition)
-                                    .thenApply { Unit }
-                                    .toCompletableFuture()
-                                    .orTimeout(
-                                        maxOf(1L, pending.deadline - System.nanoTime()),
-                                        TimeUnit.NANOSECONDS,
-                                    ).whenComplete { _, failure ->
-                                        protectionWaiting.remove(response.correlationId, pending)
-                                        if (failure == null) {
-                                            complete(pending, response, null)
-                                        } else {
-                                            complete(pending, null, BoundedGatewayException("REMOTE_PROTECTION_UNCONFIRMED", true))
-                                        }
-                                    }
-                            } catch (_: Exception) {
-                                protectionWaiting.remove(response.correlationId, pending)
-                                complete(pending, null, BoundedGatewayException("REMOTE_PROTECTION_UNCONFIRMED", true))
-                            }
-                        }
-                    }
-                }
+            client = openTransport(BoundedGatewayReplies(::receiveControl, ::receiveCancellation))
             available = true
             startup.countDown()
             while (!closing) {
@@ -248,24 +326,28 @@ internal class BoundedAeronGateway(
                 }
                 while (inFlight.size < settings.maxInFlight) {
                     val pending = queue.peek() ?: break
-                    if (now - pending.deadline >= 0) {
-                        queue.poll()
-                        complete(pending, null, BoundedGatewayException("QUEUE_TIMEOUT", false))
-                        work++
-                        continue
-                    }
-                    if (pending.bytes == null) {
+                    if (pending.bytes == null && !pending.isExpired()) {
                         pending.correlation = nextCorrelation.also { nextCorrelation = Math.addExact(it, 1) }
                         // 외부 입력의 인코딩 실패만 이 요청의 실패로 처리한다. 카운터·전송·내부 오류는
                         // 계속 바깥으로 전파해 소유자를 중단시킨다.
                         try {
-                            pending.bytes = commandEncoder(pending.correlation, pending.command)
+                            pending.bytes =
+                                when (pending) {
+                                    is Pending.Control -> commandEncoder(pending.correlation, pending.command)
+                                    is Pending.Cancellation -> checkNotNull(cancelEncoder)(pending.correlation, pending.command)
+                                }
                         } catch (_: IllegalArgumentException) {
                             check(queue.poll() === pending) { "gateway queue owner changed" }
                             complete(pending, null, BoundedGatewayException("INVALID_REQUEST", false))
                             work++
                             continue
                         }
+                    }
+                    if (pending.isExpired()) {
+                        queue.poll()
+                        complete(pending, null, BoundedGatewayException("QUEUE_TIMEOUT", false))
+                        work++
+                        continue
                     }
                     val bytes = checkNotNull(pending.bytes)
                     val offered = client.offer(bytes)
@@ -308,9 +390,9 @@ internal class BoundedAeronGateway(
         }
     }
 
-    private fun complete(
-        pending: Pending,
-        response: BoundedTradingReply?,
+    private fun <T> complete(
+        pending: Pending<T>,
+        response: T?,
         error: Throwable?,
     ) {
         if (!pending.terminal.compareAndSet(false, true)) return
@@ -324,9 +406,9 @@ internal class BoundedAeronGateway(
         }
     }
 
-    private fun completeFuture(
-        pending: Pending,
-        response: BoundedTradingReply?,
+    private fun <T> completeFuture(
+        pending: Pending<T>,
+        response: T?,
         error: Throwable?,
     ) {
         completionContext.set(true)

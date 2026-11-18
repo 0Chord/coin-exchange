@@ -86,6 +86,21 @@ class BoundedTradingOrderHttpTest {
         assertEquals(202, post("/api/trading/v3/markets/BTC-USDT/orders", order()).statusCode())
     }
 
+    @Test fun `취소 대상과 토큰 형식을 검사하고 취소를 지원하지 않는 연결에는 보내지 않는다`() {
+        val orders = "/api/trading/v3/markets/BTC-USDT/orders"
+        val cancelPath = "$orders/O2${"A".repeat(32)}/cancel"
+        val request = """{"userId":"U1","channel":0,"epoch":1,"sequence":8,"expectedConfigurationVersion":1}"""
+        val probe = context.getBean(BoundedHttpProbe::class.java)
+        val initialOffers = probe.requests.size
+
+        assertEquals(400, post("$orders/invalid/cancel", request).statusCode())
+        assertEquals(400, post(cancelPath, request.replace("\"channel\":0,", "")).statusCode())
+        val unsupported = post(cancelPath, request)
+        assertEquals(503, unsupported.statusCode())
+        assertEquals("UNSUPPORTED_COMMAND", json.readTree(unsupported.body()).path("status").asString())
+        assertEquals(initialOffers, probe.requests.size)
+    }
+
     private fun post(
         path: String,
         body: String,

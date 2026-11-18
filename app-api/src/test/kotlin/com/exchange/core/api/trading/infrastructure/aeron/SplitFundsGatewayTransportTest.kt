@@ -1,5 +1,6 @@
 package com.exchange.core.api.trading.infrastructure.aeron
 
+import com.exchange.core.api.trading.application.BoundedTradingCancellation
 import com.exchange.core.api.trading.application.BoundedTradingOrderSubmission
 import com.exchange.core.api.trading.infrastructure.codec.BoundedTradingCommand
 import com.exchange.core.api.trading.infrastructure.codec.BoundedTradingReply
@@ -7,20 +8,30 @@ import com.exchange.core.api.trading.infrastructure.codec.SplitOrderDeliveryCode
 import com.exchange.core.api.trading.infrastructure.codec.SplitOrderDeliveryCommand
 import com.exchange.core.api.trading.infrastructure.codec.SplitOrderDeliveryEnvelope
 import com.exchange.core.api.trading.infrastructure.codec.SplitOrderDeliveryReply
+import com.exchange.core.api.trading.infrastructure.recovery.RecoveryDurabilityGate
+import com.exchange.core.common.MarketId
 import com.exchange.core.common.OrderId
+import com.exchange.core.common.UserId
 import com.exchange.core.order.OrderType
 import com.exchange.core.order.Side
 import com.exchange.core.order.TimeInForce
 import com.exchange.core.trading.AdmissionCode
 import com.exchange.core.trading.AdmissionReceipt
+import com.exchange.core.trading.CancelCode
+import com.exchange.core.trading.CancelIntent
+import com.exchange.core.trading.CancelReceipt
 import com.exchange.core.trading.ClusterLineage
+import com.exchange.core.trading.RequestToken
+import com.exchange.core.trading.TradingIdentifiers
 import com.exchange.core.trading.TradingServiceRole
 import io.aeron.Publication
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.io.TempDir
 import java.nio.file.Files
 import java.nio.file.Path
+import java.util.concurrent.CompletableFuture
 import java.util.concurrent.ConcurrentLinkedQueue
+import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
@@ -61,6 +72,85 @@ class SplitFundsGatewayTransportTest {
         assertTrue(factory.attemptClosed)
         assertTrue(factory.closed)
         assertTrue(Files.list(settings.runRoot).use { it.findAny().isEmpty })
+    }
+
+    @Test
+    fun `주문과 취소가 함께 대기할 때 응답 종류와 취소 대상을 확인한다`() {
+        val factory = Factory()
+        val target = OrderId("target")
+        val cancelId = TradingIdentifiers.cancel(lineage, 1)
+        factory.afterOffer = { cancellation ->
+            if (factory.requests.size == 2) {
+                val orderCorrelation = factory.requests.first().correlationId
+                val cancelCorrelation = cancellation.correlationId
+                val wrongTarget = CancelReceipt(CancelCode.ACCEPTED, TradingIdentifiers.cancel(lineage, 2), OrderId("other"), 2)
+                val receipt = CancelReceipt(CancelCode.ACCEPTED, cancelId, target, 1)
+                factory.replies.add(cancellationReply(orderCorrelation, wrongTarget))
+                factory.replies.add(reply(cancelCorrelation))
+                factory.replies.add(cancellationReply(cancelCorrelation + 100, wrongTarget.copy(targetOrderId = target)))
+                factory.replies.add(cancellationReply(cancelCorrelation, wrongTarget))
+                factory.replies.add(cancellationReply(cancelCorrelation, receipt))
+                factory.replies.add(reply(orderCorrelation))
+            }
+        }
+        gateway(settings("mixed-replies"), factory).use { gateway ->
+            val order = gateway.submit(submission(7))
+            val cancellation = gateway.cancel(cancellation(target))
+
+            assertEquals("order-1", order.get(3, TimeUnit.SECONDS).orderId)
+            val accepted = cancellation.get(3, TimeUnit.SECONDS)
+            assertEquals("ACCEPTED", accepted.cancellationCode)
+            assertEquals(cancelId, accepted.cancelId)
+        }
+        assertEquals(
+            SplitOrderDeliveryCommand.Cancel(RequestToken(UserId("user"), 2, 4, 8), CancelIntent(MarketId("BTC-USDT"), target, 1)),
+            factory.requests.last().command,
+        )
+    }
+
+    @Test
+    fun `취소 영수증이 없는 자금 거절도 해당 요청의 결과로 전달한다`() {
+        val factory = Factory()
+        factory.afterOffer = { request ->
+            factory.replies.add(reply(request.correlationId).copy(code = "RETRYABLE_CAPACITY", control = null))
+        }
+        gateway(settings("cancel-refused"), factory).use { gateway ->
+            val refused = gateway.cancel(cancellation(OrderId("target"))).get(3, TimeUnit.SECONDS)
+            assertEquals("RETRYABLE_CAPACITY", refused.code)
+            assertEquals(null, refused.failureCode)
+            assertEquals(null, refused.cancelId)
+        }
+    }
+
+    @Test
+    fun `원격 보호 구성에서 취소 접수도 자금 로그 위치가 보호된 뒤 응답한다`() {
+        val factory = Factory()
+        val target = OrderId("target")
+        val cancelId = TradingIdentifiers.cancel(lineage, 1)
+        val receipt = CancelReceipt(CancelCode.ACCEPTED, cancelId, target, 1)
+        factory.afterOffer = { request -> factory.replies.add(cancellationReply(request.correlationId, receipt)) }
+        val requiredPosition = CompletableFuture<Pair<ClusterLineage, Long>>()
+        val protected = CompletableFuture<Unit>()
+        val gate =
+            object : RecoveryDurabilityGate {
+                override fun awaitProtected(
+                    lineage: ClusterLineage,
+                    position: Long,
+                ): CompletableFuture<Unit> {
+                    requiredPosition.complete(lineage to position)
+                    return protected
+                }
+            }
+        gateway(settings("cancel-protected", 5_000), factory, gate).use { gateway ->
+            val cancellation = gateway.cancel(cancellation(target))
+            assertEquals(lineage to 128L, requiredPosition.get(3, TimeUnit.SECONDS))
+            assertFalse(cancellation.isDone)
+
+            protected.complete(Unit)
+            val accepted = cancellation.get(3, TimeUnit.SECONDS)
+            assertEquals(cancelId, accepted.cancelId)
+            assertEquals("REMOTE_RECOVERY", accepted.protection)
+        }
     }
 
     @Test
@@ -126,7 +216,90 @@ class SplitFundsGatewayTransportTest {
                 assertEquals(if (accepted) "OUTCOME_UNKNOWN" else "NOT_SUBMITTED", result.code)
                 assertEquals(accepted, result.possiblySubmitted)
                 assertEquals(if (accepted) 1 else 0, factory.requests.size)
+
+                val cancellation = gateway.cancel(cancellation(OrderId("target"))).get(3, TimeUnit.SECONDS)
+                assertEquals(if (accepted) "OUTCOME_UNKNOWN" else "NOT_SUBMITTED", cancellation.code)
+                assertEquals(if (accepted) "RESULT_UNCONFIRMED" else "QUEUE_TIMEOUT", cancellation.failureCode)
+                assertEquals(accepted, cancellation.possiblySubmitted)
+                assertEquals(if (accepted) 2 else 0, factory.requests.size)
             }
+        }
+    }
+
+    @Test
+    fun `기한 뒤 poll에서 받은 취소 접수 응답은 결과 미확인으로 처리한다`() {
+        val timeoutMs = 300L
+        val target = OrderId("target")
+        val receipt = CancelReceipt(CancelCode.ACCEPTED, TradingIdentifiers.cancel(lineage, 1), target, 1)
+        val factory = Factory()
+        factory.afterOffer = { request -> factory.replies.add(cancellationReply(request.correlationId, receipt)) }
+        factory.beforeReply = { response -> if (response.cancellation != null) Thread.sleep(timeoutMs + 100) }
+
+        gateway(settings("late-cancel-reply", timeoutMs), factory).use { gateway ->
+            val result = gateway.cancel(cancellation(target)).get(3, TimeUnit.SECONDS)
+            assertEquals("OUTCOME_UNKNOWN", result.code)
+            assertEquals("RESULT_UNCONFIRMED", result.failureCode)
+            assertTrue(result.possiblySubmitted)
+        }
+        assertEquals(1, factory.requests.size)
+    }
+
+    @Test
+    fun `앞선 전송이 지연되는 동안 기한이 지난 다음 취소는 보내지 않는다`() {
+        val timeoutMs = 300L
+        val firstOffered = CountDownLatch(1)
+        val secondQueued = CountDownLatch(1)
+        val factory = Factory()
+        factory.afterOffer = {
+            if (factory.requests.size == 1) {
+                firstOffered.countDown()
+                check(secondQueued.await(3, TimeUnit.SECONDS))
+                Thread.sleep(timeoutMs + 100)
+            }
+        }
+
+        gateway(settings("late-cancel-offer", timeoutMs), factory).use { gateway ->
+            val first = gateway.cancel(cancellation(OrderId("first")))
+            assertTrue(firstOffered.await(3, TimeUnit.SECONDS))
+            val second = gateway.cancel(cancellation(OrderId("second")).copy(sequence = 9))
+            secondQueued.countDown()
+
+            assertEquals("OUTCOME_UNKNOWN", first.get(3, TimeUnit.SECONDS).code)
+            val expired = second.get(3, TimeUnit.SECONDS)
+            assertEquals("NOT_SUBMITTED", expired.code)
+            assertEquals("QUEUE_TIMEOUT", expired.failureCode)
+            assertFalse(expired.possiblySubmitted)
+        }
+        assertEquals(1, factory.requests.size)
+    }
+
+    @Test
+    fun `기한 뒤 완료된 원격 보호는 취소 접수 성공으로 응답하지 않는다`() {
+        val timeoutMs = 300L
+        val target = OrderId("target")
+        val receipt = CancelReceipt(CancelCode.ACCEPTED, TradingIdentifiers.cancel(lineage, 1), target, 1)
+        val factory = Factory()
+        factory.afterOffer = { request -> factory.replies.add(cancellationReply(request.correlationId, receipt)) }
+        val gateCalled = CountDownLatch(1)
+        val gate =
+            object : RecoveryDurabilityGate {
+                override fun awaitProtected(
+                    lineage: ClusterLineage,
+                    position: Long,
+                ): CompletableFuture<Unit> {
+                    gateCalled.countDown()
+                    Thread.sleep(timeoutMs + 100)
+                    return CompletableFuture.completedFuture(Unit)
+                }
+            }
+
+        gateway(settings("late-cancel-protection", timeoutMs), factory, gate).use { gateway ->
+            val cancellation = gateway.cancel(cancellation(target))
+            assertTrue(gateCalled.await(3, TimeUnit.SECONDS))
+            val result = cancellation.get(3, TimeUnit.SECONDS)
+            assertEquals("OUTCOME_UNKNOWN", result.code)
+            assertEquals("REMOTE_PROTECTION_UNCONFIRMED", result.failureCode)
+            assertTrue(result.possiblySubmitted)
         }
     }
 
@@ -206,8 +379,15 @@ class SplitFundsGatewayTransportTest {
     private fun gateway(
         settings: AeronGatewaySettings,
         factory: Factory,
-    ) = BoundedAeronGateway(settings, commandEncoder = SplitFundsGatewayTransport.Companion::encodeCommand) { receive ->
-        SplitFundsGatewayTransport(settings, lineage, receive, factory)
+        durabilityGate: RecoveryDurabilityGate? = null,
+    ) = BoundedAeronGateway(
+        settings,
+        protectedLineage = lineage.takeIf { durabilityGate != null },
+        durabilityGate = durabilityGate,
+        commandEncoder = SplitFundsGatewayTransport.Companion::encodeCommand,
+        cancelEncoder = SplitFundsGatewayTransport.Companion::encodeCancellation,
+    ) { receive ->
+        SplitFundsGatewayTransport(settings, lineage, receive, factory, onCancellation = receive.cancellation)
     }
 
     private fun settings(
@@ -218,7 +398,14 @@ class SplitFundsGatewayTransportTest {
     private fun submission(sequence: Long) =
         BoundedTradingOrderSubmission("user", 2, 4, sequence, 1, "BTC-USDT", Side.BUY, OrderType.LIMIT, TimeInForce.GTC, 100, 1)
 
+    private fun cancellation(orderId: OrderId) = BoundedTradingCancellation("user", 2, 4, 8, 1, "BTC-USDT", orderId.value)
+
     private fun control(request: SplitOrderDeliveryEnvelope) = assertIs<SplitOrderDeliveryCommand.Control>(request.command).command
+
+    private fun cancellationReply(
+        correlation: Long,
+        receipt: CancelReceipt,
+    ) = reply(correlation).copy(code = receipt.code.name, control = null, cancellation = receipt)
 
     private fun reply(correlation: Long): SplitOrderDeliveryReply {
         val control =
@@ -238,6 +425,7 @@ class SplitFundsGatewayTransportTest {
         val requests = ConcurrentLinkedQueue<SplitOrderDeliveryEnvelope>()
         val replies = ConcurrentLinkedQueue<SplitOrderDeliveryReply>()
         var afterOffer: (SplitOrderDeliveryEnvelope) -> Unit = {}
+        var beforeReply: (SplitOrderDeliveryReply) -> Unit = {}
         var offerResult = 1L
         var peerRole = TradingServiceRole.FUNDS
         var peerLineage = ClusterLineage(81, 82)
@@ -287,6 +475,7 @@ class SplitFundsGatewayTransportTest {
 
                     override fun poll(): Int {
                         val reply = replies.poll() ?: return 0
+                        beforeReply(reply)
                         receive(reply)
                         return 1
                     }

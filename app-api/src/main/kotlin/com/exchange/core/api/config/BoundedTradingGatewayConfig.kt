@@ -44,7 +44,10 @@ class BoundedTradingGatewayConfig {
             commandEncoder = { correlationId, command ->
                 SplitFundsGatewayTransport.encodeCommand(correlationId, command)
             },
-            openTransport = { receive -> SplitFundsGatewayTransport(settings, namespace.fundsLineage, receive) },
+            cancelEncoder = SplitFundsGatewayTransport.Companion::encodeCancellation,
+            openTransport = { receive ->
+                SplitFundsGatewayTransport(settings, namespace.fundsLineage, receive, onCancellation = receive.cancellation)
+            },
         )
         if (protection == "local") return gateway()
         val file = Path.of(requireNotNull(environment["TRADING_GATEWAY_BOUNDED_MANIFEST"]))

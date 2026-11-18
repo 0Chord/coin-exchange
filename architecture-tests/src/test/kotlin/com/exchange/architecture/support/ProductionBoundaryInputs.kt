@@ -29,7 +29,7 @@ object ProductionBoundaryInputs {
     private val httpEnums =
         setOf("$BASE.order.Side", "$BASE.order.OrderType", "$BASE.order.TimeInForce", "$BASE.trading.MatchingResultDirection")
 
-    // HTTP에서 읽는 마켓 결과·오류만 허용한다. 일반 application 작업 타입까지 DATA로 넓히지 않는다.
+    // HTTP가 변환하는 공개 입력·결과만 DATA로 분류한다.
     private val applicationHttpData =
         setOf("Registration", "Release", "Summary", "Error", "Exception")
             .map { "$MARKET_APPLICATION.MarketConfiguration$it" }
@@ -39,6 +39,7 @@ object ProductionBoundaryInputs {
                 "$TRADING_APPLICATION.TradingOrderSubmission",
                 "$TRADING_APPLICATION.BoundedTradingResult",
                 "$TRADING_APPLICATION.BoundedTradingOrderSubmission",
+                "$TRADING_APPLICATION.BoundedTradingCancellation",
                 "$TRADING_APPLICATION.OrderQueryCode",
                 "$TRADING_APPLICATION.OrderQueryResult",
                 "$TRADING_APPLICATION.OrderQueryRecord",

@@ -145,6 +145,7 @@ class ProductionBoundaryInputsTest {
                 "$tradingApp.TradingOrderSubmission",
                 "$tradingApp.TradingAdmissionResult",
                 "$tradingApp.BoundedTradingOrderSubmission",
+                "$tradingApp.BoundedTradingCancellation",
                 "$tradingApp.BoundedTradingResult",
             )
         assertTrue(contracts.all { it in registration.types.getValue(HttpRole.DATA) })

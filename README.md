@@ -23,7 +23,7 @@ flowchart LR
 ```
 
 - 시작점은 [ExchangeCoreApplication](app-api/src/main/kotlin/com/exchange/core/ExchangeCoreApplication.kt) 하나입니다. 기본 컴포넌트 탐색으로 주문·조회 Controller와 설정을 등록합니다.
-- 사용자 주문·사용자 ACK·세대 요청은 자금 엔진 한 곳으로 보냅니다. 조회 수집 작업의 내부 연결은 자금 원본과 각 매칭 담당을 읽으며, 한 담당이 여러 마켓을 맡거나 두 담당이 나누어 맡는 고정 배치를 지원합니다.
+- 주문·취소·사용자 ACK·세대 요청은 자금 엔진 한 곳으로 보냅니다. 조회 수집 작업의 내부 연결은 자금 원본과 각 매칭 담당을 읽으며, 한 담당이 여러 마켓을 맡거나 두 담당이 나누어 맡는 고정 배치를 지원합니다.
 - 자금·매칭 소유자가 확정한 불변 원문을 각 역할의 유한한 복제 상태로 보관합니다. WAS는 금융 계산을 다시 실행하거나 메모리 주문장을 직접 읽지 않습니다.
 - [조회 수집 작업](app-api/src/main/kotlin/com/exchange/core/api/trading/infrastructure/aeron/OrderQueryFeedWorker.kt)은 DB 커밋을 확인한 소비 위치만 소스에 ACK합니다. 소스의 복제 callback에서 ACK가 확정돼야 해당 원문을 회수합니다. 기존 주문 전달·정산 ACK는 별도 수명입니다.
 - 수집 설정이 없거나 최초 수집·원본 재검증을 마치지 못한 WAS는 `503 QUERY_NOT_READY`입니다. 준비된 범위만 실제 RDB 주문을 반환합니다.
@@ -38,7 +38,7 @@ Spring Boot의 공용 DataSource·JDBC·트랜잭션·Flyway를 사용합니다.
 4. 같은 WAS의 수집 작업이 접수 원문, maker/taker를 모두 포함한 매칭 원문, 같은 결과 stream의 정산 완료 위치를 읽습니다. 원문·주문 행·최초 처리 결과·revision·소스별 소비 위치를 한 DB 트랜잭션에 저장합니다.
 5. GET은 저장된 주문과 진행도를 함께 읽습니다. 같은 원문을 다시 받으면 최초 DB 결과를 재사용합니다. DB 커밋 응답이나 소스 ACK 응답을 잃어도 저장된 소비 위치부터 재확인합니다.
 
-[실제 HTTP 검증](app-api/src/test/kotlin/com/exchange/core/api/trading/infrastructure/aeron/SplitFundsTradingHttpTest.kt)은 매도 3 → 매수 1 → 잔량 2 취소를 실행합니다. GET은 매도 주문의 `체결 1·대기 2`를 반환하고, 취소 후 `체결 1·대기 0·취소 2`를 유지합니다. 정산을 잠시 막으면 `PENDING(SETTLEMENT)`, 반환을 막으면 `PENDING(RELEASE)`, 실제 자금 확정 뒤에는 `APPLIED`입니다. 취소는 시험의 내부 명령이며 새 취소 HTTP API는 없습니다.
+[실제 HTTP 검증](app-api/src/test/kotlin/com/exchange/core/api/trading/infrastructure/aeron/SplitFundsTradingHttpTest.kt)은 매도 3 → 매수 1 → 잔량 2 취소를 실행합니다. GET은 매도 주문의 `체결 1·대기 2`를 반환하고, 취소 후 `체결 1·대기 0·취소 2`를 유지합니다. 정산을 잠시 막으면 `PENDING(SETTLEMENT)`, 반환을 막으면 `PENDING(RELEASE)`, 실제 자금 확정 뒤에는 `APPLIED`입니다.
 
 [두 마켓 검증](app-api/src/test/kotlin/com/exchange/core/api/trading/infrastructure/aeron/MultiMarketOrderQueryHttpTest.kt)은 실제 자금 노드 하나와 BTC·ETH 매칭 담당 둘을 사용합니다. 같은 WAS에서 접수 1~4, 각 마켓 결과 1~2, 네 주문의 `FILLED/APPLIED`, 전역 접수 ACK 4와 마켓별 조회 ACK 2를 대조합니다. 이 연결 검사의 수수료는 0이며 일반 수수료 계산은 도메인 테스트가 확인합니다.
 
@@ -48,12 +48,15 @@ Spring Boot의 공용 DataSource·JDBC·트랜잭션·Flyway를 사용합니다.
 | --- | --- |
 | `POST /api/trading/v3/channels/{channel}/epoch` | 요청 세대 발급·전환 |
 | `POST /api/trading/v3/markets/{marketId}/orders` | 자금 엔진에 주문 접수 |
+| `POST /api/trading/v3/markets/{marketId}/orders/{orderId}/cancel` | 자금 엔진에 잔량 취소 요청 접수 |
 | `POST /api/trading/v3/channels/{channel}/ack` | 확인한 접수 결과의 연속 순번 알림 |
 | `GET /api/trading/v3/markets/{marketId}/orders/{orderId}` | RDB 주문 상태·수량·금융 처리 상태 조회 |
 
 주문 응답이 끊기거나 `504 OUTCOME_UNKNOWN`을 받으면 결과를 확인 중으로 둡니다. 주문을 계속 진행하려면 처음과 같은 요청 번호(`userId`, `channel`, `epoch`, `sequence`)와 같은 마켓·주문 내용으로 POST를 다시 보냅니다. 이미 접수됐으면 자금 엔진이 최초 접수 정보를 돌려주고, 첫 요청이 도착하지 않았다면 이 재전송이 첫 접수가 될 수 있습니다. `ACCEPTED` 응답의 `orderId`로 GET을 호출하고, `minAdmissionSequence`에는 응답의 `admissionSequence`를 넣습니다.
 
 확인한 응답의 연속 순번만 ACK로 정리합니다. 응답이 정리됐거나 요청 세대가 바뀌면 새 번호로 자동 재주문하지 않습니다. 이미 보관한 `orderId`가 있으면 기존 GET으로 조회합니다. [응답 유실과 재시작 검증](engineering/order-timeout-recovery-spec.md)
+
+취소 POST의 본문은 `userId`, `channel`, `epoch`, `sequence`, `expectedConfigurationVersion`입니다. 취소에는 주문과 다른 요청 순번을 쓰고, 응답을 잃어 재전송할 때는 같은 취소 요청 순번과 내용을 씁니다. `202 ACCEPTED`는 취소 요청 접수이며, 기존 GET에서 `CANCELLED / PENDING(RELEASE)` 또는 `CANCELLED / APPLIED`로 잔량 취소와 반환 진행을 확인합니다. [취소 흐름과 HTTP 계약](engineering/split-cancel-http-spec.md)
 
 조회의 `minAdmissionSequence`가 아직 반영되지 않았으면 `202 QUERY_CATCHING_UP`입니다. 준비된 범위라도 관찰한 원본보다 DB가 뒤처진 동안 부재는 202이며, 관찰 기준까지 반영한 뒤에만 `404 ORDER_NOT_FOUND_AS_OF`를 반환합니다. 원본 연결 실패·재검증 중, DB 오류, 원본 공백·정체성 모순은 503입니다. `CAUGHT_UP`은 마지막으로 검증한 원본 기준까지 반영됐다는 뜻입니다.
 

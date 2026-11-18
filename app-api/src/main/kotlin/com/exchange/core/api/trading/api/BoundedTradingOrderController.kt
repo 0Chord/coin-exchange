@@ -4,6 +4,7 @@ import com.exchange.core.api.trading.application.BoundedTradingOrderUseCase
 import com.exchange.core.api.trading.application.BoundedTradingResult
 import jakarta.validation.Valid
 import jakarta.validation.constraints.NotBlank
+import jakarta.validation.constraints.Pattern
 import jakarta.validation.constraints.PositiveOrZero
 import jakarta.validation.constraints.Size
 import org.springframework.http.MediaType
@@ -31,6 +32,42 @@ internal class BoundedTradingOrderController(
                     .copy(sequence = request.sequence, marketId = marketId)
             ResponseEntity.status(httpStatus(result)).body(response)
         }
+
+    @PostMapping(
+        "/markets/{marketId}/orders/{orderId}/cancel",
+        consumes = [MediaType.APPLICATION_JSON_VALUE],
+        produces = [MediaType.APPLICATION_JSON_VALUE],
+    )
+    fun cancel(
+        @PathVariable @NotBlank @Size(max = 256) marketId: String,
+        @PathVariable @Pattern(regexp = "O2[A-Za-z0-9_-]{32}") orderId: String,
+        @RequestBody @Valid request: BoundedTradingCancellationRequest,
+    ): CompletableFuture<ResponseEntity<BoundedTradingCancellationResponse>> {
+        val cancellation = request.toCancellation(marketId, orderId)
+        return useCase.cancel(cancellation).thenApply { result ->
+            val response =
+                BoundedTradingCancellationResponse(
+                    status = result.code,
+                    userId = request.userId,
+                    channel = cancellation.channel,
+                    epoch = request.epoch,
+                    sequence = request.sequence,
+                    marketId = marketId,
+                    orderId = orderId,
+                    cancelId = result.cancelId,
+                    reason = result.reason,
+                    appliedLogPosition = result.appliedLogPosition,
+                    protection = result.protection,
+                )
+            val status =
+                when (result.code) {
+                    "INVALID_IDENTIFIER" -> 400
+                    "UNSUPPORTED_COMMAND" -> 503
+                    else -> httpStatus(result)
+                }
+            ResponseEntity.status(status).body(response)
+        }
+    }
 
     @PostMapping("/channels/{channel}/ack", consumes = [MediaType.APPLICATION_JSON_VALUE], produces = [MediaType.APPLICATION_JSON_VALUE])
     fun acknowledge(
@@ -81,11 +118,11 @@ internal class BoundedTradingOrderController(
                 }
             }
 
-            result.admissionCode == "ACCEPTED" -> {
+            result.admissionCode == "ACCEPTED" || result.cancellationCode == "ACCEPTED" -> {
                 202
             }
 
-            result.admissionCode == "REJECTED" -> {
+            result.admissionCode == "REJECTED" || result.cancellationCode == "REJECTED" -> {
                 422
             }
 
