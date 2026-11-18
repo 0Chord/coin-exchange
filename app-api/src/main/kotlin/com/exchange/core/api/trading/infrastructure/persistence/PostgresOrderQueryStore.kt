@@ -1,5 +1,7 @@
 package com.exchange.core.api.trading.infrastructure.persistence
 
+import com.exchange.core.api.trading.application.OrderFillCursor
+import com.exchange.core.api.trading.application.OrderFillQuerySnapshot
 import com.exchange.core.api.trading.application.OrderQueryBatch
 import com.exchange.core.api.trading.application.OrderQueryLifecycle
 import com.exchange.core.api.trading.application.OrderQueryNamespace
@@ -65,6 +67,7 @@ class PostgresOrderQueryStore(
     private val namespaceKey = "${namespace.fundsLineage.high}:${namespace.fundsLineage.low}"
     private val namespaceParameters = mapOf("namespace" to namespaceKey)
     private val marketsPayload = mapper.writeValueAsString(namespace.markets.sorted())
+    private val fills = PostgresOrderFillReader(jdbc, namespaceKey)
 
     override fun initialize() {
         write {
@@ -204,6 +207,26 @@ class PostgresOrderQueryStore(
             throw OrderQueryUnavailableException("order query database read failed")
         } catch (_: Exception) {
             throw OrderQueryInconsistentException("stored order query state is inconsistent")
+        }
+
+    override fun readFills(
+        marketId: String,
+        orderId: String,
+        minAdmissionSequence: Long,
+        limit: Int,
+        after: OrderFillCursor?,
+    ): OrderFillQuerySnapshot =
+        try {
+            val order = read(marketId, orderId)
+            fills.read(order, marketId, minAdmissionSequence, limit, after)
+        } catch (error: OrderQueryInconsistentException) {
+            throw error
+        } catch (error: OrderQueryUnavailableException) {
+            throw error
+        } catch (error: DataAccessException) {
+            throw OrderQueryUnavailableException("order fills database read failed", error)
+        } catch (error: Exception) {
+            throw OrderQueryInconsistentException("stored order fills are inconsistent", error)
         }
 
     internal fun lockedProgress(): OrderQueryProgress =

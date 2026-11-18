@@ -140,6 +140,14 @@ class OrderQueryUseCaseTest {
             return snapshot
         }
 
+        override fun readFills(
+            marketId: String,
+            orderId: String,
+            minAdmissionSequence: Long,
+            limit: Int,
+            after: OrderFillCursor?,
+        ): OrderFillQuerySnapshot = OrderFillQuerySnapshot(read(marketId, orderId), settlementEnabled = false)
+
         private fun unexpectedWrite() {
             writes++
             error("queries must not write")

@@ -1,5 +1,7 @@
 package com.exchange.core.api.trading.application.port
 
+import com.exchange.core.api.trading.application.OrderFillCursor
+import com.exchange.core.api.trading.application.OrderFillQuerySnapshot
 import com.exchange.core.api.trading.application.OrderQueryBatch
 import com.exchange.core.api.trading.application.OrderQueryLifecycle
 import com.exchange.core.api.trading.application.OrderQueryNamespace
@@ -23,6 +25,15 @@ interface OrderQueryStore {
         marketId: String,
         orderId: String,
     ): OrderQuerySnapshot
+
+    /** 호출자가 연 REPEATABLE READ 트랜잭션에서 주문·체결·정산 진행 위치를 읽는다. */
+    fun readFills(
+        marketId: String,
+        orderId: String,
+        minAdmissionSequence: Long,
+        limit: Int,
+        after: OrderFillCursor?,
+    ): OrderFillQuerySnapshot
 }
 
 class OrderQueryWriteConflictException(

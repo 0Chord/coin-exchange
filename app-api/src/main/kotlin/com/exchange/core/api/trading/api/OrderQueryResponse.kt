@@ -1,5 +1,7 @@
 package com.exchange.core.api.trading.api
 
+import com.exchange.core.api.trading.application.OrderFill
+import com.exchange.core.api.trading.application.OrderFillCursor
 import java.time.Instant
 
 /** 상태 미확정 응답에는 주문 필드를 채우지 않는다. revision은 조회 DB의 정규화 스트림 기준이다. */
@@ -42,4 +44,13 @@ data class OrderQueryResultStreamResponse(
     val ownershipEpoch: Long,
     val configurationVersion: Long,
     val direction: String,
+)
+
+data class OrderFillQueryResponse(
+    val code: String,
+    val orderId: String?,
+    val marketId: String?,
+    val fills: List<OrderFill>?,
+    val nextCursor: OrderFillCursor?,
+    val coveredAdmissionSequence: Long?,
 )

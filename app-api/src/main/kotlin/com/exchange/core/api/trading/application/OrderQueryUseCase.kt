@@ -3,6 +3,9 @@ package com.exchange.core.api.trading.application
 import com.exchange.core.api.trading.application.port.OrderQueryInconsistentException
 import com.exchange.core.api.trading.application.port.OrderQueryStore
 import com.exchange.core.api.trading.application.port.OrderQueryUnavailableException
+import org.springframework.transaction.annotation.Isolation
+import org.springframework.transaction.annotation.Propagation
+import org.springframework.transaction.annotation.Transactional
 
 enum class OrderQueryCode {
     ORDER_FOUND,
@@ -22,18 +25,16 @@ data class OrderQueryResult(
 }
 
 /** 부재 확정보다 읽기 오류, 준비 상태, 최소 접수 prefix 검사를 먼저 한다. */
-class OrderQueryUseCase(
+open class OrderQueryUseCase(
     private val store: OrderQueryStore,
 ) {
-    fun get(
+    @Transactional(readOnly = true)
+    open fun get(
         marketId: String,
         orderId: String,
         minAdmissionSequence: Long = 0,
     ): OrderQueryResult {
-        requireOrderQueryText(marketId)
-        require(marketId in store.namespace.markets) { "unsupported query market" }
-        require(ORDER_ID.matches(orderId)) { "invalid order ID" }
-        require(minAdmissionSequence >= 0) { "invalid minimum admission sequence" }
+        validateInput(marketId, orderId, minAdmissionSequence)
         val snapshot =
             try {
                 store.read(marketId, orderId).also { validateSnapshot(it, marketId, orderId) }
@@ -45,6 +46,52 @@ class OrderQueryUseCase(
                 // DB 행 변환의 검증 실패가 요청 입력 오류 400으로 흘러가지 않는다.
                 return OrderQueryResult(OrderQueryCode.QUERY_INCONSISTENT)
             }
+        return resolveOrder(snapshot, minAdmissionSequence)
+    }
+
+    @Transactional(readOnly = true, isolation = Isolation.REPEATABLE_READ, propagation = Propagation.REQUIRES_NEW)
+    open fun getFills(
+        marketId: String,
+        orderId: String,
+        minAdmissionSequence: Long,
+        limit: Int,
+        after: OrderFillCursor?,
+    ): OrderFillQueryResult {
+        validateInput(marketId, orderId, minAdmissionSequence)
+        require(limit in 1..100) { "invalid fill page size" }
+        val snapshot =
+            try {
+                val stored = store.readFills(marketId, orderId, minAdmissionSequence, limit, after)
+                validateSnapshot(stored.order, marketId, orderId)
+                stored
+            } catch (_: OrderQueryUnavailableException) {
+                return OrderFillQueryResult(OrderQueryCode.QUERY_UNAVAILABLE)
+            } catch (_: OrderQueryInconsistentException) {
+                return OrderFillQueryResult(OrderQueryCode.QUERY_INCONSISTENT)
+            } catch (_: IllegalArgumentException) {
+                return OrderFillQueryResult(OrderQueryCode.QUERY_INCONSISTENT)
+            }
+        val order = resolveOrder(snapshot.order, minAdmissionSequence)
+        if (!snapshot.settlementEnabled) return OrderFillQueryResult(OrderQueryCode.QUERY_NOT_READY, order.progress)
+        if (order.code != OrderQueryCode.ORDER_FOUND) return OrderFillQueryResult(order.code, order.progress)
+        return OrderFillQueryResult(order.code, order.progress, snapshot.fills, snapshot.nextCursor)
+    }
+
+    internal open fun validateInput(
+        marketId: String,
+        orderId: String,
+        minAdmissionSequence: Long,
+    ) {
+        requireOrderQueryText(marketId)
+        require(marketId in store.namespace.markets) { "unsupported query market" }
+        require(ORDER_ID.matches(orderId)) { "invalid order ID" }
+        require(minAdmissionSequence >= 0) { "invalid minimum admission sequence" }
+    }
+
+    private fun resolveOrder(
+        snapshot: OrderQuerySnapshot,
+        minAdmissionSequence: Long,
+    ): OrderQueryResult {
         val progress = snapshot.progress ?: return OrderQueryResult(OrderQueryCode.QUERY_NOT_READY)
         if (progress.lifecycle != OrderQueryLifecycle.READY) {
             return OrderQueryResult(OrderQueryCode.QUERY_NOT_READY, progress)

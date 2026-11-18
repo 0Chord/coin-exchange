@@ -49,6 +49,11 @@ object ProductionBoundaryInputs {
                 "$TRADING_APPLICATION.OrderQueryFinancialStatus",
                 "$TRADING_APPLICATION.OrderQueryPendingReason",
                 "$TRADING_APPLICATION.OrderQueryOrderState",
+                "$TRADING_APPLICATION.OrderFillQueryResult",
+                "$TRADING_APPLICATION.OrderFill",
+                "$TRADING_APPLICATION.OrderFillCursor",
+                "$TRADING_APPLICATION.OrderFillRole",
+                "$TRADING_APPLICATION.OrderFillSettlementStatus",
             )
 
     // 현재 공개 진입점의 삭제를 잡는 최소 기대이며, 전체 검사 대상의 등록표가 아니다.
