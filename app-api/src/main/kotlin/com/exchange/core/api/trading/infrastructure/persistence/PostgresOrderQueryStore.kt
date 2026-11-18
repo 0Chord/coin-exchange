@@ -1,5 +1,7 @@
 package com.exchange.core.api.trading.infrastructure.persistence
 
+import com.exchange.core.api.trading.application.OrderFillCursor
+import com.exchange.core.api.trading.application.OrderFillQuerySnapshot
 import com.exchange.core.api.trading.application.OrderQueryBatch
 import com.exchange.core.api.trading.application.OrderQueryLifecycle
 import com.exchange.core.api.trading.application.OrderQueryNamespace
@@ -14,6 +16,8 @@ import org.springframework.dao.DataAccessException
 import org.springframework.dao.DataIntegrityViolationException
 import org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate
 import org.springframework.transaction.PlatformTransactionManager
+import org.springframework.transaction.TransactionDefinition
+import org.springframework.transaction.TransactionException
 import org.springframework.transaction.support.TransactionTemplate
 import tools.jackson.databind.DeserializationFeature
 import tools.jackson.databind.MapperFeature
@@ -32,6 +36,12 @@ class PostgresOrderQueryStore(
     transactionManager: PlatformTransactionManager,
 ) : OrderQueryStore {
     private val transaction = TransactionTemplate(transactionManager)
+    private val fillReadTransaction =
+        TransactionTemplate(transactionManager).apply {
+            isolationLevel = TransactionDefinition.ISOLATION_REPEATABLE_READ
+            propagationBehavior = TransactionDefinition.PROPAGATION_REQUIRES_NEW
+            isReadOnly = true
+        }
 
     // DB 장애 중 준비/차단 상태를 저장하지 못해도 같은 WAS가 낡은 READY를 노출하지 않는다.
     private val sourceReadGate = AtomicReference<OrderQueryLifecycle?>(null)
@@ -65,6 +75,7 @@ class PostgresOrderQueryStore(
     private val namespaceKey = "${namespace.fundsLineage.high}:${namespace.fundsLineage.low}"
     private val namespaceParameters = mapOf("namespace" to namespaceKey)
     private val marketsPayload = mapper.writeValueAsString(namespace.markets.sorted())
+    private val fills = PostgresOrderFillReader(jdbc, namespaceKey)
 
     override fun initialize() {
         write {
@@ -204,6 +215,32 @@ class PostgresOrderQueryStore(
             throw OrderQueryUnavailableException("order query database read failed")
         } catch (_: Exception) {
             throw OrderQueryInconsistentException("stored order query state is inconsistent")
+        }
+
+    override fun readFills(
+        marketId: String,
+        orderId: String,
+        minAdmissionSequence: Long,
+        limit: Int,
+        after: OrderFillCursor?,
+    ): OrderFillQuerySnapshot =
+        try {
+            checkNotNull(
+                fillReadTransaction.execute {
+                    val order = read(marketId, orderId)
+                    fills.read(order, marketId, minAdmissionSequence, limit, after)
+                },
+            )
+        } catch (error: OrderQueryInconsistentException) {
+            throw error
+        } catch (error: OrderQueryUnavailableException) {
+            throw error
+        } catch (error: DataAccessException) {
+            throw OrderQueryUnavailableException("order fills database read failed", error)
+        } catch (error: TransactionException) {
+            throw OrderQueryUnavailableException("order fills database transaction failed", error)
+        } catch (error: Exception) {
+            throw OrderQueryInconsistentException("stored order fills are inconsistent", error)
         }
 
     internal fun lockedProgress(): OrderQueryProgress =

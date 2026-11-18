@@ -1,5 +1,6 @@
 package com.exchange.core.api.trading.api
 
+import com.exchange.core.api.trading.application.OrderFillCursor
 import com.exchange.core.api.trading.application.OrderQueryCode
 import com.exchange.core.api.trading.application.OrderQueryResult
 import com.exchange.core.api.trading.application.OrderQueryUseCase
@@ -27,15 +28,48 @@ internal class OrderQueryController(
         @RequestParam(defaultValue = "0") @PositiveOrZero minAdmissionSequence: Long,
     ): ResponseEntity<OrderQueryResponse> {
         val result = useCase.get(marketId, orderId, minAdmissionSequence)
-        val status =
-            when (result.code) {
-                OrderQueryCode.ORDER_FOUND -> 200
-                OrderQueryCode.QUERY_CATCHING_UP -> 202
-                OrderQueryCode.ORDER_NOT_FOUND_AS_OF -> 404
-                OrderQueryCode.QUERY_NOT_READY, OrderQueryCode.QUERY_UNAVAILABLE, OrderQueryCode.QUERY_INCONSISTENT -> 503
-            }
-        return ResponseEntity.status(status).body(response(result))
+        return ResponseEntity.status(status(result.code)).body(response(result))
     }
+
+    @GetMapping("/markets/{marketId}/orders/{orderId}/fills", produces = [MediaType.APPLICATION_JSON_VALUE])
+    fun getFills(
+        @PathVariable @NotBlank @Size(max = 256) marketId: String,
+        @PathVariable @NotBlank @Size(min = 34, max = 34) @Pattern(regexp = "O2[A-Za-z0-9_-]{32}") orderId: String,
+        @RequestParam(defaultValue = "0") @PositiveOrZero minAdmissionSequence: Long,
+        @RequestParam(required = false) limit: String?,
+        @RequestParam(required = false) afterResultSequence: String?,
+        @RequestParam(required = false) afterEngineSequence: String?,
+    ): ResponseEntity<OrderFillQueryResponse> {
+        val pageSize = if (limit == null) 50 else requireNotNull(limit.toIntOrNull()) { "invalid fill page size" }
+        val after =
+            if (afterResultSequence == null && afterEngineSequence == null) {
+                null
+            } else {
+                val resultSequence = requireNotNull(afterResultSequence?.toLongOrNull()) { "invalid result sequence in fill cursor" }
+                val engineSequence = requireNotNull(afterEngineSequence?.toLongOrNull()) { "invalid engine sequence in fill cursor" }
+                OrderFillCursor(resultSequence = resultSequence, engineSequence = engineSequence)
+            }
+        val result = useCase.getFills(marketId, orderId, minAdmissionSequence, pageSize, after)
+        val found = result.code == OrderQueryCode.ORDER_FOUND
+        val body =
+            OrderFillQueryResponse(
+                code = result.code.name,
+                marketId = marketId.takeIf { found },
+                orderId = orderId.takeIf { found },
+                fills = result.fills.takeIf { found },
+                nextCursor = result.nextCursor,
+                coveredAdmissionSequence = result.progress?.coveredAdmissionSequence,
+            )
+        return ResponseEntity.status(status(result.code)).body(body)
+    }
+
+    private fun status(code: OrderQueryCode): Int =
+        when (code) {
+            OrderQueryCode.ORDER_FOUND -> 200
+            OrderQueryCode.QUERY_CATCHING_UP -> 202
+            OrderQueryCode.ORDER_NOT_FOUND_AS_OF -> 404
+            OrderQueryCode.QUERY_NOT_READY, OrderQueryCode.QUERY_UNAVAILABLE, OrderQueryCode.QUERY_INCONSISTENT -> 503
+        }
 
     private fun response(result: OrderQueryResult): OrderQueryResponse {
         val record = result.record

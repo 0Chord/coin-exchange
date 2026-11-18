@@ -207,6 +207,27 @@ class OrderQueryHttpTest {
     }
 
     @Test
+    fun `체결 조회 커서는 두 양수 순번을 받고 빈 값과 빠진 값을 거절한다`() {
+        val orderId = orderId(1)
+        val invalidPages =
+            listOf(
+                "afterResultSequence=",
+                "afterResultSequence=&afterEngineSequence=",
+                "afterResultSequence=1",
+                "afterResultSequence=1&afterEngineSequence=0",
+                "afterResultSequence=1&afterEngineSequence=invalid",
+                "limit=",
+                "limit=101",
+            )
+        for (query in invalidPages) {
+            val response = get(orderId, "/fills?$query")
+            assertEquals(400, response.statusCode(), query)
+            assertEquals("INVALID_INPUT", body(response).path("status").asString(), query)
+        }
+        assertResponse(503, "QUERY_NOT_READY", get(orderId, "/fills?afterResultSequence=1&afterEngineSequence=1&limit=1"))
+    }
+
+    @Test
     fun `path validation conversion and unsupported market failures preserve the existing POST error contract`() {
         val failures =
             listOf(

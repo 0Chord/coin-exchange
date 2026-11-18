@@ -566,6 +566,140 @@ class SplitFundsTradingHttpTest {
         }
     }
 
+    @Test
+    fun `주문별 체결 조회는 양쪽 주문과 정산 저장 상태를 연결한다`() {
+        withTradingNodes("query-test", feeRate = FeeRate(10_000), takerFeeRate = FeeRate(20_000), persistSettlements = true) { harness ->
+            val firstCommit = CallbackGate()
+            val followUpCommit = CallbackGate()
+            queryWas(harness, decorate = { store ->
+                object : OrderQueryFeedStore by store {
+                    override fun applySettlement(fact: SettlementFact): Long {
+                        // 매칭 및 자금 반영 뒤, 실제 PostgreSQL 트랜잭션 시작 전에 정산 저장만 기다린다.
+                        when (fact.resultSequence) {
+                            2L -> firstCommit.pause()
+                            3L -> followUpCommit.pause()
+                        }
+                        return store.applySettlement(fact)
+                    }
+                }
+            }).use { context ->
+                try {
+                    val url = wasUrl(context)
+                    val jdbc = harness.database.jdbc()
+                    val positions = "select matching_through, financial_through, settlement_through from order_query.feed_stream"
+                    val settlementIds = "select settlement_id from order_query.settlement_transaction order by result_sequence"
+
+                    fun assertStoredProgress(
+                        appliedThrough: Long,
+                        storedThrough: Long,
+                        vararg storedIds: String,
+                    ) {
+                        val progress = jdbc.queryForMap(positions)
+                        assertEquals(appliedThrough, progress["matching_through"])
+                        assertEquals(appliedThrough, progress["financial_through"])
+                        assertEquals(storedThrough, progress["settlement_through"])
+                        assertEquals(storedIds.toList(), jdbc.queryForList(settlementIds, String::class.java))
+                    }
+
+                    HttpClient.newHttpClient().use { http ->
+                        awaitEmptyReady(harness, http, url)
+                        val firstSale = submitSeller(http, url, quantity = 1)
+                        val firstSaleId = json.readTree(firstSale.body()).path("orderId").asString()
+                        awaitQuery(harness, http, url, firstSaleId, "RESTING", filled = 0, remaining = 1, cancelled = 0)
+                        assertTrue(readOrderFills(http, url, firstSaleId).isEmpty())
+                        assertTrue(jdbc.queryForList(settlementIds, String::class.java).isEmpty())
+
+                        val buyerEpoch = post(http, url, "/channels/0/epoch", """{"userId":"buyer","expectedEpoch":0}""")
+                        assertEquals(200, buyerEpoch.statusCode(), buyerEpoch.body())
+                        val buy = post(http, url, "/markets/BTC-USDT/orders", orderBody("buyer", "BUY", quantity = 3))
+                        assertEquals(202, buy.statusCode(), buy.body())
+                        val buyId = json.readTree(buy.body()).path("orderId").asString()
+                        assertTrue(firstCommit.reached.await(10, TimeUnit.SECONDS), "첫 체결이 정산 분개 저장 직전까지 진행해야 한다")
+                        awaitQuery(harness, http, url, buyId, "PARTIALLY_FILLED", filled = 1, remaining = 2, cancelled = 0)
+                        assertStoredProgress(appliedThrough = 2, storedThrough = 1)
+
+                        val firstPending = readOrderFills(http, url, buyId).single()
+                        assertEquals(HttpOrderFill(firstPending.tradeId, 100, 1, "TAKER", "PENDING"), firstPending)
+                        assertEquals(listOf(firstPending.copy(role = "MAKER")), readOrderFills(http, url, firstSaleId))
+
+                        firstCommit.release.countDown()
+                        await("첫 체결의 정산 분개 커밋") { jdbc.queryForMap(positions)["settlement_through"] == 2L }
+                        val firstCompleted = firstPending.copy(settlementStatus = "COMPLETED")
+                        assertStoredProgress(2, 2, firstCompleted.tradeId)
+                        assertEquals(listOf(firstCompleted), readOrderFills(http, url, buyId))
+                        assertEquals(listOf(firstCompleted.copy(role = "MAKER")), readOrderFills(http, url, firstSaleId))
+
+                        val followUp = post(http, url, "/markets/BTC-USDT/orders", orderBody("seller", "SELL", quantity = 2, sequence = 2))
+                        assertEquals(202, followUp.statusCode(), followUp.body())
+                        val followUpSaleId = json.readTree(followUp.body()).path("orderId").asString()
+                        assertTrue(followUpCommit.reached.await(10, TimeUnit.SECONDS), "후속 체결이 정산 분개 저장 직전까지 진행해야 한다")
+                        awaitQuery(harness, http, url, buyId, "FILLED", filled = 3, remaining = 0, cancelled = 0)
+                        assertStoredProgress(3, 2, firstCompleted.tradeId)
+
+                        val pendingFills = readOrderFills(http, url, buyId)
+                        assertEquals(2, pendingFills.size)
+                        assertEquals(firstCompleted, pendingFills.first())
+                        val followUpPending = pendingFills.last()
+                        assertTrue(followUpPending.tradeId != firstCompleted.tradeId)
+                        assertEquals(HttpOrderFill(followUpPending.tradeId, 100, 2, "MAKER", "PENDING"), followUpPending)
+                        assertEquals(listOf(followUpPending.copy(role = "TAKER")), readOrderFills(http, url, followUpSaleId))
+
+                        followUpCommit.release.countDown()
+                        await("후속 체결의 정산 분개 커밋") { jdbc.queryForMap(positions)["settlement_through"] == 3L }
+                        val followUpCompleted = followUpPending.copy(settlementStatus = "COMPLETED")
+                        assertStoredProgress(3, 3, firstCompleted.tradeId, followUpCompleted.tradeId)
+                        assertEquals(listOf(firstCompleted, followUpCompleted), readOrderFills(http, url, buyId))
+                        assertEquals(listOf(firstCompleted.copy(role = "MAKER")), readOrderFills(http, url, firstSaleId))
+                        assertEquals(listOf(followUpCompleted.copy(role = "TAKER")), readOrderFills(http, url, followUpSaleId))
+                    }
+                } finally {
+                    firstCommit.release.countDown()
+                    followUpCommit.release.countDown()
+                }
+            }
+        }
+    }
+
+    private data class HttpOrderFill(
+        val tradeId: String,
+        val price: Long,
+        val quantity: Long,
+        val role: String,
+        val settlementStatus: String,
+    )
+
+    private fun readOrderFills(
+        http: HttpClient,
+        url: String,
+        orderId: String,
+    ): List<HttpOrderFill> {
+        val request =
+            HttpRequest
+                .newBuilder(URI.create("$url/api/trading/v3/markets/BTC-USDT/orders/$orderId/fills"))
+                .timeout(Duration.ofSeconds(3))
+                .GET()
+                .build()
+        val response = http.send(request, HttpResponse.BodyHandlers.ofString())
+        assertEquals(200, response.statusCode(), response.body())
+        val body = json.readTree(response.body())
+        assertEquals(orderId, body.path("orderId").asString(), response.body())
+        assertEquals("BTC-USDT", body.path("marketId").asString(), response.body())
+        val fills = body.path("fills")
+        assertTrue(fills.isArray, response.body())
+        return List(fills.size()) { index ->
+            val fill = fills.path(index)
+            val tradeId = fill.path("tradeId").asString()
+            assertTrue(tradeId.isNotBlank(), response.body())
+            HttpOrderFill(
+                tradeId = tradeId,
+                price = fill.path("price").longValue(),
+                quantity = fill.path("quantity").longValue(),
+                role = fill.path("role").asString(),
+                settlementStatus = fill.path("settlementStatus").asString(),
+            )
+        }
+    }
+
     private fun verifyCancellationResponses(
         http: HttpClient,
         url: String,
