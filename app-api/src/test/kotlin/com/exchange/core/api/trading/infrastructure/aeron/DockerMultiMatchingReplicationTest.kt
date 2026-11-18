@@ -1813,7 +1813,11 @@ internal class MultiMatchingRun(
             val left = TimeUnit.NANOSECONDS.toMillis(until - System.nanoTime())
             if (left <= 0) break
             remainingIds =
-                command(args, minOf(3_000, left), cleaning = true).stdout.lineSequence().filter(String::isNotBlank).toList()
+                command(args, minOf(3_000, left), cleaning = true)
+                    .stdout
+                    .lineSequence()
+                    .filter(String::isNotBlank)
+                    .toList()
             if (remainingIds.isEmpty()) return
 
             val removalTime = TimeUnit.NANOSECONDS.toMillis(until - System.nanoTime()).coerceAtMost(5_000)
