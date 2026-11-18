@@ -42,7 +42,7 @@ class ReservedMatchingState(
                     true,
                     { fact: MatchingResultEnvelope -> fact.stream.marketId },
                     { fact -> fact.resultSequence },
-                    { fact -> fact.canonicalBytes },
+                    configuration::queryResultCharge,
                 )
             }
         var resultEntries = 0
@@ -130,7 +130,7 @@ class ReservedMatchingState(
             } else {
                 matched(state, input, plan, before)
             }
-        if (result.canonicalBytes > configuration.limits.maxSingleResultBytes) {
+        if (configuration.exceedsResultBudget(result)) {
             result = rejected(input, before, MatchingNotExecutedReason.RESULT_TOO_LARGE)
             plan = null
         }
@@ -171,7 +171,7 @@ class ReservedMatchingState(
         ) {
             return MatchingIntakeReply(MatchingIntakeStatus.BUSY)
         }
-        if (state.queryResults?.canRecord(input.stream.marketId, bytes) == false) {
+        if (state.queryResults != null && !state.queryResults.canRecord(input.stream.marketId, configuration.queryResultCharge(result))) {
             return MatchingIntakeReply(MatchingIntakeStatus.BUSY)
         }
         MatchingInputValidation.requireResult(configuration, result)
@@ -249,7 +249,7 @@ class ReservedMatchingState(
         ) {
             return MatchingIntakeReply(MatchingIntakeStatus.BUSY)
         }
-        if (state.queryResults?.canRecord(input.stream.marketId, bytes) == false) {
+        if (state.queryResults != null && !state.queryResults.canRecord(input.stream.marketId, configuration.queryResultCharge(result))) {
             return MatchingIntakeReply(MatchingIntakeStatus.BUSY)
         }
         val releasedBytes = if (effects.isEmpty()) 0L else MatchingResultCharge.active(checkNotNull(origin))
@@ -505,6 +505,7 @@ class ReservedMatchingState(
             }
             retained.restore(row.stream.marketId, query) { result ->
                 MatchingInputValidation.requireResult(configuration, result)
+                require(!configuration.exceedsResultBudget(result)) { "query result exceeds the permanent budget" }
                 require(result.stream == configuration.resultStream(row.stream.marketId))
                 engine?.let { require(result.engineSequenceBefore == it) { "query result engine prefix differs" } }
                 engine = result.engineSequenceAfter
@@ -611,6 +612,7 @@ class ReservedMatchingState(
             var bytes = 0L
             for (result in row.outstanding) {
                 MatchingInputValidation.requireResult(configuration, result)
+                require(!configuration.exceedsResultBudget(result)) { "outstanding result exceeds the permanent budget" }
                 require(result.input.stream == row.stream && result.resultSequence == Math.addExact(previous, 1))
                 require(result.engineSequenceBefore == engine && result.input.admissionSequence <= row.lastSourceAdmissionSequence)
                 if (!result.input.isCancellation) {
@@ -847,7 +849,7 @@ class ReservedMatchingState(
                     effects(result.input, it, origins),
                 )
             }
-        val tooLarge = candidate == null || candidate.canonicalBytes > configuration.limits.maxSingleResultBytes
+        val tooLarge = candidate == null || configuration.exceedsResultBudget(candidate)
         if (result.reason == MatchingNotExecutedReason.RESULT_TOO_LARGE) {
             require(tooLarge) { "result-too-large rejection fits the permanent budget" }
             return

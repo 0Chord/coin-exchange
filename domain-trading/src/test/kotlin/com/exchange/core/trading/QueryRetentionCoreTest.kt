@@ -166,6 +166,77 @@ class QueryRetentionCoreTest {
     }
 
     @Test
+    fun `정산 조회 여유를 먼저 확보하여 매칭 한도가 차도 체결을 정산하고 복원한다`() {
+        val config = query(entries = 2, capabilityVersion = 2)
+        val funds = funds(config)
+        val matching = matching(config)
+        fund(funds, buyer, f.quote, 1_000)
+        fund(funds, seller, f.a.baseAssetId, 3)
+        admit(funds, 1, side = Side.SELL, quantity = 3, user = seller)
+        val sell = funds.readQueryAdmissions(1, 1, 10_000).entries.single()
+        val resting = assertNotNull(matching.apply(sell).result)
+        assertEquals(FundsResultStatus.APPLIED, funds.applyMatchingResult(resting, at, settlement()).status)
+        admit(funds, 1)
+        val buy = funds.readQueryAdmissions(2, 1, 10_000).entries.single()
+        val matched = assertNotNull(matching.apply(buy).result)
+        assertEquals(2, matching.queryResultsProgress(matched.stream)?.retainedEntries)
+        assertEquals(MatchingIntakeStatus.BUSY, matching.apply(f.input(3)).status)
+
+        assertEquals(FundsResultStatus.APPLIED, funds.applyMatchingResult(matched, at, settlement()).status)
+        val saved = funds.fundsRecoveryState()
+        val restored = funds(config, initialize = false).also { it.restoreFundsRecoveryState(saved, settlement()) }
+        val facts = restored.readQuerySettlements(matched.stream, 1, 2, 10_000).entries
+        assertEquals(listOf(1L, 2L), facts.map { it.resultSequence })
+        assertTrue(facts.first().fills.isEmpty())
+        val fill = facts.last().fills.single()
+        assertEquals(TradingIdentifiers.settlement(f.funds, 0, fill.trade.engineSequence), fill.transaction.ledgerTransactionId)
+        assertEquals(at, fill.transaction.occurredAt)
+        assertEquals(Amount.ZERO, fill.makerFee)
+        assertEquals(Amount.ZERO, fill.takerFee)
+        assertTrue(facts.last().canonicalBytes <= matching.configuration.queryResultCharge(matched))
+
+        assertEquals(FundsResultStatus.DUPLICATE, restored.applyMatchingResult(matched, at.plusSeconds(1), settlement()).status)
+        assertEquals(facts, restored.readQuerySettlements(matched.stream, 1, 2, 10_000).entries)
+        assertEquals(saved.financial.balances, restored.fundsRecoveryState().financial.balances)
+        assertEquals(QueryFactsAckStatus.ACKNOWLEDGED, restored.acknowledgeQuerySettlements("query", matched.stream, 2).status)
+        assertEquals(QueryFactsReadStatus.PRUNED, restored.readQuerySettlements(matched.stream, 2, 2, 10_000).status)
+        assertEquals(QueryFactsAckStatus.ACKNOWLEDGED, matching.acknowledgeQueryResults("query", matched.stream, 2).status)
+        assertEquals(MatchingIntakeStatus.APPLIED, matching.apply(f.input(3)).status)
+    }
+
+    @Test
+    fun `정산 크기 한도를 넘는 주문은 주문장을 바꾸기 전에 최종 거절되고 복원된다`() {
+        val bytes = 5_000L
+        val limits = f.limits(maxSingleResultBytes = bytes)
+        val query = query(bytes = bytes, capabilityVersion = 2)
+        val config = MatchingIntakeConfiguration(f.topology, f.declaration, limits, queryRetention = query)
+        val matching = ReservedMatchingState(config).also { it.initialize() }
+        val control = f.owner(limits)
+        for (sequence in 1L..6L) {
+            val sell = f.input(sequence, side = Side.SELL, quantity = 1, user = "seller$sequence")
+            val result = assertNotNull(matching.apply(sell).result)
+            assertNotNull(control.apply(sell).result)
+            matching.acknowledgeQueryResults("query", result.stream, sequence)
+            val ack = MatchingFundsSettledAck(result.stream, sequence, sell.context)
+            matching.acknowledgeFundsSettled(ack)
+            control.acknowledgeFundsSettled(ack)
+        }
+        val before = matching.restingOrders(f.a.marketId)
+        val buy = f.input(7, quantity = 6)
+        val full = assertNotNull(control.apply(buy).result)
+        assertEquals(MatchingOutcome.MATCHED, full.outcome)
+        assertTrue(config.queryResultCharge(full) > bytes)
+
+        val rejected = assertNotNull(matching.apply(buy).result)
+        assertEquals(MatchingNotExecutedReason.RESULT_TOO_LARGE, rejected.reason)
+        assertEquals(before, matching.restingOrders(f.a.marketId))
+        val saved = matching.recoveryState()
+        val restored = ReservedMatchingState(config).also { it.restore(saved) }
+        assertEquals(before, restored.restingOrders(f.a.marketId))
+        assertEquals(rejected, restored.apply(buy).result)
+    }
+
+    @Test
     fun `취소 조회 포화는 주문장을 보존하고 취소 성공과 거절을 구분한다`() {
         val matching = matching(query(entries = 1), inputVersion = 2)
         val input = f.input(1).copy(inputContractVersion = 2)
@@ -424,6 +495,7 @@ class QueryRetentionCoreTest {
         marketEntries: Int = entries,
         bytes: Long = 1_048_576,
         consumer: String = "query",
+        capabilityVersion: Int = 1,
     ) = QueryRetentionConfiguration(
         consumer,
         f.contexts.associate {
@@ -431,6 +503,7 @@ class QueryRetentionCoreTest {
         },
         entries,
         bytes,
+        capabilityVersion,
     )
 
     private fun funds(
@@ -442,7 +515,12 @@ class QueryRetentionCoreTest {
             OrderAdmissionCalculator(reserve),
             f.manifest,
             FundsDispatchConfiguration(f.topology, queryRetention = query),
-            FundsResultLimits(maxReceiptEntries = 1, maxMarketReceiptEntries = 1),
+            FundsResultLimits(
+                maxReceiptEntries = 1,
+                maxMarketReceiptEntries = 1,
+                maxReceiptBytes = 1_048_576,
+                maxMarketReceiptBytes = 1_048_576,
+            ),
         ).also {
             if (initialize) {
                 it.initialize(f.manifest)

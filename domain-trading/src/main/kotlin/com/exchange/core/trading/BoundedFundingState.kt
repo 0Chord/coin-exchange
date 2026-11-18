@@ -6,6 +6,7 @@ import com.exchange.core.common.MarketId
 import com.exchange.core.common.OrderId
 import com.exchange.core.common.UserId
 import com.exchange.core.ledger.Balance
+import com.exchange.core.ledger.LedgerPostingSide
 import com.exchange.core.ledger.OpeningBalance
 import com.exchange.core.ledger.OpeningBalanceResult
 import com.exchange.core.matching.TradeExecuted
@@ -26,6 +27,7 @@ class BoundedFundingState(
     private var dispatch: FundsDispatchData? = dispatchConfiguration?.let(::FundsDispatchData)
     private var results: FundsResultData? = dispatchConfiguration?.let { FundsResultData(it, resultLimits) }
     private var queryAdmissions: QueryFactRetention<FundsOrderDispatch>? = newQueryAdmissions()
+    private var querySettlements: QueryFactRetention<SettlementFact>? = newQuerySettlements()
     private val assetTotals = linkedMapOf<AssetId, Long>()
     private val approvalInputs = linkedMapOf<Pair<MarketId, OrderId>, FundsOrderDispatch>()
     private val cancellations = linkedMapOf<Pair<MarketId, OrderId>, FundsCancellationSnapshot>()
@@ -364,6 +366,40 @@ class BoundedFundingState(
             )
         }
 
+    fun readQuerySettlements(
+        stream: MatchingResultStream,
+        fromSequence: Long,
+        maxEntries: Int,
+        maxBytes: Long,
+    ): QueryFactsRead<SettlementFact> {
+        runningBounded()
+        if (results?.matches(stream) != true) return QueryFactsRead(QueryFactsReadStatus.INVALID_STREAM)
+        return querySettlements?.read(stream.marketId, fromSequence, maxEntries, maxBytes)
+            ?: QueryFactsRead(QueryFactsReadStatus.DISABLED)
+    }
+
+    fun querySettlementsProgress(stream: MatchingResultStream): QueryFactsProgress? {
+        runningBounded()
+        if (results?.matches(stream) != true) return null
+        return querySettlements?.progress(stream.marketId)
+    }
+
+    fun acknowledgeQuerySettlements(
+        consumerId: String,
+        stream: MatchingResultStream,
+        through: Long,
+    ): QueryFactsAck {
+        runningBounded()
+        if (results?.matches(stream) != true) return QueryFactsAck(QueryFactsAckStatus.INVALID_STREAM, 0)
+        val retained = querySettlements ?: return QueryFactsAck(QueryFactsAckStatus.DISABLED, 0)
+        return boundedMutation { retained.acknowledge(consumerId, stream.marketId, through) }
+    }
+
+    private fun newQuerySettlements(): QueryFactRetention<SettlementFact>? =
+        dispatchConfiguration?.settlementRetention?.let {
+            QueryFactRetention(it, true, { fact -> fact.stream.marketId }, SettlementFact::resultSequence, SettlementFact::canonicalBytes)
+        }
+
     fun pendingDispatch(
         stream: FundsDispatchStream,
         fromSequence: Long,
@@ -528,7 +564,24 @@ class BoundedFundingState(
                 validateSettlementCurrent(settlement)
                 val fee = prepareFeeRevenue(settlement, context.market.quoteAssetId)
                 validateResultConservation(settlement, context.market.quoteAssetId, fee)
-                FundsFinancialResultCandidate(taker, participants, settlement, fee, FundsResultReceipt(result, appliedAt))
+                val settlementFact =
+                    querySettlements?.let { retained ->
+                        val fills =
+                            settlement.settlements.mapIndexed { index, fill ->
+                                SettledTrade(
+                                    trades[index],
+                                    fill.transaction,
+                                    fill.makerPlan.actualFeeAmount,
+                                    fill.takerPlan.actualFeeAmount,
+                                )
+                            }
+                        val fact = SettlementFact(result.stream, result.resultSequence, fills)
+                        require(
+                            retained.canRecord(result.stream.marketId, fact.canonicalBytes),
+                        ) { "settlement retention credit unavailable" }
+                        fact
+                    }
+                FundsFinancialResultCandidate(taker, participants, settlement, fee, FundsResultReceipt(result, appliedAt), settlementFact)
             } catch (_: IllegalArgumentException) {
                 return FundsResultReply(FundsResultStatus.INVALID_RESULT)
             } catch (_: IllegalStateException) {
@@ -567,6 +620,7 @@ class BoundedFundingState(
             current.pendingCount--
             progress.executedThrough = result.input.marketAdmissionSequence
             currentResults.record(candidate.receipt)
+            candidate.settlementFact?.let { checkNotNull(querySettlements).record(it) }
             val confirmed = checkNotNull(dispatch).acknowledge(FundsMatchingAppliedAck(inputStream, result.input.dispatchSequence, context))
             check(confirmed.status == FundsDispatchAckStatus.ACKNOWLEDGED)
         }
@@ -585,10 +639,16 @@ class BoundedFundingState(
         val context = checkNotNull(dispatchConfiguration).context(key.first)
         var released: OrderReservation? = null
         var nextBalance: Balance? = null
+        val settlementFact = querySettlements?.let { SettlementFact(result.stream, result.resultSequence, emptyList()) }
         try {
             currentResults.requireResult(result)
             require(result.engineSequenceBefore == currentResults.engine(key.first))
             require(obligation.input == result.input) { "cancellation input differs from recorded obligation" }
+            settlementFact?.let {
+                require(
+                    checkNotNull(querySettlements).canRecord(key.first, it.canonicalBytes),
+                ) { "settlement retention credit unavailable" }
+            }
             when (result.outcome) {
                 MatchingOutcome.CANCELLED -> {
                     require(live != null && obligation.terminalStatus == null && live.phase == LiveOrderPhase.RESTING)
@@ -656,6 +716,7 @@ class BoundedFundingState(
             check(cancellations.remove(key) == obligation)
             cancellationBytes -= obligation.canonicalBytes
             currentResults.record(receipt)
+            settlementFact?.let { checkNotNull(querySettlements).record(it) }
             val confirmed =
                 checkNotNull(dispatch).acknowledge(
                     FundsMatchingAppliedAck(result.input.stream, result.input.dispatchSequence, context),
@@ -671,6 +732,7 @@ class BoundedFundingState(
         val settlement: OrderSettlementCandidate,
         val nextFeeRevenue: java.math.BigInteger?,
         val receipt: FundsResultReceipt,
+        val settlementFact: SettlementFact?,
     )
 
     private fun validateResultConservation(
@@ -711,6 +773,10 @@ class BoundedFundingState(
             cancellations.values.toList(),
             lastCancellationSequence,
             queryAdmissions?.snapshot(),
+            querySettlements
+                ?.let { retained ->
+                    configuration.assignments.associate { it.marketId to retained.snapshot(it.marketId) }
+                }.orEmpty(),
         )
     }
 
@@ -803,10 +869,12 @@ class BoundedFundingState(
                         }?.let { require(it == fact) }
                 }
             }
+            val restoredSettlements = restoreQuerySettlements(saved, restoredResults)
             bounded = candidate.bounded
             dispatch = restoredDispatch
             results = restoredResults
             queryAdmissions = restoredQuery
+            querySettlements = restoredSettlements
             assetTotals.putAll(reconstructed)
             saved.approvalInputs.forEach { approvalInputs[it.order.marketId to it.order.orderId] = it }
             saved.cancellations.forEach { cancellations[it.input.order.marketId to it.input.order.orderId] = it }
@@ -817,6 +885,54 @@ class BoundedFundingState(
             isBlocked = true
             throw failure
         }
+    }
+
+    private fun restoreQuerySettlements(
+        saved: FundsRoleRecoveryState,
+        restoredResults: FundsResultData,
+    ): QueryFactRetention<SettlementFact>? {
+        val retained = newQuerySettlements()
+        if (retained == null) {
+            require(saved.querySettlements.isEmpty()) { "settlement query recovery capability differs" }
+            return null
+        }
+        val configuration = saved.configuration
+        require(saved.querySettlements.keys == configuration.settlementRetention?.marketLimits?.keys) {
+            "settlement query recovery stream coverage differs"
+        }
+        val receipts = requireNotNull(saved.results).receipts.associateBy { it.result.stream.marketId to it.result.resultSequence }
+        for ((marketId, savedStream) in saved.querySettlements) {
+            val stream = restoredResults.stream(marketId)
+            val context = configuration.context(marketId)
+            val quoteAsset = context.market.quoteAssetId
+            val feeAccount = "SYSTEM:${quoteAsset.value}:FEE_REVENUE"
+            val engineThrough = restoredResults.engine(marketId)
+            require(savedStream.issued == restoredResults.through(marketId)) { "settlement query frontier differs" }
+            var previousEngine = 0L
+            retained.restore(marketId, savedStream) { fact ->
+                require(fact.stream == stream)
+                val receipt = receipts[marketId to fact.resultSequence]
+                if (receipt != null) {
+                    require(fact.fills.map { it.trade } == receipt.result.events.filterIsInstance<TradeExecuted>())
+                }
+                for (fill in fact.fills) {
+                    val engineSequence = fill.trade.engineSequence
+                    require(engineSequence > previousEngine && engineSequence <= engineThrough)
+                    previousEngine = engineSequence
+                    val transaction = fill.transaction
+                    require(
+                        transaction.ledgerTransactionId ==
+                            TradingIdentifiers.settlement(stream.fundsLineage, context.ordinal, engineSequence),
+                    )
+                    require(receipt == null || transaction.occurredAt == receipt.appliedAt)
+                    val fees = listOf(fill.makerFee, fill.takerFee).filter { !it.isZero() }
+                    val feePostings = transaction.postings.filter { it.accountId == feeAccount }
+                    require(feePostings.map { it.amount } == fees)
+                    require(feePostings.all { it.assetId == quoteAsset && it.side == LedgerPostingSide.CREDIT })
+                }
+            }
+        }
+        return retained
     }
 
     private fun validateCancellationRecovery(

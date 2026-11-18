@@ -187,6 +187,7 @@ class MatchingIntakeConfiguration(
                 require(
                     rejected.canonicalBytes <= limits.maxSingleResultBytes,
                 ) { "matching result budget cannot retain the largest input rejection" }
+                require(!exceedsResultBudget(rejected)) { "settlement query budget cannot retain an empty result" }
                 if (inputContractVersion == 2) {
                     val target = maximal.copy(dispatchSequence = Long.MAX_VALUE - 1, marketAdmissionSequence = Long.MAX_VALUE - 1)
                     val cancellation =
@@ -249,6 +250,21 @@ class MatchingIntakeConfiguration(
         }
 
     fun context(marketId: MarketId): TradingMarketContext = markets.single { it.market.marketId == marketId }
+
+    fun queryResultCharge(result: MatchingResultEnvelope): Long {
+        if (queryRetention?.capabilityVersion != 2) return result.canonicalBytes
+        val credit = SettlementFact.creditBytes(result, result.input.context.market)
+        return maxOf(result.canonicalBytes, credit)
+    }
+
+    internal fun exceedsResultBudget(result: MatchingResultEnvelope): Boolean {
+        if (result.canonicalBytes > limits.maxSingleResultBytes) return true
+        val query = queryRetention ?: return false
+        if (query.capabilityVersion != 2) return false
+        val credit = SettlementFact.creditBytes(result, result.input.context.market)
+        val localLimit = query.marketLimits.getValue(result.stream.marketId).maxBytes
+        return credit > minOf(query.maxBytes, localLimit, SettlementFact.MAX_CANONICAL_BYTES)
+    }
 
     internal fun matches(stream: FundsDispatchStream): Boolean = streams[stream.marketId] == stream
 
