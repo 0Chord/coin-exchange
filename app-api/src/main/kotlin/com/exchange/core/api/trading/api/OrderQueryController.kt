@@ -75,6 +75,7 @@ internal class OrderQueryController(
                 fills = result.fills.takeIf { found },
                 nextCursor = result.nextCursor,
                 coveredAdmissionSequence = result.progress?.coveredAdmissionSequence,
+                settledFeeTotal = result.settledFeeTotal,
             )
         return ResponseEntity.status(status(result.code)).body(body)
     }

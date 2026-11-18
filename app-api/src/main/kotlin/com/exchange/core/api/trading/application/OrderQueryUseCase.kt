@@ -74,7 +74,13 @@ open class OrderQueryUseCase(
         val order = resolveOrder(snapshot.order, minAdmissionSequence)
         if (!snapshot.settlementEnabled) return OrderFillQueryResult(OrderQueryCode.QUERY_NOT_READY, order.progress)
         if (order.code != OrderQueryCode.ORDER_FOUND) return OrderFillQueryResult(order.code, order.progress)
-        return OrderFillQueryResult(order.code, order.progress, snapshot.fills, snapshot.nextCursor)
+        return OrderFillQueryResult(
+            code = order.code,
+            progress = order.progress,
+            fills = snapshot.fills,
+            nextCursor = snapshot.nextCursor,
+            settledFeeTotal = snapshot.settledFeeTotal,
+        )
     }
 
     internal open fun validateInput(
