@@ -3,6 +3,9 @@ package com.exchange.core.api.trading.application
 import com.exchange.core.api.trading.application.port.OrderQueryInconsistentException
 import com.exchange.core.api.trading.application.port.OrderQueryStore
 import com.exchange.core.api.trading.application.port.OrderQueryUnavailableException
+import org.springframework.transaction.annotation.Isolation
+import org.springframework.transaction.annotation.Propagation
+import org.springframework.transaction.annotation.Transactional
 
 enum class OrderQueryCode {
     ORDER_FOUND,
@@ -22,10 +25,11 @@ data class OrderQueryResult(
 }
 
 /** 부재 확정보다 읽기 오류, 준비 상태, 최소 접수 prefix 검사를 먼저 한다. */
-class OrderQueryUseCase(
+open class OrderQueryUseCase(
     private val store: OrderQueryStore,
 ) {
-    fun get(
+    @Transactional(readOnly = true)
+    open fun get(
         marketId: String,
         orderId: String,
         minAdmissionSequence: Long = 0,
@@ -45,7 +49,8 @@ class OrderQueryUseCase(
         return resolveOrder(snapshot, minAdmissionSequence)
     }
 
-    fun getFills(
+    @Transactional(readOnly = true, isolation = Isolation.REPEATABLE_READ, propagation = Propagation.REQUIRES_NEW)
+    open fun getFills(
         marketId: String,
         orderId: String,
         minAdmissionSequence: Long,
@@ -72,7 +77,7 @@ class OrderQueryUseCase(
         return OrderFillQueryResult(order.code, order.progress, snapshot.fills, snapshot.nextCursor)
     }
 
-    private fun validateInput(
+    internal open fun validateInput(
         marketId: String,
         orderId: String,
         minAdmissionSequence: Long,

@@ -16,8 +16,6 @@ import org.springframework.dao.DataAccessException
 import org.springframework.dao.DataIntegrityViolationException
 import org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate
 import org.springframework.transaction.PlatformTransactionManager
-import org.springframework.transaction.TransactionDefinition
-import org.springframework.transaction.TransactionException
 import org.springframework.transaction.support.TransactionTemplate
 import tools.jackson.databind.DeserializationFeature
 import tools.jackson.databind.MapperFeature
@@ -36,12 +34,6 @@ class PostgresOrderQueryStore(
     transactionManager: PlatformTransactionManager,
 ) : OrderQueryStore {
     private val transaction = TransactionTemplate(transactionManager)
-    private val fillReadTransaction =
-        TransactionTemplate(transactionManager).apply {
-            isolationLevel = TransactionDefinition.ISOLATION_REPEATABLE_READ
-            propagationBehavior = TransactionDefinition.PROPAGATION_REQUIRES_NEW
-            isReadOnly = true
-        }
 
     // DB 장애 중 준비/차단 상태를 저장하지 못해도 같은 WAS가 낡은 READY를 노출하지 않는다.
     private val sourceReadGate = AtomicReference<OrderQueryLifecycle?>(null)
@@ -225,20 +217,14 @@ class PostgresOrderQueryStore(
         after: OrderFillCursor?,
     ): OrderFillQuerySnapshot =
         try {
-            checkNotNull(
-                fillReadTransaction.execute {
-                    val order = read(marketId, orderId)
-                    fills.read(order, marketId, minAdmissionSequence, limit, after)
-                },
-            )
+            val order = read(marketId, orderId)
+            fills.read(order, marketId, minAdmissionSequence, limit, after)
         } catch (error: OrderQueryInconsistentException) {
             throw error
         } catch (error: OrderQueryUnavailableException) {
             throw error
         } catch (error: DataAccessException) {
             throw OrderQueryUnavailableException("order fills database read failed", error)
-        } catch (error: TransactionException) {
-            throw OrderQueryUnavailableException("order fills database transaction failed", error)
         } catch (error: Exception) {
             throw OrderQueryInconsistentException("stored order fills are inconsistent", error)
         }

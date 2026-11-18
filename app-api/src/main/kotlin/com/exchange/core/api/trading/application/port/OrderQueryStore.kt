@@ -26,7 +26,7 @@ interface OrderQueryStore {
         orderId: String,
     ): OrderQuerySnapshot
 
-    /** 체결과 정산 진행 위치도 주문과 같은 DB 관찰 시점에서 읽는다. */
+    /** 호출자가 연 REPEATABLE READ 트랜잭션에서 주문·체결·정산 진행 위치를 읽는다. */
     fun readFills(
         marketId: String,
         orderId: String,

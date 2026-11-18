@@ -1,6 +1,7 @@
 package com.exchange.core.api.trading.api
 
 import com.exchange.core.api.trading.application.OrderFillCursor
+import com.exchange.core.api.trading.application.OrderFillQueryResult
 import com.exchange.core.api.trading.application.OrderQueryCode
 import com.exchange.core.api.trading.application.OrderQueryResult
 import com.exchange.core.api.trading.application.OrderQueryUseCase
@@ -8,8 +9,10 @@ import jakarta.validation.constraints.NotBlank
 import jakarta.validation.constraints.Pattern
 import jakarta.validation.constraints.PositiveOrZero
 import jakarta.validation.constraints.Size
+import org.springframework.dao.DataAccessException
 import org.springframework.http.MediaType
 import org.springframework.http.ResponseEntity
+import org.springframework.transaction.TransactionException
 import org.springframework.web.bind.annotation.GetMapping
 import org.springframework.web.bind.annotation.PathVariable
 import org.springframework.web.bind.annotation.RequestMapping
@@ -27,7 +30,13 @@ internal class OrderQueryController(
         @PathVariable @NotBlank @Size(min = 34, max = 34) @Pattern(regexp = "O2[A-Za-z0-9_-]{32}") orderId: String,
         @RequestParam(defaultValue = "0") @PositiveOrZero minAdmissionSequence: Long,
     ): ResponseEntity<OrderQueryResponse> {
-        val result = useCase.get(marketId, orderId, minAdmissionSequence)
+        useCase.validateInput(marketId, orderId, minAdmissionSequence)
+        val result =
+            try {
+                useCase.get(marketId, orderId, minAdmissionSequence)
+            } catch (error: RuntimeException) {
+                OrderQueryResult(queryFailure(error))
+            }
         return ResponseEntity.status(status(result.code)).body(response(result))
     }
 
@@ -41,6 +50,7 @@ internal class OrderQueryController(
         @RequestParam(required = false) afterEngineSequence: String?,
     ): ResponseEntity<OrderFillQueryResponse> {
         val pageSize = if (limit == null) 50 else requireNotNull(limit.toIntOrNull()) { "invalid fill page size" }
+        require(pageSize in 1..100) { "invalid fill page size" }
         val after =
             if (afterResultSequence == null && afterEngineSequence == null) {
                 null
@@ -49,7 +59,13 @@ internal class OrderQueryController(
                 val engineSequence = requireNotNull(afterEngineSequence?.toLongOrNull()) { "invalid engine sequence in fill cursor" }
                 OrderFillCursor(resultSequence = resultSequence, engineSequence = engineSequence)
             }
-        val result = useCase.getFills(marketId, orderId, minAdmissionSequence, pageSize, after)
+        useCase.validateInput(marketId, orderId, minAdmissionSequence)
+        val result =
+            try {
+                useCase.getFills(marketId, orderId, minAdmissionSequence, pageSize, after)
+            } catch (error: RuntimeException) {
+                OrderFillQueryResult(queryFailure(error))
+            }
         val found = result.code == OrderQueryCode.ORDER_FOUND
         val body =
             OrderFillQueryResponse(
@@ -62,6 +78,12 @@ internal class OrderQueryController(
             )
         return ResponseEntity.status(status(result.code)).body(body)
     }
+
+    private fun queryFailure(error: RuntimeException): OrderQueryCode =
+        when (error) {
+            is TransactionException, is DataAccessException -> OrderQueryCode.QUERY_UNAVAILABLE
+            else -> throw error
+        }
 
     private fun status(code: OrderQueryCode): Int =
         when (code) {

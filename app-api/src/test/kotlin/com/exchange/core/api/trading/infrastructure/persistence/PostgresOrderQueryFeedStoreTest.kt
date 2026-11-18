@@ -1,6 +1,7 @@
 package com.exchange.core.api.trading.infrastructure.persistence
 
 import com.exchange.core.api.trading.application.OrderFillCursor
+import com.exchange.core.api.trading.application.OrderFillQuerySnapshot
 import com.exchange.core.api.trading.application.OrderFillRole
 import com.exchange.core.api.trading.application.OrderFillSettlementStatus
 import com.exchange.core.api.trading.application.OrderQueryCode
@@ -13,6 +14,7 @@ import com.exchange.core.api.trading.application.OrderQueryUseCase
 import com.exchange.core.api.trading.application.port.OrderQueryInconsistentException
 import com.exchange.core.api.trading.application.port.OrderQueryOriginsPendingException
 import com.exchange.core.api.trading.application.port.OrderQuerySourceBounds
+import com.exchange.core.api.trading.application.port.OrderQueryStore
 import com.exchange.core.api.trading.application.port.OrderQueryUnavailableException
 import com.exchange.core.api.trading.application.port.OrderQueryWriteConflictException
 import com.exchange.core.api.trading.infrastructure.codec.SplitOrderDeliveryCodec
@@ -70,18 +72,25 @@ import org.flywaydb.core.api.MigrationVersion
 import org.junit.jupiter.api.AfterAll
 import org.junit.jupiter.api.BeforeAll
 import org.junit.jupiter.api.TestInstance
+import org.springframework.aop.framework.ProxyFactory
 import org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate
 import org.springframework.jdbc.datasource.DataSourceTransactionManager
 import org.springframework.jdbc.datasource.DriverManagerDataSource
+import org.springframework.transaction.TransactionDefinition
+import org.springframework.transaction.annotation.AnnotationTransactionAttributeSource
+import org.springframework.transaction.interceptor.TransactionInterceptor
+import org.springframework.transaction.support.TransactionTemplate
 import org.testcontainers.postgresql.PostgreSQLContainer
 import java.time.Instant
 import java.util.concurrent.Callable
 import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicLong
 import kotlin.test.Test
 import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
+import kotlin.test.assertNotEquals
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
@@ -154,6 +163,84 @@ class PostgresOrderQueryFeedStoreTest {
         assertEquals(2, ledgerIds.distinct().size)
         assertEquals(ledgerIds, listOf(first.tradeId, second.tradeId))
         assertEquals(progressBeforeRead, f.feed.progress())
+    }
+
+    @Test
+    fun `체결 조회는 외부 트랜잭션과 분리되어 저장 전 시점을 유지한다`() {
+        val f = fixture(settlementEnabled = true)
+        val maker = f.input(1, side = Side.SELL, quantity = 1)
+        val taker = f.input(2, quantity = 1)
+        f.admit(maker)
+        f.admit(taker)
+        val resting = assertNotNull(f.owner.apply(maker).result)
+        val matched = assertNotNull(f.owner.apply(taker).result)
+        f.match(resting)
+        f.match(matched)
+        f.feed.applySettlement(f.settlement(resting))
+        f.verify(2, 2)
+
+        val transactionManager = DataSourceTransactionManager(requireNotNull(jdbc.jdbcTemplate.dataSource))
+        val outerTransaction =
+            TransactionTemplate(transactionManager).apply { isolationLevel = TransactionDefinition.ISOLATION_READ_COMMITTED }
+        val settlement = f.settlement(matched)
+        val marketId = taker.order.marketId.value
+        val orderId = taker.order.orderId.value
+        val settings =
+            """
+            select pg_backend_pid() as backend, current_setting('transaction_isolation') as isolation,
+                current_setting('transaction_read_only') as read_only
+            """.trimIndent()
+
+        fun advisedQuery(store: OrderQueryStore): OrderQueryUseCase {
+            val advice =
+                TransactionInterceptor().apply {
+                    setTransactionManager(transactionManager)
+                    setTransactionAttributeSource(AnnotationTransactionAttributeSource())
+                }
+            val factory = ProxyFactory(OrderQueryUseCase(store))
+            factory.addAdvice(advice)
+            return factory.proxy as OrderQueryUseCase
+        }
+
+        val firstRead =
+            outerTransaction.execute {
+                val before = jdbc.jdbcTemplate.queryForMap(settings)
+                assertEquals("read committed", before["isolation"])
+                val observedStore =
+                    object : OrderQueryStore by f.query {
+                        override fun readFills(
+                            marketId: String,
+                            orderId: String,
+                            minAdmissionSequence: Long,
+                            limit: Int,
+                            after: OrderFillCursor?,
+                        ): OrderFillQuerySnapshot {
+                            val active = jdbc.jdbcTemplate.queryForMap(settings)
+                            assertEquals("repeatable read", active["isolation"])
+                            assertEquals("on", active["read_only"])
+                            assertNotEquals(before["backend"], active["backend"])
+                            // 정산 저장 전에 읽기 시점을 잡고, 다른 연결에서 정산을 커밋한다.
+                            assertEquals(0L, f.settlementTransactionCount())
+                            Executors.newSingleThreadExecutor().use { writer ->
+                                val task = writer.submit(Callable { f.feed.applySettlement(settlement) })
+                                assertEquals(matched.resultSequence, task.get(10, TimeUnit.SECONDS))
+                            }
+                            return f.query.readFills(marketId, orderId, minAdmissionSequence, limit, after)
+                        }
+                    }
+                val useCase = advisedQuery(observedStore)
+                val result = useCase.getFills(marketId, orderId, minAdmissionSequence = 0, limit = 50, after = null)
+                assertEquals(before, jdbc.jdbcTemplate.queryForMap(settings))
+                assertEquals(OrderQueryCode.ORDER_FOUND, result.code)
+                result.fills.single()
+            }
+        val pending = assertNotNull(firstRead)
+        assertEquals(OrderFillSettlementStatus.PENDING, pending.settlementStatus)
+
+        val useCase = advisedQuery(f.query)
+        val afterCommit = useCase.getFills(marketId, orderId, minAdmissionSequence = 0, limit = 50, after = null)
+        assertEquals(OrderQueryCode.ORDER_FOUND, afterCommit.code)
+        assertEquals(pending.copy(settlementStatus = OrderFillSettlementStatus.COMPLETED), afterCommit.fills.single())
     }
 
     @Test

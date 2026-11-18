@@ -8,7 +8,7 @@
 2. 매칭 결과가 주문 조회 DB에 반영되면 실제 체결 건별로 한 줄이 보인다. 사용자는 가격·수량과 이 주문이 먼저 기다렸는지(`MAKER`), 기다리던 주문과 즉시 맞붙었는지(`TAKER`)를 본다.
 3. 체결 기록이 있고 해당 정산 분개의 DB 커밋을 기다리면 `PENDING`이다. 같은 체결의 분개가 커밋되면 그 줄만 `COMPLETED`로 바뀐다. 최초 체결 ID와 체결 순서는 유지된다.
 
-두 기록은 각자 커밋된다. 주문 상태의 `financialStatus=APPLIED`는 자금 엔진에 적용됐다는 뜻이다. 체결 내역의 `COMPLETED`는 해당 체결 분개가 PostgreSQL에 저장됐다는 뜻이다. 한 주문의 첫 체결이 `COMPLETED`이고 후속 체결이 `PENDING`일 수 있다. [기존 주문 조회 상태](../app-api/src/main/kotlin/com/exchange/core/api/trading/api/OrderQueryController.kt#L110) · [자금 적용 위치와 분개 수집 순서](../app-api/src/main/kotlin/com/exchange/core/api/trading/infrastructure/aeron/OrderQueryFeedWorker.kt#L280)
+두 기록은 각자 커밋된다. 주문 상태의 `financialStatus=APPLIED`는 자금 엔진에 적용됐다는 뜻이다. 체결 내역의 `COMPLETED`는 해당 체결 분개가 PostgreSQL에 저장됐다는 뜻이다. 한 주문의 첫 체결이 `COMPLETED`이고 후속 체결이 `PENDING`일 수 있다. [기존 주문 조회 상태](../app-api/src/main/kotlin/com/exchange/core/api/trading/api/OrderQueryController.kt#L132) · [자금 적용 위치와 분개 수집 순서](../app-api/src/main/kotlin/com/exchange/core/api/trading/infrastructure/aeron/OrderQueryFeedWorker.kt#L280)
 
 ## 합의한 결정과 구현 제안
 
@@ -29,11 +29,11 @@
 - **정산 분개까지 커밋된 경우**에는 같은 출처·마켓·결과 순번·체결 엔진 순번, `tradeId`, 양쪽 주문·가격·수량이 일치하는 V12 정산 행과 그 결과를 포함하는 저장 순번을 확인해 `COMPLETED`로 반환한다. 자금 적용 순번과 주문 전체의 `financialStatus`는 이 판정에 사용하지 않는다.
 - 저장 순번이 이미 해당 결과를 넘겼는데 정산 행이 없거나, 정산 행 내용이 매칭 원문과 다르거나, 정산 행이 저장 순번보다 앞서 있으면 `QUERY_INCONSISTENT`다. V12는 분개 전체와 저장 순번을 한 트랜잭션에 저장한다. 정산 행이 매칭 조회보다 먼저 도착하면 주문 체결 목록은 매칭 원문이 DB에 반영될 때 시작한다.
 
-[주문 조회의 200·202·404·503 분기](../app-api/src/main/kotlin/com/exchange/core/api/trading/application/OrderQueryUseCase.kt#L24) · [분개와 순번의 원자 커밋](../app-api/src/main/kotlin/com/exchange/core/api/trading/infrastructure/persistence/PostgresOrderQueryFeedStore.kt#L250)
+[주문 조회의 200·202·404·503 분기](../app-api/src/main/kotlin/com/exchange/core/api/trading/application/OrderQueryUseCase.kt#L91) · [분개와 순번의 원자 커밋](../app-api/src/main/kotlin/com/exchange/core/api/trading/infrastructure/persistence/PostgresOrderQueryFeedStore.kt#L250)
 
 ## 기존 DB 기록을 읽는 방법
 
-**확인한 사실.** #60은 매칭 결과를 저장하는 트랜잭션에서 영향받은 주문 목록이 든 `applied_batch`와 원문 `source_receipt`를 같은 적용 리비전으로 남긴다. 주문 목록에는 마켓과 접수 순번이 있고, 원문에는 양쪽 주문 ID가 있는 실제 체결이 들어 있다. #195 V12는 각 체결의 정산 거래·분개와 마켓별 저장 순번을 보관한다. [V11 매칭 원문](../app-api/src/main/resources/db/migration/V11__create_order_query_source_feed.sql#L19) · [매칭 반영과 원문 저장](../app-api/src/main/kotlin/com/exchange/core/api/trading/infrastructure/persistence/PostgresOrderQueryFeedStore.kt#L184) · [저장된 주문 목록의 형식](../app-api/src/main/kotlin/com/exchange/core/api/trading/infrastructure/persistence/PostgresOrderQueryStore.kt#L296)
+**확인한 사실.** #60은 매칭 결과를 저장하는 트랜잭션에서 영향받은 주문 목록이 든 `applied_batch`와 원문 `source_receipt`를 같은 적용 리비전으로 남긴다. 주문 목록에는 마켓과 접수 순번이 있고, 원문에는 양쪽 주문 ID가 있는 실제 체결이 들어 있다. #195 V12는 각 체결의 정산 거래·분개와 마켓별 저장 순번을 보관한다. [V11 매칭 원문](../app-api/src/main/resources/db/migration/V11__create_order_query_source_feed.sql#L19) · [매칭 반영과 원문 저장](../app-api/src/main/kotlin/com/exchange/core/api/trading/infrastructure/persistence/PostgresOrderQueryFeedStore.kt#L184) · [저장된 주문 목록의 형식](../app-api/src/main/kotlin/com/exchange/core/api/trading/infrastructure/persistence/PostgresOrderQueryStore.kt#L319)
 
 **작은 PR의 구현 제안.** 이미 저장한 주문 목록과 원문을 이용한다. 새 기록 파이프라인이나 별도 체결 테이블의 과거 데이터 채우기 작업을 만들 필요가 없다.
 
@@ -82,10 +82,10 @@ cd "$(git rev-parse --show-toplevel)"
 
 ## 구현 기록
 
-- `feat/order-fill-query/61`에 기존 주문 조회 컨트롤러의 `/fills`와 V13 주문 후보 인덱스를 추가했다. 기존 WAS의 DB 연결에서 읽기 전용 `REPEATABLE READ`로 주문·매칭 원문·정산 상태를 같이 본다. V11 원문을 저장 당시 형식으로 읽으므로 과거 주문을 다시 실행하거나 정산을 다시 보낼 필요가 없다. [HTTP 읽기 경로](../app-api/src/main/kotlin/com/exchange/core/api/trading/api/OrderQueryController.kt#L35) · [DB 읽기 경로](../app-api/src/main/kotlin/com/exchange/core/api/trading/infrastructure/persistence/PostgresOrderFillReader.kt#L17)
+- `feat/order-fill-query/61`에 기존 주문 조회 컨트롤러의 `/fills`와 V13 주문 후보 인덱스를 추가했다. 기존 WAS의 DB 연결에서 읽기 전용 `REPEATABLE READ`로 주문·매칭 원문·정산 상태를 같이 본다. V11 원문을 저장 당시 형식으로 읽으므로 과거 주문을 다시 실행하거나 정산을 다시 보낼 필요가 없다. [HTTP 읽기 경로](../app-api/src/main/kotlin/com/exchange/core/api/trading/api/OrderQueryController.kt#L44) · [DB 읽기 경로](../app-api/src/main/kotlin/com/exchange/core/api/trading/infrastructure/persistence/PostgresOrderFillReader.kt#L17)
 - 체결 가격과 양수 수량은 기존 매칭 원문 해석기의 검증을 거친다. 조회한 주문과 원문의 주문 ID·소유자·방향을 대조해 역할을 정하고, 첫 페이지에서 전체를 반환할 때는 체결 합계를 주문의 체결 수량과도 확인한다. 정산 완료는 V12의 저장 순번과 행이 모두 일치할 때만 판정한다. 손상 검사는 체결·정산 식별 값의 일치까지 다루며 전체 원장 대사는 #58 범위다. [매칭 원문 해석기의 검증](../app-api/src/main/kotlin/com/exchange/core/api/trading/infrastructure/codec/SplitResultDeliveryCodec.kt#L518) · [기존 정산 원본 사건 ID](../domain-trading/src/main/kotlin/com/exchange/core/trading/SettlementLedgerTransactions.kt#L42)
 - 신규 HTTP 시험을 먼저 실행해 구현 전 `/fills`가 404를 반환하고 알려진 미체결 주문의 기대값인 200을 충족하지 않는 것을 확인했다. 실제 HTTP·PostgreSQL 시험의 다음 단계에서는 #44의 결과 2·3을 V12 저장 트랜잭션을 열기 직전에 각각 멈춰, `APPLIED`인 주문과 `PENDING`인 체결을 동시에 관찰했다. 저장을 재개한 뒤 양쪽 주문이 같은 ID와 반대 역할을 유지하며 `COMPLETED`가 되는지 읽었다. [실제 HTTP 시험](../app-api/src/test/kotlin/com/exchange/core/api/trading/infrastructure/aeron/SplitFundsTradingHttpTest.kt#L570)
-- 독립 리뷰에서 빈 페이지 순번이 생략으로 처리되는 반례와 기존 정산 원본 사건 ID의 대조 누락을 확인했다. HTTP 입력 원문에서 순번을 검증하고 DB의 `source_event_id`를 매칭 원문과 대조했다. 회귀에는 빈 값·빠진 순번, 다른 사건 ID, 정산 순번과 행이 서로 앞서는 경우를 포함했다. [HTTP 입력 시험](../app-api/src/test/kotlin/com/exchange/core/api/trading/api/OrderQueryHttpTest.kt#L210) · [실제 DB 손상 시험](../app-api/src/test/kotlin/com/exchange/core/api/trading/infrastructure/persistence/PostgresOrderQueryFeedStoreTest.kt#L160)
+- 독립 리뷰에서 빈 페이지 순번이 생략으로 처리되는 반례와 기존 정산 원본 사건 ID의 대조 누락을 확인했다. HTTP 입력 원문에서 순번을 검증하고 DB의 `source_event_id`를 매칭 원문과 대조했다. 회귀에는 빈 값·빠진 순번, 다른 사건 ID, 정산 순번과 행이 서로 앞서는 경우를 포함했다. [HTTP 입력 시험](../app-api/src/test/kotlin/com/exchange/core/api/trading/api/OrderQueryHttpTest.kt#L211) · [실제 DB 손상 시험](../app-api/src/test/kotlin/com/exchange/core/api/trading/infrastructure/persistence/PostgresOrderQueryFeedStoreTest.kt#L247)
 
 ## 검증 결과
 
@@ -94,3 +94,11 @@ cd "$(git rev-parse --show-toplevel)"
 - 작성 대화를 공유하지 않은 리뷰어가 통합 기준 `20d8a41`의 고정 변경을 검토했다. 수정본의 검토 대상 목록 SHA-256은 `1c117bda8c9f26aee903e0f930498629d25db47bc88137856662b3d00c271f85`다. 리뷰어가 그 사본에서 HTTP 입력과 PostgreSQL 손상 회귀를 각각 실행해 2건 모두 통과했다. 검토 범위에 남은 지적은 없다. 이 문서는 검증 결과와 GitHub에서 열 수 있는 코드 링크를 리뷰 뒤에 반영했다.
 
 - 과거 체결은 V13 적용 전 DB에 저장하고 적용 뒤 저장소를 다시 열어 확인했다. 실제 노드 재기동·리더 교체와 운영 규모의 SQL 실행 계획·인덱스 생성 시간은 이번 검증 범위 밖이다.
+
+### 선언형 조회 트랜잭션
+
+- 기존 조회 유스케이스의 일반 주문 GET은 `@Transactional(readOnly = true)`로, 체결 GET은 `readOnly = true`, `REPEATABLE_READ`, `REQUIRES_NEW`로 선언한다. 체결 Store는 그 경계 안에서 주문·매칭 원문·정산을 읽는다. HTTP는 트랜잭션을 열기 전에 입력을 확인하고, 트랜잭션 시작·종료 중의 DB 오류는 `503 QUERY_UNAVAILABLE`로 응답한다. [유스케이스](../app-api/src/main/kotlin/com/exchange/core/api/trading/application/OrderQueryUseCase.kt#L31) · [HTTP 오류 처리](../app-api/src/main/kotlin/com/exchange/core/api/trading/api/OrderQueryController.kt#L82)
+- PostgreSQL 회귀는 바깥 `READ COMMITTED` 트랜잭션 중 체결 조회가 별도 연결의 읽기 전용 `REPEATABLE READ`로 실행되는지 확인한다. 읽기 시점을 고정한 뒤 다른 연결로 정산을 커밋하면 현재 조회는 `PENDING`, 다음 조회는 같은 ID로 `COMPLETED`를 반환해야 한다. [동시 커밋 시험](../app-api/src/test/kotlin/com/exchange/core/api/trading/infrastructure/persistence/PostgresOrderQueryFeedStoreTest.kt#L169)
+- 실제 HTTP로 연결 풀이 고갈된 때 입력 오류의 400, 트랜잭션 시작 실패와 SQL 실패의 `503 QUERY_UNAVAILABLE`, 정산 행 불일치의 `503 QUERY_INCONSISTENT`를 대조한다. [연결 실패 시험](../app-api/src/test/kotlin/com/exchange/core/api/trading/api/OrderQueryHttpTest.kt#L279) · [실제 정산 DB 오류 시험](../app-api/src/test/kotlin/com/exchange/core/api/trading/infrastructure/aeron/SplitFundsTradingHttpTest.kt#L653)
+- 정산 저장은 분개·저장 순번을 한 트랜잭션으로 커밋한다. 원본 충돌을 발견하면 먼저 실패한 쓰기를 롤백한 뒤 `BLOCKED`를 별도 저장하는 기존 경계를 유지한다. [정산 저장](../app-api/src/main/kotlin/com/exchange/core/api/trading/infrastructure/persistence/PostgresOrderQueryFeedStore.kt#L250) · [충돌 시 별도 상태 저장](../app-api/src/main/kotlin/com/exchange/core/api/trading/infrastructure/persistence/PostgresOrderQueryFeedStore.kt#L668)
+- 위 Gradle 명령으로 선언형 변경을 다시 실행했다. 앱 64건, 아키텍처 386건, P01–P09와 앱 `ktlintCheck`가 통과했다. 실패·건너뜀은 0건이다.

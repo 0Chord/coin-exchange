@@ -651,6 +651,33 @@ class SplitFundsTradingHttpTest {
                         assertEquals(listOf(firstCompleted, followUpCompleted), readOrderFills(http, url, buyId))
                         assertEquals(listOf(firstCompleted.copy(role = "MAKER")), readOrderFills(http, url, firstSaleId))
                         assertEquals(listOf(followUpCompleted.copy(role = "TAKER")), readOrderFills(http, url, followUpSaleId))
+
+                        val sourceEventId =
+                            jdbc.queryForObject(
+                                "select source_event_id from order_query.settlement_transaction where settlement_id = ?",
+                                String::class.java,
+                                followUpCompleted.tradeId,
+                            )
+                        val changeSource = "update order_query.settlement_transaction set source_event_id = ? where settlement_id = ?"
+                        try {
+                            assertEquals(1, jdbc.update(changeSource, "incorrect-source", followUpCompleted.tradeId))
+                            val inconsistent = getOrderFills(http, url, buyId)
+                            assertEquals(503, inconsistent.statusCode(), inconsistent.body())
+                            assertEquals("QUERY_INCONSISTENT", json.readTree(inconsistent.body()).path("code").asString())
+                        } finally {
+                            jdbc.update(changeSource, sourceEventId, followUpCompleted.tradeId)
+                        }
+
+                        // 실제 SQL 오류가 발생해도 체결 조회의 오류 응답을 유지한다.
+                        jdbc.execute("alter table order_query.settlement_transaction rename to unavailable_settlement_transaction")
+                        try {
+                            val unavailable = getOrderFills(http, url, buyId)
+                            assertEquals(503, unavailable.statusCode(), unavailable.body())
+                            assertEquals("QUERY_UNAVAILABLE", json.readTree(unavailable.body()).path("code").asString())
+                        } finally {
+                            jdbc.execute("alter table order_query.unavailable_settlement_transaction rename to settlement_transaction")
+                        }
+                        assertEquals(listOf(firstCompleted, followUpCompleted), readOrderFills(http, url, buyId))
                     }
                 } finally {
                     firstCommit.release.countDown()
@@ -673,13 +700,7 @@ class SplitFundsTradingHttpTest {
         url: String,
         orderId: String,
     ): List<HttpOrderFill> {
-        val request =
-            HttpRequest
-                .newBuilder(URI.create("$url/api/trading/v3/markets/BTC-USDT/orders/$orderId/fills"))
-                .timeout(Duration.ofSeconds(3))
-                .GET()
-                .build()
-        val response = http.send(request, HttpResponse.BodyHandlers.ofString())
+        val response = getOrderFills(http, url, orderId)
         assertEquals(200, response.statusCode(), response.body())
         val body = json.readTree(response.body())
         assertEquals(orderId, body.path("orderId").asString(), response.body())
@@ -698,6 +719,20 @@ class SplitFundsTradingHttpTest {
                 settlementStatus = fill.path("settlementStatus").asString(),
             )
         }
+    }
+
+    private fun getOrderFills(
+        http: HttpClient,
+        url: String,
+        orderId: String,
+    ): HttpResponse<String> {
+        val request =
+            HttpRequest
+                .newBuilder(URI.create("$url/api/trading/v3/markets/BTC-USDT/orders/$orderId/fills"))
+                .timeout(Duration.ofSeconds(3))
+                .GET()
+                .build()
+        return http.send(request, HttpResponse.BodyHandlers.ofString())
     }
 
     private fun verifyCancellationResponses(

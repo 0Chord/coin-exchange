@@ -18,6 +18,7 @@ import com.exchange.core.support.OrderQueryTestDatabase
 import com.exchange.core.trading.ClusterLineage
 import com.exchange.core.trading.MatchingResultStream
 import com.exchange.core.trading.TradingIdentifiers
+import com.zaxxer.hikari.HikariDataSource
 import org.junit.jupiter.api.AfterAll
 import org.junit.jupiter.api.BeforeAll
 import org.junit.jupiter.api.BeforeEach
@@ -271,6 +272,30 @@ class OrderQueryHttpTest {
             assertEquals(400, get(record.orderId, market = "UNKNOWN").statusCode())
         } finally {
             database.jdbc().execute("alter table order_query.unavailable_order_record rename to order_record")
+        }
+    }
+
+    @Test
+    fun `트랜잭션을 시작할 수 없으면 두 조회가 503을 반환하고 잘못된 입력은 400을 유지한다`() {
+        val order = orderId(1)
+        val pool = context.getBean(DataSource::class.java).unwrap(HikariDataSource::class.java)
+        try {
+            // 연결을 빌릴 수 없어도 잘못된 요청은 트랜잭션을 기다리지 않는다.
+            val heldConnections = List(pool.maximumPoolSize) { pool.connection }
+            try {
+                assertEquals(400, get(order, market = "UNKNOWN").statusCode())
+                assertEquals(400, get(order, "/fills", market = "UNKNOWN").statusCode())
+                assertEquals(400, get(order, "/fills?limit=101").statusCode())
+            } finally {
+                heldConnections.forEach { it.close() }
+            }
+
+            pool.close()
+            assertResponse(503, "QUERY_UNAVAILABLE", get(order), hideOrder = true)
+            assertResponse(503, "QUERY_UNAVAILABLE", get(order, "/fills"))
+        } finally {
+            context.close()
+            openContext()
         }
     }
 
