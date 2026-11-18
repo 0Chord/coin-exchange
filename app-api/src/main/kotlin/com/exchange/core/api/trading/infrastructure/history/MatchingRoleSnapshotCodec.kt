@@ -10,6 +10,7 @@ import com.exchange.core.trading.MatchingIntakeConfiguration
 import com.exchange.core.trading.MatchingRoleRecoveryState
 import com.exchange.core.trading.MatchingStreamRecovery
 import com.exchange.core.trading.ReservedMatchingState
+import com.exchange.core.trading.SettlementFact
 import com.exchange.core.trading.TradingLifecycle
 import java.io.ByteArrayOutputStream
 import java.io.DataInputStream
@@ -202,6 +203,12 @@ internal class MatchingRoleSnapshotCodec {
         val queryResults =
             expected.queryRetention?.let { retention ->
                 require(input.count(owned.size) == owned.size) { "query snapshot stream coverage differs" }
+                val maxEntryBytes =
+                    if (retention.capabilityVersion == 2) {
+                        maxOf(expected.limits.maxSingleResultBytes, SettlementFact.MAX_CANONICAL_BYTES)
+                    } else {
+                        expected.limits.maxSingleResultBytes
+                    }
                 var totalEntries = 0
                 var totalBytes = 0L
                 expected.markets.associate { context ->
@@ -213,7 +220,7 @@ internal class MatchingRoleSnapshotCodec {
                             input,
                             minOf(local.maxEntries, retention.maxEntries - totalEntries),
                             minOf(local.maxBytes, retention.maxBytes - totalBytes),
-                            expected.limits.maxSingleResultBytes,
+                            maxEntryBytes,
                             readEntry = { framed ->
                                 results.readResult(
                                     framed,
@@ -223,7 +230,7 @@ internal class MatchingRoleSnapshotCodec {
                                     expected.inputContractVersion,
                                 )
                             },
-                            charge = { it.canonicalBytes },
+                            charge = expected::queryResultCharge,
                         )
                     totalEntries = Math.addExact(totalEntries, facts.entries.size)
                     totalBytes = Math.addExact(totalBytes, facts.retainedBytes)
