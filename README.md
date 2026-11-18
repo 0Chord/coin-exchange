@@ -51,6 +51,10 @@ Spring Boot의 공용 DataSource·JDBC·트랜잭션·Flyway를 사용합니다.
 | `POST /api/trading/v3/channels/{channel}/ack` | 확인한 접수 결과의 연속 순번 알림 |
 | `GET /api/trading/v3/markets/{marketId}/orders/{orderId}` | RDB 주문 상태·수량·금융 처리 상태 조회 |
 
+주문 응답이 끊기거나 `504 OUTCOME_UNKNOWN`을 받으면 결과를 확인 중으로 둡니다. 주문을 계속 진행하려면 처음과 같은 요청 번호(`userId`, `channel`, `epoch`, `sequence`)와 같은 마켓·주문 내용으로 POST를 다시 보냅니다. 이미 접수됐으면 자금 엔진이 최초 접수 정보를 돌려주고, 첫 요청이 도착하지 않았다면 이 재전송이 첫 접수가 될 수 있습니다. `ACCEPTED` 응답의 `orderId`로 GET을 호출하고, `minAdmissionSequence`에는 응답의 `admissionSequence`를 넣습니다.
+
+확인한 응답의 연속 순번만 ACK로 정리합니다. 응답이 정리됐거나 요청 세대가 바뀌면 새 번호로 자동 재주문하지 않습니다. 이미 보관한 `orderId`가 있으면 기존 GET으로 조회합니다. [응답 유실과 재시작 검증](engineering/order-timeout-recovery-spec.md)
+
 조회의 `minAdmissionSequence`가 아직 반영되지 않았으면 `202 QUERY_CATCHING_UP`입니다. 준비된 범위라도 관찰한 원본보다 DB가 뒤처진 동안 부재는 202이며, 관찰 기준까지 반영한 뒤에만 `404 ORDER_NOT_FOUND_AS_OF`를 반환합니다. 원본 연결 실패·재검증 중, DB 오류, 원본 공백·정체성 모순은 503입니다. `CAUGHT_UP`은 마지막으로 검증한 원본 기준까지 반영됐다는 뜻입니다.
 
 조회 원본의 건수·bytes 한도가 차면 새 접수는 예약 전에 `RETRYABLE_CAPACITY`, 새 매칭 변경은 `BUSY`로 제한합니다. 원문을 버리거나 BUSY를 취소·예약 반환으로 바꾸지 않습니다. 사용자 인증·인가, 체결 상세 API, 원장 대사와 오래된 기록의 자동 이행은 이번 범위 밖입니다.

@@ -9,6 +9,7 @@ import com.exchange.core.api.trading.infrastructure.codec.BoundedTradingCommand
 import com.exchange.core.api.trading.infrastructure.codec.DevelopmentBalanceCommandPayload
 import com.exchange.core.api.trading.infrastructure.codec.OrderQuerySourceCodec
 import com.exchange.core.api.trading.infrastructure.codec.OrderQuerySourceCommand
+import com.exchange.core.api.trading.infrastructure.codec.SplitOrderDeliveryCodec
 import com.exchange.core.api.trading.infrastructure.codec.SplitOrderDeliveryCommand
 import com.exchange.core.api.trading.infrastructure.codec.SplitResultDeliveryCodec
 import com.exchange.core.api.trading.infrastructure.codec.SplitResultDeliveryCommand
@@ -33,6 +34,8 @@ import com.exchange.core.order.OrderType
 import com.exchange.core.order.Side
 import com.exchange.core.order.TimeInForce
 import com.exchange.core.support.OrderQueryTestDatabase
+import com.exchange.core.trading.AdmissionCode
+import com.exchange.core.trading.AdmissionReceipt
 import com.exchange.core.trading.BoundedFundingState
 import com.exchange.core.trading.CancelIntent
 import com.exchange.core.trading.ClusterLineage
@@ -60,15 +63,18 @@ import org.agrona.concurrent.UnsafeBuffer
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.io.TempDir
 import org.springframework.beans.factory.config.BeanPostProcessor
+import org.springframework.beans.factory.support.AbstractBeanDefinition
 import org.springframework.boot.builder.SpringApplicationBuilder
 import org.springframework.boot.web.server.servlet.context.ServletWebServerApplicationContext
 import org.springframework.context.ConfigurableApplicationContext
 import tools.jackson.databind.json.JsonMapper
+import java.math.BigInteger
 import java.net.DatagramSocket
 import java.net.URI
 import java.net.http.HttpClient
 import java.net.http.HttpRequest
 import java.net.http.HttpResponse
+import java.nio.ByteOrder
 import java.nio.file.Files
 import java.nio.file.Path
 import java.time.Duration
@@ -79,6 +85,7 @@ import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicReference
 import java.util.concurrent.locks.LockSupport
+import java.util.function.Supplier
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertNull
@@ -307,6 +314,214 @@ class SplitFundsTradingHttpTest {
             assertEquals(settled.financial.balances, resumed.financial.balances)
             assertEquals(3L, checkNotNull(resumed.results).streams.single().resultThrough)
             assertEquals(5L, jdbc.queryForObject("select count(*) from order_query.source_receipt", Long::class.java))
+        }
+    }
+
+    @Test
+    fun `주문 응답 유실 뒤 새 WAS에서 같은 요청을 재전송하고 한 번 정산된 주문을 조회한다`() {
+        val buyerToken = RequestToken(UserId("buyer"), channel = 0, epoch = 1, sequence = 1)
+        val reservedBuyerBalance = Balance(buyerToken.userId, AssetId("USDT"), Amount(899), Amount(101))
+        val lostReceipt = AtomicReference<AdmissionReceipt?>()
+        withTradingNodes(
+            consumerId = "query-test",
+            feeRate = FeeRate(10_000),
+            decorateFunds = { service -> dropFirstAdmissionReply(service, buyerToken, lostReceipt) },
+        ) { harness ->
+            val orderPath = "/markets/BTC-USDT/orders"
+            val buyOrder = orderBody("buyer", "BUY", 1)
+            val initialArguments =
+                wasArguments(harness, queryEnabled = true) + "--TRADING_GATEWAY_RESULT_TIMEOUT_MS=1500"
+            val initialPid =
+                OrderRecoveryWas.start(initialArguments, directory.resolve("initial-was.log")).use { was ->
+                    HttpClient.newHttpClient().use { http ->
+                        awaitEmptyReady(harness, http, was.url)
+                        val seller = submitSeller(http, was.url, quantity = 1)
+                        val sellerOrderId = json.readTree(seller.body()).path("orderId").asString()
+                        awaitQuery(harness, http, was.url, sellerOrderId, "RESTING", 0, 1, 0)
+                        val epoch = post(http, was.url, "/channels/0/epoch", """{"userId":"buyer","expectedEpoch":0}""")
+                        assertEquals(200, epoch.statusCode(), epoch.body())
+
+                        harness.settlementGate.paused.set(true)
+                        val unknown = post(http, was.url, orderPath, buyOrder)
+                        assertEquals(504, unknown.statusCode(), unknown.body())
+                        val unknownBody = json.readTree(unknown.body())
+                        assertEquals("OUTCOME_UNKNOWN", unknownBody.path("status").asString())
+                        assertEquals("RESULT_UNCONFIRMED", unknownBody.path("reason").asString())
+                        assertEquals("buyer", unknownBody.path("userId").asString())
+                        assertEquals(0, unknownBody.path("channel").asInt(-1))
+                        assertEquals(1L, unknownBody.path("epoch").longValue())
+                        assertEquals(1L, unknownBody.path("sequence").longValue())
+                        assertTrue(unknownBody.path("orderId").isMissingNode || unknownBody.path("orderId").isNull)
+                        val committed = checkNotNull(harness.fundsSnapshot.get()).financial
+                        val buyerBalance = committed.balances.single { it.userId.value == "buyer" && it.assetId.value == "USDT" }
+                        assertEquals(reservedBuyerBalance, buyerBalance)
+                        val buyerInbox =
+                            committed.inbox.channels.single { channel ->
+                                channel.userId == buyerToken.userId && channel.channel == buyerToken.channel
+                            }
+                        assertEquals(lostReceipt.get(), buyerInbox.entries.single { it.sequence == buyerToken.sequence }.receipt)
+                        assertEquals(2L, committed.lastAdmissionSequence)
+                    }
+                    was.pid
+                }
+            assertFalse(ProcessHandle.of(initialPid).isPresent, "첫 WAS가 종료돼야 한다")
+
+            val original = checkNotNull(lostReceipt.get()) { "자금 엔진의 성공 응답이 유실돼야 한다" }
+            val originalOrderId = checkNotNull(original.orderId).value
+            val restartedArguments = wasArguments(harness, queryEnabled = true, gatewayRoot = "gateway-restart")
+            OrderRecoveryWas.start(restartedArguments, directory.resolve("restarted-was.log")).use { was ->
+                assertTrue(was.pid != initialPid, "새 JVM에서 같은 요청을 다시 보내야 한다")
+                HttpClient.newHttpClient().use { http ->
+                    val recovered = post(http, was.url, orderPath, buyOrder)
+                    assertEquals(202, recovered.statusCode(), recovered.body())
+                    val recoveredBody = json.readTree(recovered.body())
+                    val orderId = recoveredBody.path("orderId").asString()
+                    val admissionSequence = recoveredBody.path("admissionSequence").longValue()
+                    assertEquals("ACCEPTED", recoveredBody.path("status").asString())
+                    assertEquals(originalOrderId, orderId)
+                    assertEquals(original.admissionSequence, admissionSequence)
+                    assertEquals(2L, admissionSequence)
+                    assertEquals(original.marketAdmissionSequence, recoveredBody.path("marketAdmissionSequence").longValue())
+
+                    val conflicting = post(http, was.url, orderPath, orderBody("buyer", "BUY", 1, price = 101))
+                    assertEquals(409, conflicting.statusCode(), conflicting.body())
+                    assertEquals("REQUEST_CONTENT_CONFLICT", json.readTree(conflicting.body()).path("status").asString())
+                    awaitQuery(harness, http, was.url, orderId, "FILLED", 1, 0, 0, "PENDING", "SETTLEMENT", minimum = admissionSequence)
+                    val beforeSettlement = checkNotNull(harness.fundsSnapshot.get())
+                    val buyerBalance =
+                        beforeSettlement.financial.balances.single { balance ->
+                            balance.userId == buyerToken.userId && balance.assetId == reservedBuyerBalance.assetId
+                        }
+                    assertEquals(reservedBuyerBalance, buyerBalance)
+                    assertEquals(2L, beforeSettlement.financial.lastAdmissionSequence)
+                    val beforeSettlementStream = checkNotNull(beforeSettlement.results).streams.single()
+                    assertEquals(1L, beforeSettlementStream.resultThrough)
+
+                    harness.settlementGate.paused.set(false)
+                    awaitQuery(harness, http, was.url, orderId, "FILLED", 1, 0, 0, minimum = admissionSequence)
+                    val ack = post(http, was.url, "/channels/0/ack", """{"userId":"buyer","epoch":1,"through":1}""")
+                    assertEquals(200, ack.statusCode(), ack.body())
+                    assertEquals(1L, json.readTree(ack.body()).path("retiredThrough").longValue())
+                    val retired = post(http, was.url, orderPath, buyOrder)
+                    assertEquals(409, retired.statusCode(), retired.body())
+                    assertEquals("RETIRED_UNAVAILABLE", json.readTree(retired.body()).path("status").asString())
+                    val epoch = post(http, was.url, "/channels/0/epoch", """{"userId":"buyer","expectedEpoch":1}""")
+                    assertEquals(200, epoch.statusCode(), epoch.body())
+                    assertEquals(2L, json.readTree(epoch.body()).path("epoch").longValue())
+                    val fenced = post(http, was.url, orderPath, buyOrder)
+                    assertEquals(409, fenced.statusCode(), fenced.body())
+                    assertEquals("FENCED_EPOCH", json.readTree(fenced.body()).path("status").asString())
+
+                    val unaffordableOrder = orderBody("buyer", "BUY", 10, epoch = 2)
+                    repeat(2) {
+                        val rejected = post(http, was.url, orderPath, unaffordableOrder)
+                        assertEquals(422, rejected.statusCode(), rejected.body())
+                        val rejectedBody = json.readTree(rejected.body())
+                        assertEquals("REJECTED", rejectedBody.path("status").asString())
+                        assertEquals("INSUFFICIENT_BALANCE", rejectedBody.path("reason").asString())
+                        val rejectedOrderId = rejectedBody.path("orderId")
+                        assertTrue(rejectedOrderId.isMissingNode || rejectedOrderId.isNull)
+                    }
+
+                    val settled = getQuery(http, was.url, orderId, minimum = admissionSequence)
+                    assertEquals(200, settled.statusCode(), settled.body())
+                    val settledBody = json.readTree(settled.body())
+                    assertEquals(orderId, settledBody.path("orderId").asString())
+                    assertEquals("FILLED", settledBody.path("state").asString())
+                    assertEquals("APPLIED", settledBody.path("financialStatus").asString())
+                    assertEquals(1L, settledBody.path("filledQuantity").longValue())
+                    assertEquals(2L, settledBody.path("coveredAdmissionSequence").longValue())
+                    val finalFunds = checkNotNull(harness.fundsSnapshot.get())
+                    assertFinalBalances(finalFunds, buyerQuote = 899, sellerQuote = 99)
+                    assertEquals(mapOf(AssetId("USDT") to BigInteger.TWO), finalFunds.financial.feeRevenueByAsset)
+                    assertEquals(2L, finalFunds.financial.lastAdmissionSequence)
+                    val finalStream = checkNotNull(finalFunds.results).streams.single()
+                    assertEquals(2L, finalStream.resultThrough)
+                    assertTrue(finalFunds.financial.liveOrders.isEmpty())
+                    assertEquals(4L, receiptCount(harness))
+                }
+            }
+        }
+    }
+
+    @Test
+    fun `전송 전에 막힌 요청을 그대로 다시 보내면 실제 자금 엔진이 한 번 접수한다`() {
+        withTradingNodes(consumerId = "query-test") { harness ->
+            val blockOffer = AtomicBoolean()
+            val offerBlocked = AtomicBoolean()
+            val settings =
+                AeronGatewaySettings(
+                    runRoot = directory.resolve("gateway"),
+                    ingressEndpoints = harness.fundsSettings.fundsIngressEndpoints,
+                    egressEndpoint = "127.0.0.1:${harness.basePort + 32}",
+                    resultTimeoutMs = 1_500,
+                )
+            val application = SpringApplicationBuilder(ExchangeCoreApplication::class.java)
+            application.initializers({ context ->
+                context.addBeanFactoryPostProcessor { factory ->
+                    val gateway = factory.getBeanDefinition("boundedAeronGateway") as AbstractBeanDefinition
+                    gateway.instanceSupplier =
+                        Supplier {
+                            BoundedAeronGateway(settings, commandEncoder = SplitFundsGatewayTransport.Companion::encodeCommand) { receive ->
+                                val transport = SplitFundsGatewayTransport(settings, lineage, receive)
+                                object : BoundedGatewayTransport by transport {
+                                    override fun offer(bytes: ByteArray): Long {
+                                        if (!blockOffer.get()) return transport.offer(bytes)
+                                        offerBlocked.set(true)
+                                        return Publication.BACK_PRESSURED
+                                    }
+                                }
+                            }
+                        }
+                }
+            })
+            application.run(*wasArguments(harness, queryEnabled = true)).use { context ->
+                val url = wasUrl(context)
+                val path = "/markets/BTC-USDT/orders"
+                val request = orderBody("buyer", "BUY", 1)
+                HttpClient.newHttpClient().use { http ->
+                    awaitEmptyReady(harness, http, url)
+                    val epoch = post(http, url, "/channels/0/epoch", """{"userId":"buyer","expectedEpoch":0}""")
+                    assertEquals(200, epoch.statusCode(), epoch.body())
+                    blockOffer.set(true)
+                    val unsent = post(http, url, path, request)
+                    assertEquals(503, unsent.statusCode(), unsent.body())
+                    val unsentBody = json.readTree(unsent.body())
+                    assertEquals("NOT_SUBMITTED", unsentBody.path("status").asString())
+                    assertEquals("QUEUE_TIMEOUT", unsentBody.path("reason").asString())
+                    assertEquals("buyer", unsentBody.path("userId").asString())
+                    assertEquals(0, unsentBody.path("channel").asInt(-1))
+                    assertEquals(1L, unsentBody.path("epoch").longValue())
+                    assertEquals(1L, unsentBody.path("sequence").longValue())
+                    val unsentOrderId = unsentBody.path("orderId")
+                    assertTrue(unsentOrderId.isMissingNode || unsentOrderId.isNull)
+                    assertTrue(offerBlocked.get())
+                    val afterTimeout = checkNotNull(harness.fundsSnapshot.get()).financial
+                    assertEquals(0L, afterTimeout.lastAdmissionSequence)
+                    val buyerChannel = afterTimeout.inbox.channels.single()
+                    assertTrue(buyerChannel.entries.isEmpty())
+                    assertTrue(afterTimeout.liveOrders.isEmpty())
+                    assertTrue(afterTimeout.balances.all { it.hold == Amount.ZERO })
+
+                    blockOffer.set(false)
+                    val accepted = post(http, url, path, request)
+                    assertEquals(202, accepted.statusCode(), accepted.body())
+                    val acceptedBody = json.readTree(accepted.body())
+                    val orderId = acceptedBody.path("orderId").asString()
+                    assertEquals(1L, acceptedBody.path("admissionSequence").longValue())
+                    val duplicate = post(http, url, path, request)
+                    assertEquals(202, duplicate.statusCode(), duplicate.body())
+                    val duplicateBody = json.readTree(duplicate.body())
+                    assertEquals(orderId, duplicateBody.path("orderId").asString())
+                    assertEquals(1L, duplicateBody.path("admissionSequence").longValue())
+                    awaitQuery(harness, http, url, orderId, "RESTING", 0, 1, 0)
+                    val afterRetry = checkNotNull(harness.fundsSnapshot.get()).financial
+                    val quote = afterRetry.balances.single { it.userId.value == "buyer" && it.assetId.value == "USDT" }
+                    assertEquals(Balance(UserId("buyer"), AssetId("USDT"), Amount(900), Amount(100)), quote)
+                    assertEquals(1L, afterRetry.lastAdmissionSequence)
+                    assertEquals(1, afterRetry.liveOrders.size)
+                }
+            }
         }
     }
 
@@ -809,6 +1024,58 @@ class SplitFundsTradingHttpTest {
         }
     }
 
+    /** 접수는 실제 callback으로 처리하고, 지정한 요청의 첫 승인 응답만 버린다. */
+    private fun dropFirstAdmissionReply(
+        service: ClusteredService,
+        token: RequestToken,
+        lostReceipt: AtomicReference<AdmissionReceipt?>,
+    ): ClusteredService {
+        val codec = SplitOrderDeliveryCodec(2)
+        return object : ClusteredService by service {
+            override fun onSessionMessage(
+                session: ClientSession?,
+                timestamp: Long,
+                buffer: DirectBuffer,
+                offset: Int,
+                length: Int,
+                header: Header,
+            ) {
+                if (session == null || lostReceipt.get() != null || length <= SplitOrderDeliveryCodec.HEADER_BYTES ||
+                    buffer.getShort(offset + 4, ByteOrder.LITTLE_ENDIAN).toInt() != 88
+                ) {
+                    service.onSessionMessage(session, timestamp, buffer, offset, length, header)
+                    return
+                }
+                val request = ByteArray(length)
+                buffer.getBytes(offset, request)
+                val control = codec.decode(request).command as? SplitOrderDeliveryCommand.Control
+                val admission = control?.command as? BoundedTradingCommand.Admit
+                if (admission?.token != token) {
+                    service.onSessionMessage(session, timestamp, buffer, offset, length, header)
+                    return
+                }
+                val droppingSession =
+                    object : ClientSession by session {
+                        override fun offer(
+                            buffer: DirectBuffer,
+                            offset: Int,
+                            length: Int,
+                        ): Long {
+                            val bytes = ByteArray(length)
+                            buffer.getBytes(offset, bytes)
+                            val receipt = codec.decodeReply(bytes).control?.admission
+                            if (receipt?.code != AdmissionCode.ACCEPTED) return session.offer(buffer, offset, length)
+                            check(lostReceipt.compareAndSet(null, receipt)) { "첫 승인 응답만 버려야 한다" }
+                            return 1L
+                        }
+                    }
+                service.onSessionMessage(droppingSession, timestamp, buffer, offset, length, header)
+            }
+
+            override fun doBackgroundWork(nowNs: Long): Int = service.doBackgroundWork(nowNs)
+        }
+    }
+
     /** 실제 복제 callback 뒤 지정한 QUERY 응답만 유실시키거나 Describe 메타데이터를 바꾼다. 제품 훅은 없다. */
     private class SourceReplyGate {
         val acknowledgements = AtomicInteger()
@@ -943,10 +1210,12 @@ class SplitFundsTradingHttpTest {
     private fun withTradingNodes(
         consumerId: String? = null,
         sourceRestart: Boolean = false,
+        feeRate: FeeRate = FeeRate.ZERO,
+        decorateFunds: (ClusteredService) -> ClusteredService = { it },
         verify: (TradingHarness) -> Unit,
     ) {
         val basePort = availablePorts()
-        val manifest = manifest()
+        val manifest = manifest(feeRate)
         val manifestFile = directory.resolve("manifest.bin").also { Files.write(it, BoundedTradingStateCodec().encodeManifest(manifest)) }
         val fundsSettings = settings(manifestFile, TradingServiceRole.FUNDS, basePort, consumerId)
         val matchingSettings = settings(manifestFile, TradingServiceRole.MATCHING, basePort, consumerId)
@@ -957,7 +1226,10 @@ class SplitFundsTradingHttpTest {
             DevelopmentSplitTradingNode
                 .start(
                     fundsSettings,
-                    serviceDecorator = { sourceReplies.decorate(observeFunds(it, fundsSnapshot)) },
+                    serviceDecorator = { adapter ->
+                        val observed = observeFunds(adapter, fundsSnapshot)
+                        sourceReplies.decorate(decorateFunds(observed))
+                    },
                 ).use { fundsNode ->
                     DevelopmentSplitTradingNode
                         .start(
@@ -1095,10 +1367,11 @@ class SplitFundsTradingHttpTest {
     private fun submitSeller(
         http: HttpClient,
         url: String,
+        quantity: Long = 3,
     ): HttpResponse<String> {
         val epoch = post(http, url, "/channels/0/epoch", """{"userId":"seller","expectedEpoch":0}""")
         assertEquals(200, epoch.statusCode(), epoch.body())
-        val accepted = post(http, url, "/markets/BTC-USDT/orders", orderBody("seller", "SELL", 3))
+        val accepted = post(http, url, "/markets/BTC-USDT/orders", orderBody("seller", "SELL", quantity))
         assertEquals(202, accepted.statusCode(), accepted.body())
         assertEquals(1L, json.readTree(accepted.body()).path("admissionSequence").longValue())
         return accepted
@@ -1278,8 +1551,10 @@ class SplitFundsTradingHttpTest {
         user: String,
         side: String,
         quantity: Long,
-    ) = """{"userId":"$user","channel":0,"epoch":1,"sequence":1,"expectedConfigurationVersion":1,"side":"$side","orderType":"LIMIT",""" +
-        """"timeInForce":"GTC","price":100,"quantity":$quantity}"""
+        epoch: Long = 1,
+        price: Long = 100,
+    ) = """{"userId":"$user","channel":0,"epoch":$epoch,"sequence":1,"expectedConfigurationVersion":1,""" +
+        """"side":"$side","orderType":"LIMIT","timeInForce":"GTC","price":$price,"quantity":$quantity}"""
 
     private fun awaitQuery(
         harness: TradingHarness,
@@ -1292,20 +1567,13 @@ class SplitFundsTradingHttpTest {
         cancelled: Long,
         financialStatus: String = "APPLIED",
         pendingReason: String? = null,
+        minimum: Long = 0,
     ): HttpResponse<String> {
         var last: HttpResponse<String>? = null
         await("주문 $orderId 조회 $state", { "마지막 응답 ${last?.statusCode()}: ${last?.body()}" }) {
             harness.funds.poll()
-            last =
-                http.send(
-                    HttpRequest
-                        .newBuilder(URI.create("$url/api/trading/v3/markets/BTC-USDT/orders/$orderId"))
-                        .timeout(Duration.ofSeconds(3))
-                        .GET()
-                        .build(),
-                    HttpResponse.BodyHandlers.ofString(),
-                )
-            val response = checkNotNull(last)
+            val response = getQuery(http, url, orderId, minimum)
+            last = response
             val body = json.readTree(response.body())
             response.statusCode() == 200 && body.path("state").asString() == state &&
                 body.path("filledQuantity").longValue() == filled && body.path("remainingQuantity").longValue() == remaining &&
@@ -1329,12 +1597,16 @@ class SplitFundsTradingHttpTest {
         assertTrue(ready(), "$description 제한 시간 안에 완료되어야 한다. ${detail()}")
     }
 
-    private fun assertFinalBalances(saved: FundsRoleRecoveryState) {
+    private fun assertFinalBalances(
+        saved: FundsRoleRecoveryState,
+        buyerQuote: Long = 900,
+        sellerQuote: Long = 100,
+    ) {
         val balances = saved.financial.balances.associateBy { it.userId.value to it.assetId.value }
         for ((user, asset, available) in listOf(
-            Triple("buyer", "USDT", 900L),
+            Triple("buyer", "USDT", buyerQuote),
             Triple("buyer", "BTC", 1L),
-            Triple("seller", "USDT", 100L),
+            Triple("seller", "USDT", sellerQuote),
             Triple("seller", "BTC", 2L),
         )) {
             assertEquals(Balance(UserId(user), AssetId(asset), Amount(available), Amount(0)), balances[user to asset])
@@ -1470,7 +1742,7 @@ class SplitFundsTradingHttpTest {
         )
     }
 
-    private fun manifest(): TradingClusterManifest =
+    private fun manifest(feeRate: FeeRate): TradingClusterManifest =
         TradingClusterManifest(
             lineage,
             "split-http",
@@ -1480,7 +1752,7 @@ class SplitFundsTradingHttpTest {
             listOf(
                 TradingMarketContext(
                     MarketDefinition(MarketId("BTC-USDT"), AssetId("BTC"), AssetId("USDT"), 0),
-                    TradingFeePolicySnapshot(FeeProductType.SPOT, FeeTier.NORMAL, 1, MakerTakerFeeRates(FeeRate.ZERO, FeeRate.ZERO)),
+                    TradingFeePolicySnapshot(FeeProductType.SPOT, FeeTier.NORMAL, 1, MakerTakerFeeRates(feeRate, feeRate)),
                     0,
                 ),
             ),
