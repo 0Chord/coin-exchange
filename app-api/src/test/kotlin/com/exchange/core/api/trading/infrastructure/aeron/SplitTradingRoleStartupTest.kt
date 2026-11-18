@@ -176,6 +176,9 @@ class SplitTradingRoleStartupTest {
         assertEquals(2, mixed.inputContractVersion)
         assertEquals(65_536L, mixed.dispatchLimits.maxDispatchBytes)
         assertEquals(65_536L, mixed.dispatchLimits.maxActiveBytes)
+        val settlementSettings = mapOf("EXCHANGE_ORDER_QUERY_PERSIST_SETTLEMENTS" to "true", "EXCHANGE_ORDER_QUERY_CONSUMER_ID" to "ledger")
+        assertFailsWith<IllegalArgumentException> { splitTradingConfiguration(manifest, environment + settlementSettings) }
+        assertEquals(2, splitTradingConfiguration(manifest, explicit + settlementSettings).queryRetention?.capabilityVersion)
         assertFailsWith<IllegalArgumentException> {
             splitTradingConfiguration(
                 manifest,

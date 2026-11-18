@@ -1,5 +1,6 @@
 package com.exchange.core.api.trading.infrastructure.history
 
+import com.exchange.core.api.trading.infrastructure.codec.SettlementFactCodec
 import com.exchange.core.common.AssetId
 import com.exchange.core.common.MarketId
 import com.exchange.core.common.OrderId
@@ -32,6 +33,7 @@ import com.exchange.core.trading.MatchingResultStream
 import com.exchange.core.trading.OrderAdmissionCalculator
 import com.exchange.core.trading.OrderAdmissionInput
 import com.exchange.core.trading.OrderSettlementCalculator
+import com.exchange.core.trading.SettlementFact
 import com.exchange.core.trading.SettlementLedgerTransactions
 import com.exchange.core.trading.TradingRecoveryState
 import java.io.ByteArrayInputStream
@@ -97,6 +99,11 @@ internal class FundsRoleSnapshotCodec {
                 results.writeDispatch(framed, entry, saved.configuration.inputContractVersion)
             }
         }
+        if (saved.configuration.queryRetention?.capabilityVersion == 2) {
+            for (market in saved.querySettlements.keys.sortedBy { it.value }) {
+                QueryFactsSnapshotCodec.write(output, saved.querySettlements.getValue(market), SettlementFactCodec::write)
+            }
+        }
         output.flush()
         checked.on(false)
         output.write(digest.digest())
@@ -117,15 +124,8 @@ internal class FundsRoleSnapshotCodec {
         val input = DataInputStream(checked)
         require(input.readInt() == MAGIC) { "unsupported funds snapshot" }
         val version = input.readInt()
-        require(
-            if (expected.queryRetention != null) {
-                version == QUERY_VERSION
-            } else if (expected.inputContractVersion == 2) {
-                version == CANCELLATION_VERSION
-            } else {
-                version == LEGACY_VERSION || version == VERSION
-            },
-        ) { "unsupported funds snapshot" }
+        val legacyCompatible = version == LEGACY_VERSION && expected.queryRetention == null && expected.inputContractVersion == 1
+        require(version == snapshotVersion(expected) || legacyCompatible) { "unsupported funds snapshot" }
         require(input.readLong() == expectedPosition) { "funds snapshot framework position differs" }
         require(input.blob(MAX_CONFIGURATION_BYTES).contentEquals(configurationBytes(expected))) {
             "funds snapshot configuration differs"
@@ -201,6 +201,23 @@ internal class FundsRoleSnapshotCodec {
                     charge = { it.dispatchCanonicalBytes },
                 )
             }
+        val retention = expected.queryRetention
+        val querySettlements =
+            if (retention?.capabilityVersion == 2) {
+                retention.marketLimits.keys.sortedBy { it.value }.associateWith { market ->
+                    val limits = retention.marketLimits.getValue(market)
+                    QueryFactsSnapshotCodec.read(
+                        input,
+                        minOf(limits.maxEntries, retention.maxEntries),
+                        minOf(limits.maxBytes, retention.maxBytes),
+                        SettlementFact.MAX_CANONICAL_BYTES,
+                        readEntry = SettlementFactCodec::read,
+                        charge = SettlementFact::canonicalBytes,
+                    )
+                }
+            } else {
+                emptyMap()
+            }
         checked.on(false)
         val expectedDigest = ByteArray(32).also(input::readFully)
         require(MessageDigest.isEqual(digest.digest(), expectedDigest)) { "funds snapshot checksum differs" }
@@ -216,6 +233,7 @@ internal class FundsRoleSnapshotCodec {
                 cancellations,
                 lastCancellationSequence,
                 queryAdmissions,
+                querySettlements,
             )
         // 체크섬 뒤에도 금융·전달·정산 경계의 관계를 빈 소유자에서 검사한다.
         validatedState(state, expectedResultLimits)
@@ -680,14 +698,11 @@ internal class FundsRoleSnapshotCodec {
     ): Long = limits.snapshotByteUpperBound(configuration).also { require(it in 1..MAX_SNAPSHOT_BYTES) }
 
     private fun snapshotVersion(configuration: FundsDispatchConfiguration): Int =
-        if (configuration.queryRetention !=
-            null
-        ) {
-            QUERY_VERSION
-        } else if (configuration.inputContractVersion == 2) {
-            CANCELLATION_VERSION
-        } else {
-            VERSION
+        when {
+            configuration.queryRetention?.capabilityVersion == 2 -> SETTLEMENT_QUERY_VERSION
+            configuration.queryRetention != null -> QUERY_VERSION
+            configuration.inputContractVersion == 2 -> CANCELLATION_VERSION
+            else -> VERSION
         }
 
     private class LimitedInput(
@@ -749,6 +764,7 @@ internal class FundsRoleSnapshotCodec {
         private const val LEGACY_VERSION = 1
         private const val CANCELLATION_VERSION = 3
         private const val QUERY_VERSION = 4
+        private const val SETTLEMENT_QUERY_VERSION = 5
         private const val FOOTER_BYTES = 36L
         private const val END = 0x46524531
         private const val MAX_TEXT_BYTES = 1_024

@@ -6,6 +6,8 @@ import com.exchange.core.trading.ClusterLineage
 import com.exchange.core.trading.FundsOrderDispatch
 import com.exchange.core.trading.MatchingResultEnvelope
 import com.exchange.core.trading.MatchingResultStream
+import com.exchange.core.trading.QueryFactsProgress
+import com.exchange.core.trading.SettlementFact
 import com.exchange.core.trading.TradingMarketContext
 import com.exchange.core.trading.TradingServiceRole
 import java.io.ByteArrayInputStream
@@ -31,6 +33,23 @@ internal sealed interface OrderQuerySourceCommand {
         val market: String?,
         val through: Long,
     ) : OrderQuerySourceCommand
+
+    sealed interface Settlement : OrderQuerySourceCommand {
+        val consumerId: String
+        val market: String
+    }
+
+    data class ReadSettlements(
+        override val consumerId: String,
+        override val market: String,
+        val fromSequence: Long,
+    ) : Settlement
+
+    data class AcknowledgeSettlements(
+        override val consumerId: String,
+        override val market: String,
+        val through: Long,
+    ) : Settlement
 }
 
 internal data class OrderQuerySourceEnvelope(
@@ -43,6 +62,7 @@ internal data class OrderQuerySourceProgress(
     val issued: Long,
     val retiredThrough: Long,
     val financialThrough: Long = 0,
+    val settlement: QueryFactsProgress? = null,
 )
 
 internal data class OrderQuerySourceReply(
@@ -58,6 +78,8 @@ internal data class OrderQuerySourceReply(
     val admission: FundsOrderDispatch? = null,
     val result: MatchingResultEnvelope? = null,
     val inputContractVersion: Int = 2,
+    val settlement: SettlementFact? = null,
+    val capabilityVersion: Int = 1,
 )
 
 internal class OrderQuerySourceCodec(
@@ -93,6 +115,22 @@ internal class OrderQuerySourceCodec(
                     market(command.market)
                     writeLong(command.through)
                 }
+
+                is OrderQuerySourceCommand.ReadSettlements -> {
+                    require(command.fromSequence > 0)
+                    writeByte(3)
+                    text(command.consumerId)
+                    text(command.market)
+                    writeLong(command.fromSequence)
+                }
+
+                is OrderQuerySourceCommand.AcknowledgeSettlements -> {
+                    require(command.through >= 0)
+                    writeByte(4)
+                    text(command.consumerId)
+                    text(command.market)
+                    writeLong(command.through)
+                }
             }
         }
 
@@ -122,6 +160,22 @@ internal class OrderQuerySourceCodec(
                         OrderQuerySourceCommand.Acknowledge(consumerId = consumerId, market = market, through = through)
                     }
 
+                    3 -> {
+                        val consumerId = text()
+                        val market = text()
+                        val fromSequence = readLong()
+                        require(fromSequence > 0)
+                        OrderQuerySourceCommand.ReadSettlements(consumerId, market, fromSequence)
+                    }
+
+                    4 -> {
+                        val consumerId = text()
+                        val market = text()
+                        val through = readLong()
+                        require(through >= 0)
+                        OrderQuerySourceCommand.AcknowledgeSettlements(consumerId, market, through)
+                    }
+
                     else -> {
                         throw IllegalArgumentException("unknown query command")
                     }
@@ -132,7 +186,15 @@ internal class OrderQuerySourceCodec(
     fun encodeReply(reply: OrderQuerySourceReply): ByteArray {
         reply.admission?.let { admission -> return admissionBytes(reply.correlationId, admission) }
         reply.result?.let { result -> return resultBytes(reply.correlationId, result) }
-        return frame(REPLY) {
+        reply.settlement?.let { fact ->
+            require(reply.correlationId > 0)
+            val payload = SettlementFactCodec.encode(fact)
+            return frame(SETTLEMENT_REPLY, SETTLEMENT_VERSION, SplitResultDeliveryCodec.MAX_MESSAGE_BYTES) {
+                writeLong(reply.correlationId)
+                write(payload)
+            }
+        }
+        return frame(REPLY, reply.capabilityVersion) {
             require(reply.correlationId > 0)
             writeLong(reply.correlationId)
             text(reply.code)
@@ -161,6 +223,7 @@ internal class OrderQuerySourceCodec(
                 writeLong(progress.issued)
                 writeLong(progress.retiredThrough)
                 writeLong(progress.financialThrough)
+                if (reply.capabilityVersion == SETTLEMENT_VERSION) writeSettlementProgress(progress.settlement)
             }
             require(reply.inputContractVersion in 1..2)
             writeInt(reply.inputContractVersion)
@@ -168,7 +231,17 @@ internal class OrderQuerySourceCodec(
     }
 
     fun decodeReply(bytes: ByteArray): OrderQuerySourceReply {
-        if (bytes.size >= 12) {
+        val settlementFrame =
+            bytes.size >= 4 && bytes[0].toInt() == 0 && bytes[1].toInt() == SCHEMA && bytes[2].toInt() == SETTLEMENT_VERSION
+        if (settlementFrame && bytes[3].toInt() == SETTLEMENT_REPLY) {
+            return read(bytes, SETTLEMENT_REPLY, SETTLEMENT_VERSION, SplitResultDeliveryCodec.MAX_MESSAGE_BYTES) {
+                val correlation = readLong()
+                require(correlation > 0)
+                val fact = SettlementFactCodec.read(this)
+                OrderQuerySourceReply(correlation, "FACT", settlement = fact, capabilityVersion = SETTLEMENT_VERSION)
+            }
+        }
+        if (!settlementFrame && bytes.size >= 12) {
             val peek = ByteBuffer.wrap(bytes).order(ByteOrder.LITTLE_ENDIAN)
             if (peek.getShort(0).toInt() == 89) {
                 val envelope = results.decode(bytes)
@@ -181,7 +254,8 @@ internal class OrderQuerySourceCodec(
                 return OrderQuerySourceReply(envelope.correlationId, "FACT", admission = command.input, inputContractVersion = inputVersion)
             }
         }
-        return read(bytes, REPLY) {
+        val capabilityVersion = if (settlementFrame) SETTLEMENT_VERSION else 1
+        return read(bytes, REPLY, capabilityVersion) {
             val correlation = readLong()
             require(correlation > 0)
             val code = text()
@@ -218,6 +292,7 @@ internal class OrderQuerySourceCodec(
                             issued = readLong(),
                             retiredThrough = readLong(),
                             financialThrough = readLong(),
+                            settlement = if (capabilityVersion == SETTLEMENT_VERSION) readSettlementProgress() else null,
                         )
                     require(marketProgress.retiredThrough in 0..marketProgress.issued && marketProgress.financialThrough >= 0)
                     marketProgress
@@ -236,6 +311,7 @@ internal class OrderQuerySourceCodec(
                 contexts = contexts,
                 progress = progress,
                 inputContractVersion = inputContractVersion,
+                capabilityVersion = capabilityVersion,
             )
         }
     }
@@ -252,29 +328,34 @@ internal class OrderQuerySourceCodec(
 
     private fun frame(
         kind: Int,
+        version: Int = 1,
+        maxBytes: Int = MAX_CONTROL_BYTES,
         block: DataOutputStream.() -> Unit,
     ): ByteArray {
+        require(version in 1..SETTLEMENT_VERSION)
         val bytes = ByteArrayOutputStream()
         DataOutputStream(bytes).use { output ->
             output.writeShort(SCHEMA)
-            output.writeByte(1)
+            output.writeByte(version)
             output.writeByte(kind)
             output.block()
         }
         val encodedBytes = bytes.toByteArray()
-        require(encodedBytes.size <= MAX_CONTROL_BYTES)
+        require(encodedBytes.size <= maxBytes)
         return encodedBytes
     }
 
     private fun <T> read(
         bytes: ByteArray,
         kind: Int,
+        version: Int = 1,
+        maxBytes: Int = MAX_CONTROL_BYTES,
         block: DataInputStream.() -> T,
     ): T {
-        require(bytes.size in 13..MAX_CONTROL_BYTES)
+        require(bytes.size in 13..maxBytes)
         return try {
             DataInputStream(ByteArrayInputStream(bytes)).use { input ->
-                require(input.readUnsignedShort() == SCHEMA && input.readUnsignedByte() == 1 && input.readUnsignedByte() == kind)
+                require(input.readUnsignedShort() == SCHEMA && input.readUnsignedByte() == version && input.readUnsignedByte() == kind)
                 val decoded = input.block()
                 require(input.read() == -1)
                 decoded
@@ -282,6 +363,23 @@ internal class OrderQuerySourceCodec(
         } catch (failure: IOException) {
             throw IllegalArgumentException("invalid query frame", failure)
         }
+    }
+
+    private fun DataOutputStream.writeSettlementProgress(progress: QueryFactsProgress?) {
+        writeBoolean(progress != null)
+        if (progress == null) return
+        writeLong(progress.issued)
+        writeLong(progress.retiredThrough)
+        writeInt(progress.retainedEntries)
+        writeLong(progress.retainedBytes)
+    }
+
+    private fun DataInputStream.readSettlementProgress(): QueryFactsProgress? {
+        if (!readBoolean()) return null
+        val progress = QueryFactsProgress(readLong(), readLong(), readInt(), readLong())
+        require(progress.retiredThrough in 0..progress.issued)
+        require(progress.retainedEntries.toLong() == progress.issued - progress.retiredThrough && progress.retainedBytes >= 0)
+        return progress
     }
 
     private fun DataOutputStream.text(value: String) {
@@ -327,6 +425,8 @@ internal class OrderQuerySourceCodec(
         const val MAX_MARKETS = 128
         private const val COMMAND = 1
         private const val REPLY = 2
+        private const val SETTLEMENT_REPLY = 3
+        private const val SETTLEMENT_VERSION = 2
 
         fun isQueryFrame(
             buffer: org.agrona.DirectBuffer,

@@ -5,6 +5,7 @@ import com.exchange.core.trading.FundsOrderDispatch
 import com.exchange.core.trading.MatchingFundsSettledAck
 import com.exchange.core.trading.MatchingResultEnvelope
 import com.exchange.core.trading.MatchingResultStream
+import com.exchange.core.trading.SettlementFact
 import com.exchange.core.trading.TradingMarketContext
 
 /** 소스가 보존한 범위다. genesis 증명 없이 빈 DB를 과거 전체 조회로 활성화하지 않는다. */
@@ -25,6 +26,7 @@ data class OrderQueryFeedProgress(
     val financialThrough: Map<String, Long>,
     val lifecycle: OrderQueryLifecycle,
     val appliedRevision: Long,
+    val settlementThrough: Map<String, Long> = emptyMap(),
 )
 
 /** 같은 WAS의 확정 사실 수집 전용이며 사용자 HTTP에 노출하지 않는다. */
@@ -34,6 +36,7 @@ interface OrderQueryFeedStore {
         streams: Map<String, MatchingResultStream>,
         contexts: Map<String, TradingMarketContext>,
         sourceIdentity: String? = null,
+        settlementEnabled: Boolean = false,
     )
 
     fun progress(): OrderQueryFeedProgress
@@ -59,6 +62,9 @@ interface OrderQueryFeedStore {
 
     /** 기존 미정산 결과는 한 순번씩 반영한다. 매칭보다 앞선 watermark는 원문 없이 보존할 수 있다. */
     fun applyFinancial(watermark: MatchingFundsSettledAck): Long
+
+    /** 정산 분개와 마켓별 저장 위치를 한 트랜잭션에 저장하고 해당 결과 순번을 돌려준다. */
+    fun applySettlement(fact: SettlementFact): Long
 
     fun suspendProjection()
 

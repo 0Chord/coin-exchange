@@ -10,6 +10,10 @@ import com.exchange.core.api.trading.application.port.OrderQueryInconsistentExce
 import com.exchange.core.api.trading.application.port.OrderQueryOriginsPendingException
 import com.exchange.core.api.trading.application.port.OrderQuerySourceBounds
 import com.exchange.core.api.trading.application.port.OrderQueryWriteConflictException
+import com.exchange.core.common.Amount
+import com.exchange.core.common.AssetId
+import com.exchange.core.ledger.LedgerPosting
+import com.exchange.core.ledger.LedgerPostingSide
 import com.exchange.core.trading.FundsOrderDispatch
 import com.exchange.core.trading.MatchingFundsSettledAck
 import com.exchange.core.trading.MatchingOrderDisposition
@@ -17,11 +21,14 @@ import com.exchange.core.trading.MatchingOrderEffect
 import com.exchange.core.trading.MatchingOutcome
 import com.exchange.core.trading.MatchingResultEnvelope
 import com.exchange.core.trading.MatchingResultStream
+import com.exchange.core.trading.SettlementFact
 import com.exchange.core.trading.TradingIdentifiers
 import com.exchange.core.trading.TradingMarketContext
 import org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate
 import tools.jackson.databind.json.JsonMapper
 import tools.jackson.module.kotlin.KotlinModule
+import java.time.OffsetDateTime
+import java.time.ZoneOffset
 
 /** A의 namespace 행 잠금으로 쓰기를 직렬화하고 정규화 전 원본 중복을 먼저 판정한다. */
 class PostgresOrderQueryFeedStore(
@@ -33,12 +40,14 @@ class PostgresOrderQueryFeedStore(
     private lateinit var consumerId: String
     private lateinit var streams: Map<String, MatchingResultStream>
     private lateinit var contexts: Map<String, TradingMarketContext>
+    private var settlementEnabled = false
 
     override fun initialize(
         consumerId: String,
         streams: Map<String, MatchingResultStream>,
         contexts: Map<String, TradingMarketContext>,
         sourceIdentity: String?,
+        settlementEnabled: Boolean,
     ) {
         require(consumerId.isNotBlank() && consumerId.length <= 256 && consumerId.none(Character::isISOControl))
         require(sourceIdentity == null || sourceIdentity.matches(Regex("[a-f0-9]{64}")))
@@ -50,14 +59,15 @@ class PostgresOrderQueryFeedStore(
         this.consumerId = consumerId
         this.streams = streams.toMap()
         this.contexts = contexts.toMap()
-        val configuration =
-            mapper.writeValueAsString(
-                mapOf(
-                    "streams" to streams.toSortedMap(),
-                    "contexts" to contexts.toSortedMap(),
-                    "sourceIdentity" to sourceIdentity,
-                ),
+        this.settlementEnabled = settlementEnabled
+        val sourceConfiguration =
+            mutableMapOf<String, Any?>(
+                "streams" to streams.toSortedMap(),
+                "contexts" to contexts.toSortedMap(),
+                "sourceIdentity" to sourceIdentity,
             )
+        if (settlementEnabled) sourceConfiguration["settlementEnabled"] = true
+        val configuration = mapper.writeValueAsString(sourceConfiguration)
         guarded {
             query.initialize()
             query.withTransaction {
@@ -236,6 +246,164 @@ class PostgresOrderQueryFeedStore(
                 revision
             }
         }
+
+    override fun applySettlement(fact: SettlementFact): Long =
+        guarded {
+            query.withTransaction {
+                val current = lockedProgress()
+                val market = fact.stream.marketId.value
+                require(settlementEnabled && current.lifecycle != OrderQueryLifecycle.BLOCKED)
+                require(fact.stream == streams[market]) { "settlement source identity changed" }
+                val context = contexts.getValue(market)
+                val previous = current.settlementThrough.getValue(market)
+                val sequence = fact.resultSequence
+                val resultParameters = parameters + mapOf("market" to market, "resultSequence" to sequence)
+                val duplicate = sequence <= previous
+                if (duplicate) {
+                    val storedCount =
+                        jdbc.queryForObject(
+                            """
+                            select count(*) from order_query.settlement_transaction
+                            where namespace = :namespace and market_id = :market and result_sequence = :resultSequence
+                            """.trimIndent(),
+                            resultParameters,
+                            Long::class.java,
+                        )
+                    if (storedCount != fact.fills.size.toLong()) {
+                        throw OrderQueryWriteConflictException("settlement result $market/$sequence has different fills")
+                    }
+                } else {
+                    require(sequence == Math.addExact(previous, 1)) { "settlement source prefix has a gap" }
+                }
+
+                for (fill in fact.fills) {
+                    val trade = fill.trade
+                    val transaction = fill.transaction
+                    val settlementId = TradingIdentifiers.settlement(fact.stream.fundsLineage, context.ordinal, trade.engineSequence)
+                    require(transaction.ledgerTransactionId == settlementId) { "settlement identity differs from the source" }
+                    require(transaction.occurredAt.nano % 1_000 == 0) { "settlement timestamp exceeds PostgreSQL precision" }
+                    val header =
+                        resultParameters +
+                            mapOf(
+                                "settlementId" to settlementId,
+                                "sourceEventId" to transaction.sourceEventId,
+                                "engineSequence" to trade.engineSequence,
+                                "makerOrderId" to trade.makerOrderId.value,
+                                "takerOrderId" to trade.takerOrderId.value,
+                                "makerUserId" to trade.makerUserId.value,
+                                "takerUserId" to trade.takerUserId.value,
+                                "takerSide" to trade.side.name,
+                                "baseAssetId" to context.market.baseAssetId.value,
+                                "quoteAssetId" to context.market.quoteAssetId.value,
+                                "price" to trade.price.value,
+                                "quantity" to trade.quantity.value,
+                                "makerFee" to fill.makerFee.value,
+                                "takerFee" to fill.takerFee.value,
+                                "occurredAt" to OffsetDateTime.ofInstant(transaction.occurredAt, ZoneOffset.UTC),
+                            )
+                    if (duplicate) {
+                        requireStoredSettlement(header, transaction.postings)
+                    } else {
+                        insertSettlement(header, settlementId, transaction.postings)
+                    }
+                }
+                if (!duplicate) {
+                    jdbc.update(
+                        """
+                        update order_query.feed_stream set settlement_through = :resultSequence
+                        where namespace = :namespace and market_id = :market
+                        """.trimIndent(),
+                        resultParameters,
+                    )
+                }
+                sequence
+            }
+        }
+
+    private fun insertSettlement(
+        header: Map<String, Any>,
+        settlementId: String,
+        postings: List<LedgerPosting>,
+    ) {
+        val inserted =
+            jdbc.update(
+                """
+                insert into order_query.settlement_transaction
+                    (namespace, market_id, result_sequence, settlement_id, source_event_id, engine_sequence,
+                     maker_order_id, taker_order_id, maker_user_id, taker_user_id, taker_side, base_asset_id,
+                     quote_asset_id, price, quantity, maker_fee, taker_fee, occurred_at)
+                values (:namespace, :market, :resultSequence, :settlementId, :sourceEventId, :engineSequence,
+                        :makerOrderId, :takerOrderId, :makerUserId, :takerUserId, :takerSide, :baseAssetId,
+                        :quoteAssetId, :price, :quantity, :makerFee, :takerFee, :occurredAt)
+                on conflict do nothing
+                """.trimIndent(),
+                header,
+            )
+        if (inserted != 1) throw OrderQueryWriteConflictException("settlement $settlementId already belongs to a stored result")
+        val rows =
+            postings.mapIndexed { index, posting ->
+                parameters +
+                    mapOf(
+                        "settlementId" to settlementId,
+                        "postingSequence" to index + 1,
+                        "accountId" to posting.accountId,
+                        "assetId" to posting.assetId.value,
+                        "side" to posting.side.name,
+                        "amount" to posting.amount.value,
+                    )
+            }
+        jdbc.batchUpdate(
+            """
+            insert into order_query.settlement_posting (namespace, settlement_id, posting_sequence, account_id, asset_id, side, amount)
+            values (:namespace, :settlementId, :postingSequence, :accountId, :assetId, :side, :amount)
+            """.trimIndent(),
+            rows.toTypedArray(),
+        )
+    }
+
+    private fun requireStoredSettlement(
+        header: Map<String, Any>,
+        postings: List<LedgerPosting>,
+    ) {
+        val sameHeader =
+            jdbc.queryForObject(
+                """
+                select exists (
+                    select 1 from order_query.settlement_transaction
+                    where namespace = :namespace and settlement_id = :settlementId and market_id = :market
+                        and result_sequence = :resultSequence and source_event_id = :sourceEventId
+                        and engine_sequence = :engineSequence and maker_order_id = :makerOrderId and taker_order_id = :takerOrderId
+                        and maker_user_id = :makerUserId and taker_user_id = :takerUserId and taker_side = :takerSide
+                        and base_asset_id = :baseAssetId and quote_asset_id = :quoteAssetId and price = :price and quantity = :quantity
+                        and maker_fee = :makerFee and taker_fee = :takerFee and occurred_at = :occurredAt
+                )
+                """.trimIndent(),
+                header,
+                Boolean::class.java,
+            )
+        if (sameHeader != true) throw OrderQueryWriteConflictException("settlement ${header["settlementId"]} has different content")
+        val storedPostings =
+            jdbc.query(
+                """
+                select posting_sequence, account_id, asset_id, side, amount from order_query.settlement_posting
+                where namespace = :namespace and settlement_id = :settlementId order by posting_sequence
+                """.trimIndent(),
+                header,
+            ) { row, index ->
+                if (row.getInt("posting_sequence") != index + 1) {
+                    throw OrderQueryInconsistentException("stored settlement posting positions are not contiguous")
+                }
+                LedgerPosting(
+                    accountId = row.getString("account_id"),
+                    assetId = AssetId(row.getString("asset_id")),
+                    side = LedgerPostingSide.valueOf(row.getString("side")),
+                    amount = Amount(row.getLong("amount")),
+                )
+            }
+        if (postings != storedPostings) {
+            throw OrderQueryWriteConflictException("settlement ${header["settlementId"]} has different postings")
+        }
+    }
 
     override fun suspendProjection() {
         query.suspendSourceReads()
@@ -449,23 +617,29 @@ class PostgresOrderQueryFeedStore(
         require(consumer.id == consumerId) { "query consumer identity changed" }
         val streamCursors =
             jdbc.query(
-                "select market_id, matching_through, financial_through from order_query.feed_stream where namespace = :namespace",
+                """
+                select market_id, matching_through, financial_through, settlement_through
+                from order_query.feed_stream where namespace = :namespace
+                """.trimIndent(),
                 parameters,
             ) { row, _ ->
-                val marketId = row.getString("market_id")
-                val matchingThrough = row.getLong("matching_through")
-                val financialThrough = row.getLong("financial_through")
-                Triple(marketId, matchingThrough, financialThrough)
+                StreamCursor(
+                    market = row.getString("market_id"),
+                    matching = row.getLong("matching_through"),
+                    financial = row.getLong("financial_through"),
+                    settlement = row.getLong("settlement_through"),
+                )
             }
-        require(streamCursors.map { (marketId, _, _) -> marketId }.toSet() == streams.keys)
+        require(streamCursors.map { it.market }.toSet() == streams.keys)
         require(consumer.admission == progress.coveredAdmissionSequence)
         return OrderQueryFeedProgress(
             consumerId = consumerId,
             admissionThrough = consumer.admission,
-            matchingThrough = streamCursors.associate { (marketId, matchingThrough, _) -> marketId to matchingThrough },
-            financialThrough = streamCursors.associate { (marketId, _, financialThrough) -> marketId to financialThrough },
+            matchingThrough = streamCursors.associate { it.market to it.matching },
+            financialThrough = streamCursors.associate { it.market to it.financial },
             lifecycle = progress.lifecycle,
             appliedRevision = progress.appliedRevision,
+            settlementThrough = if (settlementEnabled) streamCursors.associate { it.market to it.settlement } else emptyMap(),
         )
     }
 
@@ -518,5 +692,12 @@ class PostgresOrderQueryFeedStore(
         val admission: Long,
         val sourcesVerified: Boolean,
         val bootstrapComplete: Boolean,
+    )
+
+    private data class StreamCursor(
+        val market: String,
+        val matching: Long,
+        val financial: Long,
+        val settlement: Long,
     )
 }

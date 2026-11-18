@@ -27,6 +27,7 @@ import com.exchange.core.trading.MatchingResultAckStatus
 import com.exchange.core.trading.MatchingResultRead
 import com.exchange.core.trading.MatchingResultStream
 import com.exchange.core.trading.ReservedMatchingState
+import com.exchange.core.trading.SettlementFact
 import com.exchange.core.trading.TradingCapacityException
 import com.exchange.core.trading.TradingFundingInputException
 import com.exchange.core.trading.TradingLifecycle
@@ -438,10 +439,17 @@ internal class SplitTradingClusterAdapter(
             if (!tradingReady || configuration.queryRetention == null) {
                 emptyList()
             } else if (role == TradingServiceRole.FUNDS) {
-                val admissions = checkNotNull(funds).queryAdmissionsProgress()!!
+                val owner = checkNotNull(funds)
+                val admissions = checkNotNull(owner.queryAdmissionsProgress())
                 listOf(OrderQuerySourceProgress(null, admissions.issued, admissions.retiredThrough)) +
                     queryStreams.map { (market, stream) ->
-                        OrderQuerySourceProgress(market, 0, 0, checkNotNull(funds).matchingSettlementAck(stream)?.through ?: 0)
+                        OrderQuerySourceProgress(
+                            market = market,
+                            issued = 0,
+                            retiredThrough = 0,
+                            financialThrough = owner.matchingSettlementAck(stream)?.through ?: 0,
+                            settlement = owner.querySettlementsProgress(stream),
+                        )
                     }
             } else {
                 queryStreams.map { (market, stream) ->
@@ -460,7 +468,31 @@ internal class SplitTradingClusterAdapter(
             queryContexts,
             progress,
             inputContractVersion = configuration.inputContractVersion,
+            capabilityVersion = configuration.queryRetention?.capabilityVersion ?: 1,
         )
+    }
+
+    private fun settlementQueryReply(
+        correlation: Long,
+        command: OrderQuerySourceCommand.Settlement,
+    ): OrderQuerySourceReply {
+        val source = checkNotNull(configuration.queryRetention)
+        if (source.capabilityVersion < 2) return queryReply(correlation, "DISABLED")
+        if (command.consumerId != source.consumerId) return queryReply(correlation, "INVALID_CONSUMER")
+        val owner = funds ?: return queryReply(correlation, "INVALID_STREAM")
+        val stream = queryStreams[command.market] ?: return queryReply(correlation, "INVALID_STREAM")
+        return when (command) {
+            is OrderQuerySourceCommand.ReadSettlements -> {
+                val read = owner.readQuerySettlements(stream, command.fromSequence, 1, SettlementFact.MAX_CANONICAL_BYTES)
+                val fact = read.entries.firstOrNull() ?: return queryReply(correlation, read.status.name)
+                OrderQuerySourceReply(correlation, "FACT", settlement = fact)
+            }
+
+            is OrderQuerySourceCommand.AcknowledgeSettlements -> {
+                val ack = owner.acknowledgeQuerySettlements(command.consumerId, stream, command.through)
+                queryReply(correlation, ack.status.name)
+            }
+        }
     }
 
     private fun onQueryMessage(
@@ -491,18 +523,20 @@ internal class SplitTradingClusterAdapter(
                     queryReply(correlation, "DESCRIBED")
                 }
 
+                command is OrderQuerySourceCommand.Settlement -> {
+                    settlementQueryReply(correlation, command)
+                }
+
                 else -> {
                     val consumer =
                         when (command) {
                             is OrderQuerySourceCommand.Read -> command.consumerId
                             is OrderQuerySourceCommand.Acknowledge -> command.consumerId
-                            else -> error("query command")
                         }
                     val market =
                         when (command) {
                             is OrderQuerySourceCommand.Read -> command.market
                             is OrderQuerySourceCommand.Acknowledge -> command.market
-                            else -> error("query command")
                         }
                     when {
                         consumer != source.consumerId -> {

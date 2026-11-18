@@ -11,6 +11,8 @@ import com.exchange.core.api.trading.infrastructure.codec.OrderQuerySourceCodec
 import com.exchange.core.api.trading.infrastructure.codec.OrderQuerySourceCommand
 import com.exchange.core.api.trading.infrastructure.codec.OrderQuerySourceReply
 import com.exchange.core.trading.MatchingFundsSettledAck
+import com.exchange.core.trading.MatchingResultStream
+import com.exchange.core.trading.QueryFactsProgress
 import com.exchange.core.trading.TradingServiceRole
 import io.aeron.driver.MediaDriver
 import io.aeron.driver.ThreadingMode
@@ -127,6 +129,7 @@ internal class OrderQueryFeedWorker(
                     try {
                         val fundsClient = client(settings.ingressEndpoints)
                         val initialFundsDescription = describeSource(fundsClient, TradingServiceRole.FUNDS)
+                        val settlementEnabled = initialFundsDescription.capabilityVersion == 2
                         require(
                             initialFundsDescription.lineage == namespace.fundsLineage &&
                                 initialFundsDescription.streams.keys == matchingIngress.keys,
@@ -138,6 +141,7 @@ internal class OrderQueryFeedWorker(
                             streams = initialFundsDescription.streams,
                             contexts = initialFundsDescription.contexts,
                             sourceIdentity = initialFundsDescription.topologySha256,
+                            settlementEnabled = settlementEnabled,
                         )
                         while (running.get()) {
                             val progressBeforeSourceRead = store.progress()
@@ -145,7 +149,8 @@ internal class OrderQueryFeedWorker(
                             require(
                                 currentFundsDescription.streams == initialFundsDescription.streams &&
                                     currentFundsDescription.contexts == initialFundsDescription.contexts &&
-                                    currentFundsDescription.topologySha256 == initialFundsDescription.topologySha256,
+                                    currentFundsDescription.topologySha256 == initialFundsDescription.topologySha256 &&
+                                    currentFundsDescription.capabilityVersion == initialFundsDescription.capabilityVersion,
                             )
                             val matchingDescriptionByIngress =
                                 matchingIngress.values.distinct().associateWith { ingress ->
@@ -156,6 +161,7 @@ internal class OrderQueryFeedWorker(
                                     val matchingDescription = matchingDescriptionByIngress.getValue(ingress)
                                     require(
                                         matchingDescription.topologySha256 == initialFundsDescription.topologySha256 &&
+                                            matchingDescription.capabilityVersion == initialFundsDescription.capabilityVersion &&
                                             matchingDescription.lineage == initialFundsDescription.streams.getValue(market).matchingLineage,
                                     )
                                     require(
@@ -169,9 +175,29 @@ internal class OrderQueryFeedWorker(
                                 matchingDescriptionByMarket.mapValues { (market, description) ->
                                     description.progress.single { sourceProgress -> sourceProgress.market == market }
                                 }
-                            val financialThroughByMarket =
+                            val fundsProgressByMarket =
                                 currentFundsDescription.progress.filter { it.market != null }.associate { sourceProgress ->
-                                    checkNotNull(sourceProgress.market) to sourceProgress.financialThrough
+                                    checkNotNull(sourceProgress.market) to sourceProgress
+                                }
+                            val financialThroughByMarket = fundsProgressByMarket.mapValues { (_, progress) -> progress.financialThrough }
+                            val settlementsByMarket =
+                                if (settlementEnabled) {
+                                    val settlementCursorsBeforeRead = progressBeforeSourceRead.settlementThrough
+                                    require(fundsProgressByMarket.keys == settlementCursorsBeforeRead.keys)
+                                    fundsProgressByMarket.mapValues { (market, progress) ->
+                                        val bounds = requireNotNull(progress.settlement) { "settlement progress is missing for $market" }
+                                        require(bounds.issued == progress.financialThrough && bounds.retiredThrough in 0..bounds.issued)
+                                        val beforeRead = settlementCursorsBeforeRead.getValue(market)
+                                        require(beforeRead <= bounds.issued) { "settlement source prefix regressed for $market" }
+                                        // 다른 WAS가 소스를 조회하는 사이에 저장하고 ACK했을 수 있다.
+                                        if (bounds.retiredThrough > beforeRead) {
+                                            val latest = store.progress().settlementThrough.getValue(market)
+                                            require(bounds.retiredThrough <= latest) { "settlement source prefix is missing for $market" }
+                                        }
+                                        bounds
+                                    }
+                                } else {
+                                    emptyMap()
                                 }
                             val verifiedProgress =
                                 store.verifySources(
@@ -269,6 +295,13 @@ internal class OrderQueryFeedWorker(
                                     )
                                     appliedFactCount++
                                 }
+                                val settlementBounds = settlementsByMarket[market]
+                                if (settlementBounds != null &&
+                                    verifiedProgress.settlementThrough.getValue(market) < settlementBounds.issued
+                                ) {
+                                    appliedFactCount +=
+                                        collectSettlements(fundsClient, initialFundsDescription.streams.getValue(market), settlementBounds)
+                                }
                             }
                             // 결과를 모르는 커밋에는 도달하지 않는다. 재연결 시 DB cursor부터 먼저 읽는다.
                             val committedProgress = store.progress()
@@ -279,7 +312,22 @@ internal class OrderQueryFeedWorker(
                                     )
                                 requireAcknowledged(admissionAck)
                             }
-                            for ((market, through) in committedProgress.matchingThrough) {
+                            for ((market, matchingThrough) in committedProgress.matchingThrough) {
+                                val settlementBounds = settlementsByMarket[market]
+                                var through = matchingThrough
+                                if (settlementBounds != null) {
+                                    // 매칭의 보관 공간은 자금 클러스터도 정산 ACK를 확정한 뒤에만 돌려준다.
+                                    val acknowledged =
+                                        minOf(committedProgress.settlementThrough.getValue(market), settlementBounds.issued)
+                                    if (acknowledged > settlementBounds.retiredThrough) {
+                                        val settlementAck =
+                                            fundsClient.request(
+                                                OrderQuerySourceCommand.AcknowledgeSettlements(consumerId, market, acknowledged),
+                                            )
+                                        requireAcknowledged(settlementAck)
+                                    }
+                                    through = minOf(matchingThrough, acknowledged)
+                                }
                                 if (through <= matchingBounds.getValue(market).retiredThrough) continue
                                 val matchingClient = client(matchingIngress.getValue(market))
                                 val matchingAck =
@@ -300,6 +348,31 @@ internal class OrderQueryFeedWorker(
         }
     }
 
+    private fun collectSettlements(
+        fundsClient: OrderQuerySourceClient,
+        stream: MatchingResultStream,
+        bounds: QueryFactsProgress,
+    ): Int {
+        val market = stream.marketId.value
+        var applied = 0
+        repeat(32) {
+            val settlementThrough = store.progress().settlementThrough.getValue(market)
+            if (settlementThrough >= bounds.issued) return applied
+            val next = Math.addExact(settlementThrough, 1L)
+            val reply = fundsClient.request(OrderQuerySourceCommand.ReadSettlements(consumerId, market, next))
+            val fact = reply.settlement
+            if (fact == null) {
+                if (reply.code == "NOT_READY") throw IllegalStateException("query source is not ready")
+                if (reply.code == "PRUNED" && store.progress().settlementThrough.getValue(market) >= next) return@repeat
+                throw SourceConflict("settlement source returned ${reply.code}")
+            }
+            require(fact.stream == stream && fact.resultSequence == next) { "settlement source result differs" }
+            store.applySettlement(fact)
+            applied++
+        }
+        return applied
+    }
+
     private fun describeSource(
         client: OrderQuerySourceClient,
         role: TradingServiceRole,
@@ -311,6 +384,7 @@ internal class OrderQueryFeedWorker(
         ) { "query source capability or owner differs" }
         // 제품 WAS의 주문 Gateway와 같은 입력 계약을 준비 완료 전에 확인한다.
         require(reply.inputContractVersion == 2) { "order query WAS requires source input contract 2" }
+        require(reply.capabilityVersion in 1..2) { "unsupported query source capability" }
         return reply
     }
 

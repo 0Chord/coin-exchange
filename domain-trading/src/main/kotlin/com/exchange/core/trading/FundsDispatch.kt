@@ -84,6 +84,7 @@ class FundsDispatchConfiguration(
             manifest.markets.map { context -> topology.assignments.single { it.marketId == context.market.marketId } },
         )
     private val contexts = manifest.markets.associateBy { it.market.marketId }
+    internal val settlementRetention = queryRetention?.settlementRetention()
     private val streams =
         assignments.associate {
             it.marketId to
@@ -150,7 +151,7 @@ class FundsDispatchConfiguration(
             try {
                 Math.addExact(
                     snapshotBound(manifest.limits, limits, inputContractVersion),
-                    queryRetention?.let { Math.multiplyExact(it.maxBytes, 4L) } ?: 0L,
+                    Math.multiplyExact(Math.addExact(queryRetention?.maxBytes ?: 0, settlementRetention?.maxBytes ?: 0), 4L),
                 )
             } catch (failure: ArithmeticException) {
                 throw IllegalArgumentException("funds limits overflow the snapshot size bound", failure)

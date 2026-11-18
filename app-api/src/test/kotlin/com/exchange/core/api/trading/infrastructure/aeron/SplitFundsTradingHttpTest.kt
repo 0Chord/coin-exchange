@@ -42,6 +42,7 @@ import com.exchange.core.trading.FundsOrderDispatch
 import com.exchange.core.trading.FundsRoleRecoveryState
 import com.exchange.core.trading.OrderIntent
 import com.exchange.core.trading.RequestToken
+import com.exchange.core.trading.SettlementFact
 import com.exchange.core.trading.TradingClusterManifest
 import com.exchange.core.trading.TradingIdentifiers
 import com.exchange.core.trading.TradingLifecycle
@@ -76,6 +77,7 @@ import java.net.http.HttpResponse
 import java.nio.ByteOrder
 import java.nio.file.Files
 import java.nio.file.Path
+import java.sql.Timestamp
 import java.time.Duration
 import java.time.Instant
 import java.util.concurrent.CountDownLatch
@@ -309,6 +311,139 @@ class SplitFundsTradingHttpTest {
             assertEquals(settled.financial.balances, resumed.financial.balances)
             assertEquals(3L, checkNotNull(resumed.results).streams.single().resultThrough)
             assertEquals(5L, jdbc.queryForObject("select count(*) from order_query.source_receipt", Long::class.java))
+        }
+    }
+
+    @Test
+    fun `체결 정산 기록을 PostgreSQL에 한 번 저장한다`() {
+        val market = MarketId("BTC-USDT")
+        val buyer = UserId("buyer")
+        val usdt = AssetId("USDT")
+        withTradingNodes("query-test", feeRate = FeeRate(10_000), takerFeeRate = FeeRate(20_000), persistSettlements = true) { harness ->
+            val committed = CountDownLatch(1)
+            val committedFact = AtomicReference<SettlementFact>()
+            val actualStore = AtomicReference<OrderQueryFeedStore>()
+            queryWas(harness, decorate = { store ->
+                actualStore.set(store)
+                object : OrderQueryFeedStore by store {
+                    override fun applySettlement(fact: SettlementFact): Long {
+                        val through = store.applySettlement(fact)
+                        if (fact.fills.isNotEmpty() && committedFact.compareAndSet(null, fact)) {
+                            harness.sourceReplies.pauseDescriptions.set(true)
+                            committed.countDown()
+                            error("시험에서 PostgreSQL 커밋 확인만 유실시킨다")
+                        }
+                        return through
+                    }
+                }
+            }).use { context ->
+                val jdbc = harness.database.jdbc()
+                val url = wasUrl(context)
+                HttpClient.newHttpClient().use { http ->
+                    awaitEmptyReady(harness, http, url)
+                    val sellId = json.readTree(submitSeller(http, url, quantity = 1).body()).path("orderId").asString()
+                    awaitQuery(harness, http, url, sellId, "RESTING", 0, 1, 0)
+
+                    harness.settlementGate.paused.set(true)
+                    val buyId: String
+                    try {
+                        val epoch = post(http, url, "/channels/0/epoch", """{"userId":"buyer","expectedEpoch":0}""")
+                        assertEquals(200, epoch.statusCode(), epoch.body())
+                        val buy = post(http, url, "/markets/BTC-USDT/orders", orderBody("buyer", "BUY", quantity = 1, price = 150))
+                        assertEquals(202, buy.statusCode(), buy.body())
+                        buyId = json.readTree(buy.body()).path("orderId").asString()
+                        val expectedReservation = Balance(buyer, usdt, Amount(847), Amount(153))
+                        await("매수 대금 153 예약", { describeFunds(harness.fundsSnapshot.get()) }) {
+                            val financial = harness.fundsSnapshot.get()?.financial
+                            financial != null && expectedReservation in financial.balances
+                        }
+                        val reserved = checkNotNull(harness.fundsSnapshot.get())
+                        assertTrue(reserved.financial.feeRevenueByAsset.isEmpty())
+                        assertEquals(0L, jdbc.queryForObject("select count(*) from order_query.settlement_transaction", Long::class.java))
+                    } finally {
+                        harness.settlementGate.paused.set(false)
+                    }
+
+                    assertTrue(committed.await(15, TimeUnit.SECONDS), "PostgreSQL에 첫 정산이 커밋되어야 한다")
+                    val first = checkNotNull(harness.fundsSnapshot.get())
+                    val original = checkNotNull(first.results).receipts.single { it.result.resultSequence == 2L }.result
+                    assertFinalBalances(first, buyerQuote = 898, sellerQuote = 99)
+                    assertTrue(first.financial.liveOrders.isEmpty())
+                    assertEquals(mapOf(usdt to BigInteger.valueOf(3)), first.financial.feeRevenueByAsset)
+                    val pendingExport = first.querySettlements.getValue(market)
+                    assertTrue(pendingExport.retiredThrough < 2)
+                    assertEquals(2L, pendingExport.entries.last().resultSequence)
+                    OrderQuerySourceClient(harness.matchingEndpoint, 10_000).use { matching ->
+                        val reply = matching.request(OrderQuerySourceCommand.Describe)
+                        val matchingProgress = reply.progress.single { it.market == market.value }
+                        assertEquals(2L, matchingProgress.issued)
+                        assertTrue(matchingProgress.retiredThrough < 2)
+                    }
+
+                    val ledgerSql = "select * from order_query.settlement_transaction"
+                    val postingsSql = "select * from order_query.settlement_posting order by posting_sequence"
+                    val ledger = jdbc.queryForList(ledgerSql).single()
+                    val postings = jdbc.queryForList(postingsSql)
+                    val fact = checkNotNull(committedFact.get())
+                    val settlement = fact.fills.single().transaction
+                    assertEquals("SETTLEMENT", ledger["transaction_type"])
+                    assertEquals(settlement.ledgerTransactionId, ledger["settlement_id"])
+                    assertEquals(settlement.occurredAt, (ledger["occurred_at"] as Timestamp).toInstant())
+                    assertEquals(listOf(sellId, buyId), listOf(ledger["maker_order_id"], ledger["taker_order_id"]))
+                    val tradeColumns = listOf("result_sequence", "price", "quantity", "maker_fee", "taker_fee")
+                    assertEquals(listOf(2L, 100L, 1L, 1L, 2L), tradeColumns.map { ledger[it] })
+                    assertEquals(
+                        listOf(
+                            listOf("USER:seller:BTC:HOLD", "BTC", "DEBIT", 1L),
+                            listOf("USER:seller:USDT:AVAILABLE", "USDT", "CREDIT", 99L),
+                            listOf("SYSTEM:USDT:FEE_REVENUE", "USDT", "CREDIT", 1L),
+                            listOf("USER:buyer:USDT:HOLD", "USDT", "DEBIT", 102L),
+                            listOf("USER:buyer:USDT:HOLD", "USDT", "DEBIT", 51L),
+                            listOf("USER:buyer:USDT:AVAILABLE", "USDT", "CREDIT", 51L),
+                            listOf("USER:buyer:BTC:AVAILABLE", "BTC", "CREDIT", 1L),
+                            listOf("SYSTEM:USDT:FEE_REVENUE", "USDT", "CREDIT", 2L),
+                        ),
+                        postings.map { posting -> listOf("account_id", "asset_id", "side", "amount").map { posting[it] } },
+                    )
+                    assertEquals(2L, jdbc.queryForObject("select settlement_through from order_query.feed_stream", Long::class.java))
+                    assertEquals(2L, actualStore.get().applySettlement(fact), "동일한 확정 분개를 DB에 다시 적용한다")
+
+                    harness.sourceReplies.dropNextSettlementAck.set(true)
+                    harness.sourceReplies.pauseDescriptions.set(false)
+                    assertTrue(harness.sourceReplies.dropped.await(15, TimeUnit.SECONDS), "자금 ACK 적용 후 응답을 유실시켜야 한다")
+                    val acknowledgedFunds = checkNotNull(harness.fundsSnapshot.get())
+                    assertEquals(2L, acknowledgedFunds.querySettlements.getValue(market).retiredThrough)
+                    OrderQuerySourceClient(harness.matchingEndpoint, 10_000).use { matching ->
+                        val reply = matching.request(OrderQuerySourceCommand.Describe)
+                        assertTrue(reply.progress.single { it.market == market.value }.retiredThrough < 2L)
+                    }
+                    harness.sourceReplies.pauseDescriptions.set(false)
+                    awaitQuery(harness, http, url, buyId, "FILLED", 1, 0, 0)
+                    OrderQuerySourceClient(harness.matchingEndpoint, 10_000).use { matching ->
+                        await("매칭 조회 원본 회수") {
+                            val described = matching.request(OrderQuerySourceCommand.Describe)
+                            described.progress.singleOrNull { it.market == market.value }?.retiredThrough == 2L
+                        }
+                    }
+                    DevelopmentSplitResultDeliveryClient(harness.fundsEndpoint, 10_000).use { funds ->
+                        assertEquals("DUPLICATE", funds.request(SplitResultDeliveryCommand.Apply(original)).code)
+                    }
+                    OrderQuerySourceClient(harness.fundsEndpoint, 10_000).use { funds ->
+                        // 같은 서비스 스레드의 재전송 callback과 상태 캡처가 끝날 때까지 기다린다.
+                        assertEquals("DESCRIBED", funds.request(OrderQuerySourceCommand.Describe).code)
+                    }
+                    val replayed = checkNotNull(harness.fundsSnapshot.get())
+                    assertEquals(first.financial.balances, replayed.financial.balances)
+                    assertEquals(first.financial.liveOrders, replayed.financial.liveOrders)
+                    assertEquals(first.financial.feeRevenueByAsset, replayed.financial.feeRevenueByAsset)
+                    assertEquals(2L, checkNotNull(replayed.results).streams.single().resultThrough)
+                    val exported = replayed.querySettlements.getValue(market)
+                    assertEquals(2L, exported.retiredThrough)
+                    assertTrue(exported.entries.isEmpty())
+                    assertEquals(listOf(ledger), jdbc.queryForList(ledgerSql))
+                    assertEquals(postings, jdbc.queryForList(postingsSql))
+                }
+            }
         }
     }
 
@@ -1242,6 +1377,7 @@ class SplitFundsTradingHttpTest {
         val rewrittenDescriptions = AtomicInteger()
         val dropNextRead = AtomicBoolean()
         val dropNextAcknowledgement = AtomicBoolean()
+        val dropNextSettlementAck = AtomicBoolean()
         val pauseDescriptions = AtomicBoolean()
         val dropped = CountDownLatch(1)
         val observeNextRead = AtomicBoolean()
@@ -1272,6 +1408,7 @@ class SplitFundsTradingHttpTest {
                         when (command) {
                             is OrderQuerySourceCommand.Read -> dropNextRead.compareAndSet(true, false)
                             is OrderQuerySourceCommand.Acknowledge -> dropNextAcknowledgement.compareAndSet(true, false)
+                            is OrderQuerySourceCommand.AcknowledgeSettlements -> dropNextSettlementAck.compareAndSet(true, false)
                             else -> false
                         }
                     if (loseReply) pauseDescriptions.set(true)
@@ -1370,14 +1507,15 @@ class SplitFundsTradingHttpTest {
         sourceRestart: Boolean = false,
         feeRate: FeeRate = FeeRate.ZERO,
         takerFeeRate: FeeRate = feeRate,
+        persistSettlements: Boolean = false,
         decorateFunds: (ClusteredService) -> ClusteredService = { it },
         verify: (TradingHarness) -> Unit,
     ) {
         val basePort = availablePorts()
         val manifest = manifest(MakerTakerFeeRates(makerFeeRate = feeRate, takerFeeRate = takerFeeRate))
         val manifestFile = directory.resolve("manifest.bin").also { Files.write(it, BoundedTradingStateCodec().encodeManifest(manifest)) }
-        val fundsSettings = settings(manifestFile, TradingServiceRole.FUNDS, basePort, consumerId)
-        val matchingSettings = settings(manifestFile, TradingServiceRole.MATCHING, basePort, consumerId)
+        val fundsSettings = settings(manifestFile, TradingServiceRole.FUNDS, basePort, consumerId, persistSettlements)
+        val matchingSettings = settings(manifestFile, TradingServiceRole.MATCHING, basePort, consumerId, persistSettlements)
         val fundsSnapshot = AtomicReference<FundsRoleRecoveryState?>()
         val settlementGate = SettlementGate()
         val sourceReplies = SourceReplyGate()
@@ -1888,8 +2026,14 @@ class SplitFundsTradingHttpTest {
         role: TradingServiceRole,
         base: Int,
         consumerId: String? = null,
+        persistSettlements: Boolean = false,
     ): SplitTradingNodeSettings {
         val port = if (role == TradingServiceRole.FUNDS) base else base + 16
+        val querySettings =
+            buildMap {
+                if (consumerId != null) put("EXCHANGE_ORDER_QUERY_CONSUMER_ID", consumerId)
+                if (persistSettlements) put("EXCHANGE_ORDER_QUERY_PERSIST_SETTLEMENTS", "true")
+            }
         return splitTradingSettings(
             mapOf(
                 "SPLIT_MODE" to "RESULT_SETTLEMENT_DEV",
@@ -1909,7 +2053,7 @@ class SplitFundsTradingHttpTest {
                 "FUNDING_HOST" to "127.0.0.1",
                 "FUNDING_MEMBERS" to "0,${(0..4).joinToString(",") { "127.0.0.1:${port + it}" }}",
                 "FUNDING_RUN_ID" to "split-http",
-            ) + if (consumerId == null) emptyMap() else mapOf("EXCHANGE_ORDER_QUERY_CONSUMER_ID" to consumerId),
+            ) + querySettings,
         )
     }
 

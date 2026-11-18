@@ -28,7 +28,7 @@ class QueryRetentionConfiguration(
             "invalid query consumer identity"
         }
         require(this.marketLimits.isNotEmpty() && maxEntries > 0 && maxBytes > 0)
-        require(capabilityVersion == 1) { "unsupported query retention capability" }
+        require(capabilityVersion in 1..2) { "unsupported query retention capability" }
     }
 
     override fun equals(other: Any?): Boolean =
@@ -36,6 +36,21 @@ class QueryRetentionConfiguration(
             maxEntries == other.maxEntries && maxBytes == other.maxBytes && capabilityVersion == other.capabilityVersion
 
     override fun hashCode(): Int = listOf(consumerId, marketLimits, maxEntries, maxBytes, capabilityVersion).hashCode()
+
+    internal fun settlementRetention(): QueryRetentionConfiguration? {
+        if (capabilityVersion < 2) return null
+        // 마켓마다 다른 매칭 클러스터에서 보존 한도를 동시에 모두 사용할 수 있다.
+        var entries = 0
+        var bytes = 0L
+        val effectiveLimits =
+            marketLimits.mapValues { (_, limits) ->
+                val effective = QueryRetentionLimits(minOf(maxEntries, limits.maxEntries), minOf(maxBytes, limits.maxBytes))
+                entries = Math.addExact(entries, effective.maxEntries)
+                bytes = Math.addExact(bytes, effective.maxBytes)
+                effective
+            }
+        return QueryRetentionConfiguration(consumerId, effectiveLimits, entries, bytes, capabilityVersion)
+    }
 }
 
 data class QueryFactsProgress(

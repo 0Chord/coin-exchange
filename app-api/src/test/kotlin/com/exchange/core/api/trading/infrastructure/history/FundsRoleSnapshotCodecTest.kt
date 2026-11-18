@@ -28,10 +28,17 @@ import com.exchange.core.trading.ClusterLineage
 import com.exchange.core.trading.FundsDispatchConfiguration
 import com.exchange.core.trading.FundsDispatchLimits
 import com.exchange.core.trading.FundsMatchingAppliedAck
+import com.exchange.core.trading.FundsResultStatus
 import com.exchange.core.trading.FundsRoleRecoveryState
+import com.exchange.core.trading.MarketMatchingIntakeLimits
+import com.exchange.core.trading.MatchingIntakeLimits
 import com.exchange.core.trading.OrderAdmissionCalculator
 import com.exchange.core.trading.OrderIntent
 import com.exchange.core.trading.OrderSettlementCalculator
+import com.exchange.core.trading.QueryFactsAckStatus
+import com.exchange.core.trading.QueryFactsReadStatus
+import com.exchange.core.trading.QueryRetentionConfiguration
+import com.exchange.core.trading.QueryRetentionLimits
 import com.exchange.core.trading.RequestToken
 import com.exchange.core.trading.SettlementLedgerTransactions
 import com.exchange.core.trading.TradingClusterManifest
@@ -130,6 +137,93 @@ class FundsRoleSnapshotCodecTest {
         assertFalse(repeated.newlyRecorded)
         assertContentEquals(bytes, bytes(restored.fundsRecoveryState()))
         assertFails { BoundedTradingStateCodec().read(ByteArrayInputStream(bytes), manifest, POSITION) }
+    }
+
+    @Test
+    fun `기존 조회 스냅샷을 유지하고 새 형식은 정산 분개와 확인 위치를 복원한다`() {
+        val matchingDeclaration =
+            TradingRoleDeclaration(
+                TradingServiceRole.MATCHING,
+                configuration.stream(market.marketId).matchingLineage,
+                manifest.configurationVersion,
+                manifest.markets,
+                mapOf(market.marketId to 1),
+            )
+        val matchingLimits = MatchingIntakeLimits(mapOf(market.marketId to MarketMatchingIntakeLimits()), maxSingleResultBytes = 16_384)
+        val dispatchLimits =
+            FundsDispatchLimits(
+                configuration.limits.marketLimits,
+                maxDispatchBytes = 65_536,
+                maxActiveBytes = 65_536,
+            )
+        for (capability in listOf(1, 2)) {
+            val query =
+                QueryRetentionConfiguration(
+                    "ledger",
+                    mapOf(market.marketId to QueryRetentionLimits(maxEntries = 16, maxBytes = 16_384)),
+                    maxEntries = 16,
+                    maxBytes = 16_384,
+                    capabilityVersion = capability,
+                )
+            val expected = FundsDispatchConfiguration(topology, dispatchLimits, inputContractVersion = 2, queryRetention = query)
+            val funds = prepared(expected)
+            val matching =
+                TradingRoleAssembly.reservedMatching(
+                    topology,
+                    matchingDeclaration,
+                    matchingLimits,
+                    inputContractVersion = 2,
+                    queryRetention = query,
+                )
+            matching.initialize()
+            val seller = UserId("seller")
+            funds.prepareDevelopmentBalance(OpeningBalance("P2", seller, btc, Amount(3)), Instant.EPOCH)
+            funds.rotateEpoch(seller, 0, 0)
+            val sell = intent.copy(side = Side.SELL, quantity = Quantity(1))
+            funds.admit(RequestToken(seller, 0, 1, 1), sell, Instant.EPOCH)
+            funds.admit(token, intent.copy(quantity = Quantity(1)), Instant.EPOCH)
+            val dispatches = funds.readQueryAdmissions(1, 2, 16_384).entries
+            assertEquals(2, dispatches.size)
+            val settled =
+                dispatches
+                    .map { dispatch ->
+                        val result = assertNotNull(matching.apply(dispatch).result)
+                        val reply = funds.applyMatchingResult(result, Instant.EPOCH, settlementCalculator())
+                        assertEquals(FundsResultStatus.APPLIED, reply.status)
+                        result
+                    }.last()
+            val stream = settled.stream
+            val stored = bytes(funds.fundsRecoveryState())
+            assertEquals(if (capability == 1) 4 else 5, ByteBuffer.wrap(stored).getInt(4))
+            val decoded = codec.read(ByteArrayInputStream(stored), expected, POSITION)
+            assertContentEquals(stored, bytes(decoded))
+            val restored = owner(expected).also { it.restoreFundsRecoveryState(decoded, settlementCalculator()) }
+            val read = restored.readQuerySettlements(stream, 1, 2, 16_384)
+            if (capability == 1) {
+                assertEquals(QueryFactsReadStatus.DISABLED, read.status)
+                assertTrue(decoded.querySettlements.isEmpty())
+                continue
+            }
+            assertEquals(funds.readQuerySettlements(stream, 1, 2, 16_384).entries, read.entries)
+            val firstFact = read.entries.first()
+            val lastFact = read.entries.last()
+            val fill = lastFact.fills.single()
+            assertTrue(firstFact.fills.isEmpty())
+            assertEquals(Instant.EPOCH, fill.transaction.occurredAt)
+            assertEquals(QueryFactsAckStatus.ACKNOWLEDGED, restored.acknowledgeQuerySettlements("ledger", stream, 2).status)
+            val retired = codec.read(ByteArrayInputStream(bytes(restored.fundsRecoveryState())), expected, POSITION)
+            val restoredSettlementStream = retired.querySettlements.getValue(market.marketId)
+            assertEquals(2L, restoredSettlementStream.retiredThrough)
+            assertTrue(restoredSettlementStream.entries.isEmpty())
+
+            val matchingSnapshot = MatchingRoleSnapshotCodec()
+            val matchingSaved = matching.recoveryState()
+            val matchingBytes = ByteArrayOutputStream().also { matchingSnapshot.write(matchingSaved, POSITION, it) }.toByteArray()
+            val matchingRestored = matchingSnapshot.read(ByteArrayInputStream(matchingBytes), matchingSaved.configuration, POSITION)
+            val matchingFacts = matchingRestored.queryResults.getValue(market.marketId)
+            assertEquals(2, matchingFacts.entries.size)
+            assertEquals(matchingFacts.entries.sumOf(matchingSaved.configuration::queryResultCharge), matchingFacts.retainedBytes)
+        }
     }
 
     @Test
@@ -306,7 +400,7 @@ class FundsRoleSnapshotCodecTest {
         epoch: Long = 1,
     ) = TradingRoleTopology(definition, listOf(TradingMarketAssignment(market.marketId, destination, epoch)))
 
-    private fun owner(): BoundedFundingState =
+    private fun owner(dispatch: FundsDispatchConfiguration = configuration): BoundedFundingState =
         TradingRoleAssembly.funds(
             topology,
             TradingRoleDeclaration(
@@ -317,10 +411,13 @@ class FundsRoleSnapshotCodecTest {
                 mapOf(market.marketId to 1),
             ),
             OrderAdmissionCalculator(reservations()),
+            dispatchLimits = dispatch.limits,
+            inputContractVersion = dispatch.inputContractVersion,
+            queryRetention = dispatch.queryRetention,
         )
 
-    private fun prepared(): BoundedFundingState =
-        owner().also {
+    private fun prepared(dispatch: FundsDispatchConfiguration = configuration): BoundedFundingState =
+        owner(dispatch).also {
             it.initialize(manifest)
             it.prepareDevelopmentBalance(OpeningBalance("P1", user, usdt, Amount(1_000)), Instant.EPOCH)
             it.rotateEpoch(user, 0, 0)

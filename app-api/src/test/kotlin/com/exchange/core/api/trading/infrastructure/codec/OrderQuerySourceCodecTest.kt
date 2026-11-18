@@ -1,7 +1,9 @@
 package com.exchange.core.api.trading.infrastructure.codec
 
+import com.exchange.core.common.Amount
 import com.exchange.core.common.AssetId
 import com.exchange.core.common.MarketId
+import com.exchange.core.common.OrderId
 import com.exchange.core.common.Price
 import com.exchange.core.common.Quantity
 import com.exchange.core.common.UserId
@@ -11,7 +13,12 @@ import com.exchange.core.fee.FeeTier
 import com.exchange.core.fee.MakerTakerFeeRates
 import com.exchange.core.fee.TradingFeePolicySnapshot
 import com.exchange.core.fee.TradingFeeReserveCalculator
+import com.exchange.core.ledger.LedgerPosting
+import com.exchange.core.ledger.LedgerPostingSide
+import com.exchange.core.ledger.LedgerTransaction
+import com.exchange.core.ledger.LedgerTransactionType
 import com.exchange.core.matching.OrderEnteredBook
+import com.exchange.core.matching.TradeExecuted
 import com.exchange.core.order.BuyOrderFundingQuoteCalculator
 import com.exchange.core.order.MarketDefinition
 import com.exchange.core.order.OrderReservation
@@ -28,6 +35,9 @@ import com.exchange.core.trading.MatchingOutcome
 import com.exchange.core.trading.MatchingResultEnvelope
 import com.exchange.core.trading.MatchingResultStream
 import com.exchange.core.trading.OrderAdmissionInput
+import com.exchange.core.trading.QueryFactsProgress
+import com.exchange.core.trading.SettledTrade
+import com.exchange.core.trading.SettlementFact
 import com.exchange.core.trading.TradingIdentifiers
 import com.exchange.core.trading.TradingMarketContext
 import com.exchange.core.trading.TradingServiceRole
@@ -38,6 +48,7 @@ import java.io.ByteArrayOutputStream
 import java.io.DataInputStream
 import java.io.DataOutputStream
 import java.nio.ByteBuffer
+import java.time.Instant
 import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
@@ -74,6 +85,8 @@ class OrderQuerySourceCodecTest {
                 OrderQuerySourceCommand.Read(consumer, context.market.marketId.value, Long.MAX_VALUE),
                 OrderQuerySourceCommand.Acknowledge(consumer, null, 0),
                 OrderQuerySourceCommand.Acknowledge(consumer, context.market.marketId.value, Long.MAX_VALUE),
+                OrderQuerySourceCommand.ReadSettlements(consumer, context.market.marketId.value, Long.MAX_VALUE),
+                OrderQuerySourceCommand.AcknowledgeSettlements(consumer, context.market.marketId.value, 0),
             )
         for (command in commands) {
             val bytes = codec.encode(Long.MAX_VALUE, command)
@@ -82,6 +95,45 @@ class OrderQuerySourceCodecTest {
             assertTrue(OrderQuerySourceCodec.isQueryFrame(UnsafeBuffer(padded), 7, bytes.size))
             assertFalse(OrderQuerySourceCodec.isQueryFrame(UnsafeBuffer(padded), 7, 3))
         }
+    }
+
+    @Test
+    fun `정산을 지원하는 소스만 새 응답과 보존 위치를 보낸다`() {
+        val legacy = metadata()
+        val legacyBytes = codec.encodeReply(legacy)
+        assertEquals(1, legacyBytes[2].toInt())
+        assertEquals(legacy, codec.decodeReply(legacyBytes))
+        val progress = legacy.progress.last().copy(settlement = QueryFactsProgress(4, 3, 1, 140))
+        val settlement = legacy.copy(capabilityVersion = 2, progress = listOf(legacy.progress.first(), progress))
+        val settlementBytes = codec.encodeReply(settlement)
+        assertEquals(2, settlementBytes[2].toInt())
+        assertEquals(settlement, codec.decodeReply(settlementBytes))
+    }
+
+    @Test
+    fun `정산 결과는 양쪽 수수료와 확정 시각 및 분개 순서를 그대로 전송한다`() {
+        val market = context.market.marketId
+        val trade =
+            TradeExecuted(market, 8, OrderId("매도"), OrderId("매수"), UserId("maker"), UserId("taker"), Side.BUY, Price(100), Quantity(1))
+        val asset = context.market.baseAssetId
+        val transaction =
+            LedgerTransaction(
+                "정산-ID",
+                "MATCHING:${market.value}:8",
+                LedgerTransactionType.SETTLEMENT,
+                Instant.ofEpochSecond(25, 123_456_789),
+                listOf(
+                    LedgerPosting("매도 주문 예약", asset, LedgerPostingSide.DEBIT, Amount(1)),
+                    LedgerPosting("매수자 잔고", asset, LedgerPostingSide.CREDIT, Amount(1)),
+                ),
+            )
+        val fact = SettlementFact(stream, 3, listOf(SettledTrade(trade, transaction, Amount(0), Amount(2))))
+        val expected = OrderQuerySourceReply(9, "FACT", settlement = fact, capabilityVersion = 2)
+        val bytes = codec.encodeReply(expected)
+        assertEquals(expected, codec.decodeReply(bytes))
+        assertEquals(fact, SettlementFactCodec.decode(SettlementFactCodec.encode(fact)))
+        assertFailsWith<IllegalArgumentException> { codec.decodeReply(bytes + byteArrayOf(0)) }
+        assertFailsWith<IllegalArgumentException> { SettlementFactCodec.decode(SettlementFactCodec.encode(fact).dropLast(1).toByteArray()) }
     }
 
     @Test
