@@ -28,6 +28,7 @@ import com.exchange.core.fee.MakerTakerFeeRates
 import com.exchange.core.fee.TradingFeePolicySnapshot
 import com.exchange.core.ledger.Balance
 import com.exchange.core.ledger.OpeningBalance
+import com.exchange.core.matching.TradeExecuted
 import com.exchange.core.order.MarketDefinition
 import com.exchange.core.order.OrderType
 import com.exchange.core.order.Side
@@ -308,6 +309,125 @@ class SplitFundsTradingHttpTest {
             assertEquals(settled.financial.balances, resumed.financial.balances)
             assertEquals(3L, checkNotNull(resumed.results).streams.single().resultThrough)
             assertEquals(5L, jdbc.queryForObject("select count(*) from order_query.source_receipt", Long::class.java))
+        }
+    }
+
+    @Test
+    fun `같은 지정가 매수 주문이 첫 체결 뒤 남은 수량까지 실제 HTTP로 체결된다`() {
+        val buyer = UserId("buyer")
+        val seller = UserId("seller")
+        val btc = AssetId("BTC")
+        val usdt = AssetId("USDT")
+        val ordersPath = "/markets/BTC-USDT/orders"
+        withTradingNodes(consumerId = "query-test", feeRate = FeeRate(10_000), takerFeeRate = FeeRate(20_000)) { harness ->
+            SpringApplicationBuilder(ExchangeCoreApplication::class.java).run(*wasArguments(harness, queryEnabled = true)).use { context ->
+                val url = wasUrl(context)
+                HttpClient.newHttpClient().use { http ->
+                    awaitEmptyReady(harness, http, url)
+                    val firstSale = submitSeller(http, url, quantity = 1)
+                    val firstSaleId = json.readTree(firstSale.body()).path("orderId").asString()
+                    val resting = awaitQuery(harness, http, url, firstSaleId, "RESTING", filled = 0, remaining = 1, cancelled = 0)
+
+                    val restingFunds = checkNotNull(harness.fundsSnapshot.get()) { resting.body() }
+                    val restingDetail = "GET ${resting.body()}, ${describeFunds(restingFunds)}"
+                    val fundedBalances =
+                        restingFunds.financial.balances
+                            .filter { balance -> !balance.available.isZero() || !balance.hold.isZero() }
+                            .toSet()
+                    assertEquals(
+                        setOf(Balance(buyer, usdt, Amount(1_000), Amount.ZERO), Balance(seller, btc, Amount(2), Amount(1))),
+                        fundedBalances,
+                        restingDetail,
+                    )
+                    assertTrue(restingFunds.financial.feeRevenueByAsset.isEmpty(), restingDetail)
+
+                    val buyerEpoch = post(http, url, "/channels/0/epoch", """{"userId":"buyer","expectedEpoch":0}""")
+                    assertEquals(200, buyerEpoch.statusCode(), buyerEpoch.body())
+                    val buy = post(http, url, ordersPath, orderBody("buyer", "BUY", quantity = 3))
+                    assertEquals(202, buy.statusCode(), buy.body())
+                    val buyReceipt = json.readTree(buy.body())
+                    assertEquals("ACCEPTED", buyReceipt.path("status").asString())
+                    val buyId = buyReceipt.path("orderId").asString()
+                    val buyAdmission = buyReceipt.path("admissionSequence").longValue()
+
+                    val partial = awaitQuery(harness, http, url, buyId, "PARTIALLY_FILLED", filled = 1, remaining = 2, cancelled = 0)
+                    val partialOrder = json.readTree(partial.body())
+                    val partialFunds = checkNotNull(harness.fundsSnapshot.get()) { partial.body() }
+                    val partialDetail = "GET ${partial.body()}, ${describeFunds(partialFunds)}"
+                    assertEquals(buyId, partialOrder.path("orderId").asString(), partialDetail)
+                    assertEquals(3L, partialOrder.path("initialQuantity").longValue(), partialDetail)
+                    assertEquals(0L, partialOrder.path("cancelledQuantity").longValue(-1), partialDetail)
+                    assertEquals(0L, partialOrder.path("notExecutedQuantity").longValue(-1), partialDetail)
+                    assertEquals(2L, partialOrder.path("lastAffectedResultSequence").longValue(), partialDetail)
+                    val partialResults = checkNotNull(partialFunds.results) { partialDetail }
+                    assertEquals(2L, partialResults.streams.singleOrNull()?.resultThrough, partialDetail)
+                    assertEquals(
+                        setOf(
+                            Balance(buyer, usdt, Amount(694), Amount(204)),
+                            Balance(buyer, btc, Amount(1), Amount.ZERO),
+                            Balance(seller, usdt, Amount(99), Amount.ZERO),
+                            Balance(seller, btc, Amount(2), Amount.ZERO),
+                        ),
+                        partialFunds.financial.balances.toSet(),
+                        partialDetail,
+                    )
+                    assertEquals(1, partialFunds.financial.liveOrders.size, partialDetail)
+                    val liveBuy = partialFunds.financial.liveOrders.single()
+                    val reservation = liveBuy.reservation
+                    assertEquals(buyId, reservation.orderId.value, partialDetail)
+                    assertEquals(Amount(306), reservation.reservedAmount, partialDetail)
+                    assertEquals(Amount(6), reservation.initialFeeReserveAmount, partialDetail)
+                    assertEquals(Quantity(2), reservation.remainingQuantity, partialDetail)
+                    assertEquals(Amount(204), reservation.remainingAmount, partialDetail)
+                    assertEquals(Amount(4), reservation.remainingFeeReserveAmount, partialDetail)
+                    assertEquals(mapOf(usdt to BigInteger.valueOf(3)), partialFunds.financial.feeRevenueByAsset, partialDetail)
+
+                    val followUp = post(http, url, ordersPath, orderBody("seller", "SELL", quantity = 2, sequence = 2))
+                    assertEquals(202, followUp.statusCode(), followUp.body())
+                    val followUpReceipt = json.readTree(followUp.body())
+                    assertEquals("ACCEPTED", followUpReceipt.path("status").asString())
+                    val followUpSaleId = followUpReceipt.path("orderId").asString()
+                    assertTrue(followUpSaleId.isNotEmpty() && followUpSaleId != firstSaleId)
+
+                    val full = awaitQuery(harness, http, url, buyId, "FILLED", filled = 3, remaining = 0, cancelled = 0)
+                    val fullOrder = json.readTree(full.body())
+                    val fullFunds = checkNotNull(harness.fundsSnapshot.get()) { full.body() }
+                    val fullDetail = "GET ${full.body()}, ${describeFunds(fullFunds)}"
+                    assertEquals(buyId, fullOrder.path("orderId").asString(), fullDetail)
+                    assertEquals(buyAdmission, fullOrder.path("admissionSequence").longValue(), fullDetail)
+                    assertEquals(3L, fullOrder.path("initialQuantity").longValue(), fullDetail)
+                    assertEquals(0L, fullOrder.path("remainingQuantity").longValue(-1), fullDetail)
+                    assertEquals(0L, fullOrder.path("cancelledQuantity").longValue(-1), fullDetail)
+                    assertEquals(0L, fullOrder.path("notExecutedQuantity").longValue(-1), fullDetail)
+                    assertEquals(3L, fullOrder.path("lastAffectedResultSequence").longValue(), fullDetail)
+                    val appliedResults = checkNotNull(fullFunds.results) { fullDetail }
+                    assertEquals(3L, appliedResults.streams.singleOrNull()?.resultThrough, fullDetail)
+                    assertTrue(fullFunds.financial.liveOrders.isEmpty(), fullDetail)
+                    assertEquals(
+                        setOf(
+                            Balance(buyer, usdt, Amount(696), Amount.ZERO),
+                            Balance(buyer, btc, Amount(3), Amount.ZERO),
+                            Balance(seller, usdt, Amount(295), Amount.ZERO),
+                            Balance(seller, btc, Amount.ZERO, Amount.ZERO),
+                        ),
+                        fullFunds.financial.balances.toSet(),
+                        fullDetail,
+                    )
+                    assertEquals(mapOf(usdt to BigInteger.valueOf(9)), fullFunds.financial.feeRevenueByAsset, fullDetail)
+
+                    val trades = appliedResults.receipts.flatMap { it.result.events }.filterIsInstance<TradeExecuted>()
+                    assertEquals(2, trades.size, fullDetail)
+                    val (firstTrade, secondTrade) = trades
+                    assertEquals(firstSaleId, firstTrade.makerOrderId.value, fullDetail)
+                    assertEquals(buyId, firstTrade.takerOrderId.value, fullDetail)
+                    assertEquals(Price(100), firstTrade.price, fullDetail)
+                    assertEquals(Quantity(1), firstTrade.quantity, fullDetail)
+                    assertEquals(buyId, secondTrade.makerOrderId.value, fullDetail)
+                    assertEquals(followUpSaleId, secondTrade.takerOrderId.value, fullDetail)
+                    assertEquals(Price(100), secondTrade.price, fullDetail)
+                    assertEquals(Quantity(2), secondTrade.quantity, fullDetail)
+                }
+            }
         }
     }
 
@@ -1249,11 +1369,12 @@ class SplitFundsTradingHttpTest {
         consumerId: String? = null,
         sourceRestart: Boolean = false,
         feeRate: FeeRate = FeeRate.ZERO,
+        takerFeeRate: FeeRate = feeRate,
         decorateFunds: (ClusteredService) -> ClusteredService = { it },
         verify: (TradingHarness) -> Unit,
     ) {
         val basePort = availablePorts()
-        val manifest = manifest(feeRate)
+        val manifest = manifest(MakerTakerFeeRates(makerFeeRate = feeRate, takerFeeRate = takerFeeRate))
         val manifestFile = directory.resolve("manifest.bin").also { Files.write(it, BoundedTradingStateCodec().encodeManifest(manifest)) }
         val fundsSettings = settings(manifestFile, TradingServiceRole.FUNDS, basePort, consumerId)
         val matchingSettings = settings(manifestFile, TradingServiceRole.MATCHING, basePort, consumerId)
@@ -1591,7 +1712,8 @@ class SplitFundsTradingHttpTest {
         quantity: Long,
         epoch: Long = 1,
         price: Long = 100,
-    ) = """{"userId":"$user","channel":0,"epoch":$epoch,"sequence":1,"expectedConfigurationVersion":1,""" +
+        sequence: Long = 1,
+    ) = """{"userId":"$user","channel":0,"epoch":$epoch,"sequence":$sequence,"expectedConfigurationVersion":1,""" +
         """"side":"$side","orderType":"LIMIT","timeInForce":"GTC","price":$price,"quantity":$quantity}"""
 
     private fun awaitQuery(
@@ -1608,7 +1730,10 @@ class SplitFundsTradingHttpTest {
         minimum: Long = 0,
     ): HttpResponse<String> {
         var last: HttpResponse<String>? = null
-        await("주문 $orderId 조회 $state", { "마지막 응답 ${last?.statusCode()}: ${last?.body()}" }) {
+        await(
+            "주문 $orderId 조회 $state",
+            { "마지막 응답 ${last?.statusCode()}: ${last?.body()}, ${describeFunds(harness.fundsSnapshot.get())}" },
+        ) {
             harness.funds.poll()
             val response = getQuery(http, url, orderId, minimum)
             last = response
@@ -1619,6 +1744,14 @@ class SplitFundsTradingHttpTest {
                 (pendingReason == null || body.path("pendingReason").asString() == pendingReason)
         }
         return checkNotNull(last)
+    }
+
+    private fun describeFunds(saved: FundsRoleRecoveryState?): String {
+        if (saved == null) return "자금 적용 상태 미관측"
+        val resultSequences = saved.results?.streams?.map { it.resultThrough }
+        val financial = saved.financial
+        val reservations = financial.liveOrders.map { it.reservation }
+        return "자금 결과 순번=$resultSequences, 잔고=${financial.balances}, 예약=$reservations, 수수료=${financial.feeRevenueByAsset}"
     }
 
     private fun await(
@@ -1780,7 +1913,7 @@ class SplitFundsTradingHttpTest {
         )
     }
 
-    private fun manifest(feeRate: FeeRate): TradingClusterManifest =
+    private fun manifest(feeRates: MakerTakerFeeRates): TradingClusterManifest =
         TradingClusterManifest(
             lineage,
             "split-http",
@@ -1790,7 +1923,7 @@ class SplitFundsTradingHttpTest {
             listOf(
                 TradingMarketContext(
                     MarketDefinition(MarketId("BTC-USDT"), AssetId("BTC"), AssetId("USDT"), 0),
-                    TradingFeePolicySnapshot(FeeProductType.SPOT, FeeTier.NORMAL, 1, MakerTakerFeeRates(feeRate, feeRate)),
+                    TradingFeePolicySnapshot(FeeProductType.SPOT, FeeTier.NORMAL, 1, feeRates),
                     0,
                 ),
             ),
