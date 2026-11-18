@@ -18,7 +18,6 @@ import com.exchange.core.api.trading.infrastructure.history.BoundedTradingStateC
 import com.exchange.core.common.Amount
 import com.exchange.core.common.AssetId
 import com.exchange.core.common.MarketId
-import com.exchange.core.common.OrderId
 import com.exchange.core.common.Price
 import com.exchange.core.common.Quantity
 import com.exchange.core.common.UserId
@@ -37,7 +36,6 @@ import com.exchange.core.support.OrderQueryTestDatabase
 import com.exchange.core.trading.AdmissionCode
 import com.exchange.core.trading.AdmissionReceipt
 import com.exchange.core.trading.BoundedFundingState
-import com.exchange.core.trading.CancelIntent
 import com.exchange.core.trading.ClusterLineage
 import com.exchange.core.trading.FundsOrderDispatch
 import com.exchange.core.trading.FundsRoleRecoveryState
@@ -241,24 +239,19 @@ class SplitFundsTradingHttpTest {
                             awaitQuery(harness, http, url, buyerOrderId, "FILLED", 1, 0, 0)
 
                             harness.settlementGate.paused.set(true)
-                            val cancelled =
-                                harness.funds.request(
-                                    SplitOrderDeliveryCommand.Cancel(
-                                        RequestToken(UserId("seller"), 0, 1, 2),
-                                        CancelIntent(MarketId("BTC-USDT"), OrderId(sellerOrderId), 1),
-                                    ),
-                                )
-                            assertEquals("ACCEPTED", cancelled.code)
+                            verifyCancellationResponses(http, url, sellerOrderId, buyerOrderId)
                             awaitQuery(harness, http, url, sellerOrderId, "CANCELLED", 1, 0, 2, "PENDING", "RELEASE")
-                            assertEquals(
-                                2L,
-                                harness.fundsSnapshot
-                                    .get()
-                                    ?.results
-                                    ?.streams
-                                    ?.single()
-                                    ?.resultThrough,
-                            )
+                            val pendingRelease = checkNotNull(harness.fundsSnapshot.get())
+                            assertEquals(2L, checkNotNull(pendingRelease.results).streams.single().resultThrough)
+                            val sellerBalances =
+                                pendingRelease.financial.balances
+                                    .filter { it.userId.value == "seller" }
+                                    .associateBy { it.assetId }
+                            val btc = AssetId("BTC")
+                            val usdt = AssetId("USDT")
+                            assertEquals(Balance(UserId("seller"), btc, Amount(0), Amount(2)), sellerBalances[btc])
+                            assertEquals(Balance(UserId("seller"), usdt, Amount(100), Amount(0)), sellerBalances[usdt])
+                            assertEquals(1L, pendingRelease.lastCancellationSequence)
                             harness.settlementGate.paused.set(false)
                         }
                         val seller = awaitQuery(harness, http, url, sellerOrderId, "CANCELLED", 1, 0, 2)
@@ -289,6 +282,7 @@ class SplitFundsTradingHttpTest {
             assertFinalBalances(settled)
             assertEquals(3L, checkNotNull(settled.results).streams.single().resultThrough)
             assertEquals(2L, settled.financial.lastAdmissionSequence)
+            assertEquals(1L, settled.lastCancellationSequence)
             assertTrue(settled.financial.liveOrders.isEmpty())
             val jdbc = harness.database.jdbc()
             assertEquals(5L, jdbc.queryForObject("select count(*) from order_query.source_receipt", Long::class.java))
@@ -315,6 +309,50 @@ class SplitFundsTradingHttpTest {
             assertEquals(3L, checkNotNull(resumed.results).streams.single().resultThrough)
             assertEquals(5L, jdbc.queryForObject("select count(*) from order_query.source_receipt", Long::class.java))
         }
+    }
+
+    private fun verifyCancellationResponses(
+        http: HttpClient,
+        url: String,
+        sellerOrderId: String,
+        buyerOrderId: String,
+    ) {
+        fun cancel(
+            user: String,
+            orderId: String,
+            sequence: Long,
+        ) = post(
+            http,
+            url,
+            "/markets/BTC-USDT/orders/$orderId/cancel",
+            """{"userId":"$user","channel":0,"epoch":1,"sequence":$sequence,"expectedConfigurationVersion":1}""",
+        )
+
+        val first = cancel("seller", sellerOrderId, 2)
+        assertEquals(202, first.statusCode(), first.body())
+        val firstReceipt = json.readTree(first.body())
+        assertEquals("ACCEPTED", firstReceipt.path("status").asString())
+        assertEquals(sellerOrderId, firstReceipt.path("orderId").asString())
+        assertEquals(TradingIdentifiers.cancel(lineage, 1), firstReceipt.path("cancelId").asString())
+
+        val repeated = cancel("seller", sellerOrderId, 2)
+        assertEquals(202, repeated.statusCode(), repeated.body())
+        val repeatedReceipt = json.readTree(repeated.body())
+        assertEquals("ACCEPTED", repeatedReceipt.path("status").asString())
+        assertEquals(sellerOrderId, repeatedReceipt.path("orderId").asString())
+        assertEquals(firstReceipt.path("cancelId").asString(), repeatedReceipt.path("cancelId").asString())
+
+        val conflict = cancel("seller", buyerOrderId, 2)
+        assertEquals(409, conflict.statusCode(), conflict.body())
+        assertEquals("REQUEST_CONTENT_CONFLICT", json.readTree(conflict.body()).path("status").asString())
+
+        val alreadyPending = cancel("seller", sellerOrderId, 3)
+        assertEquals(422, alreadyPending.statusCode(), alreadyPending.body())
+        assertEquals("CANCEL_PENDING", json.readTree(alreadyPending.body()).path("reason").asString())
+
+        val wrongOwner = cancel("buyer", sellerOrderId, 2)
+        assertEquals(422, wrongOwner.statusCode(), wrongOwner.body())
+        assertEquals("NOT_ACTIVE", json.readTree(wrongOwner.body()).path("reason").asString())
     }
 
     @Test

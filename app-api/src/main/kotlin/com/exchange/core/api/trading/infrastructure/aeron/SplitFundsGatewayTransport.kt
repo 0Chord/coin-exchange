@@ -6,6 +6,7 @@ import com.exchange.core.api.trading.infrastructure.codec.SplitOrderDeliveryCode
 import com.exchange.core.api.trading.infrastructure.codec.SplitOrderDeliveryCommand
 import com.exchange.core.api.trading.infrastructure.codec.SplitOrderDeliveryReply
 import com.exchange.core.trading.ClusterLineage
+import com.exchange.core.trading.InboxRejection
 import com.exchange.core.trading.TradingServiceRole
 import io.aeron.Publication
 import io.aeron.driver.MediaDriver
@@ -20,6 +21,7 @@ internal class SplitFundsGatewayTransport(
     private val expectedFundsLineage: ClusterLineage,
     private val onReply: (BoundedTradingReply) -> Unit,
     connectionFactory: SplitOrderDeliveryConnectionFactory = AeronSplitOrderDeliveryConnectionFactory,
+    private val onCancellation: (SplitOrderDeliveryReply) -> Unit = { error("취소 응답을 받을 대기 경로가 없습니다") },
 ) : BoundedGatewayTransport {
     private val directory = Files.createTempDirectory(settings.runRoot, "split-funds-client-")
     private val failure = AtomicReference<Throwable?>()
@@ -136,12 +138,20 @@ internal class SplitFundsGatewayTransport(
             return
         }
         check(described) { "split funds gateway peer is not described" }
-        val control = requireNotNull(reply.control) { "split funds gateway requires a control reply" }
-        require(reply.ack == null && reply.expectedSequence == null && reply.cancellation == null) {
+        require(reply.ack == null && reply.expectedSequence == null) {
             "split funds gateway received a delivery reply"
         }
+        val control = reply.control
+        if (control == null) {
+            val receipt = reply.cancellation
+            require(if (receipt == null) reply.code in cancellationRefusals else reply.code == receipt.code.name) {
+                "분리 Gateway의 취소 응답 코드가 일치하지 않습니다"
+            }
+            onCancellation(reply)
+            return
+        }
         require(
-            control.correlationId == reply.correlationId && control.lineage == expectedFundsLineage &&
+            reply.cancellation == null && control.correlationId == reply.correlationId && control.lineage == expectedFundsLineage &&
                 control.code == reply.code && control.appliedLogPosition == reply.appliedLogPosition,
         ) { "split funds gateway control envelope differs" }
         // 만료된 correlation은 gateway의 대기 목록에서 제외되어 다른 HTTP 요청을 완료하지 않는다.
@@ -183,6 +193,13 @@ internal class SplitFundsGatewayTransport(
 
     companion object {
         private val codec = SplitOrderDeliveryCodec(2)
+        private val cancellationRefusals =
+            setOf("EXECUTION_CONTEXT_MISMATCH", "EXHAUSTED", "NOT_READY", "UNSUPPORTED_COMMAND") + InboxRejection.entries.map { it.name }
+
+        fun encodeCancellation(
+            correlationId: Long,
+            command: SplitOrderDeliveryCommand.Cancel,
+        ): ByteArray = codec.encode(correlationId, command)
 
         fun encodeCommand(
             correlationId: Long,

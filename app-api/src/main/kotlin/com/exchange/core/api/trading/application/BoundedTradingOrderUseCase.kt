@@ -20,6 +20,16 @@ data class BoundedTradingOrderSubmission(
     val quantity: Long,
 )
 
+data class BoundedTradingCancellation(
+    val userId: String,
+    val channel: Int,
+    val epoch: Long,
+    val sequence: Long,
+    val expectedConfigurationVersion: Long,
+    val marketId: String,
+    val orderId: String,
+)
+
 /** HTTP·wire codec과 무관하게 엔진 결과와 전달의 불확실성을 나타낸다. */
 data class BoundedTradingResult(
     val code: String,
@@ -34,10 +44,14 @@ data class BoundedTradingResult(
     val protection: String,
     val failureCode: String? = null,
     val possiblySubmitted: Boolean = false,
+    val cancellationCode: String? = null,
+    val cancelId: String? = null,
 )
 
 interface BoundedTradingOrderGateway {
     fun submit(submission: BoundedTradingOrderSubmission): CompletableFuture<BoundedTradingResult>
+
+    fun cancel(cancellation: BoundedTradingCancellation): CompletableFuture<BoundedTradingResult>
 
     fun acknowledge(
         userId: String,
@@ -58,6 +72,8 @@ class BoundedTradingOrderUseCase(
     private val gateway: BoundedTradingOrderGateway,
 ) {
     fun submit(submission: BoundedTradingOrderSubmission): CompletableFuture<BoundedTradingResult> = gateway.submit(submission)
+
+    fun cancel(cancellation: BoundedTradingCancellation): CompletableFuture<BoundedTradingResult> = gateway.cancel(cancellation)
 
     fun acknowledge(
         userId: String,
