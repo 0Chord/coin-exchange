@@ -227,11 +227,13 @@ class BoundedAeronGatewayTest {
                 maxInFlight = 1,
                 resultTimeoutMs = 10_000,
             )
+        val firstRequestDequeued = CountDownLatch(1)
         val pollsInNewTerm = CountDownLatch(2)
         lateinit var transport: ControlledOrderTransport
         BoundedAeronGateway(settings, recoveryGate = gate) { receive ->
             val connection =
                 ControlledOrderTransport(receive, leadershipTermId = 7) { term ->
+                    if (transport.firstOffer.count == 0L) firstRequestDequeued.countDown()
                     if (term == 8L) pollsInNewTerm.countDown()
                 }
             transport = connection
@@ -241,7 +243,8 @@ class BoundedAeronGatewayTest {
             val queuedCommand = BoundedTradingCommand.Admit(token.copy(sequence = 2), intent)
             val newCommand = BoundedTradingCommand.Admit(token.copy(sequence = 3), intent)
             gateway.submit(firstCommand)
-            assertTrue(transport.firstOffer.await(3, TimeUnit.SECONDS))
+            // 첫 전송이 반환된 뒤의 poll은 Gateway가 첫 요청을 큐에서 꺼낸 뒤에 실행된다.
+            assertTrue(firstRequestDequeued.await(3, TimeUnit.SECONDS))
             val queued = gateway.submit(queuedCommand)
             assertFalse(queued.isDone)
 
