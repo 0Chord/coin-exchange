@@ -11,6 +11,7 @@ import com.exchange.core.api.trading.infrastructure.codec.OrderQuerySourceCodec
 import com.exchange.core.api.trading.infrastructure.codec.OrderQuerySourceCommand
 import com.exchange.core.api.trading.infrastructure.codec.SplitOrderDeliveryCodec
 import com.exchange.core.api.trading.infrastructure.codec.SplitOrderDeliveryCommand
+import com.exchange.core.api.trading.infrastructure.codec.SplitOrderDeliveryReply
 import com.exchange.core.api.trading.infrastructure.codec.SplitResultDeliveryCodec
 import com.exchange.core.api.trading.infrastructure.codec.SplitResultDeliveryCommand
 import com.exchange.core.api.trading.infrastructure.codec.SplitResultDeliveryReply
@@ -27,7 +28,17 @@ import com.exchange.core.fee.FeeTier
 import com.exchange.core.fee.MakerTakerFeeRates
 import com.exchange.core.fee.TradingFeePolicySnapshot
 import com.exchange.core.ledger.Balance
+import com.exchange.core.ledger.LedgerPosting
+import com.exchange.core.ledger.LedgerPostingSide
+import com.exchange.core.ledger.LedgerReconciliation
+import com.exchange.core.ledger.LedgerReconciliationScope
+import com.exchange.core.ledger.LedgerReconciliationSnapshot
+import com.exchange.core.ledger.LedgerTransaction
+import com.exchange.core.ledger.LedgerTransactionType
 import com.exchange.core.ledger.OpeningBalance
+import com.exchange.core.ledger.ReconciliationItem
+import com.exchange.core.ledger.ReconciliationStatus
+import com.exchange.core.ledger.ReservationHold
 import com.exchange.core.matching.TradeExecuted
 import com.exchange.core.order.MarketDefinition
 import com.exchange.core.order.OrderType
@@ -49,6 +60,7 @@ import com.exchange.core.trading.TradingLifecycle
 import com.exchange.core.trading.TradingMarketContext
 import com.exchange.core.trading.TradingResourceLimits
 import com.exchange.core.trading.TradingServiceRole
+import io.aeron.ChannelUri
 import io.aeron.Image
 import io.aeron.Publication
 import io.aeron.cluster.ClusterControl
@@ -89,7 +101,9 @@ import java.util.concurrent.atomic.AtomicReference
 import java.util.concurrent.locks.LockSupport
 import java.util.function.Supplier
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
+import kotlin.test.assertIs
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
@@ -1105,6 +1119,143 @@ class SplitFundsTradingHttpTest {
     }
 
     @Test
+    fun `자금 Archive 승인 위치에서 복원 잔고와 활성 예약을 대조한다`() {
+        withTradingNodes(sourceRestart = true) { harness ->
+            val buyer = UserId("buyer")
+            val quote = AssetId("USDT")
+            val market = MarketId("BTC-USDT")
+            val epoch = harness.funds.request(SplitOrderDeliveryCommand.Control(BoundedTradingCommand.Rotate(buyer, 0, 0)))
+            assertEquals("ISSUED", epoch.code)
+            takeSnapshot(harness.fundsNode, harness.funds)
+
+            val intent = OrderIntent(market, 1, Side.BUY, OrderType.LIMIT, TimeInForce.GTC, Price(100), Quantity(3))
+            val order = BoundedTradingCommand.Admit(RequestToken(buyer, 0, 1, 1), intent)
+            val accepted = harness.funds.request(SplitOrderDeliveryCommand.Control(order))
+            assertEquals("ACCEPTED", accepted.code)
+            val receipt = checkNotNull(checkNotNull(accepted.control).admission)
+            val orderId = checkNotNull(receipt.orderId)
+            val admissionSequence = checkNotNull(receipt.admissionSequence)
+            val approvalPosition = accepted.appliedLogPosition
+
+            val settings = harness.fundsSettings
+            val consensus = harness.fundsNode.consensusContext
+            val archiveId = harness.fundsNode.archiveId
+            val logChannel = ChannelUri.parse(consensus.logChannel())
+            // Aeron은 UDP 로그 publication을 열 때 제어 포트를 wildcard로 바꾼다.
+            logChannel.put("control", ChannelUri.replacePortWithWildcard(checkNotNull(logChannel.get("control"))))
+            val archive =
+                RecordedArchiveReader(
+                    settings.transport,
+                    consensus.logStreamId(),
+                    logChannel.toString(),
+                    expectedArchiveId = archiveId,
+                )
+            val read = archive.read(approvalPosition)
+            val archived = assertIs<RecordedArchiveRead.Complete>(read, (read as? RecordedArchiveRead.Unavailable)?.reason)
+            val successfulInputs = harness.openingInputs + AppliedFundsInput(order, accepted)
+            val recorded = verifyArchivedFundsInputs(archived, archiveId, successfulInputs)
+            val buyerOpening = recorded.filterIsInstance<BoundedTradingCommand.Funding>().single { it.command.opening.userId == buyer }
+            val recordedBuy = recorded.filterIsInstance<BoundedTradingCommand.Admit>().single()
+            val funded = buyerOpening.command.opening
+            val reservationAmount = Amount(Math.multiplyExact(recordedBuy.intent.price.value, recordedBuy.intent.quantity.value))
+            assertEquals(Amount(1_000), funded.amount)
+            assertEquals(Amount(300), reservationAmount)
+
+            // 원본이 없거나 읽은 위치가 다르면 다른 쪽의 잔고가 맞아도 대조할 수 없다.
+            val buyerOpeningReply = harness.openingInputs.first().reply
+            val openingPosition = buyerOpeningReply.appliedLogPosition
+            for (missingPosition in listOf(openingPosition, approvalPosition)) {
+                val incomplete = archived.copy(inputs = archived.inputs.filter { it.position != missingPosition })
+                assertFailsWith<IllegalStateException> {
+                    verifyArchivedFundsInputs(incomplete, archiveId, successfulInputs)
+                }
+            }
+            assertFailsWith<IllegalStateException> {
+                verifyArchivedFundsInputs(
+                    archived.copy(consumedPosition = openingPosition),
+                    archiveId,
+                    successfulInputs,
+                )
+            }
+
+            harness.funds.close()
+            harness.fundsNode.close()
+            harness.matchingNode.close()
+            val restored = AtomicBoolean()
+            val captured = AtomicReference<FundsAtLogPosition?>()
+            val recovery = settings.copy(transport = settings.transport.copy(recoverExisting = true))
+            DevelopmentSplitTradingNode
+                .start(
+                    recovery,
+                    serviceDecorator = { adapter ->
+                        observeFunds(adapter, restored, replayPosition = approvalPosition) { position, state ->
+                            captured.compareAndSet(null, FundsAtLogPosition(position, state))
+                        }
+                    },
+                ).use { node ->
+                    await("자금 스냅샷과 Archive 주문의 같은 위치 복구") {
+                        assertNull(node.error)
+                        captured.get() != null
+                    }
+                    assertTrue(restored.get(), "실제 스냅샷 이미지가 필요하다")
+                    val restoredFunds = checkNotNull(captured.get())
+                    verifyRestoredFundsPosition(restoredFunds, accepted)
+                    assertFailsWith<IllegalStateException> {
+                        verifyRestoredFundsPosition(restoredFunds.copy(logPosition = approvalPosition + 32), accepted)
+                    }
+                    val differentLineage = accepted.lineage.copy(low = accepted.lineage.low + 1)
+                    assertFailsWith<IllegalStateException> {
+                        verifyRestoredFundsPosition(restoredFunds, accepted.copy(lineage = differentLineage))
+                    }
+                    val stateAtApproval = restoredFunds.state.financial
+                    assertEquals(admissionSequence, stateAtApproval.lastAdmissionSequence)
+                    val balance = stateAtApproval.balances.single { it.userId == buyer && it.assetId == quote }
+                    val restoredOrder = stateAtApproval.liveOrders.single()
+                    assertEquals(admissionSequence, restoredOrder.admissionSequence)
+                    val reservation = restoredOrder.reservation
+                    assertEquals(orderId, reservation.orderId)
+                    assertEquals(buyer, reservation.userId)
+                    assertEquals(quote, reservation.assetId)
+                    assertEquals("ACTIVE", reservation.status.name)
+                    assertEquals(reservationAmount, reservation.remainingAmount)
+                    assertEquals(Balance(buyer, quote, Amount(700), Amount(300)), balance)
+
+                    val preparation = checkNotNull(buyerOpeningReply.control?.funding)
+                    assertEquals(preparation, stateAtApproval.preparations.single { it.opening.preparationId == funded.preparationId })
+                    val comparisonScope = LedgerReconciliationScope(market, AssetId("BTC"), quote)
+                    // 두 분개는 Archive에서 읽은 입력으로 이 시험 안에서 재구성한다.
+                    val transactions =
+                        listOf(
+                            funded.transaction(preparation.ledgerTransactionId, preparation.occurredAt),
+                            LedgerTransaction(
+                                TradingIdentifiers.reserve(accepted.lineage, admissionSequence),
+                                "RESERVE:${orderId.value}",
+                                LedgerTransactionType.RESERVE,
+                                Instant.ofEpochMilli(archived.inputs.single { it.position == approvalPosition }.timestamp),
+                                listOf(
+                                    LedgerPosting(funded.availableAccount, quote, LedgerPostingSide.DEBIT, reservationAmount),
+                                    LedgerPosting(funded.holdAccount, quote, LedgerPostingSide.CREDIT, reservationAmount),
+                                ),
+                            ),
+                        )
+                    val activeHold = ReservationHold(market.value, orderId.value, buyer, quote, "ACTIVE", reservation.remainingAmount.value)
+                    val reconciliation = LedgerReconciliation()
+                    val comparison = LedgerReconciliationSnapshot(transactions, listOf(balance), listOf(activeHold))
+                    val matched = reconciliation.compare(comparisonScope, comparison)
+                    assertEquals(ReconciliationStatus.MATCHED, matched.status, matched.differences.toString())
+                    val sameTotal = balance.copy(available = Amount(800), hold = Amount(200))
+                    val wrongComparison = LedgerReconciliationSnapshot(transactions, listOf(sameTotal), listOf(activeHold))
+                    val mismatched = reconciliation.compare(comparisonScope, wrongComparison)
+                    assertEquals(ReconciliationStatus.MISMATCHED, mismatched.status)
+                    assertEquals(
+                        setOf(ReconciliationItem.AVAILABLE, ReconciliationItem.HOLD, ReconciliationItem.RESERVATION_HOLD),
+                        mismatched.differences.map { it.item }.toSet(),
+                    )
+                }
+        }
+    }
+
+    @Test
     fun `실제 Archive의 양쪽 snapshot 뒤 원본과 조회 ACK tail은 역할 재시작에 그대로 복원된다`() {
         withTradingNodes("query-test", sourceRestart = true) { harness ->
             for (user in listOf("seller", "buyer")) {
@@ -1197,7 +1348,9 @@ class SplitFundsTradingHttpTest {
             val recoveredFunds =
                 DevelopmentSplitTradingNode.start(
                     fundsRecovery,
-                    serviceDecorator = { observeFunds(it, harness.fundsSnapshot, fundsRestored) },
+                    serviceDecorator = { adapter ->
+                        observeFunds(adapter, fundsRestored) { _, state -> harness.fundsSnapshot.set(state) }
+                    },
                 )
             recoveredFunds.use { fundsNode ->
                 val recoveredMatching =
@@ -1773,6 +1926,68 @@ class SplitFundsTradingHttpTest {
         }
     }
 
+    private data class AppliedFundsInput(
+        val command: BoundedTradingCommand,
+        val reply: SplitOrderDeliveryReply,
+    )
+
+    private data class FundsAtLogPosition(
+        val logPosition: Long,
+        val state: FundsRoleRecoveryState,
+    )
+
+    private fun verifyRestoredFundsPosition(
+        restored: FundsAtLogPosition,
+        approval: SplitOrderDeliveryReply,
+    ) {
+        check(restored.logPosition == approval.appliedLogPosition) { "복원 상태와 주문 승인 위치가 다르다" }
+        check(restored.state.financial.manifest.lineage == approval.lineage) { "복원 상태와 주문 승인 계보가 다르다" }
+    }
+
+    private fun verifyArchivedFundsInputs(
+        archived: RecordedArchiveRead.Complete,
+        archiveId: Long,
+        successfulInputs: List<AppliedFundsInput>,
+    ): List<BoundedTradingCommand> {
+        val approval = successfulInputs.last().reply
+        check(archived.recording.archiveId == archiveId && archived.startPosition == 0L) { "자금 Archive의 최초 범위를 확인할 수 없다" }
+        check(archived.limitPosition == approval.appliedLogPosition && archived.consumedPosition == approval.appliedLogPosition) {
+            "자금 Archive가 주문 승인 위치까지 읽히지 않았다"
+        }
+        val expected =
+            successfulInputs.associateBy { input ->
+                check(input.reply.role == TradingServiceRole.FUNDS && input.reply.lineage == approval.lineage)
+                input.reply.appliedLogPosition
+            }
+        check(expected.size == successfulInputs.size)
+        val commands = mutableListOf<BoundedTradingCommand>()
+        val remaining = expected.toMutableMap()
+        val orderCodec = SplitOrderDeliveryCodec(2)
+        val resultCodec = SplitResultDeliveryCodec(2)
+        for (frame in archived.inputs) {
+            val bytes = frame.bytes
+            if (UnsafeBuffer(bytes).getShort(4, ByteOrder.LITTLE_ENDIAN).toInt() != 88) {
+                val command = resultCodec.decode(bytes).command
+                check(command == SplitResultDeliveryCommand.DescribePeer || command is SplitResultDeliveryCommand.Progress)
+                continue
+            }
+            val envelope = orderCodec.decode(bytes)
+            val command = envelope.command
+            if (command == SplitOrderDeliveryCommand.DescribePeer || command is SplitOrderDeliveryCommand.InitializeRole) continue
+            check(command is SplitOrderDeliveryCommand.Control) { "지원하지 않는 전달 입력: $command" }
+            val control = command.command
+            if (control == BoundedTradingCommand.Progress || control is BoundedTradingCommand.Rotate) continue
+            check(control is BoundedTradingCommand.Funding || control is BoundedTradingCommand.Admit) { "지원하지 않는 자금 입력: $control" }
+            val input = checkNotNull(remaining.remove(frame.position)) { "확인되지 않은 자금 입력 위치 ${frame.position}" }
+            check(input.reply.correlationId == envelope.correlationId && input.command == control) {
+                "성공 응답과 Archive 자금 입력이 일치하지 않는다"
+            }
+            commands.add(control)
+        }
+        check(remaining.isEmpty()) { "Archive에 필요한 자금 입력이 없다: ${remaining.keys}" }
+        return commands
+    }
+
     private data class TradingHarness(
         val database: OrderQueryTestDatabase,
         val basePort: Int,
@@ -1786,6 +2001,7 @@ class SplitFundsTradingHttpTest {
         val matchingEndpoint: SplitOrderDeliveryEndpoint,
         val settlementGate: SettlementGate,
         val sourceReplies: SourceReplyGate,
+        val openingInputs: List<AppliedFundsInput>,
     )
 
     private fun withTradingNodes(
@@ -1810,7 +2026,7 @@ class SplitFundsTradingHttpTest {
                 .start(
                     fundsSettings,
                     serviceDecorator = { adapter ->
-                        val observed = observeFunds(adapter, fundsSnapshot)
+                        val observed = observeFunds(adapter) { _, state -> fundsSnapshot.set(state) }
                         sourceReplies.decorate(decorateFunds(observed))
                     },
                 ).use { fundsNode ->
@@ -1855,31 +2071,20 @@ class SplitFundsTradingHttpTest {
                                                 )
                                             }
                                         }
-                                        for ((user, asset, amount) in listOf(
-                                            Triple("buyer", "USDT", 1_000L),
-                                            Triple("seller", "BTC", 3L),
-                                        )) {
-                                            assertEquals(
-                                                "PREPARED",
-                                                funds
-                                                    .request(
-                                                        SplitOrderDeliveryCommand.Control(
-                                                            BoundedTradingCommand.Funding(
-                                                                DevelopmentBalanceCommandPayload(
-                                                                    OpeningBalance(
-                                                                        "http-opening-$user",
-                                                                        UserId(user),
-                                                                        AssetId(asset),
-                                                                        Amount(amount),
-                                                                    ),
-                                                                    "http-opening-ledger-$user",
-                                                                    Instant.EPOCH,
-                                                                ),
-                                                            ),
-                                                        ),
-                                                    ).code,
-                                            )
-                                        }
+                                        val openingInputs =
+                                            listOf(
+                                                Triple("buyer", "USDT", 1_000L),
+                                                Triple("seller", "BTC", 3L),
+                                            ).map { (user, asset, amount) ->
+                                                val opening =
+                                                    OpeningBalance("http-opening-$user", UserId(user), AssetId(asset), Amount(amount))
+                                                val payload =
+                                                    DevelopmentBalanceCommandPayload(opening, "http-opening-ledger-$user", Instant.EPOCH)
+                                                val command = BoundedTradingCommand.Funding(payload)
+                                                val reply = funds.request(SplitOrderDeliveryCommand.Control(command))
+                                                assertEquals("PREPARED", reply.code)
+                                                AppliedFundsInput(command, reply)
+                                            }
                                         verify(
                                             TradingHarness(
                                                 database,
@@ -1894,6 +2099,7 @@ class SplitFundsTradingHttpTest {
                                                 endpoint(true),
                                                 settlementGate,
                                                 sourceReplies,
+                                                openingInputs,
                                             ),
                                         )
                                         assertNull(fundsNode.error)
@@ -2255,14 +2461,15 @@ class SplitFundsTradingHttpTest {
     /** 테스트만 확정 callback 안에서 불변 사본을 만든다. WAS나 제품 관찰 API는 이 상태에 접근하지 않는다. */
     private fun observeFunds(
         service: SplitTradingClusterAdapter,
-        captured: AtomicReference<FundsRoleRecoveryState?>,
         restored: AtomicBoolean? = null,
+        replayPosition: Long? = null,
+        onCaptured: (Long, FundsRoleRecoveryState) -> Unit,
     ): ClusteredService {
         val field = service.javaClass.getDeclaredField("funds").also { it.isAccessible = true }
         return object : ClusteredService by service {
             private fun capture() {
                 if (service.lifecycle == TradingLifecycle.RUNNING) {
-                    captured.set((field.get(service) as BoundedFundingState).fundsRecoveryState())
+                    onCaptured(service.appliedLogPosition, (field.get(service) as BoundedFundingState).fundsRecoveryState())
                 }
             }
 
@@ -2272,7 +2479,7 @@ class SplitFundsTradingHttpTest {
             ) {
                 restored?.set(snapshotImage != null)
                 service.onStart(cluster, snapshotImage)
-                capture()
+                if (replayPosition == null) capture()
             }
 
             override fun onSessionMessage(
@@ -2284,7 +2491,7 @@ class SplitFundsTradingHttpTest {
                 header: Header,
             ) {
                 service.onSessionMessage(session, timestamp, buffer, offset, length, header)
-                capture()
+                if (replayPosition == null || service.appliedLogPosition == replayPosition) capture()
             }
 
             override fun doBackgroundWork(nowNs: Long): Int = service.doBackgroundWork(nowNs)
