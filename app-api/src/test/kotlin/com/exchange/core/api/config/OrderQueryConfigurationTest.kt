@@ -56,7 +56,7 @@ class OrderQueryConfigurationTest {
             database.jdbc().execute(
                 """
                 truncate order_query.settlement_posting, order_query.settlement_transaction, order_query.source_receipt,
-                    order_query.feed_stream, order_query.feed_consumer, order_query.applied_batch,
+                    order_query.funds_ledger_batch, order_query.feed_stream, order_query.feed_consumer, order_query.applied_batch,
                     order_query.order_record, order_query.query_progress
                 """.trimIndent(),
             )
@@ -101,11 +101,12 @@ class OrderQueryConfigurationTest {
                     "source_receipt",
                     "settlement_transaction",
                     "settlement_posting",
+                    "funds_ledger_batch",
                 ),
                 tables,
             )
             assertEquals(
-                (1..14).map(Int::toString),
+                (1..15).map(Int::toString),
                 database.jdbc().queryForList(
                     "select version from flyway_schema_history where success order by installed_rank",
                     String::class.java,
@@ -164,7 +165,7 @@ class OrderQueryConfigurationTest {
             queryContext(existing.properties).use { context ->
                 assertEquals(before, existing.jdbc().queryForMap("select * from market_configuration_release where config_version = 7"))
                 assertEquals(
-                    14,
+                    15,
                     existing.jdbc().queryForObject("select count(*) from flyway_schema_history where success", Int::class.java),
                 )
                 val orderId = TradingIdentifiers.order(ClusterLineage(41, 42), 1).value
