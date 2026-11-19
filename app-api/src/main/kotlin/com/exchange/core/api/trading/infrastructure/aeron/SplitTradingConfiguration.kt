@@ -14,6 +14,7 @@ import com.exchange.core.trading.BoundedFundingState
 import com.exchange.core.trading.ClusterLineage
 import com.exchange.core.trading.FundsDispatchConfiguration
 import com.exchange.core.trading.FundsDispatchLimits
+import com.exchange.core.trading.FundsLedgerRecovery
 import com.exchange.core.trading.FundsMatchingAppliedAck
 import com.exchange.core.trading.FundsResultLimits
 import com.exchange.core.trading.MatchingIntakeConfiguration
@@ -67,6 +68,7 @@ internal class SplitTradingConfiguration(
     val dispatchConfiguration = FundsDispatchConfiguration(topology, dispatchLimits, inputContractVersion, queryRetention)
     val matchingConfiguration =
         MatchingIntakeConfiguration(topology, matchingDeclaration, matchingLimits, inputContractVersion, queryRetention)
+    val recoveryLedgerConfigured = queryRetention?.capabilityVersion == 2 && topology.fundsManifest.markets.size == 1
     val topologySha256: String
     val resultTopologySha256: String
 
@@ -150,7 +152,7 @@ internal class SplitTradingConfiguration(
         }
     }
 
-    fun funds(): BoundedFundingState =
+    fun funds(persistRecoveryLedger: Boolean = false): BoundedFundingState =
         TradingRoleAssembly.funds(
             topology,
             fundsDeclaration,
@@ -159,6 +161,7 @@ internal class SplitTradingConfiguration(
             resultLimits,
             inputContractVersion,
             queryRetention,
+            persistRecoveryLedger = persistRecoveryLedger,
         )
 
     fun matching(): ReservedMatchingState =
@@ -185,7 +188,7 @@ internal class SplitTradingConfiguration(
         require(matchingLimitsByLineage.keys == lineages.toSet()) { "매칭 한도는 전체 담당을 정확히 포함해야 합니다" }
         require(matchingLimits == matchingLimitsByLineage.getValue(matchingLineage)) { "자기 매칭 한도가 전체 구성과 다릅니다" }
         // declaration의 전체 context와 담당 세대는 기존 역할 조립 검사를 그대로 통과해야 한다.
-        funds()
+        funds(persistRecoveryLedger = recoveryLedgerConfigured)
         matching()
         for (declaration in matchingDeclarations) {
             val limits = matchingLimitsByLineage.getValue(declaration.lineage)
@@ -254,6 +257,7 @@ internal class SplitTradingConfiguration(
             out.writeUTF(topologySha256)
             out.writeInt(SplitResultDeliveryCodec.MAX_MESSAGE_BYTES)
             writeResultDeliveryLimits(out)
+            if (recoveryLedgerConfigured) out.writeUTF("funds-recovery-ledger-v1")
         }
 
     private fun writeOrderDeliveryLimits(out: DataOutputStream) =
@@ -317,7 +321,8 @@ internal fun splitQueryRetentionConfiguration(
     val baseBytes =
         FundsResultLimits().snapshotByteUpperBound(FundsDispatchConfiguration(topology, dispatchLimits, inputContractVersion))
     val sourceCount = if (persistSettlements) 1 + topology.fundsManifest.markets.size else 1
-    val room = (FundsDispatchConfiguration.MAX_SNAPSHOT_BYTES - baseBytes) / (4L * sourceCount)
+    val ledgerBytes = if (persistSettlements && topology.fundsManifest.markets.size == 1) FundsLedgerRecovery.SNAPSHOT_BYTES else 0L
+    val room = (FundsDispatchConfiguration.MAX_SNAPSHOT_BYTES - baseBytes - ledgerBytes) / (4L * sourceCount)
     val defaultBytes = minOf(4L * 1_024 * 1_024, room)
     require(defaultBytes > 0) { "자금 snapshot 예산에 조회 원본을 보관할 여유가 없습니다" }
     val marketEntries = environment["EXCHANGE_ORDER_QUERY_MAX_MARKET_ENTRIES"]?.toInt() ?: 2_048

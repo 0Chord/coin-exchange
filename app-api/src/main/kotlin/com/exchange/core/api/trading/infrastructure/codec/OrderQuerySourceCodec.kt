@@ -1,8 +1,16 @@
 package com.exchange.core.api.trading.infrastructure.codec
 
 import com.exchange.core.api.trading.infrastructure.codec.generated.SplitMarketContext
+import com.exchange.core.common.Amount
+import com.exchange.core.common.AssetId
 import com.exchange.core.common.MarketId
+import com.exchange.core.common.OrderId
+import com.exchange.core.common.Quantity
+import com.exchange.core.common.UserId
+import com.exchange.core.ledger.Balance
 import com.exchange.core.trading.ClusterLineage
+import com.exchange.core.trading.FundsLedgerBatch
+import com.exchange.core.trading.FundsLedgerProgress
 import com.exchange.core.trading.FundsOrderDispatch
 import com.exchange.core.trading.MatchingResultEnvelope
 import com.exchange.core.trading.MatchingResultStream
@@ -50,6 +58,25 @@ internal sealed interface OrderQuerySourceCommand {
         override val market: String,
         val through: Long,
     ) : Settlement
+
+    sealed interface Recovery : OrderQuerySourceCommand {
+        val consumerId: String
+    }
+
+    data class ReadLedger(
+        override val consumerId: String,
+        val sequence: Long,
+    ) : Recovery
+
+    data class AckLedger(
+        override val consumerId: String,
+        val through: Long,
+    ) : Recovery
+
+    data class DescribeRecovery(
+        override val consumerId: String,
+        val offset: Int = 0,
+    ) : Recovery
 }
 
 internal data class OrderQuerySourceEnvelope(
@@ -64,6 +91,35 @@ internal data class OrderQuerySourceProgress(
     val financialThrough: Long = 0,
     val settlement: QueryFactsProgress? = null,
 )
+
+/** 같은 서비스 콜백에서 주문, 잔고, 진행 위치를 함께 읽는다. */
+internal data class OrderQueryRecovery(
+    val logPosition: Long,
+    val issued: Long,
+    val matchingAppliedThrough: Long,
+    val resultThrough: Long,
+    val orders: List<OrderQueryRecoveryOrder>,
+    val balances: List<Balance> = emptyList(),
+    val nextOffset: Int? = null,
+) {
+    init {
+        require(logPosition >= 0 && matchingAppliedThrough in 0..issued && resultThrough in 0..issued)
+        require(nextOffset == null || nextOffset > 0)
+    }
+}
+
+internal data class OrderQueryRecoveryOrder(
+    val orderId: OrderId,
+    val userId: UserId,
+    val remainingQuantity: Quantity,
+    val assetId: AssetId? = null,
+    val hold: Amount? = null,
+) {
+    init {
+        require((assetId == null) == (hold == null))
+        require(remainingQuantity.value > 0 && (hold == null || hold.value > 0))
+    }
+}
 
 internal data class OrderQuerySourceReply(
     val correlationId: Long,
@@ -80,6 +136,9 @@ internal data class OrderQuerySourceReply(
     val inputContractVersion: Int = 2,
     val settlement: SettlementFact? = null,
     val capabilityVersion: Int = 1,
+    val ledgerProgress: FundsLedgerProgress? = null,
+    val ledgerBatch: FundsLedgerBatch? = null,
+    val recovery: OrderQueryRecovery? = null,
 )
 
 internal class OrderQuerySourceCodec(
@@ -91,8 +150,9 @@ internal class OrderQuerySourceCodec(
     fun encode(
         correlation: Long,
         command: OrderQuerySourceCommand,
-    ): ByteArray =
-        frame(COMMAND) {
+    ): ByteArray {
+        val version = if (command is OrderQuerySourceCommand.DescribeRecovery) RECOVERY_VERSION else 1
+        return frame(COMMAND, version) {
             require(correlation > 0)
             writeLong(correlation)
             when (command) {
@@ -131,11 +191,36 @@ internal class OrderQuerySourceCodec(
                     text(command.market)
                     writeLong(command.through)
                 }
+
+                is OrderQuerySourceCommand.ReadLedger -> {
+                    require(command.sequence > 0)
+                    writeByte(5)
+                    text(command.consumerId)
+                    writeLong(command.sequence)
+                }
+
+                is OrderQuerySourceCommand.AckLedger -> {
+                    require(command.through >= 0)
+                    writeByte(6)
+                    text(command.consumerId)
+                    writeLong(command.through)
+                }
+
+                is OrderQuerySourceCommand.DescribeRecovery -> {
+                    require(command.offset >= 0)
+                    writeByte(7)
+                    text(command.consumerId)
+                    writeInt(command.offset)
+                }
             }
         }
+    }
 
-    fun decode(bytes: ByteArray): OrderQuerySourceEnvelope =
-        read(bytes, COMMAND) {
+    fun decode(bytes: ByteArray): OrderQuerySourceEnvelope {
+        require(bytes.size >= 4)
+        val version = bytes[2].toInt()
+        require(version == 1 || version == RECOVERY_VERSION)
+        return read(bytes, COMMAND, version) {
             val correlation = readLong()
             require(correlation > 0)
             val command =
@@ -176,12 +261,35 @@ internal class OrderQuerySourceCodec(
                         OrderQuerySourceCommand.AcknowledgeSettlements(consumerId, market, through)
                     }
 
+                    5 -> {
+                        val consumerId = text()
+                        val sequence = readLong()
+                        require(sequence > 0)
+                        OrderQuerySourceCommand.ReadLedger(consumerId, sequence)
+                    }
+
+                    6 -> {
+                        val consumerId = text()
+                        val through = readLong()
+                        require(through >= 0)
+                        OrderQuerySourceCommand.AckLedger(consumerId, through)
+                    }
+
+                    7 -> {
+                        val consumerId = text()
+                        val offset = readInt()
+                        require(offset >= 0)
+                        OrderQuerySourceCommand.DescribeRecovery(consumerId, offset)
+                    }
+
                     else -> {
                         throw IllegalArgumentException("unknown query command")
                     }
                 }
+            require((command is OrderQuerySourceCommand.DescribeRecovery) == (version == RECOVERY_VERSION))
             OrderQuerySourceEnvelope(correlation, command)
         }
+    }
 
     fun encodeReply(reply: OrderQuerySourceReply): ByteArray {
         reply.admission?.let { admission -> return admissionBytes(reply.correlationId, admission) }
@@ -194,7 +302,17 @@ internal class OrderQuerySourceCodec(
                 write(payload)
             }
         }
-        return frame(REPLY, reply.capabilityVersion) {
+        reply.ledgerBatch?.let { batch ->
+            require(reply.correlationId > 0)
+            return frame(LEDGER_REPLY, RECOVERY_VERSION, SplitResultDeliveryCodec.MAX_MESSAGE_BYTES) {
+                writeLong(reply.correlationId)
+                FundsLedgerBatchCodec.write(this, batch)
+            }
+        }
+        val version = if (reply.ledgerProgress != null || reply.recovery != null) RECOVERY_VERSION else reply.capabilityVersion
+        require(version != RECOVERY_VERSION || reply.capabilityVersion == SETTLEMENT_VERSION)
+        val maxBytes = if (reply.recovery != null) SplitResultDeliveryCodec.MAX_MESSAGE_BYTES else MAX_CONTROL_BYTES
+        return frame(REPLY, version, maxBytes) {
             require(reply.correlationId > 0)
             writeLong(reply.correlationId)
             text(reply.code)
@@ -223,17 +341,21 @@ internal class OrderQuerySourceCodec(
                 writeLong(progress.issued)
                 writeLong(progress.retiredThrough)
                 writeLong(progress.financialThrough)
-                if (reply.capabilityVersion == SETTLEMENT_VERSION) writeSettlementProgress(progress.settlement)
+                if (version >= SETTLEMENT_VERSION) writeSettlementProgress(progress.settlement)
             }
             require(reply.inputContractVersion in 1..2)
             writeInt(reply.inputContractVersion)
+            if (version == RECOVERY_VERSION) {
+                writeLedgerProgress(reply.ledgerProgress)
+                writeRecovery(reply.recovery)
+            }
         }
     }
 
     fun decodeReply(bytes: ByteArray): OrderQuerySourceReply {
-        val settlementFrame =
-            bytes.size >= 4 && bytes[0].toInt() == 0 && bytes[1].toInt() == SCHEMA && bytes[2].toInt() == SETTLEMENT_VERSION
-        if (settlementFrame && bytes[3].toInt() == SETTLEMENT_REPLY) {
+        val controlFrame = bytes.size >= 4 && bytes[0].toInt() == 0 && bytes[1].toInt() == SCHEMA
+        val version = if (controlFrame) bytes[2].toInt() else 1
+        if (controlFrame && version == SETTLEMENT_VERSION && bytes[3].toInt() == SETTLEMENT_REPLY) {
             return read(bytes, SETTLEMENT_REPLY, SETTLEMENT_VERSION, SplitResultDeliveryCodec.MAX_MESSAGE_BYTES) {
                 val correlation = readLong()
                 require(correlation > 0)
@@ -241,7 +363,16 @@ internal class OrderQuerySourceCodec(
                 OrderQuerySourceReply(correlation, "FACT", settlement = fact, capabilityVersion = SETTLEMENT_VERSION)
             }
         }
-        if (!settlementFrame && bytes.size >= 12) {
+        if (controlFrame && version == RECOVERY_VERSION && bytes[3].toInt() == LEDGER_REPLY) {
+            return read(bytes, LEDGER_REPLY, RECOVERY_VERSION, SplitResultDeliveryCodec.MAX_MESSAGE_BYTES) {
+                val correlation = readLong()
+                require(correlation > 0)
+                val batch = FundsLedgerBatchCodec.read(this)
+                require((bytes.size - 4 - Long.SIZE_BYTES).toLong() <= batch.canonicalBytes)
+                OrderQuerySourceReply(correlation, "FACT", ledgerBatch = batch, capabilityVersion = SETTLEMENT_VERSION)
+            }
+        }
+        if (!controlFrame && bytes.size >= 12) {
             val peek = ByteBuffer.wrap(bytes).order(ByteOrder.LITTLE_ENDIAN)
             if (peek.getShort(0).toInt() == 89) {
                 val envelope = results.decode(bytes)
@@ -254,8 +385,8 @@ internal class OrderQuerySourceCodec(
                 return OrderQuerySourceReply(envelope.correlationId, "FACT", admission = command.input, inputContractVersion = inputVersion)
             }
         }
-        val capabilityVersion = if (settlementFrame) SETTLEMENT_VERSION else 1
-        return read(bytes, REPLY, capabilityVersion) {
+        val maxBytes = if (version == RECOVERY_VERSION) SplitResultDeliveryCodec.MAX_MESSAGE_BYTES else MAX_CONTROL_BYTES
+        return read(bytes, REPLY, version, maxBytes) {
             val correlation = readLong()
             require(correlation > 0)
             val code = text()
@@ -292,7 +423,7 @@ internal class OrderQuerySourceCodec(
                             issued = readLong(),
                             retiredThrough = readLong(),
                             financialThrough = readLong(),
-                            settlement = if (capabilityVersion == SETTLEMENT_VERSION) readSettlementProgress() else null,
+                            settlement = if (version >= SETTLEMENT_VERSION) readSettlementProgress() else null,
                         )
                     require(marketProgress.retiredThrough in 0..marketProgress.issued && marketProgress.financialThrough >= 0)
                     marketProgress
@@ -300,6 +431,14 @@ internal class OrderQuerySourceCodec(
             require(progress.map { it.market }.distinct().size == progress.size)
             val inputContractVersion = readInt()
             require(inputContractVersion in 1..2)
+            val ledgerProgress = if (version == RECOVERY_VERSION) readLedgerProgress() else null
+            val recovery = if (version == RECOVERY_VERSION) readRecovery() else null
+            require(ledgerProgress == null || role == TradingServiceRole.FUNDS)
+            if (recovery != null) {
+                require(code == "RECOVERY" && role != TradingServiceRole.INTEGRATED && streams.size == 1)
+                require(recovery.orders.all { (it.assetId != null) == (role == TradingServiceRole.FUNDS) })
+                require(if (role == TradingServiceRole.FUNDS) ledgerProgress != null else recovery.balances.isEmpty())
+            }
             OrderQuerySourceReply(
                 correlationId = correlation,
                 code = code,
@@ -311,7 +450,9 @@ internal class OrderQuerySourceCodec(
                 contexts = contexts,
                 progress = progress,
                 inputContractVersion = inputContractVersion,
-                capabilityVersion = capabilityVersion,
+                capabilityVersion = minOf(version, SETTLEMENT_VERSION),
+                ledgerProgress = ledgerProgress,
+                recovery = recovery,
             )
         }
     }
@@ -332,7 +473,7 @@ internal class OrderQuerySourceCodec(
         maxBytes: Int = MAX_CONTROL_BYTES,
         block: DataOutputStream.() -> Unit,
     ): ByteArray {
-        require(version in 1..SETTLEMENT_VERSION)
+        require(version in 1..RECOVERY_VERSION)
         val bytes = ByteArrayOutputStream()
         DataOutputStream(bytes).use { output ->
             output.writeShort(SCHEMA)
@@ -352,6 +493,7 @@ internal class OrderQuerySourceCodec(
         maxBytes: Int = MAX_CONTROL_BYTES,
         block: DataInputStream.() -> T,
     ): T {
+        require(version in 1..RECOVERY_VERSION)
         require(bytes.size in 13..maxBytes)
         return try {
             DataInputStream(ByteArrayInputStream(bytes)).use { input ->
@@ -380,6 +522,86 @@ internal class OrderQuerySourceCodec(
         require(progress.retiredThrough in 0..progress.issued)
         require(progress.retainedEntries.toLong() == progress.issued - progress.retiredThrough && progress.retainedBytes >= 0)
         return progress
+    }
+
+    private fun DataOutputStream.writeLedgerProgress(progress: FundsLedgerProgress?) {
+        writeBoolean(progress != null)
+        if (progress == null) return
+        writeLong(progress.issued)
+        writeLong(progress.retiredThrough)
+        writeBoolean(progress.completeFromGenesis)
+        text(progress.digest)
+    }
+
+    private fun DataInputStream.readLedgerProgress(): FundsLedgerProgress? {
+        if (!readBoolean()) return null
+        val issued = readLong()
+        val retiredThrough = readLong()
+        val completeFromGenesis = readBoolean()
+        val digest = text()
+        require(retiredThrough in 0..issued && digest.length == 64 && digest.all { it in '0'..'9' || it in 'a'..'f' })
+        return FundsLedgerProgress(issued, retiredThrough, completeFromGenesis, digest)
+    }
+
+    private fun DataOutputStream.writeRecovery(recovery: OrderQueryRecovery?) {
+        writeBoolean(recovery != null)
+        if (recovery == null) return
+        require(recovery.orders.size <= RECOVERY_PAGE_ROWS && recovery.balances.size <= RECOVERY_PAGE_ROWS - recovery.orders.size)
+        require(recovery.nextOffset == null || recovery.orders.size + recovery.balances.size == RECOVERY_PAGE_ROWS)
+        writeInt(recovery.nextOffset ?: -1)
+        writeLong(recovery.logPosition)
+        writeLong(recovery.issued)
+        writeLong(recovery.matchingAppliedThrough)
+        writeLong(recovery.resultThrough)
+        writeInt(recovery.orders.size)
+        for (order in recovery.orders) {
+            text(order.orderId.value)
+            text(order.userId.value)
+            writeLong(order.remainingQuantity.value)
+            writeBoolean(order.assetId != null)
+            if (order.assetId != null) {
+                text(order.assetId.value)
+                writeLong(checkNotNull(order.hold).value)
+            }
+            require(size() <= SplitResultDeliveryCodec.MAX_MESSAGE_BYTES)
+        }
+        writeInt(recovery.balances.size)
+        for (balance in recovery.balances) {
+            text(balance.userId.value)
+            text(balance.assetId.value)
+            writeLong(balance.available.value)
+            writeLong(balance.hold.value)
+            require(size() <= SplitResultDeliveryCodec.MAX_MESSAGE_BYTES)
+        }
+    }
+
+    private fun DataInputStream.readRecovery(): OrderQueryRecovery? {
+        if (!readBoolean()) return null
+        val next = readInt()
+        require(next == -1 || next > 0)
+        val position = readLong()
+        val issued = readLong()
+        val matchingAppliedThrough = readLong()
+        val resultThrough = readLong()
+        val orders =
+            List(count(RECOVERY_PAGE_ROWS)) {
+                val orderId = OrderId(text())
+                val userId = UserId(text())
+                val remainingQuantity = Quantity(readLong())
+                if (readBoolean()) {
+                    val asset = AssetId(text())
+                    val hold = Amount(readLong())
+                    OrderQueryRecoveryOrder(orderId, userId, remainingQuantity, asset, hold)
+                } else {
+                    OrderQueryRecoveryOrder(orderId, userId, remainingQuantity)
+                }
+            }
+        val balances =
+            List(count(RECOVERY_PAGE_ROWS - orders.size)) {
+                Balance(UserId(text()), AssetId(text()), Amount(readLong()), Amount(readLong()))
+            }
+        require(next == -1 || orders.size + balances.size == RECOVERY_PAGE_ROWS)
+        return OrderQueryRecovery(position, issued, matchingAppliedThrough, resultThrough, orders, balances, next.takeIf { it >= 0 })
     }
 
     private fun DataOutputStream.text(value: String) {
@@ -423,10 +645,14 @@ internal class OrderQuerySourceCodec(
         const val SCHEMA = 90
         const val MAX_CONTROL_BYTES = 512 * 1_024
         const val MAX_MARKETS = 128
+
+        const val RECOVERY_PAGE_ROWS = 512
         private const val COMMAND = 1
         private const val REPLY = 2
         private const val SETTLEMENT_REPLY = 3
+        private const val LEDGER_REPLY = 4
         private const val SETTLEMENT_VERSION = 2
+        private const val RECOVERY_VERSION = 3
 
         fun isQueryFrame(
             buffer: org.agrona.DirectBuffer,
@@ -434,6 +660,7 @@ internal class OrderQuerySourceCodec(
             length: Int,
         ): Boolean =
             length >= 4 && (buffer.getShort(offset, ByteOrder.BIG_ENDIAN).toInt() and 65535) == SCHEMA &&
-                buffer.getByte(offset + 2).toInt() == 1 && buffer.getByte(offset + 3).toInt() == COMMAND
+                (buffer.getByte(offset + 2).toInt() == 1 || buffer.getByte(offset + 2).toInt() == RECOVERY_VERSION) &&
+                buffer.getByte(offset + 3).toInt() == COMMAND
     }
 }

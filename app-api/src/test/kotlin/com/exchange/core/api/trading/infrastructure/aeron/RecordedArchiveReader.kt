@@ -54,6 +54,7 @@ internal class RecordedArchiveReader(
     private val expectedLogStreamId: Int,
     private val expectedLogChannel: String,
     private val timeoutMs: Long = config.resultTimeoutMs,
+    private val expectedArchiveId: Long = config.clusterId.toLong(),
 ) {
     init {
         require(timeoutMs in 1..60_000)
@@ -74,7 +75,7 @@ internal class RecordedArchiveReader(
                     .messageTimeoutNs(TimeUnit.MILLISECONDS.toNanos(timeoutMs))
                     .errorHandler { transportFailure.compareAndSet(null, it) }
             AeronArchive.connect(context).use { archive ->
-                require(archive.archiveId() == config.clusterId.toLong()) { "현재 실행과 다른 Archive입니다" }
+                require(archive.archiveId() == expectedArchiveId) { "현재 실행과 다른 Archive입니다" }
                 val aeron = archive.context().aeron()
                 val counters = aeron.countersReader()
                 val descriptors = listAllRecordings(archive, deadline)

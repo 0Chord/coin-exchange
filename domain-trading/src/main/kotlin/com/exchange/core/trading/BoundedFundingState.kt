@@ -7,6 +7,7 @@ import com.exchange.core.common.OrderId
 import com.exchange.core.common.UserId
 import com.exchange.core.ledger.Balance
 import com.exchange.core.ledger.LedgerPostingSide
+import com.exchange.core.ledger.LedgerTransaction
 import com.exchange.core.ledger.OpeningBalance
 import com.exchange.core.ledger.OpeningBalanceResult
 import com.exchange.core.matching.TradeExecuted
@@ -22,12 +23,15 @@ class BoundedFundingState(
     private val expectedManifest: TradingClusterManifest? = null,
     private val dispatchConfiguration: FundsDispatchConfiguration? = null,
     private val resultLimits: FundsResultLimits = FundsResultLimits(),
+    private val persistRecoveryLedger: Boolean = false,
 ) {
     private var bounded: BoundedTradingData? = null
     private var dispatch: FundsDispatchData? = dispatchConfiguration?.let(::FundsDispatchData)
     private var results: FundsResultData? = dispatchConfiguration?.let { FundsResultData(it, resultLimits) }
     private var queryAdmissions: QueryFactRetention<FundsOrderDispatch>? = newQueryAdmissions()
     private var querySettlements: QueryFactRetention<SettlementFact>? = newQuerySettlements()
+    private var ledger: FundsLedger? =
+        if (persistRecoveryLedger) FundsLedger(requireNotNull(expectedManifest).lineage) else null
     private val assetTotals = linkedMapOf<AssetId, Long>()
     private val approvalInputs = linkedMapOf<Pair<MarketId, OrderId>, FundsOrderDispatch>()
     private val cancellations = linkedMapOf<Pair<MarketId, OrderId>, FundsCancellationSnapshot>()
@@ -37,6 +41,14 @@ class BoundedFundingState(
     init {
         require(dispatchConfiguration == null || expectedManifest == dispatchConfiguration.manifest) {
             "funds dispatch requires the assembled financial manifest"
+        }
+        if (persistRecoveryLedger) {
+            val configuration = requireNotNull(dispatchConfiguration)
+            require(configuration.queryRetention?.capabilityVersion == 2)
+            val availableSnapshotBytes = FundsDispatchConfiguration.MAX_SNAPSHOT_BYTES - FundsLedgerRecovery.SNAPSHOT_BYTES
+            require(resultLimits.snapshotByteUpperBound(configuration) <= availableSnapshotBytes) {
+                "자금 원장 보존 공간이 스냅샷 한도를 초과합니다"
+            }
         }
     }
 
@@ -110,6 +122,7 @@ class BoundedFundingState(
         token: RequestToken,
         intent: OrderIntent,
         at: Instant,
+        atLogPosition: Long = 0L,
     ): AdmissionReply {
         val current = runningBounded()
         when (val lookup = current.inbox.lookup(token, intent)) {
@@ -170,6 +183,12 @@ class BoundedFundingState(
         }
         val candidate = calculation as AdmissionTransitionResult.Calculated
         check(candidate.hasPreviousBalance(balance))
+        val ledgerBatch =
+            ledger?.let { journal ->
+                val transaction = admissionCalculator.reserveTransaction(input, candidate.reservation, identifiers.reserveTransactionId, at)
+                journal.prepare(atLogPosition, listOf(transaction), leaveRoomForResult = true)
+                    ?: return AdmissionReply.Refused("RETRYABLE_CAPACITY")
+            }
         val live = BoundedLiveOrder(sequence, marketSequence, input, candidate.reservation, LiveOrderPhase.PENDING)
         val receipt = AdmissionReceipt(AdmissionCode.ACCEPTED, input.orderId, sequence, marketSequence)
         val delivery = dispatch?.prepare(live.snapshot())
@@ -193,6 +212,7 @@ class BoundedFundingState(
                 queryAdmissions?.record(it)
                 approvalInputs[input.marketId to input.orderId] = it
             }
+            ledgerBatch?.let { checkNotNull(ledger).record(it) }
         }
         return AdmissionReply.Recorded(receipt, newlyRecorded = true)
     }
@@ -273,6 +293,7 @@ class BoundedFundingState(
     fun prepareDevelopmentBalance(
         opening: OpeningBalance,
         at: Instant,
+        atLogPosition: Long = 0L,
     ): OpeningBalanceResult {
         val current = runningBounded()
         current.preparations[opening.preparationId]?.let {
@@ -315,7 +336,12 @@ class BoundedFundingState(
                 null
             }
         val next = old.credit(opening.amount)
-        opening.transaction(ledgerId, at) // 원장 항목 그래프를 보관하지 않고 같은 OPENING의 균형을 검증한다.
+        val transaction = opening.transaction(ledgerId, at)
+        val ledgerBatch =
+            ledger?.let { journal ->
+                journal.prepare(atLogPosition, listOf(transaction), leaveRoomForResult = true)
+                    ?: throw TradingCapacityException("자금 원장 보존 공간이 부족합니다")
+            }
         val result = OpeningBalanceResult(opening, ledgerId, at, alreadyPrepared = false)
         boundedMutation {
             current.accounts.add(opening.userId)
@@ -325,8 +351,55 @@ class BoundedFundingState(
             current.preparationBytes = Math.addExact(current.preparationBytes, bytes)
             current.lastPreparationSequence = sequence
             nextTotal?.let { assetTotals[opening.assetId] = it }
+            ledgerBatch?.let { checkNotNull(ledger).record(it) }
         }
         return result
+    }
+
+    fun ledgerProgress(): FundsLedgerProgress? {
+        runningBounded()
+        return ledger?.progress()
+    }
+
+    fun recoveryAccounts(
+        offset: Int,
+        maxRows: Int,
+    ): FundsRecoveryAccounts? {
+        require(offset >= 0 && maxRows > 0)
+        val current = runningBounded()
+        val orderCount = current.liveBySequence.size
+        val totalRows = orderCount.toLong() + current.balances.size
+        if (offset > totalRows || totalRows > Int.MAX_VALUE) return null
+        val reservations =
+            if (offset < orderCount) {
+                current.liveBySequence.values
+                    .asSequence()
+                    .drop(offset)
+                    .take(maxRows)
+                    .map { it.reservation }
+                    .toList()
+            } else {
+                emptyList()
+            }
+        val balanceOffset = (offset - orderCount).coerceAtLeast(0)
+        val balances =
+            current.balances.values
+                .asSequence()
+                .drop(balanceOffset)
+                .take(maxRows - reservations.size)
+                .toList()
+        val endOffset = offset + reservations.size + balances.size
+        return FundsRecoveryAccounts(balances, reservations, endOffset.takeIf { it < totalRows })
+    }
+
+    fun readLedgerBatch(sequence: Long): FundsLedgerBatch? {
+        runningBounded()
+        return ledger?.read(sequence)
+    }
+
+    fun acknowledgeLedger(through: Long): Boolean {
+        runningBounded()
+        return boundedMutation { ledger?.acknowledge(through) == true }
     }
 
     /** 조회는 전달 자료를 소비하거나 예약을 해제하지 않는다. */
@@ -430,6 +503,7 @@ class BoundedFundingState(
         result: MatchingResultEnvelope,
         appliedAt: Instant,
         settlementCalculator: OrderSettlementCalculator,
+        atLogPosition: Long = 0L,
     ): FundsResultReply {
         val current = runningBounded()
         val configuration = checkNotNull(dispatchConfiguration) { "result settlement requires a funds role" }
@@ -470,7 +544,7 @@ class BoundedFundingState(
         currentResults.repeated(result)?.let { return it }
         val next = Math.addExact(currentResults.through(result.stream.marketId), 1L)
         if (result.resultSequence != next) return FundsResultReply(FundsResultStatus.GAP, expectedSequence = next)
-        if (result.input.isCancellation) return applyCancellationResult(result, appliedAt)
+        if (result.input.isCancellation) return applyCancellationResult(result, appliedAt, atLogPosition)
         val progress = current.markets.getValue(result.stream.marketId)
         val candidate =
             try {
@@ -522,6 +596,7 @@ class BoundedFundingState(
                             appliedAt,
                         )
                     }
+                var releaseTransaction: LedgerTransaction? = null
                 val settlement =
                     if (result.outcome == MatchingOutcome.NOT_EXECUTED) {
                         val previous = taker.reservation
@@ -532,7 +607,7 @@ class BoundedFundingState(
                         val balance = requireNotNull(current.balances[key])
                         val released = previous.release()
                         val nextBalance = balance.release(previous.remainingAmount)
-                        fundsResultReleaseTransaction(result, previous, appliedAt)
+                        releaseTransaction = fundsResultReleaseTransaction(result, previous, appliedAt)
                         OrderSettlementCandidate(
                             taker.order,
                             context.market,
@@ -576,12 +651,27 @@ class BoundedFundingState(
                                 )
                             }
                         val fact = SettlementFact(result.stream, result.resultSequence, fills)
-                        require(
-                            retained.canRecord(result.stream.marketId, fact.canonicalBytes),
-                        ) { "settlement retention credit unavailable" }
+                        if (!retained.canRecord(result.stream.marketId, fact.canonicalBytes)) {
+                            return FundsResultReply(FundsResultStatus.RETRYABLE_CAPACITY)
+                        }
                         fact
                     }
-                FundsFinancialResultCandidate(taker, participants, settlement, fee, FundsResultReceipt(result, appliedAt), settlementFact)
+                val ledgerBatch =
+                    ledger?.let { journal ->
+                        val transactions =
+                            if (releaseTransaction != null) {
+                                listOf(releaseTransaction)
+                            } else {
+                                settlement.settlements.map { it.transaction }
+                            }
+                        if (transactions.isEmpty()) {
+                            null
+                        } else {
+                            journal.prepare(atLogPosition, transactions) ?: return FundsResultReply(FundsResultStatus.RETRYABLE_CAPACITY)
+                        }
+                    }
+                val receipt = FundsResultReceipt(result, appliedAt)
+                FundsFinancialResultCandidate(taker, participants, settlement, fee, receipt, settlementFact, ledgerBatch)
             } catch (_: IllegalArgumentException) {
                 return FundsResultReply(FundsResultStatus.INVALID_RESULT)
             } catch (_: IllegalStateException) {
@@ -621,6 +711,7 @@ class BoundedFundingState(
             progress.executedThrough = result.input.marketAdmissionSequence
             currentResults.record(candidate.receipt)
             candidate.settlementFact?.let { checkNotNull(querySettlements).record(it) }
+            candidate.ledgerBatch?.let { checkNotNull(ledger).record(it) }
             val confirmed = checkNotNull(dispatch).acknowledge(FundsMatchingAppliedAck(inputStream, result.input.dispatchSequence, context))
             check(confirmed.status == FundsDispatchAckStatus.ACKNOWLEDGED)
         }
@@ -630,6 +721,7 @@ class BoundedFundingState(
     private fun applyCancellationResult(
         result: MatchingResultEnvelope,
         appliedAt: Instant,
+        atLogPosition: Long,
     ): FundsResultReply {
         val current = runningBounded()
         val currentResults = checkNotNull(results)
@@ -639,15 +731,16 @@ class BoundedFundingState(
         val context = checkNotNull(dispatchConfiguration).context(key.first)
         var released: OrderReservation? = null
         var nextBalance: Balance? = null
+        var releaseTransaction: LedgerTransaction? = null
         val settlementFact = querySettlements?.let { SettlementFact(result.stream, result.resultSequence, emptyList()) }
         try {
             currentResults.requireResult(result)
             require(result.engineSequenceBefore == currentResults.engine(key.first))
             require(obligation.input == result.input) { "cancellation input differs from recorded obligation" }
             settlementFact?.let {
-                require(
-                    checkNotNull(querySettlements).canRecord(key.first, it.canonicalBytes),
-                ) { "settlement retention credit unavailable" }
+                if (!checkNotNull(querySettlements).canRecord(key.first, it.canonicalBytes)) {
+                    return FundsResultReply(FundsResultStatus.RETRYABLE_CAPACITY)
+                }
             }
             when (result.outcome) {
                 MatchingOutcome.CANCELLED -> {
@@ -662,7 +755,7 @@ class BoundedFundingState(
                     val balance = requireNotNull(current.balances[TradingBalanceKey(previous.userId, previous.assetId)])
                     released = previous.release()
                     nextBalance = balance.release(previous.remainingAmount)
-                    fundsResultReleaseTransaction(result, previous, appliedAt)
+                    releaseTransaction = fundsResultReleaseTransaction(result, previous, appliedAt)
                     val settlement =
                         OrderSettlementCandidate(
                             live.order,
@@ -701,6 +794,12 @@ class BoundedFundingState(
         ) {
             return FundsResultReply(FundsResultStatus.INVALID_RESULT)
         }
+        val ledgerBatch =
+            ledger?.let { journal ->
+                releaseTransaction?.let { release ->
+                    journal.prepare(atLogPosition, listOf(release)) ?: return FundsResultReply(FundsResultStatus.RETRYABLE_CAPACITY)
+                }
+            }
         val receipt = FundsResultReceipt(result, appliedAt)
         boundedMutation {
             if (released != null) {
@@ -717,6 +816,7 @@ class BoundedFundingState(
             cancellationBytes -= obligation.canonicalBytes
             currentResults.record(receipt)
             settlementFact?.let { checkNotNull(querySettlements).record(it) }
+            ledgerBatch?.let { checkNotNull(ledger).record(it) }
             val confirmed =
                 checkNotNull(dispatch).acknowledge(
                     FundsMatchingAppliedAck(result.input.stream, result.input.dispatchSequence, context),
@@ -733,6 +833,7 @@ class BoundedFundingState(
         val nextFeeRevenue: java.math.BigInteger?,
         val receipt: FundsResultReceipt,
         val settlementFact: SettlementFact?,
+        val ledgerBatch: FundsLedgerBatch?,
     )
 
     private fun validateResultConservation(
@@ -777,6 +878,7 @@ class BoundedFundingState(
                 ?.let { retained ->
                     configuration.assignments.associate { it.marketId to retained.snapshot(it.marketId) }
                 }.orEmpty(),
+            ledger?.snapshot(),
         )
     }
 
@@ -870,11 +972,22 @@ class BoundedFundingState(
                 }
             }
             val restoredSettlements = restoreQuerySettlements(saved, restoredResults)
+            val savedLedger = saved.ledger
+            require(persistRecoveryLedger || savedLedger == null) { "자금 원장 복구 설정이 다릅니다" }
+            val restoredLedger =
+                if (persistRecoveryLedger) {
+                    val restored = FundsLedger(financial.manifest.lineage, completeFromGenesis = savedLedger?.completeFromGenesis == true)
+                    if (savedLedger != null) restored.restore(savedLedger)
+                    restored
+                } else {
+                    null
+                }
             bounded = candidate.bounded
             dispatch = restoredDispatch
             results = restoredResults
             queryAdmissions = restoredQuery
             querySettlements = restoredSettlements
+            ledger = restoredLedger
             assetTotals.putAll(reconstructed)
             saved.approvalInputs.forEach { approvalInputs[it.order.marketId to it.order.orderId] = it }
             saved.cancellations.forEach { cancellations[it.input.order.marketId to it.input.order.orderId] = it }

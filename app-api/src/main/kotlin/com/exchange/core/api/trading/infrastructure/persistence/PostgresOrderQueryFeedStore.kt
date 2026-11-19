@@ -4,16 +4,27 @@ import com.exchange.core.api.trading.application.OrderQueryBatch
 import com.exchange.core.api.trading.application.OrderQueryLifecycle
 import com.exchange.core.api.trading.application.OrderQueryOrderState
 import com.exchange.core.api.trading.application.OrderQueryRecord
+import com.exchange.core.api.trading.application.OrderQueryRecoveryFailure
 import com.exchange.core.api.trading.application.port.OrderQueryFeedProgress
 import com.exchange.core.api.trading.application.port.OrderQueryFeedStore
 import com.exchange.core.api.trading.application.port.OrderQueryInconsistentException
+import com.exchange.core.api.trading.application.port.OrderQueryLedgerException
 import com.exchange.core.api.trading.application.port.OrderQueryOriginsPendingException
 import com.exchange.core.api.trading.application.port.OrderQuerySourceBounds
 import com.exchange.core.api.trading.application.port.OrderQueryWriteConflictException
 import com.exchange.core.common.Amount
 import com.exchange.core.common.AssetId
+import com.exchange.core.ledger.Balance
 import com.exchange.core.ledger.LedgerPosting
 import com.exchange.core.ledger.LedgerPostingSide
+import com.exchange.core.ledger.LedgerReconciliation
+import com.exchange.core.ledger.LedgerReconciliationReport
+import com.exchange.core.ledger.LedgerReconciliationScope
+import com.exchange.core.ledger.LedgerTransaction
+import com.exchange.core.ledger.LedgerTransactionType
+import com.exchange.core.ledger.ReservationHold
+import com.exchange.core.trading.FundsLedgerBatch
+import com.exchange.core.trading.FundsLedgerProgress
 import com.exchange.core.trading.FundsOrderDispatch
 import com.exchange.core.trading.MatchingFundsSettledAck
 import com.exchange.core.trading.MatchingOrderDisposition
@@ -24,9 +35,12 @@ import com.exchange.core.trading.MatchingResultStream
 import com.exchange.core.trading.SettlementFact
 import com.exchange.core.trading.TradingIdentifiers
 import com.exchange.core.trading.TradingMarketContext
+import org.springframework.jdbc.core.PreparedStatementSetter
+import org.springframework.jdbc.core.RowMapper
 import org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate
 import tools.jackson.databind.json.JsonMapper
 import tools.jackson.module.kotlin.KotlinModule
+import java.time.Instant
 import java.time.OffsetDateTime
 import java.time.ZoneOffset
 
@@ -319,6 +333,187 @@ class PostgresOrderQueryFeedStore(
                 sequence
             }
         }
+
+    override fun ledgerThrough(): Long =
+        checkNotNull(
+            jdbc.queryForObject(
+                "select coalesce(max(sequence), 0) from order_query.funds_ledger_batch where namespace = :namespace",
+                parameters,
+                Long::class.java,
+            ),
+        )
+
+    override fun verifyLedgerPrefix(through: Long) {
+        require(through >= 0L)
+        if (through == 0L) return
+        val found =
+            jdbc.queryForObject(
+                "select count(*) from order_query.funds_ledger_batch where namespace = :namespace and sequence <= :through",
+                parameters + ("through" to through),
+                Long::class.java,
+            )
+        if (found != through) throw ledgerIncomplete("자금 원본에서 회수한 원장 범위에 누락이 있다")
+    }
+
+    override fun applyLedger(batch: FundsLedgerBatch): Long =
+        query.withTransaction {
+            require(batch.lineage == query.namespace.fundsLineage)
+            // 동일 WAS DB를 쓰는 수집기가 여럿이어도 다음 순번의 판단과 저장을 함께 잠근다.
+            query.lockedProgress()
+            val head =
+                jdbc
+                    .query(
+                        """
+                        select sequence, log_position from order_query.funds_ledger_batch
+                        where namespace = :namespace order by sequence desc limit 1
+                        """.trimIndent(),
+                        parameters,
+                    ) { row, _ -> row.getLong("sequence") to row.getLong("log_position") }
+                    .singleOrNull()
+            val (through, lastPosition) = head ?: (0L to 0L)
+            val transactions = batch.transactions.map(StoredLedgerTransaction::from)
+            val values =
+                parameters +
+                    mapOf(
+                        "sequence" to batch.sequence,
+                        "position" to batch.logPosition,
+                        "transactions" to mapper.writeValueAsString(transactions),
+                    )
+            if (batch.sequence <= through) {
+                val sameBatch =
+                    jdbc
+                        .query(
+                            """
+                            select log_position = :position
+                                and transactions::text = cast(cast(:transactions as jsonb) as text) as same_batch
+                            from order_query.funds_ledger_batch where namespace = :namespace and sequence = :sequence
+                            """.trimIndent(),
+                            values,
+                        ) { row, _ -> row.getBoolean("same_batch") }
+                        .singleOrNull()
+                if (sameBatch == null) throw ledgerIncomplete("원장 묶음 ${batch.sequence} 누락")
+                if (!sameBatch) throw ledgerMismatch("원장 묶음 ${batch.sequence} 재전송 내용과 저장 내용이 다르다")
+                return@withTransaction batch.sequence
+            }
+            if (batch.sequence != Math.addExact(through, 1)) throw ledgerIncomplete("원장 저장 순번 ${batch.sequence} 앞에 공백이 있다")
+            if (batch.logPosition <= lastPosition) throw ledgerMismatch("원장 묶음 ${batch.sequence}의 적용 위치가 역행했다")
+            val inserted =
+                jdbc.update(
+                    """
+                    insert into order_query.funds_ledger_batch (namespace, sequence, log_position, transactions)
+                    values (:namespace, :sequence, :position, cast(:transactions as jsonb))
+                    """.trimIndent(),
+                    values,
+                )
+            check(inserted == 1)
+            batch.sequence
+        }
+
+    override fun reconcileLedger(
+        scope: LedgerReconciliationScope,
+        logPosition: Long,
+        ledger: FundsLedgerProgress,
+        balances: List<Balance>,
+        reservations: List<ReservationHold>,
+        onReadProgress: () -> Unit,
+    ): LedgerReconciliationReport =
+        query.withTransaction {
+            if (!ledger.completeFromGenesis) throw ledgerIncomplete("첫 금융 변경부터 원장이 보존됐는지 확인할 수 없다")
+            val source =
+                jdbc.jdbcTemplate.queryForStream(
+                    """
+                    select sequence, log_position, transactions from order_query.funds_ledger_batch
+                    where namespace = ? and sequence <= ? order by sequence
+                    """.trimIndent(),
+                    PreparedStatementSetter { statement ->
+                        statement.fetchSize = 128
+                        statement.setString(1, parameters.getValue("namespace"))
+                        statement.setLong(2, ledger.issued)
+                    },
+                    RowMapper { row, _ ->
+                        try {
+                            val payload = mapper.readTree(row.getString("transactions"))
+                            val stored = mapper.treeToValue(payload, Array<StoredLedgerTransaction>::class.java)
+                            // JSON 숫자나 문자열이 Kotlin 값으로 강제 변환되며 손상이 숨겨지지 않게 한다.
+                            val canonical = mapper.readTree(mapper.writeValueAsString(stored))
+                            require(payload == canonical) { "저장된 원장 필드의 타입이 올바르지 않다" }
+                            FundsLedgerBatch(
+                                query.namespace.fundsLineage,
+                                row.getLong("sequence"),
+                                row.getLong("log_position"),
+                                stored.map(StoredLedgerTransaction::toTransaction),
+                            )
+                        } catch (failure: RuntimeException) {
+                            throw ledgerMismatch("저장된 분개를 해석할 수 없다", failure)
+                        }
+                    },
+                )
+            source.use {
+                var previousSequence = 0L
+                var previousPosition = 0L
+                var digest = FundsLedgerBatch.GENESIS_DIGEST
+                val transactions =
+                    source.iterator().asSequence().flatMap { batch ->
+                        if (batch.sequence != Math.addExact(previousSequence, 1L)) {
+                            throw ledgerIncomplete("원장 묶음 ${previousSequence + 1} 누락")
+                        }
+                        if (batch.logPosition <= previousPosition || batch.logPosition > logPosition) {
+                            throw ledgerMismatch("원장 묶음 ${batch.sequence} 적용 위치가 올바르지 않다")
+                        }
+                        previousSequence = batch.sequence
+                        previousPosition = batch.logPosition
+                        digest = batch.digestAfter(digest)
+                        if (previousSequence % 128 == 0L) onReadProgress()
+                        batch.transactions.asSequence()
+                    }
+                val report = LedgerReconciliation().compare(scope, transactions, balances, reservations)
+                if (previousSequence != ledger.issued) throw ledgerIncomplete("자금 위치까지의 원장이 누락됐다")
+                if (digest != ledger.digest) throw ledgerMismatch("자금 클러스터와 저장된 원장 내용이 다르다")
+                report
+            }
+        }
+
+    private fun ledgerIncomplete(message: String) = OrderQueryLedgerException(OrderQueryRecoveryFailure.LEDGER_INCOMPLETE, message)
+
+    private fun ledgerMismatch(
+        message: String,
+        cause: Throwable? = null,
+    ) = OrderQueryLedgerException(OrderQueryRecoveryFailure.LEDGER_MISMATCH, message, cause)
+
+    private data class StoredLedgerTransaction(
+        val id: String,
+        val sourceEventId: String,
+        val type: LedgerTransactionType,
+        val occurredAt: String,
+        val postings: List<StoredLedgerPosting>,
+    ) {
+        fun toTransaction(): LedgerTransaction =
+            LedgerTransaction(
+                id,
+                sourceEventId,
+                type,
+                Instant.parse(occurredAt),
+                postings.map { LedgerPosting(it.accountId, AssetId(it.assetId), it.side, Amount(it.amount)) },
+            )
+
+        companion object {
+            fun from(transaction: LedgerTransaction): StoredLedgerTransaction =
+                StoredLedgerTransaction(
+                    transaction.ledgerTransactionId,
+                    transaction.sourceEventId,
+                    transaction.transactionType,
+                    transaction.occurredAt.toString(),
+                    transaction.postings.map { StoredLedgerPosting(it.accountId, it.assetId.value, it.side, it.amount.value) },
+                )
+        }
+    }
+
+    private data class StoredLedgerPosting(
+        val accountId: String,
+        val assetId: String,
+        val side: LedgerPostingSide,
+        val amount: Long,
+    )
 
     private fun insertSettlement(
         header: Map<String, Any>,

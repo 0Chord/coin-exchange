@@ -28,6 +28,7 @@ internal class OrderQuerySourceClient(
     private var lastKeepAlive = System.nanoTime()
 
     val isClosed: Boolean get() = cluster.isClosed
+    val leadershipTermId: Long get() = cluster.leadershipTermId()
 
     init {
         require(timeoutMs in 1..60_000)

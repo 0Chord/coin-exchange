@@ -103,6 +103,7 @@ object TradingRoleAssembly {
         resultLimits: FundsResultLimits = FundsResultLimits(),
         inputContractVersion: Int = 1,
         queryRetention: QueryRetentionConfiguration? = null,
+        persistRecoveryLedger: Boolean = false,
     ): BoundedFundingState {
         topology.validate(declaration, TradingServiceRole.FUNDS)
         return BoundedFundingState(
@@ -110,6 +111,7 @@ object TradingRoleAssembly {
             expectedManifest = topology.fundsManifest,
             dispatchConfiguration = FundsDispatchConfiguration(topology, dispatchLimits, inputContractVersion, queryRetention),
             resultLimits = resultLimits,
+            persistRecoveryLedger = persistRecoveryLedger,
         )
     }
 

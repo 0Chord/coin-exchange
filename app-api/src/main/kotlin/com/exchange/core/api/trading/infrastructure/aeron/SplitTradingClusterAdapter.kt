@@ -3,6 +3,8 @@ package com.exchange.core.api.trading.infrastructure.aeron
 import com.exchange.core.api.trading.infrastructure.codec.BoundedMarketProgress
 import com.exchange.core.api.trading.infrastructure.codec.BoundedTradingCommand
 import com.exchange.core.api.trading.infrastructure.codec.BoundedTradingReply
+import com.exchange.core.api.trading.infrastructure.codec.OrderQueryRecovery
+import com.exchange.core.api.trading.infrastructure.codec.OrderQueryRecoveryOrder
 import com.exchange.core.api.trading.infrastructure.codec.OrderQuerySourceCodec
 import com.exchange.core.api.trading.infrastructure.codec.OrderQuerySourceCommand
 import com.exchange.core.api.trading.infrastructure.codec.OrderQuerySourceProgress
@@ -22,6 +24,7 @@ import com.exchange.core.trading.BoundedFundingState
 import com.exchange.core.trading.FundsDispatchRead
 import com.exchange.core.trading.FundsDispatchStream
 import com.exchange.core.trading.FundsMatchingAppliedAck
+import com.exchange.core.trading.FundsResultStatus
 import com.exchange.core.trading.MatchingFundsSettledAck
 import com.exchange.core.trading.MatchingResultAckStatus
 import com.exchange.core.trading.MatchingResultRead
@@ -57,8 +60,9 @@ internal class SplitTradingClusterAdapter(
 ) : ClusteredService,
     FundsDispatchSource,
     MatchingResultSource {
-    // 시험의 callback 관찰 wrapper도 이 실제 소유자를 관찰한다. 운영 전체 상태 조회 입구는 두지 않는다.
-    private val funds: BoundedFundingState? = if (role == TradingServiceRole.FUNDS) configuration.funds() else null
+    private val recoveryLedgerEnabled = resultDeliveryEnabled && configuration.recoveryLedgerConfigured
+    private val funds: BoundedFundingState? =
+        if (role == TradingServiceRole.FUNDS) configuration.funds(persistRecoveryLedger = recoveryLedgerEnabled) else null
     private val matching: ReservedMatchingState? = if (role == TradingServiceRole.MATCHING) configuration.matching() else null
     private val codec = SplitOrderDeliveryCodec(configuration.inputContractVersion)
     private val resultCodec = SplitResultDeliveryCodec(configuration.inputContractVersion)
@@ -377,10 +381,12 @@ internal class SplitTradingClusterAdapter(
                                         command.result,
                                         Instant.ofEpochMilli(timestamp),
                                         settlementCalculator,
+                                        atLogPosition = appliedLogPosition,
                                     )
+                                val code = if (applied.status == FundsResultStatus.RETRYABLE_CAPACITY) "NOT_READY" else applied.status.name
                                 resultResponse(
                                     correlation,
-                                    applied.status.name,
+                                    code,
                                 ).copy(ack = applied.ack, expectedSequence = applied.expectedSequence)
                             }
                         }
@@ -469,6 +475,7 @@ internal class SplitTradingClusterAdapter(
             progress,
             inputContractVersion = configuration.inputContractVersion,
             capabilityVersion = configuration.queryRetention?.capabilityVersion ?: 1,
+            ledgerProgress = if (tradingReady) funds?.ledgerProgress() else null,
         )
     }
 
@@ -495,6 +502,91 @@ internal class SplitTradingClusterAdapter(
         }
     }
 
+    private fun recoveryQueryReply(
+        correlation: Long,
+        command: OrderQuerySourceCommand.Recovery,
+    ): OrderQuerySourceReply {
+        if (!recoveryLedgerEnabled) return queryReply(correlation, "DISABLED")
+        if (command.consumerId != checkNotNull(configuration.queryRetention).consumerId) {
+            return queryReply(correlation, "INVALID_CONSUMER")
+        }
+        return when (command) {
+            is OrderQuerySourceCommand.ReadLedger -> {
+                val owner = funds ?: return queryReply(correlation, "INVALID_STREAM")
+                val progress = checkNotNull(owner.ledgerProgress())
+                when {
+                    command.sequence <= progress.retiredThrough -> {
+                        queryReply(correlation, "PRUNED")
+                    }
+
+                    command.sequence > progress.issued -> {
+                        queryReply(correlation, "NOT_YET_ISSUED")
+                    }
+
+                    else -> {
+                        val batch = owner.readLedgerBatch(command.sequence) ?: return queryReply(correlation, "RECOVERY_UNAVAILABLE")
+                        OrderQuerySourceReply(correlation, "FACT", ledgerBatch = batch)
+                    }
+                }
+            }
+
+            is OrderQuerySourceCommand.AckLedger -> {
+                val owner = funds ?: return queryReply(correlation, "INVALID_STREAM")
+                val accepted = owner.acknowledgeLedger(command.through)
+                queryReply(correlation, if (accepted) "ACKNOWLEDGED" else "INVALID_SEQUENCE")
+            }
+
+            is OrderQuerySourceCommand.DescribeRecovery -> {
+                val recovery = recoveryState(command.offset) ?: return queryReply(correlation, "RECOVERY_CHANGED")
+                queryReply(correlation, "RECOVERY").copy(recovery = recovery)
+            }
+        }
+    }
+
+    private fun recoveryState(offset: Int): OrderQueryRecovery? {
+        val stream = queryStreams.values.single()
+        val market = stream.marketId
+        val pageSize = OrderQuerySourceCodec.RECOVERY_PAGE_ROWS
+        val owner = funds
+        if (owner != null) {
+            val accounts = owner.recoveryAccounts(offset, pageSize) ?: return null
+            val dispatchStream = configuration.dispatchConfiguration.stream(market)
+            // 원본의 진행 위치만 읽으므로 주문 원문을 담을 공간은 요청하지 않는다.
+            val dispatch = owner.pendingDispatch(dispatchStream, fromSequence = 1, maxEntries = 1, maxBytes = 1)
+            val settled = checkNotNull(owner.matchingSettlementAck(stream))
+            val orders =
+                accounts.reservations.map { reservation ->
+                    OrderQueryRecoveryOrder(
+                        reservation.orderId,
+                        reservation.userId,
+                        reservation.remainingQuantity,
+                        reservation.assetId,
+                        reservation.remainingAmount,
+                    )
+                }
+            return OrderQueryRecovery(
+                logPosition = appliedLogPosition,
+                issued = dispatch.issued,
+                matchingAppliedThrough = dispatch.matchingAppliedThrough,
+                resultThrough = settled.through,
+                orders = orders,
+                balances = accounts.balances,
+                nextOffset = accounts.nextOffset,
+            )
+        }
+
+        val book = checkNotNull(matching).recoveryOrders(market, offset, pageSize) ?: return null
+        val orders = book.orders.map { order -> OrderQueryRecoveryOrder(order.orderId, order.userId, order.remainingQuantity) }
+        return OrderQueryRecovery(
+            logPosition = appliedLogPosition,
+            issued = book.appliedThrough,
+            matchingAppliedThrough = book.appliedThrough,
+            resultThrough = book.resultIssued,
+            orders = orders,
+            nextOffset = book.nextOffset,
+        )
+    }
+
     private fun onQueryMessage(
         session: ClientSession?,
         bytes: ByteArray,
@@ -509,6 +601,9 @@ internal class SplitTradingClusterAdapter(
         val command = envelope.command
         val correlation = envelope.correlationId
         val source = configuration.queryRetention
+        if (command is OrderQuerySourceCommand.DescribeRecovery || command is OrderQuerySourceCommand.ReadLedger) {
+            if (session == null || !liveLeader || cluster.role() != Cluster.Role.LEADER) return
+        }
         val reply =
             when {
                 source == null -> {
@@ -525,6 +620,10 @@ internal class SplitTradingClusterAdapter(
 
                 command is OrderQuerySourceCommand.Settlement -> {
                     settlementQueryReply(correlation, command)
+                }
+
+                command is OrderQuerySourceCommand.Recovery -> {
+                    recoveryQueryReply(correlation, command)
                 }
 
                 else -> {
@@ -589,7 +688,14 @@ internal class SplitTradingClusterAdapter(
                 }
             }
         if (session == null || !liveLeader || cluster.role() != Cluster.Role.LEADER) return
-        val encoded = queryCodec.encodeReply(reply)
+        val encoded =
+            try {
+                queryCodec.encodeReply(reply)
+            } catch (failure: IllegalArgumentException) {
+                if (reply.recovery == null) throw failure
+                // 큰 상태도 서비스는 유지하고 대사 입력만 사용할 수 없음을 알린다.
+                queryCodec.encodeReply(queryReply(correlation, "RECOVERY_TOO_LARGE"))
+            }
         repeat(3) {
             if (!liveLeader || cluster.role() != Cluster.Role.LEADER) return
             val offered = session.offer(UnsafeBuffer(encoded), 0, encoded.size)
@@ -651,7 +757,13 @@ internal class SplitTradingClusterAdapter(
         return when (command) {
             is BoundedTradingCommand.Funding -> {
                 try {
-                    reply("PREPARED").copy(funding = owner.prepareDevelopmentBalance(command.command.opening, command.command.occurredAt))
+                    val prepared =
+                        owner.prepareDevelopmentBalance(
+                            command.command.opening,
+                            command.command.occurredAt,
+                            atLogPosition = appliedLogPosition,
+                        )
+                    reply("PREPARED").copy(funding = prepared)
                 } catch (_: OpeningBalanceRequestConflictException) {
                     reply("PREPARATION_CONTENT_CONFLICT")
                 } catch (_: OpeningBalanceConflictException) {
@@ -676,7 +788,8 @@ internal class SplitTradingClusterAdapter(
             }
 
             is BoundedTradingCommand.Admit -> {
-                when (val result = owner.admit(command.token, command.intent, Instant.ofEpochMilli(timestamp))) {
+                val result = owner.admit(command.token, command.intent, Instant.ofEpochMilli(timestamp), atLogPosition = appliedLogPosition)
+                when (result) {
                     is AdmissionReply.Refused -> reply(result.reason)
                     is AdmissionReply.Recorded -> reply(result.receipt.code.name).copy(admission = result.receipt)
                 }

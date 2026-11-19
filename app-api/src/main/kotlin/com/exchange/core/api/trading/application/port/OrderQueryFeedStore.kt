@@ -1,6 +1,13 @@
 package com.exchange.core.api.trading.application.port
 
 import com.exchange.core.api.trading.application.OrderQueryLifecycle
+import com.exchange.core.api.trading.application.OrderQueryRecoveryFailure
+import com.exchange.core.ledger.Balance
+import com.exchange.core.ledger.LedgerReconciliationReport
+import com.exchange.core.ledger.LedgerReconciliationScope
+import com.exchange.core.ledger.ReservationHold
+import com.exchange.core.trading.FundsLedgerBatch
+import com.exchange.core.trading.FundsLedgerProgress
 import com.exchange.core.trading.FundsOrderDispatch
 import com.exchange.core.trading.MatchingFundsSettledAck
 import com.exchange.core.trading.MatchingResultEnvelope
@@ -66,10 +73,32 @@ interface OrderQueryFeedStore {
     /** 정산 분개와 마켓별 저장 위치를 한 트랜잭션에 저장하고 해당 결과 순번을 돌려준다. */
     fun applySettlement(fact: SettlementFact): Long
 
+    fun ledgerThrough(): Long
+
+    fun verifyLedgerPrefix(through: Long)
+
+    /** 분개 묶음을 커밋한 뒤에만 원본에 확인할 수 있는 순번을 반환한다. */
+    fun applyLedger(batch: FundsLedgerBatch): Long
+
+    fun reconcileLedger(
+        scope: LedgerReconciliationScope,
+        logPosition: Long,
+        ledger: FundsLedgerProgress,
+        balances: List<Balance>,
+        reservations: List<ReservationHold>,
+        onReadProgress: () -> Unit = {},
+    ): LedgerReconciliationReport
+
     fun suspendProjection()
 
     fun block(reason: String)
 }
+
+class OrderQueryLedgerException(
+    val reason: OrderQueryRecoveryFailure,
+    message: String,
+    cause: Throwable? = null,
+) : RuntimeException(message, cause)
 
 /** 접수 원문을 먼저 가져온 뒤 같은 매칭 원문을 다시 적용한다. 조회 주문을 추정해 만들지 않는다. */
 class OrderQueryOriginsPendingException(

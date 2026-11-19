@@ -23,9 +23,25 @@ class LedgerReconciliation {
     fun compare(
         scope: LedgerReconciliationScope,
         snapshot: LedgerReconciliationSnapshot,
+    ): LedgerReconciliationReport =
+        compare(
+            scope,
+            snapshot.transactions.asSequence(),
+            snapshot.balances,
+            snapshot.reservations,
+            snapshot.problems,
+        )
+
+    /** 영속 원장을 순차로 읽으면서 계정별 합계만 메모리에 보존한다. */
+    fun compare(
+        scope: LedgerReconciliationScope,
+        transactions: Sequence<LedgerTransaction>,
+        balances: List<Balance>,
+        reservations: List<ReservationHold>,
+        storedProblems: List<ReconciliationDifference> = emptyList(),
     ): LedgerReconciliationReport {
-        val reservations = snapshot.reservations.filter { it.assetId in scope.assets }
-        if (reservations.any { it.status == "ACTIVE" && it.marketId != scope.marketId.value }) {
+        val scopedReservations = reservations.filter { it.assetId in scope.assets }
+        if (scopedReservations.any { it.status == "ACTIVE" && it.marketId != scope.marketId.value }) {
             return LedgerReconciliationReport(
                 scope,
                 ReconciliationStatus.UNAVAILABLE,
@@ -33,9 +49,9 @@ class LedgerReconciliation {
                 detail = "같은 자산에 다른 마켓의 활성 예약이 있어 hold 소유 범위를 검증할 수 없습니다",
             )
         }
-        val problems = snapshot.problems.toMutableList()
+        val problems = storedProblems.toMutableList()
         val totals =
-            ledgerBalances(snapshot.transactions.asSequence(), scope.assets) { transaction, posting ->
+            ledgerBalances(transactions, scope.assets) { transaction, posting ->
                 problems +=
                     ReconciliationDifference(
                         ReconciliationItem.INVALID_RECORD,
@@ -44,12 +60,12 @@ class LedgerReconciliation {
                         reason = "계정과 분개 자산을 해석할 수 없습니다: ${posting.accountId}",
                     )
             }
-        val balances = snapshot.balances.filter { it.assetId in scope.assets }
-        if (balances.distinctBy { AccountKey(it.userId, it.assetId) }.size != balances.size) {
+        val scopedBalances = balances.filter { it.assetId in scope.assets }
+        if (scopedBalances.distinctBy { AccountKey(it.userId, it.assetId) }.size != scopedBalances.size) {
             problems += ReconciliationDifference(ReconciliationItem.INVALID_RECORD, reason = "같은 사용자·자산 잔고가 중복되었습니다")
         }
-        val balancesByKey = balances.associateBy { AccountKey(it.userId, it.assetId) }
-        for (reservation in reservations) {
+        val balancesByKey = scopedBalances.associateBy { AccountKey(it.userId, it.assetId) }
+        for (reservation in scopedReservations) {
             if (reservation.status !in setOf("ACTIVE", "SETTLED", "RELEASED") ||
                 reservation.remainingAmount < 0 ||
                 (reservation.status == "ACTIVE" && reservation.remainingAmount == 0L) ||
@@ -67,7 +83,7 @@ class LedgerReconciliation {
         }
         val keys =
             (
-                totals.keys + balancesByKey.keys + reservations.map { AccountKey(it.userId, it.assetId) } +
+                totals.keys + balancesByKey.keys + scopedReservations.map { AccountKey(it.userId, it.assetId) } +
                     problems.mapNotNull { problem ->
                         val user = problem.userId
                         val asset = problem.assetId
@@ -83,7 +99,7 @@ class LedgerReconciliation {
                 val ledgerAvailable = if (problems.isEmpty()) totals[key]?.get(ReconciliationItem.AVAILABLE) ?: BigInteger.ZERO else null
                 val ledgerHold = if (problems.isEmpty()) totals[key]?.get(ReconciliationItem.HOLD) ?: BigInteger.ZERO else null
                 val held =
-                    reservations
+                    scopedReservations
                         .filter { it.userId == key.userId && it.assetId == key.assetId && it.status == "ACTIVE" }
                         .fold(BigInteger.ZERO) { sum, reservation -> sum + BigInteger.valueOf(reservation.remainingAmount) }
                 val account =

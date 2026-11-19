@@ -88,13 +88,20 @@ class MatchingEngine {
         }
 
     /** 매수 가격 우선·매도 가격 우선, 같은 가격 FIFO 순서의 현재 주문 값 복사본. */
-    fun restingOrders(marketId: MarketId): List<RestingOrderSnapshot> {
+    fun restingOrders(
+        marketId: MarketId,
+        offset: Int = 0,
+        limit: Int = Int.MAX_VALUE,
+    ): List<RestingOrderSnapshot> {
+        require(offset >= 0 && limit >= 0)
         val book = orderBooks[marketId]
         val orders =
             if (book == null) {
                 emptyList()
             } else {
                 (book.oppositeOrders(Side.SELL) + book.oppositeOrders(Side.BUY))
+                    .drop(offset)
+                    .take(limit)
                     .map { order ->
                         RestingOrderSnapshot(
                             order.orderId,

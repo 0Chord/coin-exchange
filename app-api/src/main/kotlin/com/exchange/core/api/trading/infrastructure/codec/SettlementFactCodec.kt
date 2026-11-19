@@ -93,6 +93,13 @@ internal object SettlementFactCodec {
         output.writeLong(trade.quantity.value)
         output.writeLong(fill.makerFee.value)
         output.writeLong(fill.takerFee.value)
+        writeTransaction(output, transaction)
+    }
+
+    internal fun writeTransaction(
+        output: DataOutputStream,
+        transaction: LedgerTransaction,
+    ) {
         output.text(transaction.ledgerTransactionId)
         output.text(transaction.sourceEventId)
         output.writeLong(transaction.occurredAt.epochSecond)
@@ -125,6 +132,14 @@ internal object SettlementFactCodec {
             )
         val makerFee = Amount(input.readLong())
         val takerFee = Amount(input.readLong())
+        val transaction = readTransaction(input, LedgerTransactionType.SETTLEMENT)
+        return SettledTrade(trade, transaction, makerFee, takerFee)
+    }
+
+    internal fun readTransaction(
+        input: DataInputStream,
+        transactionType: LedgerTransactionType,
+    ): LedgerTransaction {
         val transactionId = input.text()
         val sourceEventId = input.text()
         val seconds = input.readLong()
@@ -142,15 +157,13 @@ internal object SettlementFactCodec {
                     amount = Amount(input.readLong()),
                 )
             }
-        val transaction =
-            LedgerTransaction(
-                ledgerTransactionId = transactionId,
-                sourceEventId = sourceEventId,
-                transactionType = LedgerTransactionType.SETTLEMENT,
-                occurredAt = Instant.ofEpochSecond(seconds, nanos.toLong()),
-                postings = postings,
-            )
-        return SettledTrade(trade, transaction, makerFee, takerFee)
+        return LedgerTransaction(
+            ledgerTransactionId = transactionId,
+            sourceEventId = sourceEventId,
+            transactionType = transactionType,
+            occurredAt = Instant.ofEpochSecond(seconds, nanos.toLong()),
+            postings = postings,
+        )
     }
 
     private fun DataInputStream.readDirection(): Int = readUnsignedByte().also { require(it in 0..1) }

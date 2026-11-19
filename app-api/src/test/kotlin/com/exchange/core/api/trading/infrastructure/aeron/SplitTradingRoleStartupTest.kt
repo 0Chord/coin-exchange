@@ -11,6 +11,7 @@ import com.exchange.core.order.MarketDefinition
 import com.exchange.core.trading.ClusterLineage
 import com.exchange.core.trading.FundsDispatchConfiguration
 import com.exchange.core.trading.FundsDispatchLimits
+import com.exchange.core.trading.FundsLedgerRecovery
 import com.exchange.core.trading.FundsResultLimits
 import com.exchange.core.trading.MatchingIntakeLimits
 import com.exchange.core.trading.TradingClusterManifest
@@ -68,6 +69,39 @@ class SplitTradingRoleStartupTest {
         assertEquals(0L, assertNotNull(matching.queryResultsProgress(enabled.matchingConfiguration.resultStream(market.marketId))).issued)
         assertFailsWith<IllegalArgumentException> {
             splitTradingConfiguration(manifest, environment + ("EXCHANGE_ORDER_QUERY_MAX_BYTES" to "4194304"))
+        }
+    }
+
+    @Test
+    fun `정산 조회의 기본 예산은 자금 원장 보존 공간을 남기며 초과 설정은 기동 전에 거절한다`() {
+        val manifest = configuration().topology.fundsManifest
+        val oneMiB = 1_024L * 1_024L
+        val environment =
+            mapOf(
+                "SPLIT_MATCHING_LINEAGE_HIGH" to matchingLineage.high.toString(),
+                "SPLIT_MATCHING_LINEAGE_LOW" to matchingLineage.low.toString(),
+                "SPLIT_OWNERSHIP_EPOCH" to "1",
+                "SPLIT_INPUT_CONTRACT_VERSION" to "2",
+                "SPLIT_MAX_FUNDS_DISPATCH_BYTES" to "65536",
+                "SPLIT_MAX_FUNDS_ACTIVE_BYTES" to "65536",
+            )
+        val small = splitTradingConfiguration(manifest, environment)
+        val snapshotBytes = FundsResultLimits().snapshotByteUpperBound(small.dispatchConfiguration)
+        val availableBytes = FundsDispatchConfiguration.MAX_SNAPSHOT_BYTES - snapshotBytes
+        // 입력 계약 2의 스냅샷 상한은 전달 원문 1byte마다 6byte를 예산으로 잡는다.
+        val tightDispatchBytes = small.dispatchLimits.maxDispatchBytes + (availableBytes - 20 * oneMiB) / 6L
+        val tight = environment + ("SPLIT_MAX_FUNDS_DISPATCH_BYTES" to tightDispatchBytes.toString())
+        val base = splitTradingConfiguration(manifest, tight)
+        val baseSnapshot = FundsResultLimits().snapshotByteUpperBound(base.dispatchConfiguration)
+        val room = FundsDispatchConfiguration.MAX_SNAPSHOT_BYTES - baseSnapshot
+        val settlement = tight + mapOf("EXCHANGE_ORDER_QUERY_CONSUMER_ID" to "ledger", "EXCHANGE_ORDER_QUERY_PERSIST_SETTLEMENTS" to "true")
+        val configured = splitTradingConfiguration(manifest, settlement)
+        assertTrue(configured.recoveryLedgerConfigured)
+        assertEquals((room - FundsLedgerRecovery.SNAPSHOT_BYTES) / 8L, assertNotNull(configured.queryRetention).maxBytes)
+        val fullSnapshot = FundsResultLimits().snapshotByteUpperBound(configured.dispatchConfiguration)
+        assertTrue(fullSnapshot + FundsLedgerRecovery.SNAPSHOT_BYTES <= FundsDispatchConfiguration.MAX_SNAPSHOT_BYTES)
+        assertFailsWith<IllegalArgumentException> {
+            splitTradingConfiguration(manifest, settlement + ("EXCHANGE_ORDER_QUERY_MAX_BYTES" to (room / 8L).toString()))
         }
     }
 
