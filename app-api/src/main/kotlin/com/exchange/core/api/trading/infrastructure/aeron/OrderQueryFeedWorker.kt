@@ -48,15 +48,20 @@ internal class OrderQueryFeedWorker(
     private val thread: Thread
     private val codec = OrderQuerySourceCodec()
 
-    @Volatile
-    var recoveryVerdict = OrderQueryRecoveryVerdict(OrderQueryRecoveryStatus.RECOVERING)
-        private set
+    val recoveryGate = HttpOrderRecoveryGate()
+    val recoveryVerdict: OrderQueryRecoveryVerdict get() = recoveryGate.current.verdict
 
     init {
         require(consumerId.isNotBlank() && matchingIngress.keys.containsAll(namespace.markets))
         store.suspendProjection()
         thread =
-            Thread(::run, "order-query-feed").apply {
+            Thread({
+                try {
+                    run()
+                } finally {
+                    recoveryGate.close()
+                }
+            }, "order-query-feed").apply {
                 isDaemon = true
                 start()
             }
@@ -80,7 +85,7 @@ internal class OrderQueryFeedWorker(
                             OrderQueryRecoveryFailure.SOURCE_UNAVAILABLE
                         }
                     }
-                recoveryVerdict = OrderQueryRecoveryVerdict(OrderQueryRecoveryStatus.BLOCKED, recoveryFailure)
+                recoveryGate.publish(OrderQueryRecoveryVerdict(OrderQueryRecoveryStatus.BLOCKED, recoveryFailure))
                 val mustBlockProjection =
                     failure is IllegalArgumentException || failure is SourceConflict ||
                         failure is OrderQueryInconsistentException || failure is OrderQueryWriteConflictException
@@ -103,6 +108,14 @@ internal class OrderQueryFeedWorker(
                 }
             }
         }
+    }
+
+    private fun beginRecovery() {
+        recoveryGate.publish(OrderQueryRecoveryVerdict(OrderQueryRecoveryStatus.RECOVERING))
+    }
+
+    private fun invalidateReady() {
+        if (recoveryVerdict.status == OrderQueryRecoveryStatus.READY) beginRecovery()
     }
 
     /** 영구 충돌은 DB 장애 때문에 잊지 않는다. 기록될 때까지 원본 수집도 재개하지 않는다. */
@@ -152,6 +165,7 @@ internal class OrderQueryFeedWorker(
                                     inputContractVersion = 2,
                                 ),
                                 settings.resultTimeoutMs,
+                                onSessionChanged = ::invalidateReady,
                             )
                         }
                     try {
@@ -182,10 +196,11 @@ internal class OrderQueryFeedWorker(
                         if (recoveryMatchingClient != null) {
                             // DB를 다시 읽기 전에는 직전 연결의 읽기 실패를 해제하지 않는다.
                             store.ledgerThrough()
-                            recoveryVerdict = OrderQueryRecoveryVerdict(OrderQueryRecoveryStatus.RECOVERING)
+                            beginRecovery()
                         } else {
-                            recoveryVerdict =
-                                OrderQueryRecoveryVerdict(OrderQueryRecoveryStatus.BLOCKED, OrderQueryRecoveryFailure.SCOPE_UNSUPPORTED)
+                            recoveryGate.publish(
+                                OrderQueryRecoveryVerdict(OrderQueryRecoveryStatus.BLOCKED, OrderQueryRecoveryFailure.SCOPE_UNSUPPORTED),
+                            )
                         }
                         var reconciliationTerms: Pair<Long, Long>? = null
                         var retiredLedgerVerified = false
@@ -222,7 +237,7 @@ internal class OrderQueryFeedWorker(
                                 if (terms != reconciliationTerms) {
                                     reconciliationTerms = terms
                                     retiredLedgerVerified = false
-                                    recoveryVerdict = OrderQueryRecoveryVerdict(OrderQueryRecoveryStatus.RECOVERING)
+                                    beginRecovery()
                                 }
                             }
                             val admissionBounds = currentFundsDescription.progress.single { it.market == null }
@@ -433,6 +448,7 @@ internal class OrderQueryFeedWorker(
                             if (appliedFactCount == 0) Thread.sleep(25)
                         }
                     } finally {
+                        invalidateReady()
                         clients.values.forEach { it.close() }
                     }
                 }
@@ -562,7 +578,7 @@ internal class OrderQueryFeedWorker(
                 report.status == ReconciliationStatus.EMPTY && ledger.issued == 0L && funds.orders.isEmpty() -> null
                 else -> OrderQueryRecoveryFailure.BALANCE_MISMATCH
             }
-        recoveryVerdict =
+        val verdict =
             OrderQueryRecoveryVerdict(
                 status = if (failure == null) OrderQueryRecoveryStatus.READY else OrderQueryRecoveryStatus.BLOCKED,
                 reason = failure,
@@ -570,6 +586,7 @@ internal class OrderQueryFeedWorker(
                 ledgerThrough = ledger.issued,
                 differences = report.differences,
             )
+        recoveryGate.publish(verdict, fundsLeadershipTermId = terms.first)
     }
 
     private fun sameFinancialState(
@@ -627,7 +644,7 @@ internal class OrderQueryFeedWorker(
     }
 
     private fun blockLedgerRecovery(failure: OrderQueryLedgerException) {
-        recoveryVerdict = OrderQueryRecoveryVerdict(OrderQueryRecoveryStatus.BLOCKED, failure.reason)
+        recoveryGate.publish(OrderQueryRecoveryVerdict(OrderQueryRecoveryStatus.BLOCKED, failure.reason))
         logger.warn("자금 원장 대사 차단: {}", failure.message)
     }
 
@@ -678,6 +695,7 @@ internal class OrderQueryFeedWorker(
 
     override fun close() {
         running.set(false)
+        recoveryGate.close()
         thread.interrupt()
         thread.join(settings.resultTimeoutMs + 1_500)
         check(!thread.isAlive) { "query feed shutdown timed out" }

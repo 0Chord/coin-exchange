@@ -107,6 +107,12 @@ internal class SplitFundsGatewayTransport(
         }
     }
 
+    override val leadershipTermId: Long?
+        get() {
+            val cluster = connection.aeronCluster ?: return null
+            return if (cluster.isClosed || cluster.ingressPublication().isClosed) null else cluster.leadershipTermId()
+        }
+
     override fun offer(bytes: ByteArray): Long {
         checkDriver()
         check(!connection.isClosed) { "split funds gateway connection is closed" }

@@ -42,6 +42,8 @@ internal class BoundedGatewayException(
 
 /** HTTP 경계의 송수신은 선택한 wire와 무관하게 연결 소유 스레드 하나가 담당한다. */
 internal interface BoundedGatewayTransport : AutoCloseable {
+    val leadershipTermId: Long? get() = null
+
     fun offer(bytes: ByteArray): Long
 
     fun poll(): Int
@@ -61,6 +63,7 @@ internal class BoundedAeronGateway(
     private val durabilityGate: RecoveryDurabilityGate? = null,
     private val commandEncoder: (Long, BoundedTradingCommand) -> ByteArray = BoundedTradingCodec()::encode,
     private val cancelEncoder: ((Long, SplitOrderDeliveryCommand.Cancel) -> ByteArray)? = null,
+    private val recoveryGate: HttpOrderRecoveryGate? = null,
     private val openTransport: (BoundedGatewayReplies) -> BoundedGatewayTransport = { receive ->
         val client = BoundedAeronClient(settings, receive)
         object : BoundedGatewayTransport {
@@ -79,7 +82,11 @@ internal class BoundedAeronGateway(
         val result = CompletableFuture<T>()
         var correlation = 0L
         var bytes: ByteArray? = null
+        var recoveryApproval: HttpOrderRecoveryGate.State? = null
         val terminal = AtomicBoolean()
+
+        val requiresRecoveryApproval: Boolean
+            get() = this is Cancellation || (this is Control && command is BoundedTradingCommand.Admit)
 
         fun isExpired(): Boolean = System.nanoTime() - deadline >= 0
 
@@ -109,6 +116,9 @@ internal class BoundedAeronGateway(
     @Volatile private var closing = false
 
     @Volatile private var available = false
+
+    @Volatile private var observedFundsTerm: Long? = null
+
     private var nextCorrelation = 1L
     private val worker: Thread
     val protectionProfile: String get() = if (durabilityGate == null) "LOCAL_QUORUM" else "REMOTE_RECOVERY"
@@ -240,13 +250,19 @@ internal class BoundedAeronGateway(
 
     private fun <T> enqueue(pending: Pending<T>): CompletableFuture<T> {
         synchronized(admissionLock) {
+            val recovery = if (recoveryGate != null && pending.requiresRecoveryApproval) recoveryGate.current else null
             if (closing || !available) {
                 pending.result.completeExceptionally(BoundedGatewayException("GATEWAY_UNAVAILABLE", false))
+            } else if (recovery != null && !recovery.isReadyFor(observedFundsTerm)) {
+                pending.result.completeExceptionally(BoundedGatewayException(recovery.refusalReason, false))
             } else if (!completionPermits.tryAcquire()) {
                 pending.result.completeExceptionally(BoundedGatewayException("QUEUE_FULL", false))
-            } else if (!queue.offer(pending)) {
-                completionPermits.release()
-                pending.result.completeExceptionally(BoundedGatewayException("QUEUE_FULL", false))
+            } else {
+                pending.recoveryApproval = recovery
+                if (!queue.offer(pending)) {
+                    completionPermits.release()
+                    pending.result.completeExceptionally(BoundedGatewayException("QUEUE_FULL", false))
+                }
             }
         }
         return pending.result
@@ -310,10 +326,12 @@ internal class BoundedAeronGateway(
         val idle = TradingAeronRuntime.idleStrategy()
         try {
             client = openTransport(BoundedGatewayReplies(::receiveControl, ::receiveCancellation))
+            observeFundsTerm(client)
             available = true
             startup.countDown()
             while (!closing) {
                 var work = client.poll()
+                observeFundsTerm(client)
                 val now = System.nanoTime()
                 val iterator = inFlight.values.iterator()
                 while (iterator.hasNext()) {
@@ -350,7 +368,22 @@ internal class BoundedAeronGateway(
                         continue
                     }
                     val bytes = checkNotNull(pending.bytes)
-                    val offered = client.offer(bytes)
+                    val approval = pending.recoveryApproval
+                    val offered =
+                        if (approval == null) {
+                            client.offer(bytes)
+                        } else {
+                            checkNotNull(recoveryGate).tryOffer(approval, client, bytes)
+                        }
+                    // NOT_CONNECTED는 다음 poll을 기다리기 전에 Aeron 송신 경로를 닫을 수 있다.
+                    if (offered == null || offered < 0) observeFundsTerm(client)
+                    if (offered == null) {
+                        queue.poll()
+                        val refusalReason = checkNotNull(recoveryGate).current.refusalReason
+                        complete(pending, null, BoundedGatewayException(refusalReason, false))
+                        work++
+                        continue
+                    }
                     if (offered > 0) {
                         queue.poll()
                         inFlight[pending.correlation] = pending
@@ -388,6 +421,12 @@ internal class BoundedAeronGateway(
                 }
             }
         }
+    }
+
+    private fun observeFundsTerm(client: BoundedGatewayTransport) {
+        if (recoveryGate == null) return
+        val leadershipTerm = client.leadershipTermId
+        if (observedFundsTerm != leadershipTerm) observedFundsTerm = leadershipTerm
     }
 
     private fun <T> complete(
