@@ -46,23 +46,31 @@ class OrderAdmissionCalculator(
         transition as AdmissionTransitionResult.Calculated
         val reservation = transition.reservation
         val nextBalance = transition.nextBalance
+        val transaction = reserveTransaction(order, reservation, ledgerTransactionId, occurredAt)
+        return OrderAdmissionResult.Calculated(
+            OrderAdmissionCandidate(order, market, feePolicySnapshot, balance, nextBalance, reservation, transaction),
+        )
+    }
+
+    internal fun reserveTransaction(
+        order: OrderAdmissionInput,
+        reservation: OrderReservation,
+        ledgerTransactionId: String,
+        occurredAt: Instant,
+    ): LedgerTransaction {
         val requirementAsset = reservation.assetId
         val requirementAmount = reservation.reservedAmount
         val account = "USER:${order.userId.value}:${requirementAsset.value}"
-        val transaction =
-            LedgerTransaction(
-                ledgerTransactionId = ledgerTransactionId,
-                sourceEventId = reserveSourceId(order),
-                transactionType = LedgerTransactionType.RESERVE,
-                occurredAt = occurredAt,
-                postings =
-                    listOf(
-                        LedgerPosting("$account:AVAILABLE", requirementAsset, LedgerPostingSide.DEBIT, requirementAmount),
-                        LedgerPosting("$account:HOLD", requirementAsset, LedgerPostingSide.CREDIT, requirementAmount),
-                    ),
-            )
-        return OrderAdmissionResult.Calculated(
-            OrderAdmissionCandidate(order, market, feePolicySnapshot, balance, nextBalance, reservation, transaction),
+        return LedgerTransaction(
+            ledgerTransactionId = ledgerTransactionId,
+            sourceEventId = reserveSourceId(order),
+            transactionType = LedgerTransactionType.RESERVE,
+            occurredAt = occurredAt,
+            postings =
+                listOf(
+                    LedgerPosting("$account:AVAILABLE", requirementAsset, LedgerPostingSide.DEBIT, requirementAmount),
+                    LedgerPosting("$account:HOLD", requirementAsset, LedgerPostingSide.CREDIT, requirementAmount),
+                ),
         )
     }
 

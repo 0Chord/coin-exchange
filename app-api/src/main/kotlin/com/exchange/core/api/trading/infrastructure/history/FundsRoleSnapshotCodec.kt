@@ -1,5 +1,6 @@
 package com.exchange.core.api.trading.infrastructure.history
 
+import com.exchange.core.api.trading.infrastructure.codec.FundsLedgerBatchCodec
 import com.exchange.core.api.trading.infrastructure.codec.SettlementFactCodec
 import com.exchange.core.common.AssetId
 import com.exchange.core.common.MarketId
@@ -22,6 +23,7 @@ import com.exchange.core.trading.FundsCancellationSnapshot
 import com.exchange.core.trading.FundsDispatchConfiguration
 import com.exchange.core.trading.FundsDispatchSnapshot
 import com.exchange.core.trading.FundsDispatchStreamSnapshot
+import com.exchange.core.trading.FundsLedgerRecovery
 import com.exchange.core.trading.FundsOrderDispatch
 import com.exchange.core.trading.FundsResultLimits
 import com.exchange.core.trading.FundsResultReceipt
@@ -73,11 +75,12 @@ internal class FundsRoleSnapshotCodec {
                 bytes.toByteArray()
             }
         val digest = MessageDigest.getInstance("SHA-256")
-        val checked =
-            DigestOutputStream(LimitedOutput(target, snapshotLimit(saved.configuration, checkNotNull(saved.results).limits)), digest)
+        val ledger = saved.ledger
+        val maximum = snapshotLimit(saved.configuration, checkNotNull(saved.results).limits, ledger != null)
+        val checked = DigestOutputStream(LimitedOutput(target, maximum), digest)
         val output = DataOutputStream(checked)
         output.writeInt(MAGIC)
-        output.writeInt(snapshotVersion(saved.configuration))
+        output.writeInt(if (ledger == null) snapshotVersion(saved.configuration) else FUNDS_LEDGER_VERSION)
         output.writeLong(position)
         output.blob(configuration, MAX_CONFIGURATION_BYTES)
         output.blob(base, MAX_SNAPSHOT_BYTES.toInt())
@@ -104,6 +107,7 @@ internal class FundsRoleSnapshotCodec {
                 QueryFactsSnapshotCodec.write(output, saved.querySettlements.getValue(market), SettlementFactCodec::write)
             }
         }
+        if (ledger != null) writeLedger(output, ledger, position)
         output.flush()
         checked.on(false)
         output.write(digest.digest())
@@ -119,13 +123,16 @@ internal class FundsRoleSnapshotCodec {
     ): FundsRoleRecoveryState {
         require(expectedPosition >= 0)
         val digest = MessageDigest.getInstance("SHA-256")
-        val limited = LimitedInput(source, snapshotLimit(expected, expectedResultLimits))
+        val limited = LimitedInput(source, MAX_SNAPSHOT_BYTES)
         val checked = DigestInputStream(limited, digest)
         val input = DataInputStream(checked)
         require(input.readInt() == MAGIC) { "unsupported funds snapshot" }
         val version = input.readInt()
+        val hasLedger = version == FUNDS_LEDGER_VERSION
         val legacyCompatible = version == LEGACY_VERSION && expected.queryRetention == null && expected.inputContractVersion == 1
-        require(version == snapshotVersion(expected) || legacyCompatible) { "unsupported funds snapshot" }
+        val supportedLedger = hasLedger && expected.queryRetention?.capabilityVersion == 2
+        require(version == snapshotVersion(expected) || legacyCompatible || supportedLedger) { "unsupported funds snapshot" }
+        limited.restrictTo(snapshotLimit(expected, expectedResultLimits, hasLedger))
         require(input.readLong() == expectedPosition) { "funds snapshot framework position differs" }
         require(input.blob(MAX_CONFIGURATION_BYTES).contentEquals(configurationBytes(expected))) {
             "funds snapshot configuration differs"
@@ -218,6 +225,7 @@ internal class FundsRoleSnapshotCodec {
             } else {
                 emptyMap()
             }
+        val ledger = if (hasLedger) readLedger(input, expectedPosition) else null
         checked.on(false)
         val expectedDigest = ByteArray(32).also(input::readFully)
         require(MessageDigest.isEqual(digest.digest(), expectedDigest)) { "funds snapshot checksum differs" }
@@ -234,10 +242,48 @@ internal class FundsRoleSnapshotCodec {
                 lastCancellationSequence,
                 queryAdmissions,
                 querySettlements,
+                ledger,
             )
         // 체크섬 뒤에도 금융·전달·정산 경계의 관계를 빈 소유자에서 검사한다.
         validatedState(state, expectedResultLimits)
         return state
+    }
+
+    private fun writeLedger(
+        output: DataOutputStream,
+        ledger: FundsLedgerRecovery,
+        snapshotPosition: Long,
+    ) {
+        require(ledger.retiredLogPosition <= snapshotPosition)
+        output.writeBoolean(ledger.completeFromGenesis)
+        output.writeLong(ledger.retiredThrough)
+        output.writeLong(ledger.retiredLogPosition)
+        output.text(ledger.retiredDigest)
+        output.text(ledger.digest)
+        output.writeInt(ledger.batches.size)
+        for (batch in ledger.batches) {
+            require(batch.logPosition <= snapshotPosition)
+            FundsLedgerBatchCodec.write(output, batch)
+        }
+    }
+
+    private fun readLedger(
+        input: DataInputStream,
+        snapshotPosition: Long,
+    ): FundsLedgerRecovery {
+        val completeFromGenesis = input.readBoolean()
+        val retiredThrough = input.readLong()
+        val retiredLogPosition = input.readLong()
+        require(retiredLogPosition <= snapshotPosition)
+        val retiredDigest = input.text()
+        val digest = input.text()
+        val batches =
+            List(input.count(FundsLedgerRecovery.MAX_RETAINED_ENTRIES)) {
+                val batch = FundsLedgerBatchCodec.read(input)
+                require(batch.logPosition <= snapshotPosition)
+                batch
+            }
+        return FundsLedgerRecovery(completeFromGenesis, retiredThrough, retiredLogPosition, retiredDigest, digest, batches)
     }
 
     private fun writeCancellations(
@@ -442,6 +488,7 @@ internal class FundsRoleSnapshotCodec {
                 expectedManifest = state.configuration.manifest,
                 dispatchConfiguration = state.configuration,
                 resultLimits = resultLimits,
+                persistRecoveryLedger = state.ledger != null,
             )
         val settlement =
             OrderSettlementCalculator(
@@ -695,7 +742,13 @@ internal class FundsRoleSnapshotCodec {
     private fun snapshotLimit(
         configuration: FundsDispatchConfiguration,
         limits: FundsResultLimits,
-    ): Long = limits.snapshotByteUpperBound(configuration).also { require(it in 1..MAX_SNAPSHOT_BYTES) }
+        hasLedger: Boolean,
+    ): Long {
+        val base = limits.snapshotByteUpperBound(configuration)
+        val maximum = if (hasLedger) Math.addExact(base, FundsLedgerRecovery.SNAPSHOT_BYTES) else base
+        require(maximum in 1..MAX_SNAPSHOT_BYTES)
+        return maximum
+    }
 
     private fun snapshotVersion(configuration: FundsDispatchConfiguration): Int =
         when {
@@ -707,10 +760,15 @@ internal class FundsRoleSnapshotCodec {
 
     private class LimitedInput(
         source: InputStream,
-        private val maximum: Long,
+        private var maximum: Long,
     ) : FilterInputStream(source) {
         private var consumed = 0L
         val remaining: Long get() = maximum - consumed
+
+        fun restrictTo(limit: Long) {
+            require(limit in consumed..maximum)
+            maximum = limit
+        }
 
         override fun read(): Int =
             `in`.read().also {
@@ -765,6 +823,7 @@ internal class FundsRoleSnapshotCodec {
         private const val CANCELLATION_VERSION = 3
         private const val QUERY_VERSION = 4
         private const val SETTLEMENT_QUERY_VERSION = 5
+        private const val FUNDS_LEDGER_VERSION = 6
         private const val FOOTER_BYTES = 36L
         private const val END = 0x46524531
         private const val MAX_TEXT_BYTES = 1_024

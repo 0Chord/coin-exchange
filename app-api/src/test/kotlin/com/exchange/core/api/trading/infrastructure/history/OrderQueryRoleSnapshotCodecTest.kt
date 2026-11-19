@@ -13,6 +13,7 @@ import com.exchange.core.fee.MakerTakerFeeRates
 import com.exchange.core.fee.TradingFeeCalculator
 import com.exchange.core.fee.TradingFeePolicySnapshot
 import com.exchange.core.fee.TradingFeeReserveCalculator
+import com.exchange.core.ledger.LedgerTransactionType
 import com.exchange.core.ledger.OpeningBalance
 import com.exchange.core.order.BuyOrderFundingQuoteCalculator
 import com.exchange.core.order.MarketDefinition
@@ -26,6 +27,7 @@ import com.exchange.core.trading.BoundedFundingState
 import com.exchange.core.trading.ClusterLineage
 import com.exchange.core.trading.FundsDispatchConfiguration
 import com.exchange.core.trading.FundsDispatchLimits
+import com.exchange.core.trading.FundsLedgerBatch
 import com.exchange.core.trading.FundsMatchingAppliedAck
 import com.exchange.core.trading.FundsOrderDispatch
 import com.exchange.core.trading.FundsRoleRecoveryState
@@ -63,8 +65,11 @@ import java.time.Instant
 import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
 import kotlin.test.assertFails
+import kotlin.test.assertFalse
 import kotlin.test.assertIs
 import kotlin.test.assertNotNull
+import kotlin.test.assertNull
+import kotlin.test.assertTrue
 
 class OrderQueryRoleSnapshotCodecTest {
     private val user = UserId("buyer")
@@ -210,6 +215,50 @@ class OrderQueryRoleSnapshotCodecTest {
         val oldMatching = matching(null)
         assertFails { readFunds(fundsBytes(oldFunds.fundsRecoveryState())) }
         assertFails { readMatching(matchingBytes(oldMatching.recoveryState())) }
+    }
+
+    @Test
+    fun `스냅샷은 회수한 원장과 남은 원장을 연결하고 구형 기록의 과거 분개를 보증하지 않는다`() {
+        val query = QueryRetentionConfiguration(retention.consumerId, retention.marketLimits, capabilityVersion = 2)
+        val configuration = FundsDispatchConfiguration(topology, dispatchLimits, inputContractVersion = 2, queryRetention = query)
+
+        fun owner(persistLedger: Boolean = true): BoundedFundingState =
+            BoundedFundingState(
+                OrderAdmissionCalculator(reservations()),
+                expectedManifest = manifest,
+                dispatchConfiguration = configuration,
+                persistRecoveryLedger = persistLedger,
+            )
+
+        val opening = OpeningBalance("P1", user, quote, Amount(1_000))
+        val original = owner()
+        original.initialize(manifest)
+        original.prepareDevelopmentBalance(opening, Instant.EPOCH, atLogPosition = 32)
+        original.rotateEpoch(user, 0, 0)
+        original.admit(RequestToken(user, 0, 1, 1), intent, Instant.EPOCH, atLogPosition = 64)
+        val openingBatch = assertNotNull(original.readLedgerBatch(1))
+        val reserveBatch = assertNotNull(original.readLedgerBatch(2))
+        val expectedDigest = reserveBatch.digestAfter(openingBatch.digestAfter(FundsLedgerBatch.GENESIS_DIGEST))
+        assertTrue(original.acknowledgeLedger(1))
+        val saved = readFunds(fundsBytes(original.fundsRecoveryState()), configuration)
+        val restored = owner()
+        restored.restoreFundsRecoveryState(saved, settlement())
+
+        assertNull(restored.readLedgerBatch(1))
+        assertEquals(LedgerTransactionType.RESERVE, assertNotNull(restored.readLedgerBatch(2)).transactions.single().transactionType)
+        val progress = assertNotNull(restored.ledgerProgress())
+        assertTrue(progress.completeFromGenesis)
+        assertEquals(1L, progress.retiredThrough)
+        assertEquals(2L, progress.issued)
+        assertEquals(expectedDigest, progress.digest)
+
+        val old = owner(persistLedger = false)
+        old.initialize(manifest)
+        old.prepareDevelopmentBalance(opening, Instant.EPOCH)
+        val oldSaved = readFunds(fundsBytes(old.fundsRecoveryState()), configuration)
+        val upgraded = owner()
+        upgraded.restoreFundsRecoveryState(oldSaved, settlement())
+        assertFalse(assertNotNull(upgraded.ledgerProgress()).completeFromGenesis)
     }
 
     @Test

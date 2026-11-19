@@ -425,6 +425,28 @@ class ReservedMatchingState(
         return usable().engine.lastEngineSequence(marketId)
     }
 
+    data class RecoveryOrders(
+        val appliedThrough: Long,
+        val resultIssued: Long,
+        val orders: List<RestingOrderSnapshot>,
+        val nextOffset: Int?,
+    )
+
+    /** 복구 대사는 현재 주문장과 순번만 읽는다. 재전송용 매칭 자료는 복사하지 않는다. */
+    fun recoveryOrders(
+        marketId: MarketId,
+        offset: Int,
+        maxRows: Int,
+    ): RecoveryOrders? {
+        require(offset >= 0 && maxRows > 0)
+        val state = usable()
+        val progress = state.markets.getValue(marketId)
+        if (offset > progress.activeOrders) return null
+        val orders = state.engine.restingOrders(marketId, offset, maxRows)
+        val endOffset = offset + orders.size
+        return RecoveryOrders(progress.appliedThrough, progress.resultIssued, orders, endOffset.takeIf { it < progress.activeOrders })
+    }
+
     fun recoveryState(): MatchingRoleRecoveryState {
         val state = usable()
         return MatchingRoleRecoveryState(

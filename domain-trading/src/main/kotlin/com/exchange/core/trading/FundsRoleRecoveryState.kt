@@ -16,6 +16,7 @@ class FundsRoleRecoveryState(
     val lastCancellationSequence: Long = 0L,
     val queryAdmissions: QueryFactsRecovery<FundsOrderDispatch>? = null,
     querySettlements: Map<MarketId, QueryFactsRecovery<SettlementFact>> = emptyMap(),
+    val ledger: FundsLedgerRecovery? = null,
 ) {
     val assetTotals: Map<AssetId, Long> = Collections.unmodifiableMap(LinkedHashMap(assetTotals))
     val approvalInputs: List<FundsOrderDispatch> = Collections.unmodifiableList(approvalInputs.toList())

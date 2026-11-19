@@ -46,7 +46,7 @@ data class FundsResultLimits(
     }
 }
 
-enum class FundsResultStatus { APPLIED, DUPLICATE, PRUNED, CONTENT_CONFLICT, GAP, INVALID_STREAM, INVALID_RESULT }
+enum class FundsResultStatus { APPLIED, DUPLICATE, PRUNED, CONTENT_CONFLICT, GAP, INVALID_STREAM, INVALID_RESULT, RETRYABLE_CAPACITY }
 
 data class FundsResultReply(
     val status: FundsResultStatus,

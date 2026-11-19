@@ -1,14 +1,20 @@
 package com.exchange.core.api.trading.infrastructure.aeron
 
 import com.exchange.core.ExchangeCoreApplication
+import com.exchange.core.api.trading.application.OrderQueryRecoveryFailure
+import com.exchange.core.api.trading.application.OrderQueryRecoveryStatus
+import com.exchange.core.api.trading.application.OrderQueryRecoveryVerdict
 import com.exchange.core.api.trading.application.port.OrderQueryFeedProgress
 import com.exchange.core.api.trading.application.port.OrderQueryFeedStore
 import com.exchange.core.api.trading.application.port.OrderQuerySourceBounds
 import com.exchange.core.api.trading.application.port.OrderQueryUnavailableException
 import com.exchange.core.api.trading.infrastructure.codec.BoundedTradingCommand
 import com.exchange.core.api.trading.infrastructure.codec.DevelopmentBalanceCommandPayload
+import com.exchange.core.api.trading.infrastructure.codec.OrderQueryRecovery
+import com.exchange.core.api.trading.infrastructure.codec.OrderQueryRecoveryOrder
 import com.exchange.core.api.trading.infrastructure.codec.OrderQuerySourceCodec
 import com.exchange.core.api.trading.infrastructure.codec.OrderQuerySourceCommand
+import com.exchange.core.api.trading.infrastructure.codec.OrderQuerySourceReply
 import com.exchange.core.api.trading.infrastructure.codec.SplitOrderDeliveryCodec
 import com.exchange.core.api.trading.infrastructure.codec.SplitOrderDeliveryCommand
 import com.exchange.core.api.trading.infrastructure.codec.SplitOrderDeliveryReply
@@ -48,7 +54,9 @@ import com.exchange.core.support.OrderQueryTestDatabase
 import com.exchange.core.trading.AdmissionCode
 import com.exchange.core.trading.AdmissionReceipt
 import com.exchange.core.trading.BoundedFundingState
+import com.exchange.core.trading.CancelIntent
 import com.exchange.core.trading.ClusterLineage
+import com.exchange.core.trading.FundsLedgerBatch
 import com.exchange.core.trading.FundsOrderDispatch
 import com.exchange.core.trading.FundsRoleRecoveryState
 import com.exchange.core.trading.OrderIntent
@@ -94,6 +102,7 @@ import java.sql.Timestamp
 import java.time.Duration
 import java.time.Instant
 import java.util.concurrent.CountDownLatch
+import java.util.concurrent.ThreadLocalRandom
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
@@ -1394,6 +1403,489 @@ class SplitFundsTradingHttpTest {
         }
     }
 
+    @Test
+    fun `같은 Archive와 PostgreSQL로 복구하면 지급부터 잔량 반환까지 대사한다`() {
+        withTradingNodes("query-test", sourceRestart = true, persistSettlements = true) { harness ->
+            val buyer = UserId("buyer")
+            val seller = UserId("seller")
+            val market = MarketId("BTC-USDT")
+            for (user in listOf(buyer, seller)) {
+                val rotate = SplitOrderDeliveryCommand.Control(BoundedTradingCommand.Rotate(user, 0, 0))
+                assertEquals("ISSUED", harness.funds.request(rotate).code)
+            }
+
+            fun admit(
+                user: UserId,
+                side: Side,
+                quantity: Long,
+            ): AdmissionReceipt {
+                val intent = OrderIntent(market, 1, side, OrderType.LIMIT, TimeInForce.GTC, Price(100), Quantity(quantity))
+                val command = BoundedTradingCommand.Admit(RequestToken(user, 0, 1, 1), intent)
+                val reply = harness.funds.request(SplitOrderDeliveryCommand.Control(command))
+                assertEquals("ACCEPTED", reply.code)
+                return checkNotNull(reply.control?.admission)
+            }
+
+            fun awaitSettlement(sequence: Long): FundsRoleRecoveryState {
+                await("자금의 $sequence 번 매칭 결과 반영", { describeFunds(harness.fundsSnapshot.get()) }) {
+                    harness.funds.poll()
+                    val recovered = harness.fundsSnapshot.get()
+                    val streams = recovered?.results?.streams
+                    streams?.single()?.resultThrough == sequence
+                }
+                return checkNotNull(harness.fundsSnapshot.get())
+            }
+
+            val buy = admit(buyer, Side.BUY, 3)
+            val buyOrderId = checkNotNull(buy.orderId)
+            val reserved = awaitSettlement(1)
+            val quote = AssetId("USDT")
+            val reservedQuote = reserved.financial.balances.single { it.userId == buyer && it.assetId == quote }
+            assertEquals(Balance(buyer, quote, Amount(700), Amount(300)), reservedQuote)
+
+            // WAS 수집기가 시작되기 전의 미전달 분개를 스냅샷으로 남긴다.
+            takeSnapshot(harness.fundsNode, harness.funds)
+            takeSnapshot(harness.matchingNode, harness.funds)
+
+            admit(seller, Side.SELL, 1)
+            val partiallySettled = awaitSettlement(2)
+            val buyerQuote = partiallySettled.financial.balances.single { it.userId == buyer && it.assetId == quote }
+            assertEquals(Balance(buyer, quote, Amount(700), Amount(200)), buyerQuote)
+            val restingOrder = partiallySettled.financial.liveOrders.single()
+            assertEquals(Quantity(2), restingOrder.reservation.remainingQuantity)
+
+            val cancel = SplitOrderDeliveryCommand.Cancel(RequestToken(buyer, 0, 1, 2), CancelIntent(market, buyOrderId, 1))
+            assertEquals("ACCEPTED", harness.funds.request(cancel).code)
+            val settled = awaitSettlement(3)
+            assertFinalBalances(settled)
+            assertTrue(settled.financial.liveOrders.isEmpty())
+
+            val jdbc = harness.database.jdbc()
+
+            fun readLedger() =
+                jdbc.queryForList(
+                    "select sequence, log_position, transactions::text as transactions " +
+                        "from order_query.funds_ledger_batch order by sequence",
+                )
+
+            fun verifyReady(context: ConfigurableApplicationContext): Long {
+                val ready = awaitRecoveryVerdict(context, OrderQueryRecoveryStatus.READY)
+                assertNull(ready.reason)
+                assertEquals(6L, ready.ledgerThrough)
+                return checkNotNull(ready.logPosition)
+            }
+
+            fun verifyBlocked(
+                gatewayRoot: String,
+                reason: OrderQueryRecoveryFailure,
+            ) {
+                queryWas(harness, gatewayRoot = gatewayRoot).use { context ->
+                    val blocked = awaitRecoveryVerdict(context, OrderQueryRecoveryStatus.BLOCKED)
+                    assertEquals(reason, blocked.reason)
+                }
+            }
+
+            val originalLedger =
+                queryWas(harness, gatewayRoot = "recovery-before-restart").use { context ->
+                    val verifiedPosition = verifyReady(context)
+                    val persisted = readLedger()
+                    assertEquals((1L..6L).toList(), persisted.map { it.getValue("sequence") })
+                    val positions = persisted.map { it.getValue("log_position") as Long }
+                    assertTrue(positions.zipWithNext().all { (before, after) -> before > 0L && before < after })
+                    assertTrue(verifiedPosition >= positions.last())
+                    val transactions = persisted.flatMap { row -> readRecoveryTransactions(row.getValue("transactions") as String) }
+                    assertRecoveryLedgerTransactions(transactions)
+                    OrderQuerySourceClient(harness.fundsEndpoint, 10_000).use { source ->
+                        await("PostgreSQL 저장 뒤 원장 ACK 회수") {
+                            source.request(OrderQuerySourceCommand.Describe).ledgerProgress?.retiredThrough == 6L
+                        }
+                    }
+                    persisted
+                }
+
+            harness.funds.close()
+            harness.fundsNode.close()
+            harness.matchingNode.close()
+
+            withRestartedTradingNodes(harness) {
+                queryWas(harness, gatewayRoot = "recovery-query").use { context ->
+                    verifyReady(context)
+                    assertEquals(originalLedger, readLedger(), "재시작으로 커밋된 분개를 다시 쓰면 안 된다")
+                }
+
+                // 복구 응답의 판정 경계만 시험하면서 실제 Archive·DB와 총 자금은 유지한다.
+                try {
+                    harness.sourceReplies.rewriteRecovery.set { state ->
+                        val balances =
+                            state.balances.map { balance ->
+                                if (balance.userId == buyer && balance.assetId == quote) {
+                                    balance.copy(available = Amount(800), hold = Amount(100))
+                                } else {
+                                    balance
+                                }
+                            }
+                        state.copy(balances = balances)
+                    }
+                    verifyBlocked("recovery-balance-mismatch", OrderQueryRecoveryFailure.BALANCE_MISMATCH)
+
+                    harness.sourceReplies.rewriteRecovery.set { state ->
+                        val orphan = OrderQueryRecoveryOrder(buyOrderId, buyer, Quantity(1), quote, Amount(100))
+                        state.copy(orders = listOf(orphan))
+                    }
+                    verifyBlocked("recovery-orphan-order", OrderQueryRecoveryFailure.ORDERS_MISMATCH)
+                } finally {
+                    harness.sourceReplies.rewriteRecovery.set(null)
+                }
+
+                val restored = checkNotNull(harness.fundsSnapshot.get())
+                assertFinalBalances(restored)
+                assertTrue(restored.financial.liveOrders.isEmpty())
+            }
+
+            // 차변·대변은 서로 맞지만 실제 반환 200과 다른 199를 저장한다.
+            val updateReleaseAmounts =
+                """
+                update order_query.funds_ledger_batch
+                   set transactions = jsonb_set(
+                       jsonb_set(transactions, '{0,postings,0,amount}', cast(? as jsonb)),
+                       '{0,postings,1,amount}', cast(? as jsonb)
+                   )
+                 where sequence = 6
+                """.trimIndent()
+            assertEquals(1, jdbc.update(updateReleaseAmounts, "199", "199"))
+            val corruptedLedger = readLedger()
+            withRestartedTradingNodes(harness) {
+                verifyBlocked("recovery-corrupt-query", OrderQueryRecoveryFailure.LEDGER_MISMATCH)
+                assertEquals(corruptedLedger, readLedger(), "원장 대사는 손상된 분개를 자동 수정하면 안 된다")
+                val restored = checkNotNull(harness.fundsSnapshot.get())
+                assertFinalBalances(restored)
+                assertTrue(restored.financial.liveOrders.isEmpty())
+
+                assertEquals(1, jdbc.update(updateReleaseAmounts, "200.125", "200.125"))
+                verifyBlocked("recovery-fractional-ledger", OrderQueryRecoveryFailure.LEDGER_MISMATCH)
+
+                assertEquals(1, jdbc.update("update order_query.funds_ledger_batch set transactions = '[{}]'::jsonb where sequence = 6"))
+                verifyBlocked("recovery-malformed-ledger", OrderQueryRecoveryFailure.LEDGER_MISMATCH)
+
+                assertEquals(1, jdbc.update("delete from order_query.funds_ledger_batch where sequence = 6"))
+                verifyBlocked("recovery-missing-ledger", OrderQueryRecoveryFailure.LEDGER_INCOMPLETE)
+
+                // 실제 DB에서 원장 읽기가 실패해도 금액 불일치로 분류하면 안 된다.
+                jdbc.execute("alter table order_query.funds_ledger_batch rename to temporarily_unreadable_ledger")
+                try {
+                    verifyBlocked("recovery-unreadable-ledger", OrderQueryRecoveryFailure.DB_UNAVAILABLE)
+                } finally {
+                    jdbc.execute("alter table order_query.temporarily_unreadable_ledger rename to funds_ledger_batch")
+                }
+            }
+        }
+    }
+
+    @Test
+    fun `원장 ACK 전에 DB 첫 기록을 잃으면 마지막 순번이 남아 있어도 회수하지 않는다`() {
+        withTradingNodes("query-test", persistSettlements = true) { harness ->
+            val gate = CallbackGate()
+            val jdbc = harness.database.jdbc()
+
+            fun storedSequences() =
+                jdbc.queryForList("select sequence from order_query.funds_ledger_batch order by sequence", Long::class.java)
+
+            try {
+                queryWas(harness, gatewayRoot = "ledger-ack-lost", decorate = { store ->
+                    object : OrderQueryFeedStore by store {
+                        override fun applyLedger(batch: FundsLedgerBatch): Long {
+                            val committed = store.applyLedger(batch)
+                            if (committed == 2L) gate.pause()
+                            return committed
+                        }
+                    }
+                }).use {
+                    assertTrue(gate.reached.await(10, TimeUnit.SECONDS), "두 지급 기록이 커밋된 뒤 ACK 전에서 멈춰야 한다")
+                    assertEquals(listOf(1L, 2L), storedSequences())
+                    OrderQuerySourceClient(harness.fundsEndpoint, 10_000).use { funds ->
+                        val progress = checkNotNull(funds.request(OrderQuerySourceCommand.Describe).ledgerProgress)
+                        assertEquals(2L, progress.issued)
+                        assertEquals(0L, progress.retiredThrough)
+                    }
+                }
+            } finally {
+                gate.release.countDown()
+            }
+
+            assertEquals(1, jdbc.update("delete from order_query.funds_ledger_batch where sequence = 1"))
+            assertEquals(listOf(2L), storedSequences())
+            queryWas(harness, gatewayRoot = "ledger-ack-gap").use { context ->
+                val blocked = awaitRecoveryVerdict(context, OrderQueryRecoveryStatus.BLOCKED)
+                assertEquals(OrderQueryRecoveryFailure.LEDGER_INCOMPLETE, blocked.reason)
+                assertEquals(listOf(2L), storedSequences())
+                OrderQuerySourceClient(harness.fundsEndpoint, 10_000).use { funds ->
+                    val progress = checkNotNull(funds.request(OrderQuerySourceCommand.Describe).ledgerProgress)
+                    assertEquals(0L, progress.retiredThrough)
+                    val original = funds.request(OrderQuerySourceCommand.ReadLedger("query-test", 1))
+                    assertEquals("FACT", original.code)
+                    assertEquals(1L, original.ledgerBatch?.sequence)
+                }
+            }
+        }
+    }
+
+    @Test
+    fun `회수된 원장의 중간 기록이 없으면 새로 저장할 분개도 회수하지 않는다`() {
+        withTradingNodes("query-test", persistSettlements = true) { harness ->
+            queryWas(harness, gatewayRoot = "retired-ledger-prefix").use { context ->
+                val ready = awaitRecoveryVerdict(context, OrderQueryRecoveryStatus.READY)
+                assertEquals(2L, ready.ledgerThrough)
+                OrderQuerySourceClient(harness.fundsEndpoint, 10_000).use { funds ->
+                    await("첫 두 지급의 원장 회수") {
+                        funds.request(OrderQuerySourceCommand.Describe).ledgerProgress?.retiredThrough == 2L
+                    }
+                }
+            }
+
+            val opening = OpeningBalance("opening-late", UserId("late"), AssetId("USDT"), Amount(1))
+            val payload = DevelopmentBalanceCommandPayload(opening, "ledger-opening-late", Instant.EPOCH)
+            val command = SplitOrderDeliveryCommand.Control(BoundedTradingCommand.Funding(payload))
+            SplitOrderDeliveryClient(harness.fundsEndpoint, 10_000).use { writer ->
+                assertEquals("PREPARED", writer.request(command).code)
+            }
+            val jdbc = harness.database.jdbc()
+            assertEquals(1, jdbc.update("delete from order_query.funds_ledger_batch where sequence = 1"))
+
+            queryWas(harness, gatewayRoot = "retired-ledger-gap").use { context ->
+                val blocked = awaitRecoveryVerdict(context, OrderQueryRecoveryStatus.BLOCKED)
+                assertEquals(OrderQueryRecoveryFailure.LEDGER_INCOMPLETE, blocked.reason)
+                val persisted =
+                    jdbc.queryForList("select sequence from order_query.funds_ledger_batch order by sequence", Long::class.java)
+                assertEquals(listOf(2L), persisted)
+                OrderQuerySourceClient(harness.fundsEndpoint, 10_000).use { funds ->
+                    val progress = checkNotNull(funds.request(OrderQuerySourceCommand.Describe).ledgerProgress)
+                    assertEquals(3L, progress.issued)
+                    assertEquals(2L, progress.retiredThrough)
+                    val retained = funds.request(OrderQuerySourceCommand.ReadLedger("query-test", 3))
+                    assertEquals("FACT", retained.code)
+                    assertEquals(3L, retained.ledgerBatch?.sequence)
+                }
+            }
+        }
+    }
+
+    @Test
+    fun `재시작 뒤 남은 매칭 결과를 적용하기 전에는 원장 대사가 복구 중이다`() {
+        withTradingNodes("query-test", sourceRestart = true, persistSettlements = true) { harness ->
+            val buyer = UserId("buyer")
+            val quote = AssetId("USDT")
+            val rotate = SplitOrderDeliveryCommand.Control(BoundedTradingCommand.Rotate(buyer, 0, 0))
+            assertEquals("ISSUED", harness.funds.request(rotate).code)
+            takeSnapshot(harness.fundsNode, harness.funds)
+            takeSnapshot(harness.matchingNode, harness.funds)
+
+            harness.settlementGate.paused.set(true)
+            val intent = OrderIntent(MarketId("BTC-USDT"), 1, Side.BUY, OrderType.LIMIT, TimeInForce.GTC, Price(100), Quantity(3))
+            val command = BoundedTradingCommand.Admit(RequestToken(buyer, 0, 1, 1), intent)
+            val accepted = harness.funds.request(SplitOrderDeliveryCommand.Control(command))
+            assertEquals("ACCEPTED", accepted.code)
+            val orderId = checkNotNull(accepted.control?.admission?.orderId)
+            OrderQuerySourceClient(harness.matchingEndpoint, 10_000).use { matching ->
+                await("매칭은 결과를 확정했지만 자금에는 아직 미전달") {
+                    harness.funds.poll()
+                    val state = matching.request(OrderQuerySourceCommand.DescribeRecovery("query-test"))
+                    state.recovery?.resultThrough == 1L
+                }
+            }
+            val beforeRestart = checkNotNull(harness.fundsSnapshot.get())
+            assertEquals(0L, checkNotNull(beforeRestart.results).streams.single().resultThrough)
+
+            harness.funds.close()
+            harness.fundsNode.close()
+            harness.matchingNode.close()
+
+            withRestartedTradingNodes(harness, expectedResultThrough = 0) {
+                queryWas(harness, gatewayRoot = "recovery-pending-result").use { context ->
+                    val worker = context.getBean(OrderQueryFeedWorker::class.java)
+                    val jdbc = harness.database.jdbc()
+                    await("원장 저장과 미완료 결과의 재개 판정 요청") {
+                        val stored = jdbc.queryForObject("select count(*) from order_query.funds_ledger_batch", Long::class.java)
+                        stored == 3L && harness.sourceReplies.recoveryDescriptions.get() >= 2
+                    }
+                    assertEquals(OrderQueryRecoveryStatus.RECOVERING, worker.recoveryVerdict.status)
+                    val pending = checkNotNull(harness.fundsSnapshot.get())
+                    assertEquals(0L, checkNotNull(pending.results).streams.single().resultThrough)
+
+                    harness.settlementGate.paused.set(false)
+                    val ready = awaitRecoveryVerdict(context, OrderQueryRecoveryStatus.READY)
+                    assertEquals(3L, ready.ledgerThrough)
+                }
+                val recovered = checkNotNull(harness.fundsSnapshot.get())
+                assertEquals(1L, checkNotNull(recovered.results).streams.single().resultThrough)
+                val balance = recovered.financial.balances.single { it.userId == buyer && it.assetId == quote }
+                assertEquals(Balance(buyer, quote, Amount(700), Amount(300)), balance)
+                val restoredOrder = recovered.financial.liveOrders.single()
+                val reservation = restoredOrder.reservation
+                assertEquals(orderId, reservation.orderId)
+                assertEquals(Amount(300), reservation.remainingAmount)
+                assertEquals(Quantity(3), reservation.remainingQuantity)
+            }
+        }
+    }
+
+    private fun awaitRecoveryVerdict(
+        context: ConfigurableApplicationContext,
+        expected: OrderQueryRecoveryStatus,
+    ): OrderQueryRecoveryVerdict {
+        val worker = context.getBean(OrderQueryFeedWorker::class.java)
+        var latest = worker.recoveryVerdict
+        await("원장 대사 상태 $expected", { "마지막 대사 결과 $latest" }) {
+            latest = worker.recoveryVerdict
+            latest.status == expected
+        }
+        return latest
+    }
+
+    @Test
+    fun `원장 대사는 잔고가 512개를 넘어도 다음 페이지까지 읽고 재개한다`() {
+        val pageSize = OrderQuerySourceCodec.RECOVERY_PAGE_ROWS
+        val expectedAccounts = pageSize + 1
+        withTradingNodes("query-test", persistSettlements = true, maxFundingAccounts = 520) { harness ->
+            val quote = AssetId("USDT")
+            // 공통 준비의 두 지급을 포함해 잔고 한 페이지와 마지막 한 건을 만든다.
+            for (index in 1 until pageSize) {
+                val user = UserId("recovery-page-$index")
+                val opening = OpeningBalance("opening-${user.value}", user, quote, Amount(1))
+                val payload = DevelopmentBalanceCommandPayload(opening, "ledger-${user.value}", Instant.EPOCH)
+                val command = SplitOrderDeliveryCommand.Control(BoundedTradingCommand.Funding(payload))
+                assertEquals("PREPARED", harness.funds.request(command).code)
+            }
+            val funded = checkNotNull(harness.fundsSnapshot.get())
+            assertEquals(expectedAccounts, funded.financial.balances.size)
+
+            queryWas(harness, gatewayRoot = "recovery-balance-pages").use { context ->
+                val ready = awaitRecoveryVerdict(context, OrderQueryRecoveryStatus.READY)
+                assertEquals(expectedAccounts.toLong(), ready.ledgerThrough)
+                assertTrue(harness.sourceReplies.recoverySuffixRead.get())
+                val jdbc = harness.database.jdbc()
+                val stored = jdbc.queryForObject("select count(*) from order_query.funds_ledger_batch", Long::class.java)
+                assertEquals(expectedAccounts.toLong(), stored)
+            }
+        }
+    }
+
+    private fun withRestartedTradingNodes(
+        harness: TradingHarness,
+        expectedResultThrough: Long = 3L,
+        verify: () -> Unit,
+    ) {
+        harness.fundsSnapshot.set(null)
+        val fundsRestored = AtomicBoolean()
+        val matchingRestored = AtomicBoolean()
+        val fundsSettings = harness.fundsSettings.copy(transport = harness.fundsSettings.transport.copy(recoverExisting = true))
+        val matchingSettings = harness.matchingSettings.copy(transport = harness.matchingSettings.transport.copy(recoverExisting = true))
+        val fundsNode =
+            DevelopmentSplitTradingNode.start(
+                fundsSettings,
+                serviceDecorator = { adapter ->
+                    val observed = observeFunds(adapter, fundsRestored) { _, state -> harness.fundsSnapshot.set(state) }
+                    harness.sourceReplies.decorate(observed)
+                },
+            )
+        fundsNode.use {
+            val matchingNode =
+                DevelopmentSplitTradingNode.start(
+                    matchingSettings,
+                    AeronSplitOrderDeliveryConnectionFactory,
+                    harness.settlementGate,
+                    serviceDecorator = { adapter -> observeSnapshotRestore(adapter, matchingRestored) },
+                )
+            matchingNode.use {
+                await("같은 Archive의 양쪽 역할 복원") {
+                    assertNull(fundsNode.error)
+                    assertNull(matchingNode.error)
+                    val recovered = harness.fundsSnapshot.get()
+                    val streams = recovered?.results?.streams
+                    fundsNode.tradingReady && matchingNode.tradingReady &&
+                        streams?.single()?.resultThrough == expectedResultThrough
+                }
+                assertTrue(fundsRestored.get(), "자금 역할은 기존 스냅샷에서 시작해야 한다")
+                assertTrue(matchingRestored.get(), "매칭 역할은 기존 스냅샷에서 시작해야 한다")
+                verify()
+                assertNull(fundsNode.error)
+                assertNull(matchingNode.error)
+            }
+        }
+    }
+
+    private fun assertRecoveryLedgerTransactions(transactions: List<LedgerTransaction>) {
+        val btc = AssetId("BTC")
+        val usdt = AssetId("USDT")
+        val debit = LedgerPostingSide.DEBIT
+        val credit = LedgerPostingSide.CREDIT
+        assertEquals(
+            listOf(
+                LedgerTransactionType.OPENING,
+                LedgerTransactionType.OPENING,
+                LedgerTransactionType.RESERVE,
+                LedgerTransactionType.RESERVE,
+                LedgerTransactionType.SETTLEMENT,
+                LedgerTransactionType.RELEASE,
+            ),
+            transactions.map { it.transactionType },
+        )
+        assertEquals(
+            listOf(
+                listOf(
+                    LedgerPosting("SYSTEM:USDT:DEVELOPMENT_FUNDING", usdt, debit, Amount(1_000)),
+                    LedgerPosting("USER:buyer:USDT:AVAILABLE", usdt, credit, Amount(1_000)),
+                ),
+                listOf(
+                    LedgerPosting("SYSTEM:BTC:DEVELOPMENT_FUNDING", btc, debit, Amount(3)),
+                    LedgerPosting("USER:seller:BTC:AVAILABLE", btc, credit, Amount(3)),
+                ),
+                listOf(
+                    LedgerPosting("USER:buyer:USDT:AVAILABLE", usdt, debit, Amount(300)),
+                    LedgerPosting("USER:buyer:USDT:HOLD", usdt, credit, Amount(300)),
+                ),
+                listOf(
+                    LedgerPosting("USER:seller:BTC:AVAILABLE", btc, debit, Amount(1)),
+                    LedgerPosting("USER:seller:BTC:HOLD", btc, credit, Amount(1)),
+                ),
+                listOf(
+                    LedgerPosting("USER:buyer:USDT:HOLD", usdt, debit, Amount(100)),
+                    LedgerPosting("USER:buyer:BTC:AVAILABLE", btc, credit, Amount(1)),
+                    LedgerPosting("USER:seller:BTC:HOLD", btc, debit, Amount(1)),
+                    LedgerPosting("USER:seller:USDT:AVAILABLE", usdt, credit, Amount(100)),
+                ),
+                listOf(
+                    LedgerPosting("USER:buyer:USDT:HOLD", usdt, debit, Amount(200)),
+                    LedgerPosting("USER:buyer:USDT:AVAILABLE", usdt, credit, Amount(200)),
+                ),
+            ),
+            transactions.map { it.postings },
+        )
+        assertEquals(transactions.size, transactions.map { it.ledgerTransactionId }.toSet().size)
+        assertEquals(transactions.size, transactions.map { it.sourceEventId }.toSet().size)
+    }
+
+    private fun readRecoveryTransactions(payload: String): List<LedgerTransaction> {
+        val transactions = json.readTree(payload)
+        return transactions.values().map { transaction ->
+            val postings = transaction.path("postings").values()
+            LedgerTransaction(
+                ledgerTransactionId = transaction.path("id").asString(),
+                sourceEventId = transaction.path("sourceEventId").asString(),
+                transactionType = LedgerTransactionType.valueOf(transaction.path("type").asString()),
+                occurredAt = Instant.parse(transaction.path("occurredAt").asString()),
+                postings =
+                    postings.map { posting ->
+                        LedgerPosting(
+                            posting.path("accountId").asString(),
+                            AssetId(posting.path("assetId").asString()),
+                            LedgerPostingSide.valueOf(posting.path("side").asString()),
+                            Amount(posting.path("amount").longValue()),
+                        )
+                    },
+            )
+        }
+    }
+
     /** 실제 source 2는 유지하고 QUERY Describe의 입력 계약 메타데이터만 1로 바꾸어 호환성 확인 경계를 시험한다. */
     @Test
     fun `계약 2 소스의 조회 Describe에 계약 1 메타데이터를 주입하면 준비와 ACK 전에 차단된다`() {
@@ -1812,6 +2304,8 @@ class SplitFundsTradingHttpTest {
     private class SourceReplyGate {
         val acknowledgements = AtomicInteger()
         val descriptions = AtomicInteger()
+        val recoveryDescriptions = AtomicInteger()
+        val recoverySuffixRead = AtomicBoolean()
         val describeInputContractVersion = AtomicInteger(2)
         val rewrittenDescriptions = AtomicInteger()
         val dropNextRead = AtomicBoolean()
@@ -1821,6 +2315,7 @@ class SplitFundsTradingHttpTest {
         val dropped = CountDownLatch(1)
         val observeNextRead = AtomicBoolean()
         val observedRead = CountDownLatch(1)
+        val rewriteRecovery = AtomicReference<((OrderQueryRecovery) -> OrderQueryRecovery)?>(null)
         private val codec = OrderQuerySourceCodec()
 
         fun decorate(actual: ClusteredService): ClusteredService =
@@ -1852,6 +2347,7 @@ class SplitFundsTradingHttpTest {
                         }
                     if (loseReply) pauseDescriptions.set(true)
                     val loseDescription = command == OrderQuerySourceCommand.Describe && pauseDescriptions.get()
+                    val rewrite = rewriteRecovery.get()
                     val replySession =
                         when {
                             loseReply || loseDescription -> {
@@ -1862,11 +2358,22 @@ class SplitFundsTradingHttpTest {
                                 descriptorSession(session, describeInputContractVersion.get())
                             }
 
+                            command is OrderQuerySourceCommand.DescribeRecovery && session != null && rewrite != null -> {
+                                rewriteReply(session) { reply ->
+                                    val recovery = reply.recovery
+                                    if (recovery == null) reply else reply.copy(recovery = rewrite(recovery))
+                                }
+                            }
+
                             else -> {
                                 session
                             }
                         }
                     actual.onSessionMessage(replySession, timestamp, buffer, offset, length, header)
+                    if (command is OrderQuerySourceCommand.DescribeRecovery) {
+                        recoveryDescriptions.incrementAndGet()
+                        if (command.offset > 0) recoverySuffixRead.set(true)
+                    }
                     if (loseReply) dropped.countDown()
                     if (command is OrderQuerySourceCommand.Read && command.from == 1L && observeNextRead.compareAndSet(true, false)) {
                         observedRead.countDown()
@@ -1881,6 +2388,15 @@ class SplitFundsTradingHttpTest {
             actual: ClientSession,
             inputContractVersion: Int,
         ): ClientSession =
+            rewriteReply(actual) { described ->
+                rewrittenDescriptions.incrementAndGet()
+                described.copy(inputContractVersion = inputContractVersion)
+            }
+
+        private fun rewriteReply(
+            actual: ClientSession,
+            update: (OrderQuerySourceReply) -> OrderQuerySourceReply,
+        ): ClientSession =
             object : ClientSession by actual {
                 override fun offer(
                     buffer: DirectBuffer,
@@ -1889,9 +2405,8 @@ class SplitFundsTradingHttpTest {
                 ): Long {
                     val bytes = ByteArray(length)
                     buffer.getBytes(offset, bytes)
-                    val described = codec.decodeReply(bytes)
-                    val changed = codec.encodeReply(described.copy(inputContractVersion = inputContractVersion))
-                    rewrittenDescriptions.incrementAndGet()
+                    val reply = codec.decodeReply(bytes)
+                    val changed = codec.encodeReply(update(reply))
                     return actual.offer(UnsafeBuffer(changed), 0, changed.size)
                 }
             }
@@ -2010,11 +2525,13 @@ class SplitFundsTradingHttpTest {
         feeRate: FeeRate = FeeRate.ZERO,
         takerFeeRate: FeeRate = feeRate,
         persistSettlements: Boolean = false,
+        maxFundingAccounts: Int = 8,
         decorateFunds: (ClusteredService) -> ClusteredService = { it },
         verify: (TradingHarness) -> Unit,
     ) {
         val basePort = availablePorts()
-        val manifest = manifest(MakerTakerFeeRates(makerFeeRate = feeRate, takerFeeRate = takerFeeRate))
+        val feeRates = MakerTakerFeeRates(makerFeeRate = feeRate, takerFeeRate = takerFeeRate)
+        val manifest = manifest(feeRates, maxFundingAccounts)
         val manifestFile = directory.resolve("manifest.bin").also { Files.write(it, BoundedTradingStateCodec().encodeManifest(manifest)) }
         val fundsSettings = settings(manifestFile, TradingServiceRole.FUNDS, basePort, consumerId, persistSettlements)
         val matchingSettings = settings(manifestFile, TradingServiceRole.MATCHING, basePort, consumerId, persistSettlements)
@@ -2550,7 +3067,10 @@ class SplitFundsTradingHttpTest {
         )
     }
 
-    private fun manifest(feeRates: MakerTakerFeeRates): TradingClusterManifest =
+    private fun manifest(
+        feeRates: MakerTakerFeeRates,
+        maxFundingAccounts: Int,
+    ): TradingClusterManifest =
         TradingClusterManifest(
             lineage,
             "split-http",
@@ -2565,7 +3085,7 @@ class SplitFundsTradingHttpTest {
                 ),
             ),
             TradingResourceLimits(
-                maxAccounts = 8,
+                maxAccounts = maxFundingAccounts,
                 channelsPerAccount = 1,
                 maxChannels = 8,
                 requestWindow = 16,
@@ -2574,8 +3094,8 @@ class SplitFundsTradingHttpTest {
                 maxPendingOrders = 32,
                 maxMarketActiveOrders = 32,
                 maxMarketPendingOrders = 32,
-                maxBalanceKeys = 32,
-                maxPreparations = 16,
+                maxBalanceKeys = maxOf(32, maxFundingAccounts),
+                maxPreparations = maxOf(16, maxFundingAccounts),
                 maxMarkets = 1,
                 maxAssets = 2,
             ),
@@ -2583,7 +3103,8 @@ class SplitFundsTradingHttpTest {
 
     private fun availablePorts(): Int {
         repeat(100) {
-            val base = DatagramSocket(0).use { it.localPort }.coerceIn(1024, 65480)
+            // 노드 기동 뒤에 바인딩하는 WAS의 고정 포트를 OS 임시 UDP 응답 포트와 분리한다.
+            val base = ThreadLocalRandom.current().nextInt(16_000, 30_000)
             val sockets = mutableListOf<DatagramSocket>()
             try {
                 for (offset in (0..8) + (16..24) + (32..33)) sockets.add(DatagramSocket(base + offset))

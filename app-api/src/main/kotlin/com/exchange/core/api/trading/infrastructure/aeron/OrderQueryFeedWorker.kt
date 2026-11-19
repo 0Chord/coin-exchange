@@ -2,14 +2,25 @@ package com.exchange.core.api.trading.infrastructure.aeron
 
 import com.exchange.core.api.trading.application.OrderQueryLifecycle
 import com.exchange.core.api.trading.application.OrderQueryNamespace
+import com.exchange.core.api.trading.application.OrderQueryRecoveryFailure
+import com.exchange.core.api.trading.application.OrderQueryRecoveryStatus
+import com.exchange.core.api.trading.application.OrderQueryRecoveryVerdict
 import com.exchange.core.api.trading.application.port.OrderQueryFeedStore
 import com.exchange.core.api.trading.application.port.OrderQueryInconsistentException
+import com.exchange.core.api.trading.application.port.OrderQueryLedgerException
 import com.exchange.core.api.trading.application.port.OrderQueryOriginsPendingException
 import com.exchange.core.api.trading.application.port.OrderQuerySourceBounds
+import com.exchange.core.api.trading.application.port.OrderQueryUnavailableException
 import com.exchange.core.api.trading.application.port.OrderQueryWriteConflictException
+import com.exchange.core.api.trading.infrastructure.codec.OrderQueryRecovery
 import com.exchange.core.api.trading.infrastructure.codec.OrderQuerySourceCodec
 import com.exchange.core.api.trading.infrastructure.codec.OrderQuerySourceCommand
 import com.exchange.core.api.trading.infrastructure.codec.OrderQuerySourceReply
+import com.exchange.core.ledger.LedgerReconciliationScope
+import com.exchange.core.ledger.ReconciliationStatus
+import com.exchange.core.ledger.ReservationHold
+import com.exchange.core.trading.ClusterLineage
+import com.exchange.core.trading.FundsLedgerProgress
 import com.exchange.core.trading.MatchingFundsSettledAck
 import com.exchange.core.trading.MatchingResultStream
 import com.exchange.core.trading.QueryFactsProgress
@@ -17,6 +28,8 @@ import com.exchange.core.trading.TradingServiceRole
 import io.aeron.driver.MediaDriver
 import io.aeron.driver.ThreadingMode
 import org.slf4j.LoggerFactory
+import org.springframework.dao.DataAccessException
+import org.springframework.transaction.TransactionException
 import java.nio.file.Files
 import java.nio.file.Path
 import java.util.Comparator
@@ -34,6 +47,10 @@ internal class OrderQueryFeedWorker(
     private val logger = LoggerFactory.getLogger(javaClass)
     private val thread: Thread
     private val codec = OrderQuerySourceCodec()
+
+    @Volatile
+    var recoveryVerdict = OrderQueryRecoveryVerdict(OrderQueryRecoveryStatus.RECOVERING)
+        private set
 
     init {
         require(consumerId.isNotBlank() && matchingIngress.keys.containsAll(namespace.markets))
@@ -53,6 +70,17 @@ internal class OrderQueryFeedWorker(
                 Thread.currentThread().interrupt()
                 break
             } catch (failure: Exception) {
+                val recoveryFailure =
+                    when (failure) {
+                        is DataAccessException, is OrderQueryUnavailableException, is TransactionException -> {
+                            OrderQueryRecoveryFailure.DB_UNAVAILABLE
+                        }
+
+                        else -> {
+                            OrderQueryRecoveryFailure.SOURCE_UNAVAILABLE
+                        }
+                    }
+                recoveryVerdict = OrderQueryRecoveryVerdict(OrderQueryRecoveryStatus.BLOCKED, recoveryFailure)
                 val mustBlockProjection =
                     failure is IllegalArgumentException || failure is SourceConflict ||
                         failure is OrderQueryInconsistentException || failure is OrderQueryWriteConflictException
@@ -130,6 +158,14 @@ internal class OrderQueryFeedWorker(
                         val fundsClient = client(settings.ingressEndpoints)
                         val initialFundsDescription = describeSource(fundsClient, TradingServiceRole.FUNDS)
                         val settlementEnabled = initialFundsDescription.capabilityVersion == 2
+                        val recoveryMarket =
+                            if (initialFundsDescription.ledgerProgress != null) {
+                                val context = initialFundsDescription.contexts.values.single()
+                                context.market
+                            } else {
+                                null
+                            }
+                        val recoveryMatchingClient = recoveryMarket?.let { client(matchingIngress.getValue(it.marketId.value)) }
                         require(
                             initialFundsDescription.lineage == namespace.fundsLineage &&
                                 initialFundsDescription.streams.keys == matchingIngress.keys,
@@ -143,6 +179,16 @@ internal class OrderQueryFeedWorker(
                             sourceIdentity = initialFundsDescription.topologySha256,
                             settlementEnabled = settlementEnabled,
                         )
+                        if (recoveryMatchingClient != null) {
+                            // DB를 다시 읽기 전에는 직전 연결의 읽기 실패를 해제하지 않는다.
+                            store.ledgerThrough()
+                            recoveryVerdict = OrderQueryRecoveryVerdict(OrderQueryRecoveryStatus.RECOVERING)
+                        } else {
+                            recoveryVerdict =
+                                OrderQueryRecoveryVerdict(OrderQueryRecoveryStatus.BLOCKED, OrderQueryRecoveryFailure.SCOPE_UNSUPPORTED)
+                        }
+                        var reconciliationTerms: Pair<Long, Long>? = null
+                        var retiredLedgerVerified = false
                         while (running.get()) {
                             val progressBeforeSourceRead = store.progress()
                             val currentFundsDescription = describeSource(fundsClient, TradingServiceRole.FUNDS)
@@ -150,7 +196,8 @@ internal class OrderQueryFeedWorker(
                                 currentFundsDescription.streams == initialFundsDescription.streams &&
                                     currentFundsDescription.contexts == initialFundsDescription.contexts &&
                                     currentFundsDescription.topologySha256 == initialFundsDescription.topologySha256 &&
-                                    currentFundsDescription.capabilityVersion == initialFundsDescription.capabilityVersion,
+                                    currentFundsDescription.capabilityVersion == initialFundsDescription.capabilityVersion &&
+                                    (currentFundsDescription.ledgerProgress != null) == (recoveryMatchingClient != null),
                             )
                             val matchingDescriptionByIngress =
                                 matchingIngress.values.distinct().associateWith { ingress ->
@@ -170,6 +217,14 @@ internal class OrderQueryFeedWorker(
                                     )
                                     matchingDescription
                                 }
+                            if (recoveryMatchingClient != null) {
+                                val terms = fundsClient.leadershipTermId to recoveryMatchingClient.leadershipTermId
+                                if (terms != reconciliationTerms) {
+                                    reconciliationTerms = terms
+                                    retiredLedgerVerified = false
+                                    recoveryVerdict = OrderQueryRecoveryVerdict(OrderQueryRecoveryStatus.RECOVERING)
+                                }
+                            }
                             val admissionBounds = currentFundsDescription.progress.single { it.market == null }
                             val matchingBounds =
                                 matchingDescriptionByMarket.mapValues { (market, description) ->
@@ -222,6 +277,22 @@ internal class OrderQueryFeedWorker(
                                 throw SourceConflict("query checkpoint is blocked")
                             }
                             var appliedFactCount = 0
+                            val ledgerBounds = currentFundsDescription.ledgerProgress
+                            val ledgerFailure = recoveryVerdict.reason
+                            if (ledgerBounds != null && ledgerFailure != OrderQueryRecoveryFailure.LEDGER_INCOMPLETE &&
+                                ledgerFailure != OrderQueryRecoveryFailure.LEDGER_MISMATCH &&
+                                ledgerFailure != OrderQueryRecoveryFailure.SOURCE_PROGRESS_MISMATCH
+                            ) {
+                                try {
+                                    if (!retiredLedgerVerified) {
+                                        store.verifyLedgerPrefix(ledgerBounds.retiredThrough)
+                                        retiredLedgerVerified = true
+                                    }
+                                    appliedFactCount += collectLedger(fundsClient, ledgerBounds)
+                                } catch (failure: OrderQueryLedgerException) {
+                                    blockLedgerRecovery(failure)
+                                }
+                            }
                             for (attempt in 0 until 32) {
                                 val admissionThrough = store.progress().admissionThrough
                                 if (admissionThrough >= admissionBounds.issued) break
@@ -336,6 +407,28 @@ internal class OrderQueryFeedWorker(
                                     )
                                 requireAcknowledged(matchingAck)
                             }
+                            if (recoveryMarket != null && recoveryMatchingClient != null &&
+                                recoveryVerdict.status == OrderQueryRecoveryStatus.RECOVERING
+                            ) {
+                                val stream = initialFundsDescription.streams.getValue(recoveryMarket.marketId.value)
+                                val scope =
+                                    LedgerReconciliationScope(
+                                        recoveryMarket.marketId,
+                                        recoveryMarket.baseAssetId,
+                                        recoveryMarket.quoteAssetId,
+                                    )
+                                try {
+                                    reconcileRecovery(
+                                        fundsClient,
+                                        recoveryMatchingClient,
+                                        initialFundsDescription.topologySha256,
+                                        stream,
+                                        scope,
+                                    )
+                                } catch (failure: OrderQueryLedgerException) {
+                                    blockLedgerRecovery(failure)
+                                }
+                            }
                             clients.values.forEach { it.poll() }
                             if (appliedFactCount == 0) Thread.sleep(25)
                         }
@@ -346,6 +439,196 @@ internal class OrderQueryFeedWorker(
         } finally {
             Files.walk(directory).use { paths -> paths.sorted(Comparator.reverseOrder()).forEach(Files::deleteIfExists) }
         }
+    }
+
+    private fun collectLedger(
+        client: OrderQuerySourceClient,
+        bounds: FundsLedgerProgress,
+    ): Int {
+        if (!bounds.completeFromGenesis) {
+            throw OrderQueryLedgerException(OrderQueryRecoveryFailure.LEDGER_INCOMPLETE, "초기 분개부터 보존됐는지 확인할 수 없다")
+        }
+        if (store.ledgerThrough() < bounds.retiredThrough) {
+            throw OrderQueryLedgerException(OrderQueryRecoveryFailure.LEDGER_INCOMPLETE, "원본에서 이미 정리한 분개가 DB에 없다")
+        }
+        var verifiedThrough = bounds.retiredThrough
+        var applied = 0
+        while (applied < 32 && verifiedThrough < bounds.issued) {
+            val next = Math.addExact(verifiedThrough, 1L)
+            val reply = client.request(OrderQuerySourceCommand.ReadLedger(consumerId, next))
+            val batch = reply.ledgerBatch
+            if (batch == null) {
+                if (reply.code == "PRUNED" && store.ledgerThrough() >= next) {
+                    // 다른 WAS가 확인한 새 회수 위치를 다음 Describe에서 다시 읽는다.
+                    return applied
+                }
+                if (reply.code == "NOT_READY") throw IllegalStateException("query ledger source is not ready")
+                throw OrderQueryLedgerException(
+                    OrderQueryRecoveryFailure.LEDGER_INCOMPLETE,
+                    "원본에서 분개 묶음 ${next}을 확인할 수 없다 (${reply.code})",
+                )
+            }
+            if (batch.lineage != namespace.fundsLineage || batch.sequence != next) {
+                throw OrderQueryLedgerException(OrderQueryRecoveryFailure.LEDGER_MISMATCH, "분개 묶음의 출처나 순번이 다르다")
+            }
+            // ACK가 유실된 구간도 DB의 마지막 번호만 믿지 않고 남아 있는 원본과 행을 다시 대조한다.
+            verifiedThrough = store.applyLedger(batch)
+            applied++
+        }
+        if (verifiedThrough > bounds.retiredThrough) {
+            requireAcknowledged(client.request(OrderQuerySourceCommand.AckLedger(consumerId, verifiedThrough)))
+        }
+        return applied
+    }
+
+    private fun reconcileRecovery(
+        fundsClient: OrderQuerySourceClient,
+        matchingClient: OrderQuerySourceClient,
+        topology: String,
+        stream: MatchingResultStream,
+        scope: LedgerReconciliationScope,
+    ) {
+        val initialTerms = fundsClient.leadershipTermId to matchingClient.leadershipTermId
+        val fundsReply = describeRecovery(fundsClient, TradingServiceRole.FUNDS, topology, stream.fundsLineage) ?: return
+        val funds = checkNotNull(fundsReply.recovery)
+        val ledger = checkNotNull(fundsReply.ledgerProgress)
+        val matchingReply = describeRecovery(matchingClient, TradingServiceRole.MATCHING, topology, stream.matchingLineage) ?: return
+        val matching = checkNotNull(matchingReply.recovery)
+        val terms = fundsClient.leadershipTermId to matchingClient.leadershipTermId
+        if (initialTerms != terms) return
+        val storedThrough = store.ledgerThrough()
+        if (funds.issued < matching.matchingAppliedThrough ||
+            funds.matchingAppliedThrough > matching.matchingAppliedThrough ||
+            funds.resultThrough > matching.resultThrough ||
+            storedThrough > ledger.issued
+        ) {
+            val latest = describeRecovery(fundsClient, TradingServiceRole.FUNDS, topology, stream.fundsLineage) ?: return
+            matchingClient.poll()
+            if (terms == (fundsClient.leadershipTermId to matchingClient.leadershipTermId) &&
+                sameFinancialState(funds, checkNotNull(latest.recovery)) && latest.ledgerProgress == ledger
+            ) {
+                throw OrderQueryLedgerException(OrderQueryRecoveryFailure.SOURCE_PROGRESS_MISMATCH, "자금·매칭·DB의 확정 순서가 모순된다")
+            }
+            return
+        }
+        if (funds.issued != funds.matchingAppliedThrough ||
+            funds.issued != matching.matchingAppliedThrough ||
+            funds.resultThrough != matching.resultThrough ||
+            storedThrough < ledger.issued
+        ) {
+            return
+        }
+
+        val expectedOrders = funds.orders.associate { it.orderId to (it.userId to it.remainingQuantity) }
+        val matchingOrders = matching.orders.associate { it.orderId to (it.userId to it.remainingQuantity) }
+        val ordersMatch =
+            expectedOrders.size == funds.orders.size && matchingOrders.size == matching.orders.size && expectedOrders == matchingOrders
+        val reservations =
+            funds.orders.map { order ->
+                ReservationHold(
+                    scope.marketId.value,
+                    order.orderId.value,
+                    order.userId,
+                    checkNotNull(order.assetId),
+                    "ACTIVE",
+                    checkNotNull(order.hold).value,
+                )
+            }
+        val report =
+            store.reconcileLedger(
+                scope = scope,
+                logPosition = funds.logPosition,
+                ledger = ledger,
+                balances = funds.balances,
+                reservations = reservations,
+                onReadProgress = {
+                    fundsClient.poll()
+                    matchingClient.poll()
+                },
+            )
+        val currentReply = describeRecovery(fundsClient, TradingServiceRole.FUNDS, topology, stream.fundsLineage) ?: return
+        val currentFunds = checkNotNull(currentReply.recovery)
+        matchingClient.poll()
+        if (terms != (fundsClient.leadershipTermId to matchingClient.leadershipTermId) ||
+            !sameFinancialState(funds, currentFunds) || currentReply.ledgerProgress != ledger
+        ) {
+            return
+        }
+
+        val failure =
+            when {
+                !ordersMatch -> OrderQueryRecoveryFailure.ORDERS_MISMATCH
+                report.status == ReconciliationStatus.MATCHED -> null
+                report.status == ReconciliationStatus.EMPTY && ledger.issued == 0L && funds.orders.isEmpty() -> null
+                else -> OrderQueryRecoveryFailure.BALANCE_MISMATCH
+            }
+        recoveryVerdict =
+            OrderQueryRecoveryVerdict(
+                status = if (failure == null) OrderQueryRecoveryStatus.READY else OrderQueryRecoveryStatus.BLOCKED,
+                reason = failure,
+                logPosition = funds.logPosition,
+                ledgerThrough = ledger.issued,
+                differences = report.differences,
+            )
+    }
+
+    private fun sameFinancialState(
+        first: OrderQueryRecovery,
+        current: OrderQueryRecovery,
+    ): Boolean = first.copy(logPosition = current.logPosition) == current
+
+    private fun describeRecovery(
+        client: OrderQuerySourceClient,
+        role: TradingServiceRole,
+        topology: String,
+        lineage: ClusterLineage,
+    ): OrderQuerySourceReply? {
+        val term = client.leadershipTermId
+        val firstReply = readRecoveryPage(client, role, topology, lineage, offset = 0) ?: return null
+        val first = checkNotNull(firstReply.recovery)
+        var offset = first.nextOffset ?: return firstReply
+        val orders = first.orders.toMutableList()
+        val balances = first.balances.toMutableList()
+        while (true) {
+            if (offset != orders.size + balances.size || offset == 0) {
+                throw OrderQueryLedgerException(OrderQueryRecoveryFailure.SOURCE_UNAVAILABLE, "복구 상태 페이지 위치가 다르다")
+            }
+            val pageReply = readRecoveryPage(client, role, topology, lineage, offset) ?: return null
+            val page = checkNotNull(pageReply.recovery)
+            if (client.leadershipTermId != term || page.issued != first.issued ||
+                page.matchingAppliedThrough != first.matchingAppliedThrough || page.resultThrough != first.resultThrough ||
+                pageReply.ledgerProgress != firstReply.ledgerProgress
+            ) {
+                return null
+            }
+            orders.addAll(page.orders)
+            balances.addAll(page.balances)
+            offset = page.nextOffset ?: break
+        }
+        return firstReply.copy(recovery = first.copy(orders = orders, balances = balances, nextOffset = null))
+    }
+
+    private fun readRecoveryPage(
+        client: OrderQuerySourceClient,
+        role: TradingServiceRole,
+        topology: String,
+        lineage: ClusterLineage,
+        offset: Int,
+    ): OrderQuerySourceReply? {
+        val reply = client.request(OrderQuerySourceCommand.DescribeRecovery(consumerId, offset))
+        if (reply.code == "RECOVERY_CHANGED") return null
+        if (reply.code == "NOT_READY") throw IllegalStateException("query recovery source is not ready")
+        if (reply.code != "RECOVERY" || reply.role != role || reply.lineage != lineage ||
+            reply.topologySha256 != topology || reply.recovery == null
+        ) {
+            throw OrderQueryLedgerException(OrderQueryRecoveryFailure.SOURCE_UNAVAILABLE, "복구 상태를 읽을 수 없다 (${reply.code})")
+        }
+        return reply
+    }
+
+    private fun blockLedgerRecovery(failure: OrderQueryLedgerException) {
+        recoveryVerdict = OrderQueryRecoveryVerdict(OrderQueryRecoveryStatus.BLOCKED, failure.reason)
+        logger.warn("자금 원장 대사 차단: {}", failure.message)
     }
 
     private fun collectSettlements(
