@@ -1,5 +1,7 @@
 package com.exchange.core.api.trading.infrastructure.aeron
 
+import com.exchange.core.api.trading.application.OrderQueryRecoveryStatus
+import com.exchange.core.api.trading.application.OrderQueryRecoveryVerdict
 import com.exchange.core.api.trading.infrastructure.codec.BoundedCommandEnvelope
 import com.exchange.core.api.trading.infrastructure.codec.BoundedTradingCodec
 import com.exchange.core.api.trading.infrastructure.codec.BoundedTradingCommand
@@ -18,12 +20,14 @@ import com.exchange.core.trading.AdmissionReceipt
 import com.exchange.core.trading.ClusterLineage
 import com.exchange.core.trading.OrderIntent
 import com.exchange.core.trading.RequestToken
+import io.aeron.Publication
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.io.TempDir
 import java.nio.file.Path
 import java.util.concurrent.CompletableFuture
 import java.util.concurrent.ConcurrentLinkedQueue
 import java.util.concurrent.CountDownLatch
+import java.util.concurrent.ExecutionException
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicReference
@@ -100,6 +104,198 @@ class BoundedAeronGatewayTest {
             val cause = (failure as java.util.concurrent.ExecutionException).cause
             assertTrue(assertIs<BoundedGatewayException>(cause).possiblySubmitted)
             assertEquals(1, seen.get())
+        }
+    }
+
+    @Test
+    fun `전송 역압을 받은 주문은 복구 차단 이후 재시도해도 전송되지 않는다`() {
+        val gate = HttpOrderRecoveryGate()
+        gate.publish(OrderQueryRecoveryVerdict(OrderQueryRecoveryStatus.READY), fundsLeadershipTermId = 7)
+        val settings = AeronGatewaySettings(directory.resolve("gateway"), "0=127.0.0.1:19700", "127.0.0.1:19707")
+        lateinit var transport: ControlledOrderTransport
+        BoundedAeronGateway(settings, recoveryGate = gate) { receive ->
+            ControlledOrderTransport(receive, leadershipTermId = 7).also { transport = it }
+        }.use { gateway ->
+            transport.backPressured = true
+            val command = BoundedTradingCommand.Admit(token, intent)
+            val pending = gateway.submit(command)
+            assertTrue(transport.firstBackPressure.await(3, TimeUnit.SECONDS))
+
+            gate.publish(OrderQueryRecoveryVerdict(OrderQueryRecoveryStatus.RECOVERING))
+            transport.backPressured = false
+            transport.allowReply.countDown()
+
+            val failure = assertFailsWith<ExecutionException> { pending.get(3, TimeUnit.SECONDS) }
+            val rejected = assertIs<BoundedGatewayException>(failure.cause)
+            assertEquals("RECOVERY_IN_PROGRESS", rejected.code)
+            assertFalse(rejected.possiblySubmitted)
+            assertTrue(transport.offered.isEmpty())
+        }
+    }
+
+    @Test
+    fun `이미 전송한 주문의 응답이 없으면 복구가 닫혀도 결과 미확인으로 남는다`() {
+        val gate = HttpOrderRecoveryGate()
+        gate.publish(OrderQueryRecoveryVerdict(OrderQueryRecoveryStatus.READY), fundsLeadershipTermId = 7)
+        val settings = AeronGatewaySettings(directory.resolve("gateway"), "0=127.0.0.1:19700", "127.0.0.1:19707", resultTimeoutMs = 1_500)
+        lateinit var transport: ControlledOrderTransport
+        BoundedAeronGateway(settings, recoveryGate = gate) { receive ->
+            ControlledOrderTransport(receive, leadershipTermId = 7).also { transport = it }
+        }.use { gateway ->
+            val command = BoundedTradingCommand.Admit(token, intent)
+            val pending = gateway.submit(command)
+            assertTrue(transport.firstOffer.await(3, TimeUnit.SECONDS))
+            gate.close()
+            assertFalse(pending.isDone)
+
+            val failure = assertFailsWith<ExecutionException> { pending.get(3, TimeUnit.SECONDS) }
+            val unknown = assertIs<BoundedGatewayException>(failure.cause)
+            assertEquals("RESULT_UNCONFIRMED", unknown.code)
+            assertTrue(unknown.possiblySubmitted)
+            assertEquals(command, transport.offered.single())
+        }
+    }
+
+    @Test
+    fun `복구를 다시 열어도 이전 판정으로 큐에 들어간 주문은 자동 전송하지 않는다`() {
+        val gate = HttpOrderRecoveryGate()
+        val ready = OrderQueryRecoveryVerdict(OrderQueryRecoveryStatus.READY)
+        gate.publish(ready, fundsLeadershipTermId = 7)
+        val settings =
+            AeronGatewaySettings(directory.resolve("gateway"), "0=127.0.0.1:19700", "127.0.0.1:19707", maxInFlight = 1)
+        lateinit var transport: ControlledOrderTransport
+        BoundedAeronGateway(settings, recoveryGate = gate) { receive ->
+            ControlledOrderTransport(receive, leadershipTermId = 7).also { transport = it }
+        }.use { gateway ->
+            val firstCommand = BoundedTradingCommand.Admit(token, intent)
+            val nextCommand = BoundedTradingCommand.Admit(token.copy(sequence = 2), intent)
+            val alreadyOffered = gateway.submit(firstCommand)
+            assertTrue(transport.firstOffer.await(3, TimeUnit.SECONDS))
+
+            val queued = gateway.submit(nextCommand)
+            assertFalse(queued.isDone)
+            gate.publish(OrderQueryRecoveryVerdict(OrderQueryRecoveryStatus.RECOVERING))
+            gate.publish(ready, fundsLeadershipTermId = 7)
+            transport.allowReply.countDown()
+
+            assertEquals("ACCEPTED", alreadyOffered.get(3, TimeUnit.SECONDS).code)
+            val failure = assertFailsWith<ExecutionException> { queued.get(3, TimeUnit.SECONDS) }
+            val rejected = assertIs<BoundedGatewayException>(failure.cause)
+            assertEquals("RECOVERY_IN_PROGRESS", rejected.code)
+            assertFalse(rejected.possiblySubmitted)
+            assertEquals(listOf(firstCommand), transport.offered.toList())
+
+            assertEquals("ACCEPTED", gateway.submit(nextCommand).get(3, TimeUnit.SECONDS).code)
+            assertEquals(listOf(firstCommand, nextCommand), transport.offered.toList())
+        }
+    }
+
+    @Test
+    fun `송신 연결의 새 임기는 해당 임기의 복구 판정이 나올 때까지 주문을 막는다`() {
+        val gate = HttpOrderRecoveryGate()
+        val ready = OrderQueryRecoveryVerdict(OrderQueryRecoveryStatus.READY)
+        gate.publish(ready, fundsLeadershipTermId = 7)
+        val settings = AeronGatewaySettings(directory.resolve("gateway"), "0=127.0.0.1:19700", "127.0.0.1:19707")
+        lateinit var transport: ControlledOrderTransport
+        BoundedAeronGateway(settings, recoveryGate = gate) { receive ->
+            ControlledOrderTransport(receive, leadershipTermId = 8).also { transport = it }
+        }.use { gateway ->
+            val command = BoundedTradingCommand.Admit(token, intent)
+            val failure = assertFailsWith<ExecutionException> { gateway.submit(command).get(3, TimeUnit.SECONDS) }
+            val rejected = assertIs<BoundedGatewayException>(failure.cause)
+            assertEquals("RECOVERY_IN_PROGRESS", rejected.code)
+            assertFalse(rejected.possiblySubmitted)
+            assertTrue(transport.offered.isEmpty())
+
+            gate.publish(ready, fundsLeadershipTermId = 8)
+            transport.allowReply.countDown()
+            assertEquals("ACCEPTED", gateway.submit(command).get(3, TimeUnit.SECONDS).code)
+            assertEquals(command, transport.offered.single())
+        }
+    }
+
+    @Test
+    fun `큐가 가득 차도 새 송신 임기에 대한 복구 판정을 먼저 확인한다`() {
+        val gate = HttpOrderRecoveryGate()
+        gate.publish(OrderQueryRecoveryVerdict(OrderQueryRecoveryStatus.READY), fundsLeadershipTermId = 7)
+        val settings =
+            AeronGatewaySettings(
+                directory.resolve("gateway"),
+                "0=127.0.0.1:19700",
+                "127.0.0.1:19707",
+                queueCapacity = 1,
+                maxInFlight = 1,
+                resultTimeoutMs = 10_000,
+            )
+        val firstRequestDequeued = CountDownLatch(1)
+        val pollsInNewTerm = CountDownLatch(2)
+        lateinit var transport: ControlledOrderTransport
+        BoundedAeronGateway(settings, recoveryGate = gate) { receive ->
+            val connection =
+                ControlledOrderTransport(receive, leadershipTermId = 7) { term ->
+                    if (transport.firstOffer.count == 0L) firstRequestDequeued.countDown()
+                    if (term == 8L) pollsInNewTerm.countDown()
+                }
+            transport = connection
+            connection
+        }.use { gateway ->
+            val firstCommand = BoundedTradingCommand.Admit(token, intent)
+            val queuedCommand = BoundedTradingCommand.Admit(token.copy(sequence = 2), intent)
+            val newCommand = BoundedTradingCommand.Admit(token.copy(sequence = 3), intent)
+            gateway.submit(firstCommand)
+            // 첫 전송이 반환된 뒤의 poll은 Gateway가 첫 요청을 큐에서 꺼낸 뒤에 실행된다.
+            assertTrue(firstRequestDequeued.await(3, TimeUnit.SECONDS))
+            val queued = gateway.submit(queuedCommand)
+            assertFalse(queued.isDone)
+
+            val full = assertFailsWith<ExecutionException> { gateway.submit(newCommand).get(3, TimeUnit.SECONDS) }
+            assertEquals("QUEUE_FULL", assertIs<BoundedGatewayException>(full.cause).code)
+
+            transport.leadershipTermId = 8
+            // 두 번째 poll은 송신 스레드가 새 임기로 한 번 이상 순회한 뒤에야 실행된다.
+            assertTrue(pollsInNewTerm.await(3, TimeUnit.SECONDS))
+            val failure = assertFailsWith<ExecutionException> { gateway.submit(newCommand).get(3, TimeUnit.SECONDS) }
+            val rejected = assertIs<BoundedGatewayException>(failure.cause)
+            assertEquals("RECOVERY_IN_PROGRESS", rejected.code)
+            assertFalse(rejected.possiblySubmitted)
+            assertEquals(listOf(firstCommand), transport.offered.toList())
+        }
+    }
+
+    @Test
+    fun `전송 도중 연결이 닫히면 다음 폴링 전에도 복구 상태로 새 주문을 막는다`() {
+        val gate = HttpOrderRecoveryGate()
+        gate.publish(OrderQueryRecoveryVerdict(OrderQueryRecoveryStatus.READY), fundsLeadershipTermId = 7)
+        val settings = AeronGatewaySettings(directory.resolve("gateway"), "0=127.0.0.1:19700", "127.0.0.1:19707", queueCapacity = 1)
+        val pollAfterDisconnect = CountDownLatch(1)
+        val continuePolling = CountDownLatch(1)
+        lateinit var transport: ControlledOrderTransport
+        BoundedAeronGateway(settings, recoveryGate = gate) { receive ->
+            val connection =
+                ControlledOrderTransport(receive, leadershipTermId = 7) { term ->
+                    if (term == null) {
+                        pollAfterDisconnect.countDown()
+                        check(continuePolling.await(5, TimeUnit.SECONDS))
+                    }
+                }
+            transport = connection
+            connection
+        }.use { gateway ->
+            try {
+                transport.disconnectOnOffer = true
+                val first = gateway.submit(BoundedTradingCommand.Admit(token, intent))
+                assertTrue(pollAfterDisconnect.await(3, TimeUnit.SECONDS))
+                assertFalse(first.isDone)
+
+                val nextCommand = BoundedTradingCommand.Admit(token.copy(sequence = 2), intent)
+                val failure = assertFailsWith<ExecutionException> { gateway.submit(nextCommand).get(3, TimeUnit.SECONDS) }
+                val rejected = assertIs<BoundedGatewayException>(failure.cause)
+                assertEquals("RECOVERY_IN_PROGRESS", rejected.code)
+                assertFalse(rejected.possiblySubmitted)
+                assertTrue(transport.offered.isEmpty())
+            } finally {
+                continuePolling.countDown()
+            }
         }
     }
 
@@ -324,6 +520,61 @@ class BoundedAeronGatewayTest {
             assertFalse(completion?.isAlive == true, "완료 작업이 남으면 안 된다")
             if (callbackEntered.count == 0L) callback.get(3, TimeUnit.SECONDS)
         }
+    }
+
+    private class ControlledOrderTransport(
+        private val receive: (BoundedTradingReply) -> Unit,
+        leadershipTermId: Long,
+        private val onPoll: (Long?) -> Unit = {},
+    ) : BoundedGatewayTransport {
+        @Volatile
+        override var leadershipTermId: Long? = leadershipTermId
+
+        @Volatile
+        var backPressured = false
+
+        @Volatile
+        var disconnectOnOffer = false
+
+        val offered = ConcurrentLinkedQueue<BoundedTradingCommand>()
+        val firstOffer = CountDownLatch(1)
+        val firstBackPressure = CountDownLatch(1)
+        val allowReply = CountDownLatch(1)
+        private val codec = BoundedTradingCodec()
+        private val replies = ArrayDeque<BoundedTradingReply>()
+
+        override fun offer(bytes: ByteArray): Long {
+            if (disconnectOnOffer) {
+                leadershipTermId = null
+                return Publication.NOT_CONNECTED
+            }
+            if (backPressured) {
+                firstBackPressure.countDown()
+                return Publication.BACK_PRESSURED
+            }
+            val request = codec.decode(bytes)
+            offered.add(request.command)
+            replies.addLast(
+                BoundedTradingReply(
+                    request.correlationId,
+                    "ACCEPTED",
+                    640,
+                    AdmissionReceipt(AdmissionCode.ACCEPTED, OrderId("O2example"), 4, 2),
+                ),
+            )
+            firstOffer.countDown()
+            return 1
+        }
+
+        override fun poll(): Int {
+            onPoll(leadershipTermId)
+            if (allowReply.count != 0L) return 0
+            val reply = replies.removeFirstOrNull() ?: return 0
+            receive(reply)
+            return 1
+        }
+
+        override fun close() = Unit
     }
 
     private class ControlledAcknowledgementTransport(

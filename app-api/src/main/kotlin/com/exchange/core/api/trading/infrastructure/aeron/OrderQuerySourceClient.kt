@@ -18,6 +18,7 @@ internal class OrderQuerySourceUnconfirmedException(
 internal class OrderQuerySourceClient(
     endpoint: SplitOrderDeliveryEndpoint,
     private val timeoutMs: Long = 3_000,
+    private val onSessionChanged: () -> Unit = {},
 ) : AutoCloseable {
     private val codec = OrderQuerySourceCodec(endpoint.inputContractVersion)
     private val failure = AtomicReference<Throwable?>()
@@ -96,17 +97,31 @@ internal class OrderQuerySourceClient(
 
     /** 두 요청 사이에도 호출해 session을 유지한다. */
     fun poll(): Int {
-        requireNotInterrupted()
-        requireTransportHealthy()
-        check(!cluster.isClosed) { "query source connection closed" }
-        val work = cluster.pollEgress()
-        requireTransportHealthy()
-        val now = System.nanoTime()
-        if (now - lastKeepAlive >= KEEP_ALIVE_NS) {
-            cluster.sendKeepAlive()
-            lastKeepAlive = now
+        try {
+            requireNotInterrupted()
+            requireTransportHealthy()
+            requireLiveSession()
+            val previousTerm = cluster.leadershipTermId()
+            val work = cluster.pollEgress()
+            requireLiveSession()
+            if (previousTerm != cluster.leadershipTermId()) onSessionChanged()
+            requireTransportHealthy()
+            val now = System.nanoTime()
+            if (now - lastKeepAlive >= KEEP_ALIVE_NS) {
+                cluster.sendKeepAlive()
+                requireLiveSession()
+                lastKeepAlive = now
+            }
+            return work
+        } catch (failure: Exception) {
+            onSessionChanged()
+            throw failure
         }
-        return work
+    }
+
+    private fun requireLiveSession() {
+        // Aeron은 새 리더를 기다리는 동안 세션을 닫기 전에 기존 ingress를 닫는다.
+        check(!cluster.isClosed && !cluster.ingressPublication().isClosed) { "query source connection closed" }
     }
 
     fun request(command: OrderQuerySourceCommand): OrderQuerySourceReply {

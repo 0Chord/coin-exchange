@@ -6,6 +6,7 @@ import com.exchange.core.api.trading.application.OrderQueryNamespace
 import com.exchange.core.api.trading.infrastructure.aeron.AeronGatewaySettings
 import com.exchange.core.api.trading.infrastructure.aeron.BoundedAeronGateway
 import com.exchange.core.api.trading.infrastructure.aeron.BoundedExecutionIdentity
+import com.exchange.core.api.trading.infrastructure.aeron.OrderQueryFeedWorker
 import com.exchange.core.api.trading.infrastructure.aeron.SplitFundsGatewayTransport
 import com.exchange.core.api.trading.infrastructure.history.BoundedTradingStateCodec
 import com.exchange.core.api.trading.infrastructure.recovery.RecoveryDurabilityGate
@@ -26,6 +27,7 @@ class BoundedTradingGatewayConfig {
     @Bean(name = ["boundedAeronGateway"], destroyMethod = "close")
     internal fun boundedAeronGateway(
         gates: ObjectProvider<RecoveryDurabilityGate>,
+        queryWorkers: ObjectProvider<OrderQueryFeedWorker>,
         source: Environment,
         namespace: OrderQueryNamespace,
     ): BoundedAeronGateway {
@@ -33,6 +35,15 @@ class BoundedTradingGatewayConfig {
         val protection = environment["TRADING_GATEWAY_PROTECTION"] ?: "local"
         require(protection in setOf("local", "remote"))
         val settings = AeronGatewaySettings.from(environment)
+        val requiresRecoveryReady = source.getProperty("exchange.order-query.require-recovery-ready", Boolean::class.java, false)
+        val recoveryGate =
+            if (requiresRecoveryReady) {
+                require(namespace.markets.size == 1) { "복구 접수 보호는 단일 마켓 설정이 필요합니다" }
+                val worker = requireNotNull(queryWorkers.ifAvailable) { "복구 접수 보호는 exchange.order-query.consumer-id 설정이 필요합니다" }
+                worker.recoveryGate
+            } else {
+                null
+            }
 
         fun gateway(
             protectedLineage: ClusterLineage? = null,
@@ -45,6 +56,7 @@ class BoundedTradingGatewayConfig {
                 SplitFundsGatewayTransport.encodeCommand(correlationId, command)
             },
             cancelEncoder = SplitFundsGatewayTransport.Companion::encodeCancellation,
+            recoveryGate = recoveryGate,
             openTransport = { receive ->
                 SplitFundsGatewayTransport(settings, namespace.fundsLineage, receive, onCancellation = receive.cancellation)
             },

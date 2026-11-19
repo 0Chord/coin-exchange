@@ -25,6 +25,7 @@ import com.exchange.core.api.trading.infrastructure.history.BoundedTradingStateC
 import com.exchange.core.common.Amount
 import com.exchange.core.common.AssetId
 import com.exchange.core.common.MarketId
+import com.exchange.core.common.OrderId
 import com.exchange.core.common.Price
 import com.exchange.core.common.Quantity
 import com.exchange.core.common.UserId
@@ -82,6 +83,7 @@ import org.agrona.DirectBuffer
 import org.agrona.concurrent.UnsafeBuffer
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.io.TempDir
+import org.springframework.beans.factory.BeanCreationException
 import org.springframework.beans.factory.config.BeanPostProcessor
 import org.springframework.beans.factory.support.AbstractBeanDefinition
 import org.springframework.boot.builder.SpringApplicationBuilder
@@ -1670,12 +1672,14 @@ class SplitFundsTradingHttpTest {
     }
 
     @Test
-    fun `재시작 뒤 남은 매칭 결과를 적용하기 전에는 원장 대사가 복구 중이다`() {
+    fun `복구 중 HTTP 주문과 취소를 막고 대사 완료 뒤 같은 토큰으로 한 번씩 접수한다`() {
         withTradingNodes("query-test", sourceRestart = true, persistSettlements = true) { harness ->
             val buyer = UserId("buyer")
             val quote = AssetId("USDT")
-            val rotate = SplitOrderDeliveryCommand.Control(BoundedTradingCommand.Rotate(buyer, 0, 0))
-            assertEquals("ISSUED", harness.funds.request(rotate).code)
+            for (user in listOf(buyer, UserId("seller"))) {
+                val rotate = SplitOrderDeliveryCommand.Control(BoundedTradingCommand.Rotate(user, 0, 0))
+                assertEquals("ISSUED", harness.funds.request(rotate).code)
+            }
             takeSnapshot(harness.fundsNode, harness.funds)
             takeSnapshot(harness.matchingNode, harness.funds)
 
@@ -1700,7 +1704,7 @@ class SplitFundsTradingHttpTest {
             harness.matchingNode.close()
 
             withRestartedTradingNodes(harness, expectedResultThrough = 0) {
-                queryWas(harness, gatewayRoot = "recovery-pending-result").use { context ->
+                queryWas(harness, gatewayRoot = "recovery-pending-result", requireRecoveryReady = true).use { context ->
                     val worker = context.getBean(OrderQueryFeedWorker::class.java)
                     val jdbc = harness.database.jdbc()
                     await("원장 저장과 미완료 결과의 재개 판정 요청") {
@@ -1711,22 +1715,242 @@ class SplitFundsTradingHttpTest {
                     val pending = checkNotNull(harness.fundsSnapshot.get())
                     assertEquals(0L, checkNotNull(pending.results).streams.single().resultThrough)
 
-                    harness.settlementGate.paused.set(false)
-                    val ready = awaitRecoveryVerdict(context, OrderQueryRecoveryStatus.READY)
-                    assertEquals(3L, ready.ledgerThrough)
+                    val url = wasUrl(context)
+                    HttpClient.newHttpClient().use { http ->
+                        assertRecoveryRequestsBlocked(harness, http, url, orderId, "RECOVERY_IN_PROGRESS")
+
+                        harness.settlementGate.paused.set(false)
+                        val ready = awaitRecoveryVerdict(context, OrderQueryRecoveryStatus.READY)
+                        assertEquals(3L, ready.ledgerThrough)
+                        val recovered = checkNotNull(harness.fundsSnapshot.get())
+                        assertEquals(1L, checkNotNull(recovered.results).streams.single().resultThrough)
+                        val balance = recovered.financial.balances.single { it.userId == buyer && it.assetId == quote }
+                        assertEquals(Balance(buyer, quote, Amount(700), Amount(300)), balance)
+                        val recoveredOrder = recovered.financial.liveOrders.single()
+                        val reservation = recoveredOrder.reservation
+                        assertEquals(orderId, reservation.orderId)
+                        assertEquals(Amount(300), reservation.remainingAmount)
+                        assertEquals(Quantity(3), reservation.remainingQuantity)
+
+                        val sell = postRecoverySell(http, url)
+                        assertEquals(202, sell.statusCode(), sell.body())
+                        val sellId = OrderId(json.readTree(sell.body()).path("orderId").asString())
+                        val cancel = postRecoveryCancel(http, url, orderId)
+                        assertEquals(202, cancel.statusCode(), cancel.body())
+                        val cancelId = json.readTree(cancel.body()).path("cancelId").asString()
+                        assertEquals(TradingIdentifiers.cancel(lineage, 1), cancelId)
+
+                        val repeatedSell = postRecoverySell(http, url)
+                        assertEquals(202, repeatedSell.statusCode(), repeatedSell.body())
+                        assertEquals(sellId.value, json.readTree(repeatedSell.body()).path("orderId").asString())
+                        val repeatedCancel = postRecoveryCancel(http, url, orderId)
+                        assertEquals(202, repeatedCancel.statusCode(), repeatedCancel.body())
+                        assertEquals(cancelId, json.readTree(repeatedCancel.body()).path("cancelId").asString())
+
+                        await("매수 예약 반환과 매도 신규 예약 분개 저장") {
+                            val results = harness.fundsSnapshot.get()?.results
+                            val resultThrough = results?.streams?.single()?.resultThrough
+                            val count = jdbc.queryForObject("select count(*) from order_query.funds_ledger_batch", Long::class.java)
+                            resultThrough == 3L && count == 5L
+                        }
+                        val settled = checkNotNull(harness.fundsSnapshot.get())
+                        val balances = settled.financial.balances.associateBy { it.userId to it.assetId }
+                        val seller = UserId("seller")
+                        val btc = AssetId("BTC")
+                        assertEquals(Balance(buyer, quote, Amount(1_000), Amount(0)), balances[buyer to quote])
+                        assertEquals(Balance(seller, btc, Amount(2), Amount(1)), balances[seller to btc])
+                        assertEquals(2L, settled.financial.lastAdmissionSequence)
+                        assertEquals(1L, settled.lastCancellationSequence)
+                        val dispatch = settled.dispatch.streams.single()
+                        val liveOrder = settled.financial.liveOrders.single()
+                        assertEquals(3L, dispatch.issued)
+                        assertEquals(sellId, liveOrder.reservation.orderId)
+                        OrderQuerySourceClient(harness.matchingEndpoint, 10_000).use { matching ->
+                            val description = matching.request(OrderQuerySourceCommand.DescribeRecovery("query-test"))
+                            val recoveredBook = checkNotNull(description.recovery)
+                            assertEquals(listOf(OrderQueryRecoveryOrder(sellId, seller, Quantity(1))), recoveredBook.orders)
+                        }
+                        val transactions =
+                            jdbc
+                                .queryForList(
+                                    "select transactions::text from order_query.funds_ledger_batch order by sequence",
+                                    String::class.java,
+                                ).flatMap { readRecoveryTransactions(checkNotNull(it)) }
+                        assertEquals(
+                            listOf(
+                                LedgerTransactionType.OPENING,
+                                LedgerTransactionType.OPENING,
+                                LedgerTransactionType.RESERVE,
+                                LedgerTransactionType.RESERVE,
+                                LedgerTransactionType.RELEASE,
+                            ),
+                            transactions.map { it.transactionType },
+                        )
+                        assertEquals(listOf(Amount(1), Amount(1)), transactions[3].postings.map { it.amount })
+                        assertEquals(listOf(Amount(300), Amount(300)), transactions[4].postings.map { it.amount })
+                    }
                 }
-                val recovered = checkNotNull(harness.fundsSnapshot.get())
-                assertEquals(1L, checkNotNull(recovered.results).streams.single().resultThrough)
-                val balance = recovered.financial.balances.single { it.userId == buyer && it.assetId == quote }
-                assertEquals(Balance(buyer, quote, Amount(700), Amount(300)), balance)
-                val restoredOrder = recovered.financial.liveOrders.single()
-                val reservation = restoredOrder.reservation
-                assertEquals(orderId, reservation.orderId)
-                assertEquals(Amount(300), reservation.remainingAmount)
-                assertEquals(Quantity(3), reservation.remainingQuantity)
             }
         }
     }
+
+    @Test
+    fun `원장 불일치면 재시작 뒤에도 HTTP 주문과 취소가 자금에 적용되지 않는다`() {
+        withTradingNodes("query-test", sourceRestart = true, persistSettlements = true) { harness ->
+            val seller = UserId("seller")
+            val buyer = UserId("buyer")
+            for (user in listOf(buyer, seller)) {
+                val rotate = SplitOrderDeliveryCommand.Control(BoundedTradingCommand.Rotate(user, 0, 0))
+                assertEquals("ISSUED", harness.funds.request(rotate).code)
+            }
+            val intent = OrderIntent(MarketId("BTC-USDT"), 1, Side.BUY, OrderType.LIMIT, TimeInForce.GTC, Price(100), Quantity(3))
+            val command = BoundedTradingCommand.Admit(RequestToken(buyer, 0, 1, 1), intent)
+            val accepted = harness.funds.request(SplitOrderDeliveryCommand.Control(command))
+            assertEquals("ACCEPTED", accepted.code)
+            val orderId = checkNotNull(accepted.control?.admission?.orderId)
+
+            queryWas(harness, gatewayRoot = "recovery-before-corruption", requireRecoveryReady = true).use { context ->
+                val ready = awaitRecoveryVerdict(context, OrderQueryRecoveryStatus.READY)
+                assertEquals(3L, ready.ledgerThrough)
+                OrderQuerySourceClient(harness.fundsEndpoint, 10_000).use { funds ->
+                    await("원장 3번 저장 뒤 ACK 확정") {
+                        funds.request(OrderQuerySourceCommand.Describe).ledgerProgress?.retiredThrough == 3L
+                    }
+                }
+                takeSnapshot(harness.fundsNode, harness.funds)
+                takeSnapshot(harness.matchingNode, harness.funds)
+            }
+
+            val jdbc = harness.database.jdbc()
+            // 균형은 맞지만 자금 엔진에 기록된 예약 300과 다른 금액을 저장한다.
+            val updateReserveAmounts =
+                """
+                update order_query.funds_ledger_batch
+                   set transactions = jsonb_set(
+                       jsonb_set(transactions, '{0,postings,0,amount}', '299'::jsonb),
+                       '{0,postings,1,amount}', '299'::jsonb
+                   )
+                 where sequence = 3
+                """.trimIndent()
+            assertEquals(1, jdbc.update(updateReserveAmounts))
+            val readLedger = "select sequence, log_position, transactions::text from order_query.funds_ledger_batch order by sequence"
+            val corruptedLedger = jdbc.queryForList(readLedger)
+            assertEquals(3, corruptedLedger.size)
+
+            harness.funds.close()
+            harness.fundsNode.close()
+            harness.matchingNode.close()
+            withRestartedTradingNodes(harness, expectedResultThrough = 1) {
+                repeat(2) { restart ->
+                    queryWas(harness, gatewayRoot = "recovery-blocked-$restart", requireRecoveryReady = true).use { context ->
+                        val blocked = awaitRecoveryVerdict(context, OrderQueryRecoveryStatus.BLOCKED)
+                        assertEquals(OrderQueryRecoveryFailure.LEDGER_MISMATCH, blocked.reason)
+                        HttpClient.newHttpClient().use { http ->
+                            assertRecoveryRequestsBlocked(harness, http, wasUrl(context), orderId, "RECOVERY_BLOCKED")
+                        }
+                        assertEquals(corruptedLedger, jdbc.queryForList(readLedger))
+                    }
+                }
+            }
+        }
+    }
+
+    @Test
+    fun `복구 보호에는 수집기가 필요하고 원본이 복구를 지원하지 않으면 HTTP 주문을 막는다`() {
+        withTradingNodes("query-test") { harness ->
+            val failure =
+                assertFailsWith<BeanCreationException> {
+                    val arguments = wasArguments(harness, gatewayRoot = "recovery-no-consumer", requireRecoveryReady = true)
+                    SpringApplicationBuilder(ExchangeCoreApplication::class.java).run(*arguments).use {}
+                }
+            assertTrue(
+                generateSequence<Throwable>(failure) { it.cause }.any { it.message?.contains("exchange.order-query.consumer-id") == true },
+                failure.message,
+            )
+
+            val seller = UserId("seller")
+            val rotate = SplitOrderDeliveryCommand.Control(BoundedTradingCommand.Rotate(seller, 0, 0))
+            assertEquals("ISSUED", harness.funds.request(rotate).code)
+            queryWas(harness, gatewayRoot = "recovery-scope-unsupported", requireRecoveryReady = true).use { context ->
+                val blocked = awaitRecoveryVerdict(context, OrderQueryRecoveryStatus.BLOCKED)
+                assertEquals(OrderQueryRecoveryFailure.SCOPE_UNSUPPORTED, blocked.reason)
+                HttpClient.newHttpClient().use { http ->
+                    val response = postRecoverySell(http, wasUrl(context))
+                    assertEquals(503, response.statusCode(), response.body())
+                    val body = json.readTree(response.body())
+                    assertEquals("NOT_SUBMITTED", body.path("status").asString(), response.body())
+                    assertEquals("RECOVERY_BLOCKED", body.path("reason").asString(), response.body())
+                }
+                val saved = checkNotNull(harness.fundsSnapshot.get())
+                assertEquals(0L, saved.financial.lastAdmissionSequence)
+                assertTrue(saved.financial.liveOrders.isEmpty())
+            }
+        }
+    }
+
+    private fun assertRecoveryRequestsBlocked(
+        harness: TradingHarness,
+        http: HttpClient,
+        url: String,
+        orderId: OrderId,
+        reason: String,
+    ) {
+        val responses = listOf(postRecoverySell(http, url), postRecoveryCancel(http, url, orderId))
+        for ((index, response) in responses.withIndex()) {
+            assertEquals(503, response.statusCode(), response.body())
+            val body = json.readTree(response.body())
+            assertEquals("NOT_SUBMITTED", body.path("status").asString(), response.body())
+            assertEquals(reason, body.path("reason").asString(), response.body())
+            assertEquals(1L, body.path("epoch").longValue(), response.body())
+            assertEquals(0, body.path("channel").intValue(), response.body())
+            assertEquals(if (index == 0) 1L else 2L, body.path("sequence").longValue(), response.body())
+            val resultId = body.path(if (index == 0) "orderId" else "cancelId")
+            assertTrue(resultId.isMissingNode || resultId.isNull, response.body())
+        }
+        OrderQuerySourceClient(harness.fundsEndpoint, 10_000).use { funds ->
+            val progress = checkNotNull(funds.request(OrderQuerySourceCommand.Describe).ledgerProgress)
+            assertEquals(3L, progress.issued)
+        }
+        val saved = checkNotNull(harness.fundsSnapshot.get())
+        val buyer = UserId("buyer")
+        val seller = UserId("seller")
+        val quote = AssetId("USDT")
+        val btc = AssetId("BTC")
+        val balances = saved.financial.balances.associateBy { it.userId to it.assetId }
+        assertEquals(Balance(buyer, quote, Amount(700), Amount(300)), balances[buyer to quote])
+        assertEquals(Balance(seller, btc, Amount(3), Amount(0)), balances[seller to btc])
+        assertEquals(1L, saved.financial.lastAdmissionSequence)
+        assertEquals(0L, saved.lastCancellationSequence)
+        val dispatch = saved.dispatch.streams.single()
+        val liveOrder = saved.financial.liveOrders.single()
+        assertEquals(1L, dispatch.issued)
+        assertEquals(orderId, liveOrder.reservation.orderId)
+        val inbox = saved.financial.inbox
+        val channels = inbox.channels.associateBy { it.userId }
+        assertEquals(0L, channels.getValue(seller).processedThrough)
+        assertEquals(1L, channels.getValue(buyer).processedThrough)
+        assertTrue(channels.getValue(buyer).cancelEntries.isEmpty())
+        OrderQuerySourceClient(harness.matchingEndpoint, 10_000).use { matching ->
+            val restoredBook = checkNotNull(matching.request(OrderQuerySourceCommand.DescribeRecovery("query-test")).recovery)
+            assertEquals(listOf(OrderQueryRecoveryOrder(orderId, buyer, Quantity(3))), restoredBook.orders)
+        }
+    }
+
+    private fun postRecoverySell(
+        http: HttpClient,
+        url: String,
+    ) = post(http, url, "/markets/BTC-USDT/orders", orderBody("seller", "SELL", 1, price = 101))
+
+    private fun postRecoveryCancel(
+        http: HttpClient,
+        url: String,
+        orderId: OrderId,
+    ) = post(
+        http,
+        url,
+        "/markets/BTC-USDT/orders/${orderId.value}/cancel",
+        """{"userId":"buyer","channel":0,"epoch":1,"sequence":2,"expectedConfigurationVersion":1}""",
+    )
 
     private fun awaitRecoveryVerdict(
         context: ConfigurableApplicationContext,
@@ -2639,6 +2863,7 @@ class SplitFundsTradingHttpTest {
         harness: TradingHarness,
         gatewayRoot: String = "gateway",
         egressOffset: Int = 32,
+        requireRecoveryReady: Boolean = false,
         decorate: (OrderQueryFeedStore) -> OrderQueryFeedStore = { it },
     ): ConfigurableApplicationContext =
         SpringApplicationBuilder(ExchangeCoreApplication::class.java)
@@ -2654,7 +2879,7 @@ class SplitFundsTradingHttpTest {
                     )
                 }
             })
-            .run(*wasArguments(harness, true, gatewayRoot, egressOffset))
+            .run(*wasArguments(harness, true, gatewayRoot, egressOffset, requireRecoveryReady))
 
     private fun wasUrl(context: ConfigurableApplicationContext): String =
         "http://127.0.0.1:${(context as ServletWebServerApplicationContext).webServer!!.port}"
@@ -2830,6 +3055,7 @@ class SplitFundsTradingHttpTest {
         queryEnabled: Boolean = false,
         gatewayRoot: String = "gateway",
         egressOffset: Int = 32,
+        requireRecoveryReady: Boolean = false,
     ): Array<String> {
         val properties =
             harness.database.properties +
@@ -2844,6 +3070,11 @@ class SplitFundsTradingHttpTest {
                         "exchange.order-query.consumer-id" to "query-test",
                         "exchange.order-query.matching-ingress" to "BTC-USDT@0=127.0.0.1:${harness.basePort + 16}",
                     )
+                } else {
+                    emptyMap()
+                } +
+                if (requireRecoveryReady) {
+                    mapOf("exchange.order-query.require-recovery-ready" to "true")
                 } else {
                     emptyMap()
                 }
