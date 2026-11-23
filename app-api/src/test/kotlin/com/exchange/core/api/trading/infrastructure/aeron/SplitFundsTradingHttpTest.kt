@@ -972,7 +972,8 @@ class SplitFundsTradingHttpTest {
 
             val original = checkNotNull(lostReceipt.get()) { "자금 엔진의 성공 응답이 유실돼야 한다" }
             val originalOrderId = checkNotNull(original.orderId).value
-            val restartedArguments = wasArguments(harness, queryEnabled = true, gatewayRoot = "gateway-restart")
+            // 새 클라이언트 세션이 이전 WAS의 Aeron 응답 채널을 재사용하지 않도록 분리한다.
+            val restartedArguments = wasArguments(harness, queryEnabled = true, gatewayRoot = "gateway-restart", egressOffset = 33)
             OrderRecoveryWas.start(restartedArguments, directory.resolve("restarted-was.log")).use { was ->
                 assertTrue(was.pid != initialPid, "새 JVM에서 같은 요청을 다시 보내야 한다")
                 HttpClient.newHttpClient().use { http ->

@@ -133,6 +133,27 @@ jobs:
         with:
           cache-provider: basic
           cache-read-only: ${{ github.event_name == 'pull_request' }}
+      - name: Resolve Gradle build plugins
+        shell: bash
+        run: |
+          gradle_log="$(mktemp)"
+          trap 'rm -f "$gradle_log"' EXIT
+          # 플러그인 준비의 저장소 요청 제한만 재시도한다.
+          for retry_delay in 15 35 0
+          do
+            gradle_status=0
+            ./gradlew help --no-daemon --console=plain > "$gradle_log" 2>&1 || gradle_status=$?
+            cat "$gradle_log"
+            if (( gradle_status == 0 )); then
+              break
+            fi
+            if (( retry_delay == 0 )) || ! grep -Eq 'Received status code 429 from server' "$gradle_log"; then
+              exit "$gradle_status"
+            fi
+            wait_seconds=$((retry_delay + RANDOM % 10))
+            echo "Gradle plugin repository returned HTTP 429. Retrying in ${wait_seconds}s."
+            sleep "$wait_seconds"
+          done
       - name: Check Kotlin formatting
         if: matrix.group == 'general'
         run: ./gradlew ktlintCheck --no-daemon --console=plain --continue
