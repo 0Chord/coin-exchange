@@ -17,6 +17,8 @@ import com.exchange.core.order.OrderReservationStatus
 import com.exchange.core.order.Side
 import java.time.Instant
 
+private val appliedFundsResult = FundsResultReply(FundsResultStatus.APPLIED)
+
 /** 매칭 엔진 없이 공통 잔고·예약·접수와 정산 효과를 배타적으로 쓰는 금융 소유자다. */
 class BoundedFundingState(
     private val admissionCalculator: OrderAdmissionCalculator,
@@ -33,7 +35,7 @@ class BoundedFundingState(
     private var ledger: FundsLedger? =
         if (persistRecoveryLedger) FundsLedger(requireNotNull(expectedManifest).lineage) else null
     private val assetTotals = linkedMapOf<AssetId, Long>()
-    private val approvalInputs = linkedMapOf<Pair<MarketId, OrderId>, FundsOrderDispatch>()
+    private val approvalInputs = linkedMapOf<Long, FundsOrderDispatch>()
     private val cancellations = linkedMapOf<Pair<MarketId, OrderId>, FundsCancellationSnapshot>()
     private var cancellationBytes = 0L
     private var lastCancellationSequence = 0L
@@ -136,25 +138,32 @@ class BoundedFundingState(
         }
         val progress = current.markets.getValue(intent.marketId)
         val limits = current.manifest.limits
+        if (current.liveBySequence.size >= limits.maxActiveOrders || progress.activeCount >= limits.maxMarketActiveOrders ||
+            current.pendingCount >= limits.maxPendingOrders || progress.pending.size >= limits.maxMarketPendingOrders
+        ) {
+            return AdmissionReply.Refused("RETRYABLE_CAPACITY")
+        }
         val baseKey = TradingBalanceKey(token.userId, context.market.baseAssetId)
         val quoteKey = TradingBalanceKey(token.userId, context.market.quoteAssetId)
-        val baseExists = baseKey in current.balances
-        val quoteExists = quoteKey in current.balances
+        val baseBalance = current.balances[baseKey]
+        val quoteBalance = current.balances[quoteKey]
+        val baseExists = baseBalance != null
+        val quoteExists = quoteBalance != null
         val requiredKeys = (if (baseExists) 0 else 1) + (if (quoteExists) 0 else 1)
-        if (current.liveBySequence.size >= limits.maxActiveOrders || progress.activeCount >= limits.maxMarketActiveOrders ||
-            current.pendingCount >= limits.maxPendingOrders || progress.pending.size >= limits.maxMarketPendingOrders ||
-            requiredKeys > limits.maxBalanceKeys - current.balances.size ||
+        if (requiredKeys > limits.maxBalanceKeys - current.balances.size ||
             (token.userId !in current.accounts && current.accounts.size >= limits.maxAccounts)
         ) {
             return AdmissionReply.Refused("RETRYABLE_CAPACITY")
         }
         val sequence = Math.addExact(current.lastAdmissionSequence, 1L)
         val marketSequence = Math.addExact(progress.lastAssigned, 1L)
-        val identifiers = TradingIdentifiers.admission(current.manifest.lineage, sequence)
+        val lineage = current.manifest.lineage
+        val ledgerIdentifiers =
+            if (ledger != null) TradingIdentifiers.admission(lineage, sequence) else null
         val input =
             OrderAdmissionInput(
                 intent.marketId,
-                identifiers.orderId,
+                ledgerIdentifiers?.orderId ?: TradingIdentifiers.order(lineage, sequence),
                 token.userId,
                 intent.side,
                 intent.orderType,
@@ -165,9 +174,12 @@ class BoundedFundingState(
         if (queryAdmissions?.canRecord(input.marketId, FundsDispatchCharge.dispatch(input, context)) == false) {
             return AdmissionReply.Refused("RETRYABLE_CAPACITY")
         }
-        if (dispatch?.canAdmit(input) == false) return AdmissionReply.Refused("RETRYABLE_CAPACITY")
-        val reservedKey = if (intent.side == Side.BUY) quoteKey else baseKey
-        val balance = current.balances[reservedKey] ?: Balance(token.userId, reservedKey.assetId, Amount.ZERO, Amount.ZERO)
+        val dispatchAdmission = dispatch?.admission(input)
+        if (dispatch != null && dispatchAdmission == null) return AdmissionReply.Refused("RETRYABLE_CAPACITY")
+        val isBuy = intent.side == Side.BUY
+        val reservedKey = if (isBuy) quoteKey else baseKey
+        val currentBalance = if (isBuy) quoteBalance else baseBalance
+        val balance = currentBalance ?: Balance(token.userId, reservedKey.assetId, Amount.ZERO, Amount.ZERO)
         val calculation =
             admissionCalculator.calculateTransition(
                 input,
@@ -183,21 +195,30 @@ class BoundedFundingState(
         }
         val candidate = calculation as AdmissionTransitionResult.Calculated
         check(candidate.hasPreviousBalance(balance))
+        val transaction =
+            ledgerIdentifiers?.let {
+                admissionCalculator.reserveTransaction(input, candidate.reservation, it.reserveTransactionId, at)
+            }
         val ledgerBatch =
             ledger?.let { journal ->
-                val transaction = admissionCalculator.reserveTransaction(input, candidate.reservation, identifiers.reserveTransactionId, at)
-                journal.prepare(atLogPosition, listOf(transaction), leaveRoomForResult = true)
+                journal.prepare(atLogPosition, listOf(checkNotNull(transaction)), leaveRoomForResult = true)
                     ?: return AdmissionReply.Refused("RETRYABLE_CAPACITY")
             }
-        val live = BoundedLiveOrder(sequence, marketSequence, input, candidate.reservation, LiveOrderPhase.PENDING)
+        val live =
+            BoundedLiveOrder(
+                sequence,
+                marketSequence,
+                input,
+                candidate.reservation,
+                LiveOrderPhase.PENDING,
+                activeDispatchBytes = dispatchAdmission?.activeBytes ?: 0L,
+            )
         val receipt = AdmissionReceipt(AdmissionCode.ACCEPTED, input.orderId, sequence, marketSequence)
-        val delivery = dispatch?.prepare(live.snapshot())
+        val delivery = dispatch?.prepare(live.snapshot(), dispatchAdmission)
         boundedMutation {
             current.accounts.add(token.userId)
             if (!baseExists) current.balances[baseKey] = Balance(baseKey.userId, baseKey.assetId, Amount.ZERO, Amount.ZERO)
             if (!quoteExists) current.balances[quoteKey] = Balance(quoteKey.userId, quoteKey.assetId, Amount.ZERO, Amount.ZERO)
-            current.usedBalances.add(baseKey)
-            current.usedBalances.add(quoteKey)
             current.balances[reservedKey] = candidate.nextBalance
             current.liveBySequence[sequence] = live
             current.liveByOrder[input.marketId to input.orderId] = live
@@ -208,9 +229,9 @@ class BoundedFundingState(
             current.lastAdmissionSequence = sequence
             current.inbox.remember(token, intent, receipt)
             delivery?.let {
-                checkNotNull(dispatch).record(it)
+                checkNotNull(dispatch).record(it, dispatchAdmission)
                 queryAdmissions?.record(it)
-                approvalInputs[input.marketId to input.orderId] = it
+                approvalInputs[sequence] = it
             }
             ledgerBatch?.let { checkNotNull(ledger).record(it) }
         }
@@ -247,7 +268,7 @@ class BoundedFundingState(
         }
         val live = current.liveByOrder[key] ?: return reject("NOT_ACTIVE")
         if (live.order.userId != token.userId) return reject("NOT_ACTIVE")
-        val original = checkNotNull(approvalInputs[key]) { "active approval input is missing" }
+        val original = checkNotNull(approvalInputs[live.admissionSequence]) { "active approval input is missing" }
         val sequence =
             try {
                 deliveries.nextSequence(intent.marketId)
@@ -314,11 +335,13 @@ class BoundedFundingState(
             throw TradingFundingInputException(TradingFundingRejection.INVALID_IDENTIFIER)
         }
         val key = TradingBalanceKey(opening.userId, opening.assetId)
-        val old = current.balances[key] ?: Balance(opening.userId, opening.assetId, Amount.ZERO, Amount.ZERO)
-        opening.requireUnused(old, key in current.usedBalances)
+        val existing = current.balances[key]
+        val old = existing ?: Balance(opening.userId, opening.assetId, Amount.ZERO, Amount.ZERO)
+        // 주문 접수로 만들어 둔 0원 잔고도 이미 사용한 잔고다.
+        opening.requireUnused(old, existing != null)
         val bytes = preparationBytes(opening)
         if (current.preparations.size >= limits.maxPreparations || bytes > limits.maxPreparationBytes - current.preparationBytes ||
-            (key !in current.balances && current.balances.size >= limits.maxBalanceKeys) ||
+            current.balances.size >= limits.maxBalanceKeys ||
             (opening.userId !in current.accounts && current.accounts.size >= limits.maxAccounts)
         ) {
             throw TradingCapacityException("development funding capacity exceeded")
@@ -346,7 +369,6 @@ class BoundedFundingState(
         boundedMutation {
             current.accounts.add(opening.userId)
             current.balances[key] = next
-            current.usedBalances.add(key)
             current.preparations[opening.preparationId] = result
             current.preparationBytes = Math.addExact(current.preparationBytes, bytes)
             current.lastPreparationSequence = sequence
@@ -484,6 +506,20 @@ class BoundedFundingState(
             .read(stream, fromSequence, maxEntries, maxBytes)
     }
 
+    /** 서비스 소유자가 같은 바이트 한도에서 연속한 전체 페이지를 한 번에 읽는다. */
+    fun pendingDispatchPages(
+        stream: FundsDispatchStream,
+        fromSequence: Long,
+        maxEntries: Int,
+        maxBytes: Long,
+        pageEntries: Int,
+    ): FundsDispatchRead {
+        runningBounded()
+        require(pageEntries > 0 && maxEntries >= pageEntries && maxEntries % pageEntries == 0)
+        return checkNotNull(dispatch) { "dispatch is only available to the funds role" }
+            .read(stream, fromSequence, maxEntries, maxBytes, pageEntries)
+    }
+
     /** 상대의 연속 업무 적용 확인은 전달 보존만 회수한다. 금융 실행 완료와 별개다. */
     fun acknowledgeMatchingApplied(ack: FundsMatchingAppliedAck): FundsDispatchAck {
         runningBounded()
@@ -498,12 +534,62 @@ class BoundedFundingState(
         return if (currentResults.matches(stream)) currentResults.ack(stream.marketId) else null
     }
 
-    /** 전체 후보를 검사한 뒤 금융·결과 prefix·전달 확인을 한 소유자의 변경으로 반영한다. */
     fun applyMatchingResult(
         result: MatchingResultEnvelope,
         appliedAt: Instant,
         settlementCalculator: OrderSettlementCalculator,
         atLogPosition: Long = 0L,
+    ): FundsResultReply {
+        val reply = applyFinancialResult(result, appliedAt, settlementCalculator, atLogPosition)
+        return when (reply.status) {
+            FundsResultStatus.APPLIED, FundsResultStatus.DUPLICATE, FundsResultStatus.PRUNED -> {
+                reply.copy(ack = checkNotNull(results).ack(result.stream.marketId))
+            }
+
+            else -> {
+                reply
+            }
+        }
+    }
+
+    /** 코덱이 한 마켓의 연속 순번을 확인한 묶음을 적용하고, 처리한 구간의 누적 ACK를 만든다. */
+    fun applyMatchingResultBatch(
+        batch: List<MatchingResultEnvelope>,
+        appliedAt: Instant,
+        settlementCalculator: OrderSettlementCalculator,
+        atLogPosition: Long,
+    ): FundsResultReply {
+        require(batch.size >= 2)
+        var lastSuccessfulStream: MatchingResultStream? = null
+        var status = FundsResultStatus.APPLIED
+        for (result in batch) {
+            val reply = applyFinancialResult(result, appliedAt, settlementCalculator, atLogPosition)
+            status = reply.status
+            when (status) {
+                FundsResultStatus.APPLIED, FundsResultStatus.DUPLICATE, FundsResultStatus.PRUNED -> {
+                    lastSuccessfulStream = result.stream
+                }
+
+                FundsResultStatus.RETRYABLE_CAPACITY -> {
+                    val ack = lastSuccessfulStream?.let { checkNotNull(results).ack(it.marketId) }
+                    return reply.copy(ack = ack, expectedSequence = result.resultSequence)
+                }
+
+                else -> {
+                    return reply
+                }
+            }
+        }
+        val market = checkNotNull(lastSuccessfulStream).marketId
+        return FundsResultReply(status, checkNotNull(results).ack(market))
+    }
+
+    /** 전체 후보를 검사한 뒤 금융·결과 prefix·전달 확인을 한 소유자의 변경으로 반영한다. */
+    private fun applyFinancialResult(
+        result: MatchingResultEnvelope,
+        appliedAt: Instant,
+        settlementCalculator: OrderSettlementCalculator,
+        atLogPosition: Long,
     ): FundsResultReply {
         val current = runningBounded()
         val configuration = checkNotNull(dispatchConfiguration) { "result settlement requires a funds role" }
@@ -530,8 +616,10 @@ class BoundedFundingState(
                 (configuration.inputContractVersion != 1 || input.marketAdmissionSequence == input.dispatchSequence) &&
                 input.marketAdmissionSequence in 1..input.dispatchSequence &&
                 input.order.marketId == result.stream.marketId &&
-                input.order.orderId == TradingIdentifiers.order(configuration.manifest.lineage, input.admissionSequence)
-        if (!validApprovalIdentity(result.input) || result.effects.any { !validApprovalIdentity(it.origin) }) {
+                TradingIdentifiers.matchesOrder(input.order.orderId, configuration.manifest.lineage, input.admissionSequence)
+        if (!validApprovalIdentity(result.input) ||
+            result.effects.any { effect -> effect.origin !== result.input && !validApprovalIdentity(effect.origin) }
+        ) {
             return FundsResultReply(FundsResultStatus.INVALID_RESULT)
         }
         try {
@@ -541,62 +629,39 @@ class BoundedFundingState(
         } catch (_: ArithmeticException) {
             return FundsResultReply(FundsResultStatus.INVALID_RESULT)
         }
-        currentResults.repeated(result)?.let { return it }
+        currentResults.repeated(result)?.let { return FundsResultReply(it) }
         val next = Math.addExact(currentResults.through(result.stream.marketId), 1L)
         if (result.resultSequence != next) return FundsResultReply(FundsResultStatus.GAP, expectedSequence = next)
         if (result.input.isCancellation) return applyCancellationResult(result, appliedAt, atLogPosition)
         val progress = current.markets.getValue(result.stream.marketId)
         val candidate =
             try {
-                currentResults.requireResult(result)
+                val tradeCount = currentResults.requireResult(result)
                 require(result.engineSequenceBefore == currentResults.engine(result.stream.marketId)) { "result engine boundary differs" }
                 val taker = requireNotNull(progress.pending.firstOrNull()) { "result has no pending financial order" }
                 require(
                     taker.admissionSequence == result.input.admissionSequence &&
                         taker.marketAdmissionSequence == result.input.marketAdmissionSequence,
                 )
-                if (configuration.inputContractVersion ==
-                    2
-                ) {
-                    require(approvalInputs[result.input.order.marketId to result.input.order.orderId] == result.input)
-                }
+                // 결과 검증을 통과한 첫 효과의 원본은 입력과 같다. 최초 승인 원문은 효과를 읽을 때 대조한다.
                 val participants =
                     result.effects.mapIndexed { index, effect ->
-                        val live =
-                            requireNotNull(
-                                current.liveByOrder[effect.origin.order.marketId to effect.orderId],
-                            ) { "unknown financial order" }
+                        val admissionSequence = effect.origin.admissionSequence
+                        val live = requireNotNull(current.liveBySequence[admissionSequence]) { "unknown financial order" }
                         require(
                             (index == 0 && live === taker && live.phase == LiveOrderPhase.PENDING) ||
                                 (index > 0 && live.phase == LiveOrderPhase.RESTING),
                         ) { "financial order phase differs" }
-                        requireFundsOriginal(effect.origin, live.snapshot())
-                        if (configuration.inputContractVersion ==
-                            2
-                        ) {
-                            require(approvalInputs[effect.origin.order.marketId to effect.orderId] == effect.origin)
+                        requireFundsOriginal(effect.origin, live)
+                        if (configuration.inputContractVersion == 2) {
+                            require(approvalInputs[admissionSequence] == effect.origin)
                         }
                         require(effect.beforeQuantity == live.reservation.remainingQuantity) { "financial quantity differs" }
                         live
                     }
-                val trades = result.events.filterIsInstance<TradeExecuted>()
-                val executions =
-                    trades.map { trade ->
-                        SettlementExecution(
-                            trade.marketId,
-                            trade.engineSequence,
-                            trade.makerOrderId,
-                            trade.takerOrderId,
-                            trade.makerUserId,
-                            trade.takerUserId,
-                            trade.side,
-                            trade.price,
-                            trade.quantity,
-                            TradingIdentifiers.settlement(current.manifest.lineage, context.ordinal, trade.engineSequence),
-                            appliedAt,
-                        )
-                    }
+                val directSingleFill = tradeCount == 1 && participants.size == 2 && participants[1].order.userId != taker.order.userId
                 var releaseTransaction: LedgerTransaction? = null
+                var singleFillFee: Long? = null
                 val settlement =
                     if (result.outcome == MatchingOutcome.NOT_EXECUTED) {
                         val previous = taker.reservation
@@ -616,18 +681,73 @@ class BoundedFundingState(
                             listOf(OrderSettlementCandidate.ReservationChange(previous, released)),
                         )
                     } else {
-                        validateNoFillBalances(taker.snapshot(), context)
-                        settlementCalculator.calculate(
-                            taker.order,
-                            context.market,
-                            executions,
-                            participants.map { it.reservation },
-                            participantBalances(participants.map { it.reservation }, context.market),
-                        )
+                        if (tradeCount == 0) {
+                            validateNoFillBalances(taker.snapshot(), context)
+                            settlementCalculator.calculateEmpty(taker.order, context.market)
+                        } else {
+                            val executions =
+                                List(tradeCount) { index ->
+                                    val trade = result.events[index] as TradeExecuted
+                                    SettlementExecution(
+                                        trade.marketId,
+                                        trade.engineSequence,
+                                        trade.makerOrderId,
+                                        trade.takerOrderId,
+                                        trade.makerUserId,
+                                        trade.takerUserId,
+                                        trade.side,
+                                        trade.price,
+                                        trade.quantity,
+                                        TradingIdentifiers.settlement(current.manifest.lineage, context.ordinal, trade.engineSequence),
+                                        appliedAt,
+                                    )
+                                }
+                            if (directSingleFill) {
+                                settlementCalculator.calculateSingleFill(
+                                    taker.order,
+                                    context.market,
+                                    executions.single(),
+                                    participants[1].reservation,
+                                    taker.reservation,
+                                    recordFeeProof =
+                                        if (configuration.inputContractVersion == 2 && ledger == null && querySettlements == null) {
+                                            // 원장 또는 조회에 결과를 공급하는 경우에는 기존 분개를 사용한다.
+                                            { amount -> singleFillFee = amount }
+                                        } else {
+                                            null
+                                        },
+                                ) { user, asset ->
+                                    checkNotNull(current.balances[TradingBalanceKey(user, asset)]) {
+                                        "participant balance capacity was not reserved"
+                                    }
+                                }
+                            } else {
+                                validateNoFillBalances(taker.snapshot(), context)
+                                val reservations = participants.map { it.reservation }
+                                settlementCalculator.calculate(
+                                    taker.order,
+                                    context.market,
+                                    executions,
+                                    reservations,
+                                    participantBalances(reservations, context.market),
+                                )
+                            }
+                        }
                     }
-                val changes = settlement.reservationChanges.associateBy { it.next.orderId }
+                val reservationChanges = settlement.reservationChanges
+                val changesByOrder = if (directSingleFill) null else reservationChanges.associateBy { it.next.orderId }
+                if (directSingleFill) check(reservationChanges.size == participants.size)
                 for ((index, effect) in result.effects.withIndex()) {
-                    val after = changes[effect.orderId]?.next ?: participants[index].reservation
+                    val currentReservation = participants[index].reservation
+                    // 매칭 결과는 taker가 먼저이고 단일 체결의 예약 변경은 maker가 먼저다.
+                    val after =
+                        if (changesByOrder == null) {
+                            val change = reservationChanges[1 - index]
+                            check(change.previous === currentReservation)
+                            change.next
+                        } else {
+                            changesByOrder[effect.orderId]?.next ?: currentReservation
+                        }
                     require(after.remainingQuantity == effect.afterQuantity)
                     when (effect.disposition) {
                         MatchingOrderDisposition.RESTING -> require(after.status == OrderReservationStatus.ACTIVE)
@@ -636,21 +756,21 @@ class BoundedFundingState(
                         MatchingOrderDisposition.CANCELLED -> error("cancellation effect in a submit result")
                     }
                 }
-                validateSettlementCurrent(settlement)
-                val fee = prepareFeeRevenue(settlement, context.market.quoteAssetId)
-                validateResultConservation(settlement, context.market.quoteAssetId, fee)
+                if (!directSingleFill) validateSettlementCurrent(settlement)
+                val feeAsset = context.market.quoteAssetId
+                val provedFee = singleFillFee
+                val fee =
+                    if (provedFee == null) {
+                        prepareFeeRevenue(settlement, feeAsset)
+                    } else {
+                        validateBoundedStage(TradingInvariantReason.FEE_REVENUE_INVALID, TradingExecutionPhase.RESULT_VALIDATION) {
+                            nextFeeRevenue(current, feeAsset, java.math.BigInteger.valueOf(provedFee))
+                        }
+                    }
+                validateResultConservation(settlement, feeAsset, fee, provedFee)
                 val settlementFact =
                     querySettlements?.let { retained ->
-                        val fills =
-                            settlement.settlements.mapIndexed { index, fill ->
-                                SettledTrade(
-                                    trades[index],
-                                    fill.transaction,
-                                    fill.makerPlan.actualFeeAmount,
-                                    fill.takerPlan.actualFeeAmount,
-                                )
-                            }
-                        val fact = SettlementFact(result.stream, result.resultSequence, fills)
+                        val fact = settlementFact(result, settlement)
                         if (!retained.canRecord(result.stream.marketId, fact.canonicalBytes)) {
                             return FundsResultReply(FundsResultStatus.RETRYABLE_CAPACITY)
                         }
@@ -658,20 +778,26 @@ class BoundedFundingState(
                     }
                 val ledgerBatch =
                     ledger?.let { journal ->
-                        val transactions =
-                            if (releaseTransaction != null) {
-                                listOf(releaseTransaction)
-                            } else {
-                                settlement.settlements.map { it.transaction }
-                            }
-                        if (transactions.isEmpty()) {
+                        val ledgerTransactions =
+                            if (releaseTransaction != null) listOf(releaseTransaction) else settlement.settlements.map { it.transaction }
+                        if (ledgerTransactions.isEmpty()) {
                             null
                         } else {
-                            journal.prepare(atLogPosition, transactions) ?: return FundsResultReply(FundsResultStatus.RETRYABLE_CAPACITY)
+                            journal.prepare(atLogPosition, ledgerTransactions)
+                                ?: return FundsResultReply(FundsResultStatus.RETRYABLE_CAPACITY)
                         }
                     }
                 val receipt = FundsResultReceipt(result, appliedAt)
-                FundsFinancialResultCandidate(taker, participants, settlement, fee, receipt, settlementFact, ledgerBatch)
+                FundsFinancialResultCandidate(
+                    taker,
+                    participants,
+                    settlement,
+                    directSingleFill,
+                    fee,
+                    receipt,
+                    settlementFact,
+                    ledgerBatch,
+                )
             } catch (_: IllegalArgumentException) {
                 return FundsResultReply(FundsResultStatus.INVALID_RESULT)
             } catch (_: IllegalStateException) {
@@ -683,19 +809,25 @@ class BoundedFundingState(
             for (change in candidate.settlement.balanceChanges) {
                 current.balances[TradingBalanceKey(change.next.userId, change.next.assetId)] = change.next
             }
-            for (change in candidate.settlement.reservationChanges) {
-                current.liveByOrder.getValue(change.next.marketId to change.next.orderId).reservation = change.next
+            val reservationChanges = candidate.settlement.reservationChanges
+            if (candidate.directSingleFill) {
+                candidate.participants[1].reservation = reservationChanges[0].next
+                candidate.taker.reservation = reservationChanges[1].next
+            } else {
+                for (change in reservationChanges) {
+                    current.liveByOrder.getValue(change.next.marketId to change.next.orderId).reservation = change.next
+                }
             }
             candidate.nextFeeRevenue?.let { current.feeRevenue[context.market.quoteAssetId] = it }
             if (result.effects.first().disposition == MatchingOrderDisposition.RESTING) candidate.taker.phase = LiveOrderPhase.RESTING
             for (live in candidate.participants) {
                 if (live.reservation.status != OrderReservationStatus.ACTIVE) {
-                    check(current.liveByOrder.remove(live.order.marketId to live.order.orderId) === live)
+                    val key = live.order.marketId to live.order.orderId
+                    check(current.liveByOrder.remove(key) === live)
                     check(current.liveBySequence.remove(live.admissionSequence) === live)
                     progress.activeCount--
-                    checkNotNull(dispatch).finish(live.order)
-                    val key = live.order.marketId to live.order.orderId
-                    approvalInputs.remove(key)
+                    checkNotNull(dispatch).finish(live.order.marketId, live.activeDispatchBytes)
+                    approvalInputs.remove(live.admissionSequence)
                     cancellations[key]?.let {
                         cancellations[key] =
                             it.copy(
@@ -712,10 +844,9 @@ class BoundedFundingState(
             currentResults.record(candidate.receipt)
             candidate.settlementFact?.let { checkNotNull(querySettlements).record(it) }
             candidate.ledgerBatch?.let { checkNotNull(ledger).record(it) }
-            val confirmed = checkNotNull(dispatch).acknowledge(FundsMatchingAppliedAck(inputStream, result.input.dispatchSequence, context))
-            check(confirmed.status == FundsDispatchAckStatus.ACKNOWLEDGED)
+            checkNotNull(dispatch).acknowledgeSettled(result.stream.marketId, result.input.dispatchSequence)
         }
-        return FundsResultReply(FundsResultStatus.APPLIED, currentResults.ack(result.stream.marketId))
+        return appliedFundsResult
     }
 
     private fun applyCancellationResult(
@@ -746,7 +877,7 @@ class BoundedFundingState(
                 MatchingOutcome.CANCELLED -> {
                     require(live != null && obligation.terminalStatus == null && live.phase == LiveOrderPhase.RESTING)
                     val effect = result.effects.single()
-                    require(effect.origin == approvalInputs[key])
+                    require(effect.origin == approvalInputs[live.admissionSequence])
                     requireFundsOriginal(effect.origin, live.snapshot())
                     require(effect.beforeQuantity == live.reservation.remainingQuantity)
                     require(effect.afterQuantity.value == 0L && effect.disposition == MatchingOrderDisposition.CANCELLED)
@@ -809,34 +940,81 @@ class BoundedFundingState(
                 check(current.liveByOrder.remove(key) === order)
                 check(current.liveBySequence.remove(order.admissionSequence) === order)
                 current.markets.getValue(key.first).activeCount--
-                checkNotNull(dispatch).finish(order.order)
-                approvalInputs.remove(key)
+                checkNotNull(dispatch).finish(order.order.marketId, order.activeDispatchBytes)
+                approvalInputs.remove(order.admissionSequence)
             }
             check(cancellations.remove(key) == obligation)
             cancellationBytes -= obligation.canonicalBytes
             currentResults.record(receipt)
             settlementFact?.let { checkNotNull(querySettlements).record(it) }
             ledgerBatch?.let { checkNotNull(ledger).record(it) }
-            val confirmed =
-                checkNotNull(dispatch).acknowledge(
-                    FundsMatchingAppliedAck(result.input.stream, result.input.dispatchSequence, context),
-                )
-            check(confirmed.status == FundsDispatchAckStatus.ACKNOWLEDGED)
+            checkNotNull(dispatch).acknowledgeSettled(key.first, result.input.dispatchSequence)
         }
-        return FundsResultReply(FundsResultStatus.APPLIED, currentResults.ack(key.first))
+        return appliedFundsResult
     }
 
     private data class FundsFinancialResultCandidate(
         val taker: BoundedLiveOrder,
         val participants: List<BoundedLiveOrder>,
         val settlement: OrderSettlementCandidate,
+        val directSingleFill: Boolean,
         val nextFeeRevenue: java.math.BigInteger?,
         val receipt: FundsResultReceipt,
         val settlementFact: SettlementFact?,
         val ledgerBatch: FundsLedgerBatch?,
     )
 
+    private fun settlementFact(
+        result: MatchingResultEnvelope,
+        settlement: OrderSettlementCandidate,
+    ): SettlementFact {
+        val fills =
+            settlement.settlements.mapIndexed { index, fill ->
+                val trade = result.events[index] as TradeExecuted
+                SettledTrade(trade, fill.transaction, fill.makerPlan.actualFeeAmount, fill.takerPlan.actualFeeAmount)
+            }
+        return SettlementFact(result.stream, result.resultSequence, fills)
+    }
+
     private fun validateResultConservation(
+        settlement: OrderSettlementCandidate,
+        feeAsset: AssetId,
+        nextFee: java.math.BigInteger?,
+        provedFee: Long? = null,
+    ) {
+        val market = settlement.market
+        if (feeAsset != market.quoteAssetId) return validateResultConservationWithBigInteger(settlement, feeAsset, nextFee)
+
+        // 자금 역할의 자산 총량은 Long 범위다. 중간 합이 넘치면 기존 정밀도로 검사한다.
+        var baseDelta = 0L
+        var quoteDelta = 0L
+        try {
+            val changes = settlement.balanceChanges
+            for (index in changes.indices) {
+                val change = changes[index]
+                val before = Math.addExact(change.previous.available.value, change.previous.hold.value)
+                val after = Math.addExact(change.next.available.value, change.next.hold.value)
+                val delta = Math.subtractExact(after, before)
+                when (change.next.assetId) {
+                    market.baseAssetId -> baseDelta = Math.addExact(baseDelta, delta)
+                    market.quoteAssetId -> quoteDelta = Math.addExact(quoteDelta, delta)
+                    else -> return validateResultConservationWithBigInteger(settlement, feeAsset, nextFee)
+                }
+            }
+            if (provedFee != null) {
+                quoteDelta = Math.addExact(quoteDelta, provedFee)
+            } else if (nextFee != null) {
+                val previous = runningBounded().feeRevenue[feeAsset] ?: java.math.BigInteger.ZERO
+                val delta = Math.subtractExact(nextFee.longValueExact(), previous.longValueExact())
+                quoteDelta = Math.addExact(quoteDelta, delta)
+            }
+        } catch (_: ArithmeticException) {
+            return validateResultConservationWithBigInteger(settlement, feeAsset, nextFee)
+        }
+        require(baseDelta == 0L && quoteDelta == 0L) { "result financial conservation differs" }
+    }
+
+    private fun validateResultConservationWithBigInteger(
         settlement: OrderSettlementCandidate,
         feeAsset: AssetId,
         nextFee: java.math.BigInteger?,
@@ -894,7 +1072,7 @@ class BoundedFundingState(
             require(saved.configuration == configuration) { "funds recovery configuration differs" }
             val financial = saved.financial
             val candidate = BoundedFundingState(admissionCalculator, expectedManifest)
-            candidate.restoreRecoveryState(financial, settlementCalculator)
+            candidate.restoreRecoveryState(financial, settlementCalculator, restoreActiveDispatchBytes = true)
             if (saved.results == null) {
                 // 결과 상태가 없는 과거 v1은 최초 PENDING 형식만 허용한다.
                 require(financial.markets.all { it.executedThrough == 0L }) { "legacy funds snapshot has settled progress" }
@@ -989,7 +1167,7 @@ class BoundedFundingState(
             querySettlements = restoredSettlements
             ledger = restoredLedger
             assetTotals.putAll(reconstructed)
-            saved.approvalInputs.forEach { approvalInputs[it.order.marketId to it.order.orderId] = it }
+            saved.approvalInputs.forEach { approvalInputs[it.admissionSequence] = it }
             saved.cancellations.forEach { cancellations[it.input.order.marketId to it.input.order.orderId] = it }
             cancellationBytes = saved.cancellations.fold(0L) { total, c -> Math.addExact(total, c.canonicalBytes) }
             lastCancellationSequence = saved.lastCancellationSequence
@@ -1429,34 +1607,45 @@ class BoundedFundingState(
         val current = runningBounded()
         // SPOT 정산에서는 두 참여자 모두에게 이 시장의 quote 자산으로 수수료를 부과한다.
         // 체결별 임시 맵이나 maker·taker 목록 없이 정확한 수익을 한 번만 누적한다.
-        val transactionIds = hashSetOf<String>()
-        val eventIds = hashSetOf<String>()
+        val fills = settlement.settlements
+        val transactionIds = if (fills.size > 1) hashSetOf<String>() else null
+        val eventIds = if (fills.size > 1) hashSetOf<String>() else null
         return validateBoundedStage(TradingInvariantReason.FEE_REVENUE_INVALID, TradingExecutionPhase.RESULT_VALIDATION) {
             var feeDelta = java.math.BigInteger.ZERO
             var ledgerRevenue = java.math.BigInteger.ZERO
-            for (fill in settlement.settlements) {
-                check(transactionIds.add(fill.transaction.ledgerTransactionId) && eventIds.add(fill.transaction.sourceEventId))
+            for (fill in fills) {
+                if (transactionIds != null && eventIds != null) {
+                    check(transactionIds.add(fill.transaction.ledgerTransactionId) && eventIds.add(fill.transaction.sourceEventId))
+                }
                 check(fill.makerPlan.feeAssetId == feeAsset && fill.takerPlan.feeAssetId == feeAsset)
                 feeDelta =
                     feeDelta
                         .add(java.math.BigInteger.valueOf(fill.makerPlan.actualFeeAmount.value))
                         .add(java.math.BigInteger.valueOf(fill.takerPlan.actualFeeAmount.value))
                 for (posting in fill.transaction.postings) {
-                    if (posting.accountId == "SYSTEM:${posting.assetId.value}:FEE_REVENUE") {
+                    if (posting.accountId.startsWith("SYSTEM:") && posting.accountId == "SYSTEM:${posting.assetId.value}:FEE_REVENUE") {
                         check(posting.assetId == feeAsset && posting.side == com.exchange.core.ledger.LedgerPostingSide.CREDIT)
                         ledgerRevenue = ledgerRevenue.add(java.math.BigInteger.valueOf(posting.amount.value))
                     }
                 }
             }
             check(feeDelta == ledgerRevenue) { "fee delta differs from ledger revenue" }
-            if (settlement.settlements.isEmpty()) {
+            if (fills.isEmpty()) {
                 null
             } else {
-                val next = (current.feeRevenue[feeAsset] ?: java.math.BigInteger.ZERO).add(feeDelta)
-                check(next.signum() >= 0 && next.bitLength() <= feeBitLimit(current.manifest.limits))
-                if (next.signum() != 0) next else null
+                nextFeeRevenue(current, feeAsset, feeDelta)
             }
         }
+    }
+
+    private fun nextFeeRevenue(
+        current: BoundedTradingData,
+        asset: AssetId,
+        delta: java.math.BigInteger,
+    ): java.math.BigInteger? {
+        val next = (current.feeRevenue[asset] ?: java.math.BigInteger.ZERO).add(delta)
+        check(next.signum() >= 0 && next.bitLength() <= current.feeRevenueBitLimit)
+        return if (next.signum() != 0) next else null
     }
 
     private inline fun <T> validateBoundedStage(
@@ -1521,7 +1710,7 @@ class BoundedFundingState(
             current.lifecycle,
             current.balances.values.sortedWith(compareBy({ it.userId.value }, { it.assetId.value })),
             current.feeRevenue.toSortedMap(compareBy { it.value }),
-            current.usedBalances.sortedWith(compareBy({ it.userId.value }, { it.assetId.value })),
+            current.balances.keys.sortedWith(compareBy({ it.userId.value }, { it.assetId.value })),
             current.preparations.values.toList(),
             current.accounts.sortedBy { it.value },
             current.liveBySequence.values
@@ -1559,6 +1748,7 @@ class BoundedFundingState(
     internal fun restoreRecoveryState(
         saved: BoundedFundingRecoveryState,
         settlementCalculator: OrderSettlementCalculator,
+        restoreActiveDispatchBytes: Boolean = false,
     ) {
         requireExpectedManifest(saved.manifest)
         check(!isBlocked && bounded == null) { "bounded restore requires an empty owner" }
@@ -1586,14 +1776,13 @@ class BoundedFundingState(
                 ) { "duplicate recovery balance" }
             }
             require(saved.usedBalances.size == saved.usedBalances.distinct().size && saved.usedBalances.toSet() == candidate.balances.keys)
-            candidate.usedBalances.addAll(saved.usedBalances)
             require(saved.preparations.size <= limits.maxPreparations && saved.lastPreparationSequence == saved.preparations.size.toLong())
             val supplied = linkedMapOf<AssetId, java.math.BigInteger>()
             val preparedKeys = hashSetOf<TradingBalanceKey>()
             for ((index, preparation) in saved.preparations.withIndex()) {
                 val opening = preparation.opening
                 val key = TradingBalanceKey(opening.userId, opening.assetId)
-                require(key in candidate.usedBalances && preparedKeys.add(key)) { "duplicate or unknown prepared balance" }
+                require(key in candidate.balances && preparedKeys.add(key)) { "duplicate or unknown prepared balance" }
                 require(!preparation.alreadyPrepared)
                 require(preparation.ledgerTransactionId == TradingIdentifiers.opening(manifest.lineage, index.toLong() + 1))
                 require(candidate.preparations.put(opening.preparationId, preparation) == null) { "duplicate preparation identity" }
@@ -1607,7 +1796,7 @@ class BoundedFundingState(
                 candidate.preparationBytes == saved.preparationCanonicalBytes && candidate.preparationBytes <= limits.maxPreparationBytes,
             )
             for ((asset, fee) in saved.feeRevenueByAsset) {
-                require(asset in candidate.assets && fee.signum() >= 0 && fee.bitLength() <= feeBitLimit(limits))
+                require(asset in candidate.assets && fee.signum() >= 0 && fee.bitLength() <= candidate.feeRevenueBitLimit)
                 if (fee.signum() != 0) candidate.feeRevenue[asset] = fee
             }
             require(saved.liveOrders.size <= limits.maxActiveOrders)
@@ -1622,8 +1811,17 @@ class BoundedFundingState(
                 val context = requireNotNull(candidate.contexts[order.order.marketId])
                 require(admissionCalculator.validOrderIdentifiers(order.order))
                 require(admissionCalculator.supports(order.order.orderType, order.order.timeInForce))
+                val activeDispatchBytes =
+                    if (restoreActiveDispatchBytes) FundsDispatchCharge.active(order.order, context) else 0L
                 val live =
-                    BoundedLiveOrder(order.admissionSequence, order.marketAdmissionSequence, order.order, order.reservation, order.phase)
+                    BoundedLiveOrder(
+                        order.admissionSequence,
+                        order.marketAdmissionSequence,
+                        order.order,
+                        order.reservation,
+                        order.phase,
+                        activeDispatchBytes,
+                    )
                 validateReservationRelationship(live.snapshot(), context)
                 settlementCalculator.validateReservation(context.market, live.reservation)
                 require(candidate.liveBySequence.put(order.admissionSequence, live) == null)
@@ -1774,10 +1972,4 @@ class BoundedFundingState(
 
     private fun preparationBytes(opening: OpeningBalance): Long =
         128L + tradingTextBytes(opening.preparationId) + tradingTextBytes(opening.userId.value) + tradingTextBytes(opening.assetId.value)
-
-    private fun feeBitLimit(limits: TradingResourceLimits): Int =
-        java.math.BigInteger
-            .valueOf(limits.maxBalanceKeys.toLong())
-            .multiply(java.math.BigInteger.valueOf(Long.MAX_VALUE))
-            .bitLength()
 }

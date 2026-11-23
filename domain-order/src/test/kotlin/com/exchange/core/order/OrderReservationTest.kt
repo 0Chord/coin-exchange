@@ -51,6 +51,59 @@ class OrderReservationTest {
     }
 
     @Test
+    fun `최초 예약 대조는 새로 생성한 예약과의 전체 값 비교와 같다`() {
+        val requirement = ReservationRequirement(AssetId("KRW"), Amount(500), Amount(10))
+        val policy = feeFreePolicySnapshot.copy(feeRates = MakerTakerFeeRates(FeeRate(10_000), FeeRate(20_000)))
+        val expected =
+            OrderReservation.create(
+                marketId = MarketId("BTC-KRW"),
+                orderId = OrderId("order-1"),
+                userId = UserId("user-1"),
+                side = Side.BUY,
+                limitPrice = Price(100),
+                quantity = Quantity(5),
+                requirement = requirement,
+                feePolicySnapshot = policy,
+            )
+        val cases =
+            mapOf(
+                "same" to expected.copy(),
+                "market" to expected.copy(marketId = MarketId("ETH-KRW")),
+                "order" to expected.copy(orderId = OrderId("order-2")),
+                "user" to expected.copy(userId = UserId("user-2")),
+                "side" to expected.copy(side = Side.SELL),
+                "asset" to expected.copy(assetId = AssetId("BTC")),
+                "price" to expected.copy(limitPrice = Price(101)),
+                "initial quantity" to expected.copy(initialQuantity = Quantity(6)),
+                "remaining quantity" to expected.copy(remainingQuantity = Quantity(4)),
+                "initial amount" to expected.copy(reservedAmount = Amount(511)),
+                "remaining amount" to expected.copy(remainingAmount = Amount(509)),
+                "policy" to expected.copy(feePolicySnapshot = policy.copy(scheduleVersion = 2)),
+                "initial fee" to expected.copy(initialFeeReserveAmount = Amount(11)),
+                "remaining fee" to expected.copy(remainingFeeReserveAmount = Amount(9)),
+                "fee remainder" to expected.copy(feeRemainder = FeeRemainder(1)),
+                "released" to expected.release(),
+                "settled" to expected.applyFill(Quantity(5), Amount(500), Amount(10)),
+            )
+        for ((field, candidate) in cases) {
+            assertEquals(
+                expected == candidate,
+                candidate.matchesInitial(
+                    marketId = expected.marketId,
+                    orderId = expected.orderId,
+                    userId = expected.userId,
+                    side = expected.side,
+                    limitPrice = expected.limitPrice,
+                    quantity = expected.initialQuantity,
+                    requirement = requirement,
+                    feePolicySnapshot = policy,
+                ),
+                field,
+            )
+        }
+    }
+
+    @Test
     fun `최초 주문 수량은 0보다 커야 한다`() {
         assertFailsWith<IllegalArgumentException> {
             OrderReservation.create(

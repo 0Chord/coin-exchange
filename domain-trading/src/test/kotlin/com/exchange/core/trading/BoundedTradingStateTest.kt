@@ -417,12 +417,13 @@ class BoundedTradingStateTest {
         manifest: TradingClusterManifest = saved.manifest,
         balances: List<Balance> = saved.balances,
         matching: MatchingCheckpoint = saved.matching,
+        usedBalances: List<TradingBalanceKey> = saved.usedBalances,
     ) = TradingRecoveryState(
         manifest,
         saved.lifecycle,
         balances,
         saved.feeRevenueByAsset,
-        saved.usedBalances,
+        usedBalances,
         saved.preparations,
         saved.accounts,
         liveOrders,
@@ -466,6 +467,8 @@ class BoundedTradingStateTest {
         val damaged =
             listOf(
                 "활성 예약 합계" to alterRecovery(saved, balances = balances),
+                "사용 잔고 누락" to alterRecovery(saved, usedBalances = saved.usedBalances.dropLast(1)),
+                "사용 잔고 중복" to alterRecovery(saved, usedBalances = saved.usedBalances + saved.usedBalances.first()),
                 "주문장 잔량" to alterRecovery(saved, matching = wrongQuantity),
                 "실행 순번" to alterRecovery(saved, matching = wrongSequence),
             )
@@ -877,9 +880,18 @@ class BoundedTradingStateTest {
         assertEquals(Amount.ZERO, newReceiver.currentBalance(buyer, btc).available)
         assertEquals(Amount.ZERO, newReceiver.currentBalance(buyer, btc).hold)
         assertEquals(2, newReceiver.boundedRetention().balances)
-        assertTrue(TradingBalanceKey(buyer, btc) in newReceiver.recoveryState().usedBalances)
-        assertTrue(TradingBalanceKey(buyer, usdt) in newReceiver.recoveryState().usedBalances)
-        assertFailsWith<OpeningBalanceConflictException> { fund(newReceiver, buyer, btc, 1) }
+        val snapshot = newReceiver.recoveryState()
+        assertEquals(listOf(TradingBalanceKey(buyer, btc), TradingBalanceKey(buyer, usdt)), snapshot.usedBalances)
+        val restored = state().also { it.restoreRecoveryState(snapshot) }
+        assertEquals(snapshot.balances, restored.recoveryState().balances)
+        assertEquals(snapshot.usedBalances, restored.recoveryState().usedBalances)
+        for (owner in listOf(newReceiver, restored)) {
+            assertFailsWith<OpeningBalanceConflictException> { fund(owner, buyer, btc, 1) }
+            assertTrue(fund(owner, buyer, usdt, 1000).alreadyPrepared)
+            // 조회에 보이는 합성 0원 잔고는 아직 준비할 수 있다.
+            assertEquals(Amount.ZERO, owner.currentBalance(buyer, sui).available)
+            assertFalse(fund(owner, buyer, sui, 1).alreadyPrepared)
+        }
     }
 
     @Test

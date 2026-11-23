@@ -91,12 +91,23 @@ class TradingRequestInbox(
         token: RequestToken,
         intent: OrderIntent,
     ): InboxLookup {
-        if (tradingTextBytes(token.userId.value) > limits.maxIdentifierBytes ||
-            tradingTextBytes(intent.marketId.value) > limits.maxIdentifierBytes
-        ) {
-            return rejected(InboxRejection.INVALID_IDENTIFIER)
+        val state = channels[ChannelKey(token.userId, token.channel)]
+        return checkOrderRequest(token, intent, state) { _, bytes ->
+            if (hasReceiptCapacity(bytes)) InboxLookup.Ready else rejected(InboxRejection.RETRYABLE_CAPACITY)
         }
-        val state = channels[ChannelKey(token.userId, token.channel)] ?: return rejected(InboxRejection.UNKNOWN_CHANNEL)
+    }
+
+    private inline fun checkOrderRequest(
+        token: RequestToken,
+        intent: OrderIntent,
+        state: Channel?,
+        onReady: (Channel, Long) -> InboxLookup,
+    ): InboxLookup {
+        val userIdBytes = tradingTextBytes(token.userId.value)
+        if (userIdBytes > limits.maxIdentifierBytes) return rejected(InboxRejection.INVALID_IDENTIFIER)
+        val marketIdBytes = tradingTextBytes(intent.marketId.value)
+        if (marketIdBytes > limits.maxIdentifierBytes) return rejected(InboxRejection.INVALID_IDENTIFIER)
+        if (state == null) return rejected(InboxRejection.UNKNOWN_CHANNEL)
         if (token.epoch < state.epoch) return rejected(InboxRejection.FENCED_EPOCH)
         if (token.epoch > state.epoch) return rejected(InboxRejection.UNISSUED_EPOCH)
         if (token.sequence <= state.retiredThrough) return rejected(InboxRejection.RETIRED_UNAVAILABLE)
@@ -106,38 +117,32 @@ class TradingRequestInbox(
         }
         // Long.MAX_VALUE 근처에서도 넘치지 않도록 뺄셈으로 비교한다.
         if (token.sequence - state.retiredThrough > limits.requestWindow) return rejected(InboxRejection.RETRYABLE_CAPACITY)
-        val bytes = canonicalEntryBytes(token.userId, intent)
-        if (entryCount >= limits.maxInboxEntries || bytes > limits.maxInboxBytes - canonicalBytes) {
-            return rejected(InboxRejection.RETRYABLE_CAPACITY)
-        }
-        return InboxLookup.Ready
+        return onReady(state, canonicalEntryBytes(userIdBytes, marketIdBytes))
     }
+
+    private fun hasReceiptCapacity(bytes: Long): Boolean =
+        entryCount < limits.maxInboxEntries && bytes <= limits.maxInboxBytes - canonicalBytes
 
     fun remember(
         token: RequestToken,
         intent: OrderIntent,
         receipt: AdmissionReceipt,
     ) {
-        when (val previous = lookup(token, intent)) {
-            is InboxLookup.Repeated -> {
-                check(previous.receipt == receipt) { "first admission receipt cannot change" }
-                return
+        val state = channels[ChannelKey(token.userId, token.channel)]
+        val previous =
+            checkOrderRequest(token, intent, state) { channel, bytes ->
+                check(hasReceiptCapacity(bytes)) { "cannot remember request: ${InboxRejection.RETRYABLE_CAPACITY}" }
+                channel.entries[token.sequence] = TradingInboxEntrySnapshot(token.sequence, intent, receipt)
+                entryCount = Math.addExact(entryCount, 1)
+                canonicalBytes = Math.addExact(canonicalBytes, bytes)
+                channel.advanceProcessedThrough()
+                InboxLookup.Ready
             }
-
-            InboxLookup.Ready -> {
-                Unit
-            }
-
-            is InboxLookup.Rejected -> {
-                error("cannot remember request: ${previous.reason}")
-            }
+        when (previous) {
+            is InboxLookup.Repeated -> check(previous.receipt == receipt) { "first admission receipt cannot change" }
+            InboxLookup.Ready -> Unit
+            is InboxLookup.Rejected -> error("cannot remember request: ${previous.reason}")
         }
-        val state = channels.getValue(ChannelKey(token.userId, token.channel))
-        val bytes = canonicalEntryBytes(token.userId, intent)
-        state.entries[token.sequence] = TradingInboxEntrySnapshot(token.sequence, intent, receipt)
-        entryCount = Math.addExact(entryCount, 1)
-        canonicalBytes = Math.addExact(canonicalBytes, bytes)
-        state.advanceProcessedThrough()
     }
 
     fun lookupCancel(
@@ -360,6 +365,11 @@ class TradingRequestInbox(
         fun canonicalEntryBytes(
             userId: UserId,
             intent: OrderIntent,
-        ): Long = 64L + Int.SIZE_BYTES * 2 + tradingTextBytes(userId.value) + tradingTextBytes(intent.marketId.value) + 384L
+        ): Long = canonicalEntryBytes(tradingTextBytes(userId.value), tradingTextBytes(intent.marketId.value))
+
+        private fun canonicalEntryBytes(
+            userIdBytes: Int,
+            marketIdBytes: Int,
+        ): Long = 64L + Int.SIZE_BYTES * 2 + userIdBytes + marketIdBytes + 384L
     }
 }

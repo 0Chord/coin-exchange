@@ -259,24 +259,36 @@ object FundsDispatchCharge {
     fun active(
         order: OrderAdmissionInput,
         context: TradingMarketContext,
-    ): Long = 24L + payload(order, context)
+    ): Long = charge(order, context, dispatch = false)
 
     fun dispatch(
         order: OrderAdmissionInput,
         context: TradingMarketContext,
-    ): Long = 80L + text(order.marketId.value) + text(order.orderId.value) + payload(order, context)
+    ): Long = charge(order, context, dispatch = true)
 
-    private fun payload(
+    internal fun dispatchFromActive(
+        order: OrderAdmissionInput,
+        activeBytes: Long,
+    ): Long = activeBytes + (80L - 24L) + text(order.marketId.value) + text(order.orderId.value)
+
+    private fun charge(
         order: OrderAdmissionInput,
         context: TradingMarketContext,
+        dispatch: Boolean,
     ): Long {
         val market = context.market
-        val reserveAsset = if (order.side == Side.BUY) market.quoteAssetId else market.baseAssetId
-        val orderBytes = 28L + text(order.marketId.value) + text(order.orderId.value) + text(order.userId.value)
-        val reservationBytes =
-            81L + text(order.marketId.value) + text(order.orderId.value) + text(order.userId.value) + text(reserveAsset.value)
-        val contextBytes = 56L + text(market.marketId.value) + text(market.baseAssetId.value) + text(market.quoteAssetId.value)
-        return orderBytes + reservationBytes + contextBytes
+        val orderMarketBytes = text(order.marketId.value)
+        val orderKeyBytes = orderMarketBytes + text(order.orderId.value)
+        val orderIdentifiers = orderKeyBytes + text(order.userId.value)
+        val baseBytes = text(market.baseAssetId.value)
+        val quoteBytes = text(market.quoteAssetId.value)
+        val reserveAssetBytes = if (order.side == Side.BUY) quoteBytes else baseBytes
+        val contextMarketBytes = if (market.marketId == order.marketId) orderMarketBytes else text(market.marketId.value)
+        val orderBytes = 28L + orderIdentifiers
+        val reservationBytes = 81L + orderIdentifiers + reserveAssetBytes
+        val contextBytes = 56L + contextMarketBytes + baseBytes + quoteBytes
+        val entryBytes = if (dispatch) 80L + orderKeyBytes else 24L
+        return entryBytes + orderBytes + reservationBytes + contextBytes
     }
 
     private fun text(value: String): Long = Int.SIZE_BYTES.toLong() + tradingTextBytes(value)
@@ -348,6 +360,15 @@ class FundsDispatchSnapshot(
 internal class FundsDispatchData(
     private val configuration: FundsDispatchConfiguration,
 ) {
+    /** 활성 바이트와 전송 바이트는 이 주문 원본과 마켓에만 적용된다. */
+    class Admission(
+        val order: OrderAdmissionInput,
+        val context: TradingMarketContext,
+    ) {
+        val activeBytes = FundsDispatchCharge.active(order, context)
+        val dispatchBytes = FundsDispatchCharge.dispatchFromActive(order, activeBytes)
+    }
+
     private class Progress {
         var issued = 0L
         var matchingAppliedThrough = 0L
@@ -366,13 +387,22 @@ internal class FundsDispatchData(
     private var activeOrders = 0
     private var activeBytes = 0L
 
-    fun canAdmit(order: OrderAdmissionInput): Boolean {
-        val progress = markets[order.marketId] ?: return false
-        val context = configuration.context(order.marketId)
+    fun canAdmit(order: OrderAdmissionInput): Boolean = admission(order) != null
+
+    fun admission(order: OrderAdmissionInput): Admission? {
+        val progress = markets[order.marketId] ?: return null
+        val admission = Admission(order, configuration.context(order.marketId))
+        return if (hasAdmissionCapacity(order.marketId, progress, admission.dispatchBytes, admission.activeBytes)) admission else null
+    }
+
+    private fun hasAdmissionCapacity(
+        marketId: MarketId,
+        progress: Progress,
+        dispatchCharge: Long,
+        activeCharge: Long,
+    ): Boolean {
         val limits = configuration.limits
-        val local = limits.marketLimits.getValue(order.marketId)
-        val dispatchCharge = FundsDispatchCharge.dispatch(order, context)
-        val activeCharge = FundsDispatchCharge.active(order, context)
+        val local = limits.marketLimits.getValue(marketId)
         return dispatchEntries < limits.maxDispatchEntries && progress.outstanding.size < local.maxDispatchEntries &&
             activeOrders < limits.maxActiveOrders && progress.activeOrders < local.maxActiveOrders &&
             dispatchCharge <= limits.maxDispatchBytes - dispatchBytes &&
@@ -381,10 +411,17 @@ internal class FundsDispatchData(
     }
 
     /** 모든 할당/검사는 금융 쓰기 전에 끝낸다. 실제 반영은 record가 같은 mutation에서 한다. */
-    fun prepare(live: TradingLiveOrderSnapshot): FundsOrderDispatch {
+    fun prepare(
+        live: TradingLiveOrderSnapshot,
+        admission: Admission? = null,
+    ): FundsOrderDispatch {
         requireInitial(live)
-        require(canAdmit(live.order)) { "dispatch capacity exceeded" }
-        val progress = markets.getValue(live.order.marketId)
+        val marketId = live.order.marketId
+        val progress = markets.getValue(marketId)
+        val context = configuration.context(marketId)
+        val checked = admission ?: Admission(live.order, context)
+        require(checked.order === live.order && checked.context == context) { "dispatch charge origin differs" }
+        require(hasAdmissionCapacity(marketId, progress, checked.dispatchBytes, checked.activeBytes)) { "dispatch capacity exceeded" }
         val next = Math.addExact(progress.issued, 1L)
         if (configuration.inputContractVersion ==
             1
@@ -392,32 +429,42 @@ internal class FundsDispatchData(
             require(live.marketAdmissionSequence == next) { "dispatch and market admission sequence differ" }
         }
         return FundsOrderDispatch(
-            configuration.stream(live.order.marketId),
+            configuration.stream(marketId),
             next,
             live.admissionSequence,
             live.marketAdmissionSequence,
             live.order,
             live.reservation,
-            configuration.context(live.order.marketId),
+            context,
             inputContractVersion = configuration.inputContractVersion,
         )
     }
 
-    fun record(prepared: FundsOrderDispatch) {
+    fun record(
+        prepared: FundsOrderDispatch,
+        admission: Admission? = null,
+    ) {
         val progress = markets.getValue(prepared.order.marketId)
         check(configuration.matches(prepared.stream) && prepared.context == configuration.context(prepared.order.marketId))
         check(prepared.dispatchSequence == Math.addExact(progress.issued, 1L))
         check(!prepared.isCancellation && prepared.formatVersion == configuration.inputContractVersion)
         if (configuration.inputContractVersion == 1) check(prepared.marketAdmissionSequence == prepared.dispatchSequence)
-        check(canAdmit(prepared.order)) { "prepared dispatch capacity changed" }
+        val checked = admission ?: Admission(prepared.order, prepared.context)
+        check(checked.order === prepared.order && checked.context == prepared.context) { "dispatch charge origin differs" }
+        val activeCharge = checked.activeBytes
+        val dispatchCharge = checked.dispatchBytes
+        check(hasAdmissionCapacity(prepared.order.marketId, progress, dispatchCharge, activeCharge)) {
+            "prepared dispatch capacity changed"
+        }
+
         check(progress.outstanding.put(prepared.dispatchSequence, prepared) == null)
         progress.issued = prepared.dispatchSequence
-        progress.dispatchBytes = Math.addExact(progress.dispatchBytes, prepared.dispatchCanonicalBytes)
-        progress.activeBytes = Math.addExact(progress.activeBytes, prepared.activeCanonicalBytes)
+        progress.dispatchBytes = Math.addExact(progress.dispatchBytes, dispatchCharge)
+        progress.activeBytes = Math.addExact(progress.activeBytes, activeCharge)
         progress.activeOrders = Math.addExact(progress.activeOrders, 1)
         dispatchEntries = Math.addExact(dispatchEntries, 1)
-        dispatchBytes = Math.addExact(dispatchBytes, prepared.dispatchCanonicalBytes)
-        activeBytes = Math.addExact(activeBytes, prepared.activeCanonicalBytes)
+        dispatchBytes = Math.addExact(dispatchBytes, dispatchCharge)
+        activeBytes = Math.addExact(activeBytes, activeCharge)
         activeOrders = Math.addExact(activeOrders, 1)
     }
 
@@ -449,6 +496,14 @@ internal class FundsDispatchData(
         fromSequence: Long,
         maxEntries: Int,
         maxBytes: Long,
+    ): FundsDispatchRead = read(stream, fromSequence, maxEntries, maxBytes, wholePageEntries = 0)
+
+    fun read(
+        stream: FundsDispatchStream,
+        fromSequence: Long,
+        maxEntries: Int,
+        maxBytes: Long,
+        wholePageEntries: Int,
     ): FundsDispatchRead {
         if (fromSequence <= 0 || maxEntries <= 0 || maxBytes <= 0) return FundsDispatchRead(FundsDispatchReadStatus.INVALID_QUERY)
         if (!configuration.matches(stream)) return FundsDispatchRead(FundsDispatchReadStatus.INVALID_STREAM)
@@ -491,10 +546,17 @@ internal class FundsDispatchData(
                 reply(FundsDispatchReadStatus.INVALID_QUERY)
             }
         }
+        val entryLimit =
+            if (wholePageEntries == 0) {
+                maxEntries
+            } else {
+                val available = minOf(maxEntries.toLong(), progress.issued - fromSequence + 1).toInt()
+                (available / wholePageEntries * wholePageEntries).coerceAtLeast(wholePageEntries)
+            }
         val result = ArrayList<FundsOrderDispatch>()
         var bytes = 0L
         var sequence = fromSequence
-        while (sequence <= progress.issued && result.size < maxEntries) {
+        while (sequence <= progress.issued && result.size < entryLimit) {
             val entry = checkNotNull(progress.outstanding[sequence]) { "dispatch prefix contains a hole" }
             val charge = entry.dispatchCanonicalBytes
             if (charge > maxBytes - bytes) {
@@ -506,6 +568,11 @@ internal class FundsDispatchData(
             if (sequence == Long.MAX_VALUE) break
             sequence++
         }
+        if (wholePageEntries > 0 && result.size > wholePageEntries) {
+            val completeEntries = result.size / wholePageEntries * wholePageEntries
+            // 바이트 한도에 걸린 마지막 불완전 페이지는 다음 조회에서 읽는다.
+            if (completeEntries < result.size) result.subList(completeEntries, result.size).clear()
+        }
         return reply(FundsDispatchReadStatus.BATCH, result)
     }
 
@@ -513,16 +580,32 @@ internal class FundsDispatchData(
     fun acknowledge(ack: FundsMatchingAppliedAck): FundsDispatchAck {
         if (!configuration.matches(ack.stream)) return FundsDispatchAck(FundsDispatchAckStatus.INVALID_STREAM, 0)
         val progress = markets.getValue(ack.stream.marketId)
+        if (ack.context != configuration.context(ack.stream.marketId)) {
+            return FundsDispatchAck(FundsDispatchAckStatus.INVALID_POLICY, progress.matchingAppliedThrough)
+        }
+        val status = acknowledgeThrough(progress, ack.through)
+        return FundsDispatchAck(status, progress.matchingAppliedThrough)
+    }
 
-        fun reply(status: FundsDispatchAckStatus) = FundsDispatchAck(status, progress.matchingAppliedThrough)
-        if (ack.context != configuration.context(ack.stream.marketId)) return reply(FundsDispatchAckStatus.INVALID_POLICY)
-        if (ack.through < 0) return reply(FundsDispatchAckStatus.INVALID_SEQUENCE)
-        if (ack.through > progress.issued) return reply(FundsDispatchAckStatus.FUTURE_ACK)
-        if (ack.through <= progress.matchingAppliedThrough) return reply(FundsDispatchAckStatus.ACKNOWLEDGED)
+    /** 같은 자금 상태가 검증하고 적용한 매칭 결과의 순번으로 주문 원본을 회수한다. */
+    fun acknowledgeSettled(
+        market: MarketId,
+        through: Long,
+    ) {
+        check(acknowledgeThrough(markets.getValue(market), through) == FundsDispatchAckStatus.ACKNOWLEDGED)
+    }
+
+    private fun acknowledgeThrough(
+        progress: Progress,
+        through: Long,
+    ): FundsDispatchAckStatus {
+        if (through < 0) return FundsDispatchAckStatus.INVALID_SEQUENCE
+        if (through > progress.issued) return FundsDispatchAckStatus.FUTURE_ACK
+        if (through <= progress.matchingAppliedThrough) return FundsDispatchAckStatus.ACKNOWLEDGED
         var removedBytes = 0L
         var removedEntries = 0
         var sequence = progress.matchingAppliedThrough + 1
-        while (sequence <= ack.through) {
+        while (sequence <= through) {
             val entry = checkNotNull(progress.outstanding[sequence]) { "acknowledgement crossed a dispatch hole" }
             removedBytes = Math.addExact(removedBytes, entry.dispatchCanonicalBytes)
             removedEntries = Math.addExact(removedEntries, 1)
@@ -530,7 +613,7 @@ internal class FundsDispatchData(
             sequence++
         }
         sequence = progress.matchingAppliedThrough + 1
-        while (sequence <= ack.through) {
+        while (sequence <= through) {
             progress.outstanding.remove(sequence)
             if (sequence == Long.MAX_VALUE) break
             sequence++
@@ -538,14 +621,17 @@ internal class FundsDispatchData(
         progress.dispatchBytes -= removedBytes
         dispatchBytes -= removedBytes
         dispatchEntries -= removedEntries
-        progress.matchingAppliedThrough = ack.through
-        return reply(FundsDispatchAckStatus.ACKNOWLEDGED)
+        progress.matchingAppliedThrough = through
+        return FundsDispatchAckStatus.ACKNOWLEDGED
     }
 
     /** 실제 금융 종료만 활성 예산을 회수한다. 전달 ACK와 별도 수명이다. */
-    fun finish(order: OrderAdmissionInput) {
-        val progress = markets.getValue(order.marketId)
-        val charge = FundsDispatchCharge.active(order, configuration.context(order.marketId))
+    fun finish(
+        marketId: MarketId,
+        charge: Long,
+    ) {
+        val progress = markets.getValue(marketId)
+        check(charge > 0L)
         check(progress.activeOrders > 0 && activeOrders > 0 && progress.activeBytes >= charge && activeBytes >= charge)
         progress.activeOrders--
         progress.activeBytes -= charge
@@ -679,7 +765,7 @@ internal class FundsDispatchData(
         val reservation = live.reservation
         val context = configuration.context(order.marketId)
         require(live.phase == LiveOrderPhase.PENDING && live.admissionSequence > 0 && live.marketAdmissionSequence > 0)
-        require(order.orderId == TradingIdentifiers.order(configuration.manifest.lineage, live.admissionSequence))
+        require(TradingIdentifiers.matchesOrder(order.orderId, configuration.manifest.lineage, live.admissionSequence))
         require(reservation.marketId == order.marketId && reservation.orderId == order.orderId && reservation.userId == order.userId)
         require(reservation.side == order.side && reservation.limitPrice == order.price && reservation.initialQuantity == order.quantity)
         require(reservation.feePolicySnapshot == context.feePolicySnapshot && reservation.status == OrderReservationStatus.ACTIVE)

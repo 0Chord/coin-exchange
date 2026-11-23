@@ -51,6 +51,21 @@ class FundsDispatchDataTest {
     }
 
     @Test
+    fun `logical charge counts the actual market and reserved asset bytes`() {
+        val context = a.copy(market = a.market.copy(marketId = MarketId("시장"), quoteAssetId = AssetId("USD🌐")))
+        val buy = live(1, 1, a).order.copy(side = Side.BUY)
+        val sell = buy.copy(side = Side.SELL)
+        // 기존 주문과 같은 ID이며, context market이 5byte, quote asset이 4byte 길다.
+        assertEquals(324L, FundsDispatchCharge.active(buy, context))
+        assertEquals(423L, FundsDispatchCharge.dispatch(buy, context))
+        assertEquals(320L, FundsDispatchCharge.active(sell, context))
+        assertEquals(419L, FundsDispatchCharge.dispatch(sell, context))
+
+        val invalid = context.copy(market = context.market.copy(quoteAssetId = AssetId("USD\uD800")))
+        assertFailsWith<IllegalArgumentException> { FundsDispatchCharge.dispatch(sell, invalid) }
+    }
+
+    @Test
     fun `exact dispatch bytes admit and one byte less refuses without mutation`() {
         val original = live(1, 1, a, UserId("한"))
         val exactConfiguration = configuration(dispatchBytes = 414)
@@ -63,6 +78,27 @@ class FundsDispatchDataTest {
         assertFalse(short.canAdmit(original.order))
         assertFailsWith<IllegalArgumentException> { short.prepare(original) }
         assertEquals(before, short.snapshot())
+    }
+
+    @Test
+    fun `prepared charges belong to the same order and market context`() {
+        val data = FundsDispatchData(configuration())
+        val original = live(1, 1, a, UserId("한"))
+        val other = live(1, 1, a)
+        val admission = checkNotNull(data.admission(original.order))
+        val foreignContext = a.copy(market = a.market.copy(quoteAssetId = AssetId("Q")))
+        val foreign = FundsDispatchData.Admission(original.order, foreignContext)
+        val before = data.snapshot()
+        assertFailsWith<IllegalArgumentException> { data.prepare(other, admission) }
+        assertFailsWith<IllegalArgumentException> { data.prepare(original, foreign) }
+        assertFailsWith<IllegalStateException> { data.record(data.prepare(other), admission) }
+        assertFailsWith<IllegalStateException> { data.record(data.prepare(original), foreign) }
+        assertEquals(before, data.snapshot())
+
+        data.record(data.prepare(original, admission), admission)
+        val recorded = data.snapshot()
+        assertEquals(FundsDispatchCharge.active(original.order, a), recorded.activeBytes)
+        assertEquals(FundsDispatchCharge.dispatch(original.order, a), recorded.dispatchBytes)
     }
 
     @Test

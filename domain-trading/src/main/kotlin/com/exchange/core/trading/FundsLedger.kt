@@ -11,7 +11,7 @@ import java.security.MessageDigest
 import java.util.Collections
 import java.util.HexFormat
 
-/** 하나의 자금 로그 명령이 확정한 분개다. 분개 순번과 자금 로그 위치를 함께 보존한다. */
+/** 하나의 금융 효과가 확정한 분개다. 한 전송 묶음의 효과들은 로그 위치를 공유하고 순번으로 구분한다. */
 class FundsLedgerBatch(
     val lineage: ClusterLineage,
     val sequence: Long,
@@ -154,7 +154,7 @@ internal class FundsLedger(
         transactions: List<LedgerTransaction>,
         leaveRoomForResult: Boolean = false,
     ): FundsLedgerBatch? {
-        require(atLogPosition > lastLogPosition) { "자금 원장 위치가 역행했습니다" }
+        require(atLogPosition > 0L && atLogPosition >= lastLogPosition) { "자금 원장 위치가 역행했습니다" }
         val batch = FundsLedgerBatch(lineage, Math.addExact(issued, 1L), atLogPosition, transactions)
         // DB가 밀려도 앞서 접수된 주문의 정산·반환이 먼저 진행될 수 있게 여유를 둔다.
         val spareEntries = if (leaveRoomForResult) 1 else 0
@@ -166,7 +166,7 @@ internal class FundsLedger(
     }
 
     fun record(batch: FundsLedgerBatch) {
-        require(batch.lineage == lineage && batch.sequence == Math.addExact(issued, 1L) && batch.logPosition > lastLogPosition)
+        require(batch.lineage == lineage && batch.sequence == Math.addExact(issued, 1L) && batch.logPosition >= lastLogPosition)
         require(retained.size < FundsLedgerRecovery.MAX_RETAINED_ENTRIES)
         require(batch.canonicalBytes <= FundsLedgerRecovery.MAX_RETAINED_BYTES - retainedBytes)
         val nextDigest = batch.digestAfter(digest)

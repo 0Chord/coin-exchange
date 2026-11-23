@@ -253,6 +253,25 @@ data class OrderReservation(
         }
     }
 
+    /** 승인 수신·복원에서 [create]와 같은 최초 예약인지 새 객체 없이 대조한다. */
+    fun matchesInitial(
+        marketId: MarketId,
+        orderId: OrderId,
+        userId: UserId,
+        side: Side,
+        limitPrice: Price,
+        quantity: Quantity,
+        requirement: ReservationRequirement,
+        feePolicySnapshot: TradingFeePolicySnapshot,
+    ): Boolean =
+        this.marketId == marketId && this.orderId == orderId && this.userId == userId &&
+            this.side == side && assetId == requirement.assetId && this.limitPrice == limitPrice &&
+            initialQuantity == quantity && remainingQuantity == quantity &&
+            reservedAmount == requirement.totalReserveAmount && remainingAmount == requirement.totalReserveAmount &&
+            this.feePolicySnapshot == feePolicySnapshot && initialFeeReserveAmount == requirement.feeReserveAmount &&
+            remainingFeeReserveAmount == requirement.feeReserveAmount && status == OrderReservationStatus.ACTIVE &&
+            feeRemainder == FeeRemainder.ZERO && releasedAmount == null
+
     /**
      * 활성 주문의 남은 예약 금액을 모두 반환한 상태로 전환한다.
      *

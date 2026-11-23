@@ -38,45 +38,57 @@ class LedgerTransaction(
         require(snapshot.isNotEmpty()) {
             "ledger transaction postings must not be empty"
         }
-
-        // 대부분의 거래는 자산이 한두 개이므로 세 번째 자산부터 맵을 사용한다.
-        val firstBalance = ExactAssetBalance(snapshot[0].assetId)
-        var secondBalance: ExactAssetBalance? = null
-        var furtherBalances: LinkedHashMap<AssetId, ExactAssetBalance>? = null
-        for (posting in snapshot) {
-            val second = secondBalance
-            val balance =
-                when {
-                    posting.assetId == firstBalance.assetId -> {
-                        firstBalance
-                    }
-
-                    second == null -> {
-                        ExactAssetBalance(posting.assetId).also { secondBalance = it }
-                    }
-
-                    posting.assetId == second.assetId -> {
-                        second
-                    }
-
-                    else -> {
-                        val further = furtherBalances ?: LinkedHashMap<AssetId, ExactAssetBalance>().also { furtherBalances = it }
-                        further.getOrPut(posting.assetId) { ExactAssetBalance(posting.assetId) }
-                    }
-                }
-            balance.add(posting)
-        }
-
-        // 불균형을 보고할 때는 groupBy와 같이 처음 나타난 자산 순서를 유지한다.
-        firstBalance.requireBalanced()
-        secondBalance?.requireBalanced()
-        for (balance in furtherBalances?.values.orEmpty()) {
-            balance.requireBalanced()
-        }
+        requireBalanced(snapshot)
 
         // ID·이벤트·유형·시각은 각 거래에 따로 두고, 원장 항목 값의 저장 공간만 공유한다.
         this.postings = postingLists.shareValidated(snapshot)
     }
+
+    private fun requireBalanced(snapshot: List<LedgerPosting>) {
+        val firstAsset = snapshot[0].assetId
+        var secondAsset: AssetId? = null
+        var firstTotal = 0L
+        var secondTotal = 0L
+        for (index in snapshot.indices) {
+            val posting = snapshot[index]
+            val isFirstAsset = posting.assetId == firstAsset
+            if (!isFirstAsset) {
+                if (secondAsset == null) secondAsset = posting.assetId
+                if (posting.assetId != secondAsset) return requireBalancedExactly(snapshot)
+            }
+            val amount = posting.signedAmount()
+            val total = if (isFirstAsset) firstTotal else secondTotal
+            val next = total + amount
+            // 세 번째 자산이나 Long 합산 범위를 벗어나면 처음부터 정확한 합계를 구한다.
+            if (((total xor next) and (amount xor next)) < 0L) return requireBalancedExactly(snapshot)
+            if (isFirstAsset) firstTotal = next else secondTotal = next
+        }
+
+        require(firstTotal == 0L) { "ledger transaction must balance for asset ${firstAsset.value}" }
+        if (secondAsset != null) {
+            require(secondTotal == 0L) { "ledger transaction must balance for asset ${secondAsset.value}" }
+        }
+    }
+
+    private fun requireBalancedExactly(snapshot: List<LedgerPosting>) {
+        val balances = LinkedHashMap<AssetId, ExactAssetBalance>()
+        for (posting in snapshot) {
+            val balance = balances.getOrPut(posting.assetId) { ExactAssetBalance(posting.assetId) }
+            balance.add(posting.signedAmount())
+        }
+
+        // 처음 나타난 자산부터 균형을 검사한다.
+        for (balance in balances.values) {
+            balance.requireBalanced()
+        }
+    }
+
+    // LedgerPosting의 금액은 양수이므로 CREDIT의 부호를 바꿔도 넘치지 않는다.
+    private fun LedgerPosting.signedAmount(): Long =
+        when (side) {
+            LedgerPostingSide.DEBIT -> amount.value
+            LedgerPostingSide.CREDIT -> -amount.value
+        }
 
     private class ExactAssetBalance(
         val assetId: AssetId,
@@ -84,13 +96,7 @@ class LedgerTransaction(
         private var total = 0L
         private var largeTotal: BigInteger? = null
 
-        fun add(posting: LedgerPosting) {
-            // LedgerPosting의 금액은 양수이므로 CREDIT의 부호를 바꿔도 넘치지 않는다.
-            val signedAmount =
-                when (posting.side) {
-                    LedgerPostingSide.DEBIT -> posting.amount.value
-                    LedgerPostingSide.CREDIT -> -posting.amount.value
-                }
+        fun add(signedAmount: Long) {
             val large = largeTotal
             if (large != null) {
                 largeTotal = large.add(BigInteger.valueOf(signedAmount))
