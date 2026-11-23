@@ -1980,8 +1980,14 @@ class SplitFundsTradingHttpTest {
                 val command = SplitOrderDeliveryCommand.Control(BoundedTradingCommand.Funding(payload))
                 assertEquals("PREPARED", harness.funds.request(command).code)
             }
-            val funded = checkNotNull(harness.fundsSnapshot.get())
-            assertEquals(expectedAccounts, funded.financial.balances.size)
+            // 지급 응답을 받은 뒤에도 테스트 관찰용 사본은 갱신 중일 수 있다.
+            await(
+                "지급 이후 잔고 ${expectedAccounts}건 관측",
+                { "관측 잔고 수=${harness.fundsSnapshot.get()?.financial?.balances?.size}" },
+            ) {
+                val financial = harness.fundsSnapshot.get()?.financial
+                financial?.balances?.size == expectedAccounts
+            }
 
             queryWas(harness, gatewayRoot = "recovery-balance-pages").use { context ->
                 val ready = awaitRecoveryVerdict(context, OrderQueryRecoveryStatus.READY)
