@@ -1,5 +1,7 @@
 package com.exchange.core.api.trading.infrastructure.persistence
 
+import com.exchange.core.api.trading.application.LatestSettledTrade
+import com.exchange.core.api.trading.application.LatestSettledTradeSnapshot
 import com.exchange.core.api.trading.application.OrderFillCursor
 import com.exchange.core.api.trading.application.OrderFillQuerySnapshot
 import com.exchange.core.api.trading.application.OrderQueryBatch
@@ -254,6 +256,51 @@ class PostgresOrderQueryStore(
             throw OrderQueryUnavailableException("order fills database read failed", error)
         } catch (error: Exception) {
             throw OrderQueryInconsistentException("stored order fills are inconsistent", error)
+        }
+
+    override fun readLatestSettledTrade(marketId: String): LatestSettledTradeSnapshot? =
+        try {
+            jdbc
+                .query(
+                    """
+                    select p.*, c.namespace is not null as settlement_enabled,
+                        s.settlement_through, t.price, t.quantity, t.occurred_at
+                    from order_query.query_progress p
+                    left join order_query.feed_consumer c
+                        on c.namespace = p.namespace and c.configuration_payload -> 'settlementEnabled' = 'true'::jsonb
+                    left join order_query.feed_stream s on s.namespace = c.namespace and s.market_id = :marketId
+                    left join lateral (
+                        select price, quantity, occurred_at
+                        from order_query.settlement_transaction
+                        where namespace = s.namespace and market_id = s.market_id and result_sequence <= s.settlement_through
+                        order by engine_sequence desc
+                        limit 1
+                    ) t on true
+                    where p.namespace = :namespace
+                    """.trimIndent(),
+                    namespaceParameters + ("marketId" to marketId),
+                ) { rows, _ ->
+                    val lifecycle = sourceLifecycle(progress(rows).lifecycle)
+                    if (lifecycle != OrderQueryLifecycle.READY || !rows.getBoolean("settlement_enabled")) {
+                        return@query LatestSettledTradeSnapshot(lifecycle, settlementThrough = null, trade = null)
+                    }
+
+                    val settlementThrough = rows.getObject("settlement_through", Long::class.javaObjectType) ?: inconsistent()
+                    val price = rows.getObject("price", Long::class.javaObjectType)
+                    val trade =
+                        if (price == null) {
+                            null
+                        } else {
+                            LatestSettledTrade(
+                                price = price,
+                                quantity = rows.getLong("quantity"),
+                                settledAt = rows.getTimestamp("occurred_at").toInstant(),
+                            )
+                        }
+                    LatestSettledTradeSnapshot(lifecycle, settlementThrough, trade)
+                }.singleOrNull()
+        } catch (error: DataAccessException) {
+            throw OrderQueryUnavailableException("latest settled trade database read failed", error)
         }
 
     internal fun lockedProgress(): OrderQueryProgress =

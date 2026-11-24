@@ -1227,7 +1227,7 @@ class SplitFundsTradingHttpTest {
             makerFeeRate = FeeRate(4_000),
             takerFeeRate = FeeRate(6_000),
             first = FillFees(buyer = 0, seller = 0),
-            // 매수의 첫 0.6이 후속 0.8로 이월되어 1을 실제 청구한다.
+            // 매수의 첫 0.6과 후속 0.84가 합쳐져 1을 실제 청구한다.
             followUp = FillFees(buyer = 1, seller = 1),
             buyerTotal = 1,
         )
@@ -1310,7 +1310,48 @@ class SplitFundsTradingHttpTest {
                             assertTrue(actual.nextCursor.isNull)
                         }
 
+                        fun assertLatestTrade(
+                            settledThrough: Long,
+                            expectedPrice: Long = 100,
+                            expectedQuantity: Long? = null,
+                        ): JsonNode {
+                            val response = getLatestSettledTrade(http, url)
+                            assertEquals(200, response.statusCode(), response.body())
+                            val body = json.readTree(response.body())
+                            assertEquals(setOf("code", "marketId", "asOfSettlementResultSequence", "trade"), body.propertyNames().toSet())
+                            assertEquals("BTC-USDT", body.path("marketId").asString())
+                            val sequence = body.path("asOfSettlementResultSequence")
+                            assertTrue(sequence.isIntegralNumber, response.body())
+                            assertEquals(settledThrough, sequence.longValue())
+
+                            val trade = body.path("trade")
+                            if (expectedQuantity == null) {
+                                assertEquals("NO_SETTLED_TRADE_AS_OF", body.path("code").asString())
+                                assertTrue(trade.isNull, response.body())
+                            } else {
+                                assertEquals("LATEST_SETTLED_TRADE", body.path("code").asString())
+                                assertEquals(setOf("price", "quantity", "settledAt"), trade.propertyNames().toSet())
+                                assertEquals(expectedPrice, trade.path("price").longValue())
+                                assertEquals(expectedQuantity, trade.path("quantity").longValue())
+                            }
+                            return trade
+                        }
+
+                        fun assertSettlementTime(
+                            tradeId: String,
+                            trade: JsonNode,
+                        ) {
+                            val storedTime =
+                                jdbc.queryForObject(
+                                    "select occurred_at from order_query.settlement_transaction where settlement_id = ?",
+                                    Timestamp::class.java,
+                                    tradeId,
+                                )
+                            assertEquals(storedTime?.toInstant(), Instant.parse(trade.path("settledAt").asString()))
+                        }
+
                         awaitEmptyReady(harness, http, url)
+                        assertLatestTrade(settledThrough = 0)
                         val firstSale = submitSeller(http, url, quantity = 1)
                         val firstSaleId = json.readTree(firstSale.body()).path("orderId").asString()
                         awaitQuery(harness, http, url, firstSaleId, "RESTING", filled = 0, remaining = 1, cancelled = 0)
@@ -1319,12 +1360,14 @@ class SplitFundsTradingHttpTest {
 
                         val buyerEpoch = post(http, url, "/channels/0/epoch", """{"userId":"buyer","expectedEpoch":0}""")
                         assertEquals(200, buyerEpoch.statusCode(), buyerEpoch.body())
-                        val buy = post(http, url, "/markets/BTC-USDT/orders", orderBody("buyer", "BUY", quantity = 3))
+                        // 첫 체결은 기존 매도 주문의 100, 후속 체결은 남은 매수 주문의 105에 체결된다.
+                        val buy = post(http, url, "/markets/BTC-USDT/orders", orderBody("buyer", "BUY", quantity = 3, price = 105))
                         assertEquals(202, buy.statusCode(), buy.body())
                         val buyId = json.readTree(buy.body()).path("orderId").asString()
                         assertTrue(firstCommit.reached.await(10, TimeUnit.SECONDS), "첫 체결이 정산 분개 저장 직전까지 진행해야 한다")
                         awaitQuery(harness, http, url, buyId, "PARTIALLY_FILLED", filled = 1, remaining = 2, cancelled = 0)
                         assertStoredProgress(appliedThrough = 2, storedThrough = 1)
+                        assertLatestTrade(settledThrough = 1)
 
                         val firstPendingResponse = readOrderFills(http, url, buyId)
                         assertNull(firstPendingResponse.settledFeeTotal)
@@ -1339,6 +1382,8 @@ class SplitFundsTradingHttpTest {
                         val firstCompleted = firstPending.copy(settlementStatus = "COMPLETED", chargedFee = firstBuyerFee)
                         assertStoredProgress(2, 2, firstCompleted.tradeId)
                         assertStoredFees(firstCompleted.tradeId, makerFee = first.seller, takerFee = first.buyer)
+                        val firstSettledTrade = assertLatestTrade(settledThrough = 2, expectedQuantity = 1)
+                        assertSettlementTime(firstCompleted.tradeId, firstSettledTrade)
                         assertFills(buyId, firstBuyerFee, firstCompleted)
                         assertFills(firstSaleId, firstSellerFee, firstCompleted.copy(role = "MAKER", chargedFee = firstSellerFee))
 
@@ -1349,6 +1394,7 @@ class SplitFundsTradingHttpTest {
                         assertTrue(followUpCommit.reached.await(10, TimeUnit.SECONDS), "후속 체결이 정산 분개 저장 직전까지 진행해야 한다")
                         awaitQuery(harness, http, url, buyId, "FILLED", filled = 3, remaining = 0, cancelled = 0)
                         assertStoredProgress(3, 2, firstCompleted.tradeId)
+                        assertEquals(firstSettledTrade, assertLatestTrade(settledThrough = 2, expectedQuantity = 1))
 
                         val pendingResponse = readOrderFills(http, url, buyId)
                         assertEquals(firstBuyerFee, pendingResponse.settledFeeTotal)
@@ -1357,7 +1403,7 @@ class SplitFundsTradingHttpTest {
                         assertEquals(firstCompleted, pendingFills.first())
                         val followUpPending = pendingFills.last()
                         assertTrue(followUpPending.tradeId != firstCompleted.tradeId)
-                        assertEquals(HttpOrderFill(followUpPending.tradeId, 100, 2, "MAKER", "PENDING"), followUpPending)
+                        assertEquals(HttpOrderFill(followUpPending.tradeId, 105, 2, "MAKER", "PENDING"), followUpPending)
                         assertFills(followUpSaleId, null, followUpPending.copy(role = "TAKER"))
 
                         followUpCommit.release.countDown()
@@ -1368,6 +1414,8 @@ class SplitFundsTradingHttpTest {
                         val followUpCompleted = followUpPending.copy(settlementStatus = "COMPLETED", chargedFee = followUpBuyerFee)
                         assertStoredProgress(3, 3, firstCompleted.tradeId, followUpCompleted.tradeId)
                         assertStoredFees(followUpCompleted.tradeId, makerFee = followUp.buyer, takerFee = followUp.seller)
+                        val latestSettledTrade = assertLatestTrade(settledThrough = 3, expectedPrice = 105, expectedQuantity = 2)
+                        assertSettlementTime(followUpCompleted.tradeId, latestSettledTrade)
                         assertFills(buyId, buyerSettledTotal, firstCompleted, followUpCompleted)
                         assertFills(firstSaleId, firstSellerFee, firstCompleted.copy(role = "MAKER", chargedFee = firstSellerFee))
                         val followUpSellerFill = followUpCompleted.copy(role = "TAKER", chargedFee = followUpSellerFee)
@@ -1490,6 +1538,19 @@ class SplitFundsTradingHttpTest {
         val request =
             HttpRequest
                 .newBuilder(URI.create("$url/api/trading/v3/markets/BTC-USDT/orders/$orderId/fills$query"))
+                .timeout(Duration.ofSeconds(3))
+                .GET()
+                .build()
+        return http.send(request, HttpResponse.BodyHandlers.ofString())
+    }
+
+    private fun getLatestSettledTrade(
+        http: HttpClient,
+        url: String,
+    ): HttpResponse<String> {
+        val request =
+            HttpRequest
+                .newBuilder(URI.create("$url/api/trading/v3/markets/BTC-USDT/trades/latest"))
                 .timeout(Duration.ofSeconds(3))
                 .GET()
                 .build()
