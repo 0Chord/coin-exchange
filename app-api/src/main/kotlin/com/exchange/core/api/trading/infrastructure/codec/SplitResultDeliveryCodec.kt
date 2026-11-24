@@ -6,6 +6,7 @@ import com.exchange.core.api.trading.infrastructure.codec.generated.SplitMatchin
 import com.exchange.core.api.trading.infrastructure.codec.generated.SplitMatchingEvent
 import com.exchange.core.api.trading.infrastructure.codec.generated.SplitMatchingOutcome
 import com.exchange.core.api.trading.infrastructure.codec.generated.SplitMatchingResult
+import com.exchange.core.api.trading.infrastructure.codec.generated.SplitMatchingResultBatch
 import com.exchange.core.api.trading.infrastructure.codec.generated.SplitNotExecutedReason
 import com.exchange.core.api.trading.infrastructure.codec.generated.SplitOrderCancelRejected
 import com.exchange.core.api.trading.infrastructure.codec.generated.SplitOrderCancelled
@@ -57,6 +58,10 @@ internal sealed interface SplitResultDeliveryCommand {
 
     data class Apply(
         val result: MatchingResultEnvelope,
+    ) : SplitResultDeliveryCommand
+
+    data class ApplyBatch(
+        val results: List<MatchingResultEnvelope>,
     ) : SplitResultDeliveryCommand
 
     data class Progress(
@@ -112,6 +117,11 @@ internal class SplitResultDeliveryCodec(
                 builder.apply = result(command.result)
             }
 
+            is SplitResultDeliveryCommand.ApplyBatch -> {
+                requireConsecutiveResults(command.results)
+                builder.applyBatch = SplitMatchingResultBatch.newBuilder().addAllResults(command.results.map(::result)).build()
+            }
+
             is SplitResultDeliveryCommand.Progress -> {
                 requireContext(command.stream, command.context)
                 builder.progress =
@@ -148,6 +158,12 @@ internal class SplitResultDeliveryCodec(
 
                     SplitResultCommand.BodyCase.APPLY -> {
                         SplitResultDeliveryCommand.Apply(result(wire.apply))
+                    }
+
+                    SplitResultCommand.BodyCase.APPLY_BATCH -> {
+                        val results = wire.applyBatch.resultsList.map(::result)
+                        requireConsecutiveResults(results)
+                        SplitResultDeliveryCommand.ApplyBatch(results)
                     }
 
                     SplitResultCommand.BodyCase.PROGRESS -> {
@@ -587,6 +603,18 @@ internal class SplitResultDeliveryCodec(
         }
     }
 
+    private fun requireConsecutiveResults(results: List<MatchingResultEnvelope>) {
+        require(inputContractVersion == 2 && results.size in 2..MAX_BATCH_ENTRIES) { "invalid result batch size or contract" }
+        val first = results.first()
+        for (index in 1 until results.size) {
+            val result = results[index]
+            require(
+                result.stream == first.stream && result.input.context == first.input.context &&
+                    result.resultSequence - 1 == results[index - 1].resultSequence,
+            ) { "result batch must belong to one stream and advance consecutively" }
+        }
+    }
+
     private fun requireContext(
         stream: MatchingResultStream,
         context: TradingMarketContext,
@@ -667,9 +695,15 @@ internal class SplitResultDeliveryCodec(
                 val tag = input.readTag()
                 require(tag != 0)
                 val field = requireNotNull(type.findFieldByNumber(WireFormat.getTagFieldNumber(tag))) { "unknown result field" }
+                if (type.name == "SplitResultCommand" && field.name == "apply_batch") require(inputContractVersion == 2)
                 counts[field.index]++
                 if (field.isRepeated) {
-                    val maximum = if (field.name == "effects") MAX_RESULT_EVENTS + 1 else MAX_RESULT_EVENTS
+                    val maximum =
+                        when (field.name) {
+                            "results" -> MAX_BATCH_ENTRIES
+                            "effects" -> MAX_RESULT_EVENTS + 1
+                            else -> MAX_RESULT_EVENTS
+                        }
                     require(counts[field.index] <= maximum) { "result repeated field exceeds bound" }
                 } else {
                     require(counts[field.index] == 1) { "duplicate result field" }
@@ -743,6 +777,7 @@ internal class SplitResultDeliveryCodec(
         const val HEADER_BYTES = 12
         const val MAX_MESSAGE_BYTES = 2 * 1_024 * 1_024 - 32
         const val MAX_BODY_BYTES = MAX_MESSAGE_BYTES - HEADER_BYTES
+        const val MAX_BATCH_ENTRIES = 8
         const val MAX_RESULT_EVENTS = 16_384
         private const val SCHEMA = 89
         private const val COMMAND_KIND = 1

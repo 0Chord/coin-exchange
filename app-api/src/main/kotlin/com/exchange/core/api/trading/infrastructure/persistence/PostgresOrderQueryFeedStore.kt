@@ -371,7 +371,7 @@ class PostgresOrderQueryFeedStore(
         for (batch in batches) {
             if (batch.lineage != query.namespace.fundsLineage) throw ledgerMismatch("원장 묶음 ${batch.sequence}의 출처가 다르다")
             if (batch.sequence - 1 != previousSequence) throw ledgerIncomplete("원장 묶음 ${batch.sequence} 앞의 순번이 연속되지 않는다")
-            if (batch.logPosition <= previousPosition) throw ledgerMismatch("원장 묶음 ${batch.sequence}의 적용 위치가 역행했다")
+            if (!batch.followsLogPosition(previousPosition)) throw ledgerMismatch("원장 묶음 ${batch.sequence}의 적용 위치가 올바르지 않다")
             previousSequence = batch.sequence
             previousPosition = batch.logPosition
         }
@@ -394,7 +394,7 @@ class PostgresOrderQueryFeedStore(
             if (overlapCount > 0) verifyStoredLedger(batches.subList(0, overlapCount))
             val firstNew = batches.getOrNull(overlapCount) ?: return@withTransaction batches.last().sequence
             if (firstNew.sequence - 1 != through) throw ledgerIncomplete("원장 저장 순번 ${firstNew.sequence} 앞에 공백이 있다")
-            if (firstNew.logPosition <= lastPosition) throw ledgerMismatch("원장 묶음 ${firstNew.sequence}의 적용 위치가 역행했다")
+            if (!firstNew.followsLogPosition(lastPosition)) throw ledgerMismatch("원장 묶음 ${firstNew.sequence}의 적용 위치가 올바르지 않다")
 
             val rows =
                 batches.subList(overlapCount, batches.size).map { batch ->
@@ -493,7 +493,7 @@ class PostgresOrderQueryFeedStore(
                         if (batch.sequence != Math.addExact(previousSequence, 1L)) {
                             throw ledgerIncomplete("원장 묶음 ${previousSequence + 1} 누락")
                         }
-                        if (batch.logPosition <= previousPosition || batch.logPosition > logPosition) {
+                        if (!batch.followsLogPosition(previousPosition) || batch.logPosition > logPosition) {
                             throw ledgerMismatch("원장 묶음 ${batch.sequence} 적용 위치가 올바르지 않다")
                         }
                         previousSequence = batch.sequence

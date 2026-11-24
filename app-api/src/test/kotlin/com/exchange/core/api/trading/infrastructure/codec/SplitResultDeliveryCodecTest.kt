@@ -3,6 +3,7 @@ package com.exchange.core.api.trading.infrastructure.codec
 import com.exchange.core.api.trading.infrastructure.codec.generated.SplitMatchingEffect
 import com.exchange.core.api.trading.infrastructure.codec.generated.SplitMatchingEvent
 import com.exchange.core.api.trading.infrastructure.codec.generated.SplitMatchingOutcome
+import com.exchange.core.api.trading.infrastructure.codec.generated.SplitMatchingResultBatch
 import com.exchange.core.api.trading.infrastructure.codec.generated.SplitOrderDisposition
 import com.exchange.core.api.trading.infrastructure.codec.generated.SplitResultCommand
 import com.exchange.core.api.trading.infrastructure.codec.generated.SplitResultReply
@@ -76,6 +77,29 @@ class SplitResultDeliveryCodecTest {
     private val context = TradingMarketContext(MarketDefinition(MarketId("X-Q"), AssetId("X"), AssetId("Q"), 0), policy, 7)
     private val stream = MatchingResultStream(matching, funds, context.market.marketId, 13, 19)
     private val reservations = OrderReservationCalculator(BuyOrderFundingQuoteCalculator(TradingFeeReserveCalculator()))
+
+    @Test
+    fun `배치는 전체 결과를 순번대로 보존하고 간격이 있는 결과를 거절한다`() {
+        val first = versionTwo(result(0))
+        val second = versionTwo(result(1))
+        val batch = SplitResultDeliveryCommand.ApplyBatch(listOf(first, second))
+        val bytes = cancellationCodec.encode(91, batch)
+        assertEquals(SplitResultDeliveryEnvelope(91, batch), cancellationCodec.decode(bytes))
+        assertFailsWith<IllegalArgumentException> { codec.encode(91, batch) }
+        assertFailsWith<IllegalArgumentException> {
+            cancellationCodec.encode(91, SplitResultDeliveryCommand.ApplyBatch(listOf(first, versionTwo(result(2)))))
+        }
+
+        val wire = command(bytes)
+        val one = wire.applyBatch.getResults(0)
+        val two = wire.applyBatch.getResults(1)
+        val skipped = wire.applyBatch.toBuilder().setResults(1, two.toBuilder().setResultSequence(3))
+        val oversized = SplitMatchingResultBatch.newBuilder().addAllResults(List(9) { one })
+        for (invalid in listOf(skipped, oversized)) {
+            val bad = frame(1, wire.toBuilder().setApplyBatch(invalid).build(), 2)
+            assertFailsWith<AdmissionMessageException> { cancellationCodec.decode(bad) }
+        }
+    }
 
     @Test
     fun `명시한 취소 결과는 취소 원문 대상 최초 원본과 빈 효과 거절을 보존한다`() {

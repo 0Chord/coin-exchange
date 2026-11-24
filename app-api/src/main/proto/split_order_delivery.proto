@@ -17,7 +17,12 @@ message SplitDeliveryCommand {
     SplitDispatch apply = 13;
     SplitAppliedAck record_ack = 14;
     SplitCancelCommand cancel = 15;
+    SplitDispatchBatch apply_batch = 16;
   }
+}
+
+message SplitDispatchBatch {
+  repeated SplitDispatch entries = 1;
 }
 
 message SplitDeliveryReply {

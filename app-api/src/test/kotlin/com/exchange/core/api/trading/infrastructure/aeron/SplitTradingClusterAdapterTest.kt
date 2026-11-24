@@ -35,13 +35,20 @@ import com.exchange.core.trading.CancelInboxLookup
 import com.exchange.core.trading.CancelIntent
 import com.exchange.core.trading.CancelReceipt
 import com.exchange.core.trading.ClusterLineage
+import com.exchange.core.trading.FundsDispatchLimits
 import com.exchange.core.trading.FundsDispatchReadStatus
 import com.exchange.core.trading.FundsMatchingAppliedAck
 import com.exchange.core.trading.FundsRoleRecoveryState
 import com.exchange.core.trading.InboxRejection
+import com.exchange.core.trading.MarketFundsDispatchLimits
+import com.exchange.core.trading.MarketMatchingIntakeLimits
+import com.exchange.core.trading.MatchingIntakeLimits
 import com.exchange.core.trading.MatchingResultEnvelope
 import com.exchange.core.trading.MatchingResultReadStatus
 import com.exchange.core.trading.OrderIntent
+import com.exchange.core.trading.QueryFactsAckStatus
+import com.exchange.core.trading.QueryRetentionConfiguration
+import com.exchange.core.trading.QueryRetentionLimits
 import com.exchange.core.trading.RequestToken
 import com.exchange.core.trading.ReservedMatchingState
 import com.exchange.core.trading.TradingCancelInboxEntrySnapshot
@@ -96,6 +103,130 @@ class SplitTradingClusterAdapterTest {
     private val configuration = configuration()
     private val stream = configuration.dispatchConfiguration.stream(market.marketId)
     private val timestamp = 1_793_664_000_000L
+
+    @Test
+    fun `매칭 주문 묶음은 공간이 찬 순번에서 멈추고 앞의 두 건만 확인한다`() {
+        val settings = configuration(inputContractVersion = 2, maxMatchingResults = 2)
+        val source = fixture(TradingServiceRole.FUNDS, results = true, settings = settings)
+        prepare(source)
+        for (sequence in 1L..3L) assertEquals("ACCEPTED", source.command(admit(sequence, 1)).code)
+        val orders = source.read(1).entries
+        val target = fixture(TradingServiceRole.MATCHING, results = true, settings = settings)
+        target.initialize()
+
+        val gap = target.command(SplitOrderDeliveryCommand.ApplyBatch(orders.drop(1)))
+        assertEquals("GAP", gap.code)
+        assertEquals(1L, gap.expectedSequence)
+        assertNull(gap.ack)
+
+        val partial = target.command(SplitOrderDeliveryCommand.ApplyBatch(orders))
+        assertEquals("BUSY", partial.code)
+        assertEquals(3L, partial.expectedSequence)
+        val applied = assertNotNull(partial.ack)
+        assertEquals(2L, applied.through)
+        assertEquals(listOf(1L, 2L), target.readResult(1).entries.map { it.resultSequence })
+        assertEquals("ACKNOWLEDGED", source.command(SplitOrderDeliveryCommand.RecordAck(applied)).code)
+        assertEquals(listOf(3L), source.read(3).entries.map { it.dispatchSequence })
+
+        val completed = source.resultCommand(SplitResultDeliveryCommand.ApplyBatch(target.readResult(1).entries))
+        assertEquals(2L, completed.ack?.through)
+        assertEquals("ACKNOWLEDGED", target.resultCommand(SplitResultDeliveryCommand.RecordAck(assertNotNull(completed.ack))).code)
+        val retry = target.command(SplitOrderDeliveryCommand.ApplyBatch(orders.drop(1)))
+        assertEquals("APPLIED", retry.code)
+        assertEquals(3L, retry.ack?.through)
+        assertEquals(listOf(3L), target.readResult(3).entries.map { it.resultSequence })
+        assertEquals(3, target.matching().restingOrders(market.marketId).size)
+    }
+
+    @Test
+    fun `정산 묶음은 적용한 두 건만 확인하고 전체 재시도에서 세 번째만 새로 적용한다`() {
+        val consumerId = "settlement-batch-test"
+        val queryRetention =
+            QueryRetentionConfiguration(consumerId, mapOf(market.marketId to QueryRetentionLimits(maxEntries = 2)), capabilityVersion = 2)
+        val settings = configuration(inputContractVersion = 2, queryRetention = queryRetention)
+        val funds = fixture(TradingServiceRole.FUNDS, results = true, settings = settings)
+        prepare(funds)
+        for (sequence in 1L..2L) assertEquals("ACCEPTED", funds.command(admit(sequence, 1)).code)
+        assertEquals(QueryFactsAckStatus.ACKNOWLEDGED, funds.funds().acknowledgeQueryAdmissions(consumerId, 2).status)
+        assertEquals("ACCEPTED", funds.command(admit(3, 1)).code)
+        val orders = funds.read(1).entries
+        val matching = fixture(TradingServiceRole.MATCHING, results = true, settings = settings)
+        matching.initialize()
+        assertEquals("APPLIED", matching.command(SplitOrderDeliveryCommand.ApplyBatch(orders.take(2))).code)
+        val resultStream = settings.matchingConfiguration.resultStream(market.marketId)
+        assertEquals(QueryFactsAckStatus.ACKNOWLEDGED, matching.matching().acknowledgeQueryResults(consumerId, resultStream, 2).status)
+        assertEquals("APPLIED", matching.command(SplitOrderDeliveryCommand.Apply(orders.last())).code)
+        val batch = SplitResultDeliveryCommand.ApplyBatch(matching.readResult(1).entries)
+
+        val partial = funds.resultCommand(batch)
+        assertEquals("NOT_READY", partial.code)
+        assertEquals(3L, partial.expectedSequence)
+        assertEquals(2L, partial.ack?.through)
+        assertEquals(2L, funds.funds().querySettlementsProgress(resultStream)?.issued)
+        assertEquals(QueryFactsAckStatus.ACKNOWLEDGED, funds.funds().acknowledgeQuerySettlements(consumerId, resultStream, 2).status)
+
+        val retry = funds.resultCommand(batch, timestamp + 1)
+        assertEquals("APPLIED", retry.code)
+        assertEquals(3L, retry.ack?.through)
+        val duplicate = funds.resultCommand(batch, timestamp + 2)
+        assertEquals("DUPLICATE", duplicate.code)
+        assertEquals(3L, duplicate.ack?.through)
+        val receipts = assertNotNull(funds.funds().fundsRecoveryState().results).receipts
+        assertEquals(listOf(1L, 2L, 3L), receipts.map { it.result.resultSequence })
+        assertEquals(listOf(timestamp, timestamp, timestamp + 1), receipts.map { it.appliedAt.toEpochMilli() })
+        assertEquals(Balance(user, quote, Amount(700), Amount(300)), funds.funds().currentBalance(user, quote))
+    }
+
+    @Test
+    fun `같은 정산 프레임의 두 분개는 별도 순번을 얻고 snapshot 뒤 재생해도 같은 원장을 만든다`() {
+        val queryRetention =
+            QueryRetentionConfiguration("journal-replay", mapOf(market.marketId to QueryRetentionLimits()), capabilityVersion = 2)
+        val settings = configuration(inputContractVersion = 2, queryRetention = queryRetention)
+        val funds = fixture(TradingServiceRole.FUNDS, results = true, settings = settings)
+        prepare(funds)
+        val seller = UserId("seller")
+        val opening = OpeningBalance("seller-opening", seller, market.baseAssetId, Amount(3))
+        val credit = DevelopmentBalanceCommandPayload(opening, "unused-legacy-id", Instant.EPOCH)
+        assertEquals("PREPARED", funds.command(control(BoundedTradingCommand.Funding(credit))).code)
+        assertEquals("ISSUED", funds.command(control(BoundedTradingCommand.Rotate(seller, 0, 0))).code)
+        val sell = OrderIntent(market.marketId, 7, Side.SELL, OrderType.LIMIT, TimeInForce.GTC, Price(100), Quantity(3))
+        assertEquals("ACCEPTED", funds.command(control(BoundedTradingCommand.Admit(RequestToken(seller, 0, 1, 1), sell))).code)
+        assertEquals("ACCEPTED", funds.command(admit(1, 1)).code)
+        assertEquals("ACCEPTED", funds.command(admit(2, 2)).code)
+        val snapshot = funds.snapshot()
+        val snapshotPosition = funds.position
+        val before = assertNotNull(funds.funds().ledgerProgress()).issued
+
+        val matching = fixture(TradingServiceRole.MATCHING, results = true, settings = settings)
+        matching.initialize()
+        assertEquals(3L, matching.command(SplitOrderDeliveryCommand.ApplyBatch(funds.read(1).entries)).ack?.through)
+        val batch = SplitResultDeliveryCommand.ApplyBatch(matching.readResult(1).entries)
+        assertEquals(3L, funds.resultCommand(batch).ack?.through)
+        val ledger = assertNotNull(funds.funds().ledgerProgress())
+        assertEquals(before + 2, ledger.issued)
+        val firstTrade = assertNotNull(funds.funds().readLedgerBatch(before + 1))
+        val secondTrade = assertNotNull(funds.funds().readLedgerBatch(before + 2))
+        assertEquals(funds.position, firstTrade.logPosition)
+        assertEquals(firstTrade.logPosition, secondTrade.logPosition)
+        assertEquals(Balance(seller, quote, Amount(300), Amount(0)), funds.funds().currentBalance(seller, quote))
+        assertEquals(Balance(user, quote, Amount(700), Amount(0)), funds.funds().currentBalance(user, quote))
+
+        val restored = fixture(TradingServiceRole.FUNDS, start = false, position = snapshotPosition, results = true, settings = settings)
+        restored.service.onStart(restored.cluster, snapshotImage(snapshot))
+        restored.replayResult(batch)
+        assertTrue(restored.resultReplies.isEmpty())
+        assertEquals(ledger, restored.funds().ledgerProgress())
+        assertEquals(firstTrade.logPosition, restored.funds().readLedgerBatch(firstTrade.sequence)?.logPosition)
+        assertEquals(secondTrade.logPosition, restored.funds().readLedgerBatch(secondTrade.sequence)?.logPosition)
+        val liveAccounts = assertNotNull(funds.funds().recoveryAccounts(0, 8))
+        val restoredAccounts = assertNotNull(restored.funds().recoveryAccounts(0, 8))
+        assertEquals(liveAccounts.balances.toSet(), restoredAccounts.balances.toSet())
+        assertEquals(liveAccounts.reservations, restoredAccounts.reservations)
+
+        restored.role(Cluster.Role.LEADER)
+        assertEquals("DUPLICATE", restored.resultCommand(batch, timestamp + 1).code)
+        assertEquals(ledger, restored.funds().ledgerProgress())
+    }
 
     @Test
     fun `자금 callback은 예약과 전달만 기록하고 적용 ACK는 payload만 회수한다`() {
@@ -807,8 +938,9 @@ class SplitTradingClusterAdapterTest {
         start: Boolean = true,
         position: Long = 0,
         results: Boolean = false,
+        settings: SplitTradingConfiguration = configuration,
     ): Fixture {
-        val fixture = Fixture(role, position, results)
+        val fixture = Fixture(role, position, results, settings)
         if (start) {
             fixture.service.onStart(fixture.cluster, null)
             fixture.role(Cluster.Role.LEADER)
@@ -820,13 +952,16 @@ class SplitTradingClusterAdapterTest {
         role: TradingServiceRole,
         var position: Long,
         results: Boolean,
+        private val settings: SplitTradingConfiguration,
     ) {
+        private val codec = SplitOrderDeliveryCodec(settings.inputContractVersion)
+        private val resultCodec = SplitResultDeliveryCodec(settings.inputContractVersion)
         val cluster = mock(Cluster::class.java)
         val session = mock(ClientSession::class.java)
         val replies = mutableListOf<SplitOrderDeliveryReply>()
         val resultReplies = mutableListOf<SplitResultDeliveryReply>()
         val failures = mutableListOf<Throwable>()
-        val service = SplitTradingClusterAdapter(role, configuration, failures::add, results)
+        val service = SplitTradingClusterAdapter(role, settings, failures::add, results)
         private var correlation = 0L
 
         init {
@@ -853,7 +988,7 @@ class SplitTradingClusterAdapterTest {
         }
 
         fun initialize() {
-            assertEquals("INITIALIZED", command(SplitOrderDeliveryCommand.InitializeRole(configuration.topologySha256)).code)
+            assertEquals("INITIALIZED", command(SplitOrderDeliveryCommand.InitializeRole(settings.topologySha256)).code)
         }
 
         fun command(command: SplitOrderDeliveryCommand): SplitOrderDeliveryReply {
@@ -893,7 +1028,7 @@ class SplitTradingClusterAdapterTest {
             service
                 .readResults(
                     assertNotNull(service.activeResultGeneration()),
-                    configuration.matchingConfiguration.resultStream(market.marketId),
+                    settings.matchingConfiguration.resultStream(market.marketId),
                     from,
                     8,
                     2L * 1024 * 1024,
@@ -954,7 +1089,11 @@ class SplitTradingClusterAdapterTest {
         return image
     }
 
-    private fun configuration(): SplitTradingConfiguration {
+    private fun configuration(
+        inputContractVersion: Int = 1,
+        maxMatchingResults: Int = 8_192,
+        queryRetention: QueryRetentionConfiguration? = null,
+    ): SplitTradingConfiguration {
         val context =
             TradingMarketContext(
                 market,
@@ -993,6 +1132,23 @@ class SplitTradingClusterAdapterTest {
             topology,
             declaration(TradingServiceRole.FUNDS, manifest.lineage),
             declaration(TradingServiceRole.MATCHING, matchingLineage),
+            inputContractVersion = inputContractVersion,
+            dispatchLimits =
+                if (inputContractVersion == 2) {
+                    FundsDispatchLimits(
+                        mapOf(market.marketId to MarketFundsDispatchLimits(maxDispatchBytes = 1_048_576, maxActiveBytes = 1_048_576)),
+                        maxDispatchBytes = 1_048_576,
+                        maxActiveBytes = 1_048_576,
+                    )
+                } else {
+                    FundsDispatchLimits.defaults(manifest)
+                },
+            matchingLimits =
+                MatchingIntakeLimits(
+                    mapOf(market.marketId to MarketMatchingIntakeLimits(maxResultEntries = maxMatchingResults)),
+                    maxResultEntries = maxMatchingResults,
+                ),
+            queryRetention = queryRetention,
         )
     }
 }

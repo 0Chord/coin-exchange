@@ -161,6 +161,7 @@ internal fun splitTradingConfiguration(
         matchingDeclarations = matchingDeclarations,
         matchingLimitsByLineage = matchingLimitsByLineage,
         queryRetention = splitQueryRetentionConfiguration(topology, environment, dispatchLimits, inputContractVersion),
+        transferBatchEnabled = environment["SPLIT_TRANSFER_BATCH_ENABLED"]?.toBooleanStrict() ?: false,
     )
 }
 

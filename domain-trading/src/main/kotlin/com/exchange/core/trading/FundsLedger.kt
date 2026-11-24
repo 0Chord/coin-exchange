@@ -11,7 +11,7 @@ import java.security.MessageDigest
 import java.util.Collections
 import java.util.HexFormat
 
-/** 하나의 자금 로그 명령이 확정한 분개다. 분개 순번과 자금 로그 위치를 함께 보존한다. */
+/** 한 자금 명령 또는 정산 결과의 분개다. 원장 순번과 원본 로그 위치를 함께 보존한다. */
 class FundsLedgerBatch(
     val lineage: ClusterLineage,
     val sequence: Long,
@@ -36,6 +36,13 @@ class FundsLedgerBatch(
         }
         require(bytes <= MAX_CANONICAL_BYTES) { "자금 명령의 분개 전송 한도를 초과했습니다" }
         canonicalBytes = bytes
+    }
+
+    /** 정산 전송 한 건에 든 결과들은 같은 로그 위치를 원장 순번으로 나눈다. */
+    fun followsLogPosition(previous: Long): Boolean {
+        val kind = transactions.first().transactionType
+        return logPosition > previous ||
+            (logPosition == previous && (kind == LedgerTransactionType.SETTLEMENT || kind == LedgerTransactionType.RELEASE))
     }
 
     /** 저장소에서도 재계산할 수 있도록 값의 순서와 인코딩을 고정한다. */
@@ -154,8 +161,8 @@ internal class FundsLedger(
         transactions: List<LedgerTransaction>,
         leaveRoomForResult: Boolean = false,
     ): FundsLedgerBatch? {
-        require(atLogPosition > lastLogPosition) { "자금 원장 위치가 역행했습니다" }
         val batch = FundsLedgerBatch(lineage, Math.addExact(issued, 1L), atLogPosition, transactions)
+        require(batch.followsLogPosition(lastLogPosition)) { "자금 원장 위치가 올바르지 않습니다" }
         // DB가 밀려도 앞서 접수된 주문의 정산·반환이 먼저 진행될 수 있게 여유를 둔다.
         val spareEntries = if (leaveRoomForResult) 1 else 0
         val spareBytes = if (leaveRoomForResult) FundsLedgerBatch.MAX_CANONICAL_BYTES else 0L
@@ -166,7 +173,7 @@ internal class FundsLedger(
     }
 
     fun record(batch: FundsLedgerBatch) {
-        require(batch.lineage == lineage && batch.sequence == Math.addExact(issued, 1L) && batch.logPosition > lastLogPosition)
+        require(batch.lineage == lineage && batch.sequence == Math.addExact(issued, 1L) && batch.followsLogPosition(lastLogPosition))
         require(retained.size < FundsLedgerRecovery.MAX_RETAINED_ENTRIES)
         require(batch.canonicalBytes <= FundsLedgerRecovery.MAX_RETAINED_BYTES - retainedBytes)
         val nextDigest = batch.digestAfter(digest)

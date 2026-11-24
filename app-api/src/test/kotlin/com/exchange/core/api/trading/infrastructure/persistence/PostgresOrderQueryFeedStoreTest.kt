@@ -106,6 +106,7 @@ class PostgresOrderQueryFeedStoreTest {
     private val identities = AtomicLong(1_000)
     private lateinit var jdbc: NamedParameterJdbcTemplate
     private lateinit var migratedFillFixture: Fixture
+    private lateinit var migratedLedgerFixture: Fixture
 
     @BeforeAll
     fun start() {
@@ -114,6 +115,9 @@ class PostgresOrderQueryFeedStoreTest {
         val migrations = Flyway.configure().dataSource(dataSource()).locations("classpath:db/migration")
         migrations.target("12").load().migrate()
         migratedFillFixture = storeFillHistoryBeforeUpgrade()
+        migrations.target("15").load().migrate()
+        migratedLedgerFixture = fixture()
+        migratedLedgerFixture.feed.applyLedgerPage(listOf(migratedLedgerFixture.ledgerBatch(1)))
         migrations.target(MigrationVersion.LATEST).load().migrate()
     }
 
@@ -1008,7 +1012,7 @@ class PostgresOrderQueryFeedStoreTest {
     }
 
     @Test
-    fun `원장 페이지 안과 저장 경계에서 같은 로그 위치나 이전 위치를 거절한다`() {
+    fun `원장 페이지 안과 저장 경계에서 같은 지급 로그 위치나 이전 위치를 거절한다`() {
         val f = fixture()
         val first = f.ledgerBatch(1)
         val second = f.ledgerBatch(2)
@@ -1054,20 +1058,23 @@ class PostgresOrderQueryFeedStoreTest {
     }
 
     @Test
-    fun `저장된 원장이 DB 유일성 제약과 충돌하면 원장 위치를 전진시키지 않는다`() {
-        val f = fixture()
-        val third = f.ledgerBatch(3)
-        assertEquals(2L, f.feed.applyLedgerPage(listOf(f.ledgerBatch(1), f.ledgerBatch(2))))
-        assertEquals(
-            1,
-            jdbc.update(
-                "update order_query.funds_ledger_batch set log_position = :position where namespace = :namespace and sequence = 1",
-                f.parameters + ("position" to third.logPosition),
-            ),
-        )
+    fun `기존 원장 마이그레이션 뒤 한 로그 위치에서 정산한 두 원장을 순번으로 저장한다`() {
+        val f = migratedLedgerFixture
+        assertEquals(1L, f.feed.applyLedgerPage(listOf(f.ledgerBatch(1))))
+        f.owner.apply(f.input(1, side = Side.SELL, quantity = 2))
+        val firstFill = f.settlement(f.owner.apply(f.input(2, quantity = 1)).result!!).fills.single()
+        val secondFill = f.settlement(f.owner.apply(f.input(3, quantity = 1)).result!!).fills.single()
+        val second = FundsLedgerBatch(f.namespace.fundsLineage, 2L, 64L, listOf(firstFill.transaction))
+        val third = FundsLedgerBatch(f.namespace.fundsLineage, 3L, 64L, listOf(secondFill.transaction))
+        assertEquals(2L, f.feed.applyLedgerPage(listOf(second)))
+        assertEquals(3L, f.reopen().feed.applyLedgerPage(listOf(second, third)))
+        assertEquals(3L, f.reopen().feed.applyLedgerPage(listOf(second, third)))
+        f.feed.verifyLedgerPrefix(3L)
 
-        assertFailsWith<OrderQueryWriteConflictException> { f.feed.applyLedgerPage(listOf(third)) }
-        assertEquals(2L, f.feed.ledgerThrough())
+        val backwards = FundsLedgerBatch(f.namespace.fundsLineage, 4L, 63L, listOf(secondFill.transaction))
+        val failure = assertFailsWith<OrderQueryLedgerException> { f.feed.applyLedgerPage(listOf(backwards)) }
+        assertEquals(OrderQueryRecoveryFailure.LEDGER_MISMATCH, failure.reason)
+        assertEquals(3L, f.feed.ledgerThrough())
     }
 
     @Test

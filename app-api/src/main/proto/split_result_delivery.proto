@@ -16,7 +16,12 @@ message SplitResultCommand {
     SplitMatchingResult apply = 11;
     SplitSettlementProgress progress = 12;
     SplitFundsSettledAck record_ack = 13;
+    SplitMatchingResultBatch apply_batch = 14;
   }
+}
+
+message SplitMatchingResultBatch {
+  repeated SplitMatchingResult results = 1;
 }
 
 message SplitResultReply {

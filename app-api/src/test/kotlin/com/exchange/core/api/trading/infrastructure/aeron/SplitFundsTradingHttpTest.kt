@@ -1711,6 +1711,100 @@ class SplitFundsTradingHttpTest {
         )
 
     @Test
+    fun `한 Aeron 정산 묶음의 두 체결은 재전송과 재시작 뒤에도 원장에 한 번씩 남는다`() {
+        withTradingNodes("query-test", sourceRestart = true, persistSettlements = true) { harness ->
+            val market = MarketId("BTC-USDT")
+            val buyer = UserId("buyer")
+            val seller = UserId("seller")
+            for (user in listOf(buyer, seller)) {
+                val rotate = SplitOrderDeliveryCommand.Control(BoundedTradingCommand.Rotate(user, 0, 0))
+                assertEquals("ISSUED", harness.funds.request(rotate).code)
+            }
+
+            fun admit(
+                user: UserId,
+                side: Side,
+                quantity: Long,
+                sequence: Long,
+            ) {
+                val intent = OrderIntent(market, 1, side, OrderType.LIMIT, TimeInForce.GTC, Price(100), Quantity(quantity))
+                val command = BoundedTradingCommand.Admit(RequestToken(user, 0, 1, sequence), intent)
+                assertEquals("ACCEPTED", harness.funds.request(SplitOrderDeliveryCommand.Control(command)).code)
+            }
+
+            admit(seller, Side.SELL, 3, 1)
+            await("매도 대기 결과의 자금 적용") {
+                harness.funds.poll()
+                val streams =
+                    harness.fundsSnapshot
+                        .get()
+                        ?.results
+                        ?.streams
+                streams?.single()?.resultThrough == 1L
+            }
+            harness.settlementGate.paused.set(true)
+            admit(buyer, Side.BUY, 1, 1)
+            admit(buyer, Side.BUY, 1, 2)
+
+            val results =
+                OrderQuerySourceClient(harness.matchingEndpoint, 10_000).use { matching ->
+                    await("두 매수 체결의 매칭 로그 반영") {
+                        harness.funds.poll()
+                        matching.request(OrderQuerySourceCommand.DescribeRecovery("query-test")).recovery?.resultThrough == 3L
+                    }
+                    (2L..3L).map { sequence ->
+                        checkNotNull(matching.request(OrderQuerySourceCommand.Read("query-test", market.value, sequence)).result)
+                    }
+                }
+            val pending =
+                harness.fundsSnapshot
+                    .get()
+                    ?.results
+                    ?.streams
+            assertEquals(1L, pending?.single()?.resultThrough)
+            takeSnapshot(harness.fundsNode, harness.funds)
+            takeSnapshot(harness.matchingNode, harness.funds)
+
+            val command = SplitResultDeliveryCommand.ApplyBatch(results)
+            val applied =
+                DevelopmentSplitResultDeliveryClient(harness.fundsEndpoint, 10_000).use { funds ->
+                    val reply = funds.request(command)
+                    assertEquals("APPLIED", reply.code)
+                    assertEquals(3L, reply.ack?.through)
+                    val repeated = funds.request(command)
+                    assertEquals("DUPLICATE", repeated.code)
+                    assertEquals(reply.ack, repeated.ack)
+                    reply
+                }
+            DevelopmentSplitResultDeliveryClient(harness.matchingEndpoint, 10_000).use { matching ->
+                assertEquals("ACKNOWLEDGED", matching.request(SplitResultDeliveryCommand.RecordAck(checkNotNull(applied.ack))).code)
+            }
+            val beforeRestart = checkNotNull(harness.fundsSnapshot.get())
+            val expectedBalance = Balance(buyer, AssetId("USDT"), Amount(800), Amount.ZERO)
+            assertTrue(expectedBalance in beforeRestart.financial.balances)
+
+            harness.funds.close()
+            harness.fundsNode.close()
+            harness.matchingNode.close()
+            withRestartedTradingNodes(harness) {
+                assertEquals(beforeRestart.financial.balances, checkNotNull(harness.fundsSnapshot.get()).financial.balances)
+                queryWas(harness, gatewayRoot = "batch-ledger", requireRecoveryReady = true).use { context ->
+                    assertEquals(7L, awaitRecoveryVerdict(context, OrderQueryRecoveryStatus.READY).ledgerThrough)
+                    val rows = storedLedgerRows(harness)
+                    assertEquals((1L..7L).toList(), rows.map { it.getValue("sequence") })
+                    val settlements = rows.takeLast(2)
+                    val positions = settlements.map { it.getValue("log_position") }
+                    assertEquals(listOf(applied.appliedLogPosition, applied.appliedLogPosition), positions)
+                    val transactions = settlements.flatMap { readRecoveryTransactions(it.getValue("transactions") as String) }
+                    val types = transactions.map { it.transactionType }
+                    assertEquals(listOf(LedgerTransactionType.SETTLEMENT, LedgerTransactionType.SETTLEMENT), types)
+                    assertEquals(2, transactions.map { it.ledgerTransactionId }.toSet().size)
+                }
+            }
+        }
+    }
+
+    @Test
     fun `원장 ACK 전에 DB 첫 기록을 잃으면 마지막 순번이 남아 있어도 회수하지 않는다`() {
         withTradingNodes("query-test", persistSettlements = true) { harness ->
             val gate = CallbackGate()

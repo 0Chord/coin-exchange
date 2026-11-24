@@ -138,11 +138,14 @@ internal class MatchingResultDeliveryAgent(
 
     private data class Flight(
         val stream: Stream,
-        val sequence: Long,
+        val firstSequence: Long,
+        val lastSequence: Long,
         val epoch: Long,
         val bytes: Int,
         val sentAt: Long,
-    )
+    ) {
+        val entryCount: Int get() = (lastSequence - firstSequence + 1).toInt()
+    }
 
     private data class Read(
         val stream: Stream,
@@ -155,7 +158,7 @@ internal class MatchingResultDeliveryAgent(
 
     private data class Prepared(
         val stream: Stream,
-        val input: MatchingResultEnvelope,
+        val entryCount: Int,
         val frame: Frame,
     )
 
@@ -193,6 +196,7 @@ internal class MatchingResultDeliveryAgent(
     private val resultByteBudget = limits.maxInFlightBytes - limits.controlReserve(configuration)
     private val flights = linkedMapOf<Long, Flight>()
     private var resultBytes = 0L
+    private var inFlightEntries = 0
     private var read: Read? = null
     private var prepared: Prepared? = null
     private var ackRequest: AckSubmission? = null
@@ -304,7 +308,7 @@ internal class MatchingResultDeliveryAgent(
         when (reply.code) {
             "APPLIED", "DUPLICATE", "PRUNED" -> {
                 val ack = reply.ack
-                if (ack == null || ack.stream != stream.identity || ack.context != stream.context || ack.through < flight.sequence) {
+                if (ack == null || ack.stream != stream.identity || ack.context != stream.context || ack.through < flight.lastSequence) {
                     failStream(stream, "funds result reply has an invalid cumulative ACK")
                     return
                 }
@@ -314,7 +318,7 @@ internal class MatchingResultDeliveryAgent(
 
             "GAP" -> {
                 val expected = reply.expectedSequence
-                if (expected == null || expected <= 0 || expected > flight.sequence) {
+                if (expected == null || expected <= 0 || expected > flight.firstSequence) {
                     failStream(stream, "funds result GAP has an invalid expected sequence")
                     return
                 }
@@ -323,7 +327,25 @@ internal class MatchingResultDeliveryAgent(
             }
 
             "NOT_READY" -> {
-                retryStream(stream)
+                val ack = reply.ack
+                val blocked = reply.expectedSequence
+                if (ack == null) {
+                    if (blocked != null && blocked != flight.firstSequence) {
+                        failStream(stream, "funds result capacity reply skips a result without an ACK")
+                        return
+                    }
+                    retryStream(stream)
+                } else {
+                    if (blocked == null || blocked !in flight.firstSequence..flight.lastSequence ||
+                        ack.stream != stream.identity || ack.context != stream.context ||
+                        ack.through < flight.firstSequence || ack.through != blocked - 1
+                    ) {
+                        failStream(stream, "funds result capacity reply has an invalid partial ACK")
+                        return
+                    }
+                    acceptOrRefreshAck(stream, ack)
+                    retryStream(stream, blocked)
+                }
             }
 
             else -> {
@@ -346,7 +368,7 @@ internal class MatchingResultDeliveryAgent(
             }
             return
         }
-        removeFlights(stream) { it.sequence <= ack.through }
+        removeFlights(stream) { it.lastSequence <= ack.through }
         if (ack.through > stream.confirmed) {
             val previous = stream.pendingAck
             if (previous == null) stream.ackSince = nanoTime()
@@ -354,7 +376,7 @@ internal class MatchingResultDeliveryAgent(
                 stream.pendingAck = ack
                 stream.needsIssuedRefresh = false
             }
-            stream.ackCount = minOf(limits.ackBatchSize, stream.ackCount + 1)
+            stream.ackCount = minOf(limits.ackBatchSize.toLong(), ack.through - stream.confirmed).toInt()
         }
     }
 
@@ -377,7 +399,7 @@ internal class MatchingResultDeliveryAgent(
         stream.issued = maxOf(stream.issued, issued)
         stream.confirmed = maxOf(stream.confirmed, ack.through)
         if (stream.pendingAck?.through?.let { it <= stream.confirmed } == true) clearPendingAck(stream)
-        removeFlights(stream) { it.sequence <= stream.confirmed }
+        removeFlights(stream) { it.lastSequence <= stream.confirmed }
         ackRequest = null
     }
 
@@ -426,7 +448,7 @@ internal class MatchingResultDeliveryAgent(
         stream.confirmed = maxOf(stream.confirmed, result.fundsSettledThrough)
         stream.issued = maxOf(stream.issued, result.resultIssued)
         if (stream.pendingAck?.through?.let { it <= stream.confirmed } == true) clearPendingAck(stream)
-        removeFlights(stream) { it.sequence <= stream.confirmed }
+        removeFlights(stream) { it.lastSequence <= stream.confirmed }
         if (request.metadataThrough != null) {
             if (result.status !in
                 setOf(MatchingResultReadStatus.BATCH, MatchingResultReadStatus.PRUNED, MatchingResultReadStatus.BATCH_TOO_SMALL) ||
@@ -510,7 +532,7 @@ internal class MatchingResultDeliveryAgent(
     private fun readNextResults(now: Long): Int {
         val metadataWork = refreshResultIssuance(now)
         if (read != null) return metadataWork
-        if (prepared != null || streams.any { it.batchIndex < it.batch.size } || flights.size >= limits.maxInFlightEntries) return 0
+        if (prepared != null || streams.any { it.batchIndex < it.batch.size } || inFlightEntries >= limits.maxInFlightEntries) return 0
         repeat(streams.size) {
             val stream = streams[nextStream]
             nextStream = (nextStream + 1) % streams.size
@@ -530,27 +552,25 @@ internal class MatchingResultDeliveryAgent(
         // 한 번에 최대8건만 발행한 뒤 polling과 ACK 제어 경로로 돌아간다.
         repeat(limits.maxInFlightEntries) {
             if (source.activeResultGeneration() != generation || !transport.ready) return work
-            if (flights.size + (if (prepared == null) 0 else 1) > limits.maxInFlightEntries) return work
+            val available = limits.maxInFlightEntries - inFlightEntries
+            if (available <= 0) return work
             var item = prepared
             if (item == null) {
-                if (flights.size >= limits.maxInFlightEntries) return work
                 val stream =
                     streams.firstOrNull { it.failure == null && !it.needsIssuedRefresh && it.batchIndex < it.batch.size } ?: return work
-                val input = stream.batch[stream.batchIndex]
-                val maximum = SplitResultDeliveryCodec.maximumResultFrameBytes(input.canonicalBytes, maxOf(1, input.eventCount))
-                // encode로 준비 frame을 만들기 전부터 예산을 확보해 일시적인 초과 보관도 막는다.
-                if (maximum > resultByteBudget - resultBytes) return work
-                val next = transport.newFrame(SplitResultDeliveryCommand.Apply(input), now)
-                if (next.bytes.size > resultByteBudget - resultBytes) return work
-                item = Prepared(stream, input, next)
+                item = prepareResults(stream, now, available) ?: return work
                 prepared = item
-                resultBytes += next.bytes.size
+                resultBytes += item.frame.bytes.size
             }
             val offered = transport.offerFunds(item.frame, now)
             work += offered
             if (!item.frame.accepted || prepared !== item) return work
-            flights[item.frame.correlation] = Flight(item.stream, item.input.resultSequence, item.stream.epoch, item.frame.bytes.size, now)
-            item.stream.batchIndex++
+            val stream = item.stream
+            val first = stream.batch[stream.batchIndex].resultSequence
+            val last = stream.batch[stream.batchIndex + item.entryCount - 1].resultSequence
+            flights[item.frame.correlation] = Flight(stream, first, last, stream.epoch, item.frame.bytes.size, now)
+            inFlightEntries += item.entryCount
+            item.stream.batchIndex += item.entryCount
             if (item.stream.batchIndex == item.stream.batch.size) {
                 item.stream.cursor = item.stream.batchNext
                 item.stream.batch = emptyList()
@@ -559,6 +579,34 @@ internal class MatchingResultDeliveryAgent(
             prepared = null
         }
         return work
+    }
+
+    private fun prepareResults(
+        stream: Stream,
+        now: Long,
+        available: Int,
+    ): Prepared? {
+        val byteLimit = minOf(resultByteBudget - resultBytes, SplitResultDeliveryCodec.MAX_MESSAGE_BYTES.toLong())
+        val maxEntries = if (configuration.transferBatchEnabled) minOf(available, SplitResultDeliveryCodec.MAX_BATCH_ENTRIES) else 1
+        val end = minOf(stream.batch.size, stream.batchIndex + maxEntries)
+        var next = stream.batchIndex
+        var size = 0L
+        while (next < end) {
+            val result = stream.batch[next]
+            val maximum = SplitResultDeliveryCodec.maximumResultFrameBytes(result.canonicalBytes, maxOf(1, result.eventCount))
+            // 단건의 보수적인 크기 합으로 배치 프레임의 예산도 잡는다.
+            if (maximum > byteLimit - size) break
+            size += maximum
+            next++
+        }
+        if (next == stream.batchIndex) return null
+
+        val results = stream.batch.subList(stream.batchIndex, next)
+        val command =
+            if (results.size == 1) SplitResultDeliveryCommand.Apply(results.single()) else SplitResultDeliveryCommand.ApplyBatch(results)
+        val frame = transport.newFrame(command, now)
+        check(frame.bytes.size <= byteLimit) { "result frame exceeds the reserved byte budget" }
+        return Prepared(stream, results.size, frame)
     }
 
     private fun recordSettlementAck(
@@ -601,9 +649,12 @@ internal class MatchingResultDeliveryAgent(
         return if (request.frame.accepted) 0 else transport.offerFunds(request.frame, now)
     }
 
-    private fun retryStream(stream: Stream) {
+    private fun retryStream(
+        stream: Stream,
+        from: Long? = after(stream.confirmed),
+    ) {
         val delay = if (stream.busyDelay == 0L) limits.busyMinDelayNs else minOf(limits.busyMaxDelayNs, stream.busyDelay * 2)
-        resetStream(stream, after(stream.confirmed), nanoTime() + delay, preserveAck = true)
+        resetStream(stream, from, nanoTime() + delay, preserveAck = true)
         stream.busyDelay = delay
     }
 
@@ -616,6 +667,7 @@ internal class MatchingResultDeliveryAgent(
             val entry = iterator.next()
             if (entry.value.stream === stream && predicate(entry.value)) {
                 resultBytes -= entry.value.bytes
+                inFlightEntries -= entry.value.entryCount
                 iterator.remove()
             }
         }
@@ -701,6 +753,7 @@ internal class MatchingResultDeliveryAgent(
             stream.failure = null
         }
         flights.clear()
+        inFlightEntries = 0
         resultBytes = 0
         // nanoTime의 음수 원점도 유효하므로 0을 재시도 sentinel로 쓰지 않는다.
         transport.retryAfter(null)

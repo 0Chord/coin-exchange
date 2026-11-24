@@ -58,6 +58,7 @@ internal class SplitTradingConfiguration(
                 }
         },
     val queryRetention: QueryRetentionConfiguration? = null,
+    val transferBatchEnabled: Boolean = false,
 ) {
     val matchingDeclarations: List<TradingRoleDeclaration> =
         Collections.unmodifiableList(matchingDeclarations.sortedWith(compareBy({ it.lineage.high }, { it.lineage.low })))
@@ -88,6 +89,7 @@ internal class SplitTradingConfiguration(
             matchingDeclarations,
             matchingLimitsByLineage,
             queryRetention,
+            transferBatchEnabled,
         )
     }
 
@@ -125,6 +127,7 @@ internal class SplitTradingConfiguration(
     }
 
     init {
+        require(!transferBatchEnabled || inputContractVersion == 2) { "전송 배치는 입력 계약 2가 필요합니다" }
         validateRoleAssembly()
         topologySha256 = sha256(orderDeliveryConfigurationBytes())
         resultTopologySha256 = sha256(resultDeliveryConfigurationBytes())

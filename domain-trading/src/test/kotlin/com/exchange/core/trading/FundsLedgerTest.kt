@@ -3,6 +3,10 @@ package com.exchange.core.trading
 import com.exchange.core.common.Amount
 import com.exchange.core.common.AssetId
 import com.exchange.core.common.UserId
+import com.exchange.core.ledger.LedgerPosting
+import com.exchange.core.ledger.LedgerPostingSide
+import com.exchange.core.ledger.LedgerTransaction
+import com.exchange.core.ledger.LedgerTransactionType
 import com.exchange.core.ledger.OpeningBalance
 import java.time.Instant
 import kotlin.test.Test
@@ -13,6 +17,37 @@ import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 class FundsLedgerTest {
+    @Test
+    fun `같은 정산 로그 위치의 일부를 확인해도 남은 원장 순번을 복원한다`() {
+        val lineage = ClusterLineage(1, 2)
+        val ledger = FundsLedger(lineage)
+        val asset = AssetId("USDT")
+        for (user in listOf("first", "second")) {
+            val release =
+                LedgerTransaction(
+                    "release-$user",
+                    "cancel-$user",
+                    LedgerTransactionType.RELEASE,
+                    Instant.EPOCH,
+                    listOf(
+                        LedgerPosting("USER:$user:USDT:HOLD", asset, LedgerPostingSide.DEBIT, Amount(100)),
+                        LedgerPosting("USER:$user:USDT:AVAILABLE", asset, LedgerPostingSide.CREDIT, Amount(100)),
+                    ),
+                )
+            ledger.record(assertNotNull(ledger.prepare(64L, listOf(release))))
+        }
+
+        assertTrue(ledger.acknowledge(1L))
+        val restored = FundsLedger(lineage)
+        restored.restore(ledger.snapshot())
+        assertEquals(ledger.progress(), restored.progress())
+        assertNull(restored.read(1L))
+        val remaining = assertNotNull(restored.read(2L))
+        assertEquals(64L, remaining.logPosition)
+        assertEquals("release-second", remaining.transactions.single().ledgerTransactionId)
+        assertFailsWith<IllegalArgumentException> { restored.prepare(63L, remaining.transactions) }
+    }
+
     @Test
     fun `원장 묶음의 로그 위치 중복을 거절하고 확인한 다음 순번부터 복원한다`() {
         val lineage = ClusterLineage(1, 2)
