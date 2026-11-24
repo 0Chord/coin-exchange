@@ -552,6 +552,45 @@ class BoundedFundingState(
         }
     }
 
+    /** 같은 확정 로그 프레임 안의 결과를 순서대로 반영하고 적용이 끝난 순번까지만 확인한다. */
+    fun applyMatchingResultBatch(
+        batch: List<MatchingResultEnvelope>,
+        appliedAt: Instant,
+        settlementCalculator: OrderSettlementCalculator,
+        atLogPosition: Long,
+    ): FundsResultReply {
+        require(batch.size >= 2)
+        val first = batch.first()
+        for (index in 1 until batch.size) {
+            val result = batch[index]
+            require(
+                result.stream == first.stream && result.input.context == first.input.context &&
+                    result.resultSequence > 0 && result.resultSequence - 1 == batch[index - 1].resultSequence,
+            )
+        }
+        val state = checkNotNull(results)
+        var status = FundsResultStatus.APPLIED
+        for ((index, result) in batch.withIndex()) {
+            val applied = applyFinancialResult(result, appliedAt, settlementCalculator, atLogPosition)
+            status = applied.status
+            when (status) {
+                FundsResultStatus.APPLIED, FundsResultStatus.DUPLICATE, FundsResultStatus.PRUNED -> {
+                    Unit
+                }
+
+                FundsResultStatus.RETRYABLE_CAPACITY -> {
+                    val ack = if (index == 0) null else state.ack(first.stream.marketId)
+                    return applied.copy(ack = ack, expectedSequence = result.resultSequence)
+                }
+
+                else -> {
+                    return applied
+                }
+            }
+        }
+        return FundsResultReply(status, state.ack(first.stream.marketId))
+    }
+
     /** 전체 후보를 검사한 뒤 금융·결과 prefix·전달 확인을 한 소유자의 변경으로 반영한다. */
     private fun applyFinancialResult(
         result: MatchingResultEnvelope,

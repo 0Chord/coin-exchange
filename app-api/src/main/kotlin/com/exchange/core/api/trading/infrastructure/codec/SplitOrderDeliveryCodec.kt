@@ -10,6 +10,7 @@ import com.exchange.core.api.trading.infrastructure.codec.generated.SplitDeliver
 import com.exchange.core.api.trading.infrastructure.codec.generated.SplitDeliveryReply
 import com.exchange.core.api.trading.infrastructure.codec.generated.SplitDirection
 import com.exchange.core.api.trading.infrastructure.codec.generated.SplitDispatch
+import com.exchange.core.api.trading.infrastructure.codec.generated.SplitDispatchBatch
 import com.exchange.core.api.trading.infrastructure.codec.generated.SplitDispatchStream
 import com.exchange.core.api.trading.infrastructure.codec.generated.SplitFeePolicy
 import com.exchange.core.api.trading.infrastructure.codec.generated.SplitInputKind
@@ -85,6 +86,10 @@ internal sealed interface SplitOrderDeliveryCommand {
         val input: FundsOrderDispatch,
     ) : SplitOrderDeliveryCommand
 
+    data class ApplyBatch(
+        val inputs: List<FundsOrderDispatch>,
+    ) : SplitOrderDeliveryCommand
+
     data class Cancel(
         val token: RequestToken,
         val intent: CancelIntent,
@@ -151,6 +156,11 @@ internal class SplitOrderDeliveryCodec(
                 builder.apply = dispatch(command.input)
             }
 
+            is SplitOrderDeliveryCommand.ApplyBatch -> {
+                requireDispatchBatch(command.inputs)
+                builder.applyBatch = SplitDispatchBatch.newBuilder().addAllEntries(command.inputs.map(::dispatch)).build()
+            }
+
             is SplitOrderDeliveryCommand.RecordAck -> {
                 builder.recordAck = ack(command.ack)
             }
@@ -204,6 +214,13 @@ internal class SplitOrderDeliveryCodec(
 
                     SplitDeliveryCommand.BodyCase.APPLY -> {
                         SplitOrderDeliveryCommand.Apply(dispatch(wire.apply))
+                    }
+
+                    SplitDeliveryCommand.BodyCase.APPLY_BATCH -> {
+                        known(wire.applyBatch)
+                        val inputs = wire.applyBatch.entriesList.map(::dispatch)
+                        requireDispatchBatch(inputs)
+                        SplitOrderDeliveryCommand.ApplyBatch(inputs)
                     }
 
                     SplitDeliveryCommand.BodyCase.RECORD_ACK -> {
@@ -297,6 +314,62 @@ internal class SplitOrderDeliveryCodec(
                 if (wire.hasCancellation()) receipt(wire.cancellation) else null,
             )
         }
+
+    /** 조회한 연속 주문 중 실제 프레임 예산에 들어가는 앞부분을 고른다. */
+    internal fun encodeApplyPrefix(
+        correlationId: Long,
+        inputs: List<FundsOrderDispatch>,
+        fromIndex: Int,
+        maxEntries: Int,
+        maxFrameBytes: Int,
+    ): Pair<ByteArray, Int>? {
+        require(correlationId >= 0 && fromIndex in inputs.indices && maxEntries in 1..MAX_BATCH_ENTRIES)
+        val frameLimit = minOf(maxFrameBytes, MAX_MESSAGE_BYTES)
+        val commonBytes = HEADER_BYTES + CodedOutputStream.computeInt64Size(SplitDeliveryCommand.CORRELATION_ID_FIELD_NUMBER, correlationId)
+        val first = dispatch(inputs[fromIndex])
+        val singleSize = commonBytes + CodedOutputStream.computeMessageSize(SplitDeliveryCommand.APPLY_FIELD_NUMBER, first)
+        if (singleSize > frameLimit) return null
+
+        val builder = SplitDeliveryCommand.newBuilder().setCorrelationId(correlationId)
+        val end = minOf(inputs.size, fromIndex + maxEntries)
+        if (inputContractVersion == 2 && end > fromIndex + 1) {
+            val batch = SplitDispatchBatch.newBuilder().addEntries(first)
+            val entriesField = SplitDispatchBatch.ENTRIES_FIELD_NUMBER
+            val batchTagBytes = CodedOutputStream.computeTagSize(SplitDeliveryCommand.APPLY_BATCH_FIELD_NUMBER)
+            var bodySize = CodedOutputStream.computeMessageSize(entriesField, first)
+            for (index in fromIndex + 1 until end) {
+                val next = inputs[index]
+                requireNextDispatch(inputs[fromIndex], inputs[index - 1], next)
+                val wire = dispatch(next)
+                val nextSize = bodySize + CodedOutputStream.computeMessageSize(entriesField, wire)
+                val frameSize = commonBytes + batchTagBytes + CodedOutputStream.computeUInt32SizeNoTag(nextSize) + nextSize
+                if (frameSize > frameLimit) break
+                batch.addEntries(wire)
+                bodySize = nextSize
+            }
+            if (batch.entriesCount > 1) {
+                builder.applyBatch = batch.build()
+                return frame(COMMAND_KIND, builder.build()) to batch.entriesCount
+            }
+        }
+        builder.apply = first
+        return frame(COMMAND_KIND, builder.build()) to 1
+    }
+
+    private fun requireDispatchBatch(inputs: List<FundsOrderDispatch>) {
+        require(inputContractVersion == 2 && inputs.size in 2..MAX_BATCH_ENTRIES) { "invalid dispatch batch count or contract" }
+        val first = inputs.first()
+        for (index in 1 until inputs.size) requireNextDispatch(first, inputs[index - 1], inputs[index])
+    }
+
+    private fun requireNextDispatch(
+        first: FundsOrderDispatch,
+        previous: FundsOrderDispatch,
+        next: FundsOrderDispatch,
+    ) {
+        require(next.stream == first.stream && next.context == first.context) { "dispatch batch stream or context differs" }
+        require(next.dispatchSequence - 1 == previous.dispatchSequence) { "dispatch batch sequence is not continuous" }
+    }
 
     internal fun dispatch(input: FundsOrderDispatch): SplitDispatch {
         require(input.formatVersion == inputContractVersion) { "split input contract differs" }
@@ -733,18 +806,22 @@ internal class SplitOrderDeliveryCodec(
         fun visit(type: Descriptor) {
             val seen = BooleanArray(type.fields.size)
             val oneofs = BooleanArray(type.oneofs.size)
+            var dispatchEntries = 0
             while (!input.isAtEnd) {
                 val tag = input.readTag()
                 require(tag != 0)
                 val field = requireNotNull(type.findFieldByNumber(WireFormat.getTagFieldNumber(tag))) { "unknown split field" }
                 val newer =
                     when (type.name) {
-                        "SplitDeliveryCommand" -> field.name == "cancel"
+                        "SplitDeliveryCommand" -> field.name == "cancel" || field.name == "apply_batch"
                         "SplitDeliveryReply" -> field.name == "cancellation"
                         "SplitDispatch" -> field.number >= 9
                         else -> false
                     }
                 require(inputContractVersion == 2 || !newer) { "new fields require split wire contract 2" }
+                if (type.name == "SplitDispatchBatch") {
+                    require(++dispatchEntries <= MAX_BATCH_ENTRIES) { "dispatch batch exceeds entry limit" }
+                }
                 if (inputContractVersion == 2 && !field.isRepeated) {
                     require(!seen[field.index]) { "duplicate split field" }
                     seen[field.index] = true
@@ -787,6 +864,7 @@ internal class SplitOrderDeliveryCodec(
         const val HEADER_BYTES = 8
         const val MAX_MESSAGE_BYTES = 32_768
         const val MAX_BODY_BYTES = MAX_MESSAGE_BYTES - HEADER_BYTES
+        const val MAX_BATCH_ENTRIES = 64
         private const val COMMAND_KIND = 1
         private const val REPLY_KIND = 2
         private const val SCHEMA = 88

@@ -23,6 +23,9 @@ import com.exchange.core.order.Side
 import com.exchange.core.order.TimeInForce
 import com.exchange.core.trading.AdmissionReply
 import com.exchange.core.trading.ClusterLineage
+import com.exchange.core.trading.FundsDispatchLimits
+import com.exchange.core.trading.FundsResultStatus
+import com.exchange.core.trading.MarketFundsDispatchLimits
 import com.exchange.core.trading.MarketMatchingIntakeLimits
 import com.exchange.core.trading.MatchingFundsSettledAck
 import com.exchange.core.trading.MatchingIntakeLimits
@@ -58,6 +61,57 @@ import kotlin.test.assertTrue
 
 /** 작업의 제어·재전송 경계 검사다. 실제 Aeron·복제 로그 증거는 별도 6노드 검사에서 수집한다. */
 class MatchingResultDeliveryAgentTest {
+    @Test
+    fun `부분 적용 ACK만 회수하고 막힌 순번부터 다시 보낸다`() {
+        val f = Fixture(batchEnabled = true)
+        val results = List(3) { f.produce() }
+        f.transport.overrideFunds = { envelope ->
+            val batch = assertIs<SplitResultDeliveryCommand.ApplyBatch>(envelope.command)
+            assertEquals(results, batch.results)
+            val applied = f.funds.applyMatchingResult(results.first(), Instant.EPOCH, f.config.settlementCalculator())
+            assertEquals("APPLIED", applied.status.name)
+            f.transport.reply(envelope, TradingServiceRole.FUNDS, "NOT_READY", applied.ack, expected = 2)
+        }
+        f.agent.use {
+            f.cycles(10)
+            assertEquals(1, f.transport.applies.size)
+            assertEquals(listOf(1L), f.transport.recordedAcks.map { it.through })
+            assertEquals(2, f.matching.recoveryState().resultEntries)
+            assertEquals(1L, f.confirmed())
+
+            f.transport.overrideFunds = null
+            f.advance(f.config.resultDeliveryLimits.busyMinDelayNs)
+            f.cycles(10)
+            val retry =
+                assertIs<SplitResultDeliveryCommand.ApplyBatch>(
+                    f.transport.applies
+                        .last()
+                        .command,
+                )
+            assertEquals(results.drop(1), retry.results)
+            assertEquals(listOf(1L, 3L), f.transport.recordedAcks.map { it.through })
+            assertEquals(3L, f.confirmed())
+            assertEquals(0, f.matching.recoveryState().resultEntries)
+            assertNull(f.agent.failure)
+        }
+    }
+
+    @Test
+    fun `막힌 순번을 포함한 부분 ACK는 결과를 회수하지 않는다`() {
+        val f = Fixture(batchEnabled = true)
+        repeat(3) { f.produce() }
+        f.transport.overrideFunds = { envelope ->
+            f.transport.reply(envelope, TradingServiceRole.FUNDS, "NOT_READY", f.ack(2), expected = 2)
+        }
+        f.agent.use {
+            f.cycles(12)
+            assertNotNull(f.agent.failure)
+            assertEquals(0L, f.confirmed())
+            assertTrue(f.transport.recordedAcks.isEmpty())
+            assertEquals(3, f.matching.recoveryState().resultEntries)
+        }
+    }
+
     @Test
     fun `대기 결과와 체결 결과를 정산하고 자기 로그 ACK 뒤에만 결과를 회수한다`() {
         val f = Fixture()
@@ -745,6 +799,7 @@ class MatchingResultDeliveryAgentTest {
         limits: MatchingResultDeliveryLimits = MatchingResultDeliveryLimits(),
         maxSingleResultBytes: Long = 1L * 1_024 * 1_024,
         maxResultEvents: Int = 1_024,
+        batchEnabled: Boolean = false,
     ) {
         val quote = AssetId("QUOTE")
         val asset = AssetId("A")
@@ -777,6 +832,16 @@ class MatchingResultDeliveryAgentTest {
                 topology,
                 fundsDeclaration,
                 matchingDeclaration,
+                dispatchLimits =
+                    if (batchEnabled) {
+                        FundsDispatchLimits(
+                            mapOf(market.marketId to MarketFundsDispatchLimits(maxDispatchBytes = 65_536, maxActiveBytes = 65_536)),
+                            maxDispatchBytes = 65_536,
+                            maxActiveBytes = 65_536,
+                        )
+                    } else {
+                        FundsDispatchLimits.defaults(manifest)
+                    },
                 matchingLimits =
                     MatchingIntakeLimits(
                         mapOf(market.marketId to MarketMatchingIntakeLimits()),
@@ -784,6 +849,8 @@ class MatchingResultDeliveryAgentTest {
                         maxResultEvents = maxResultEvents,
                     ),
                 resultDeliveryLimits = limits,
+                inputContractVersion = if (batchEnabled) 2 else 1,
+                transferBatchEnabled = batchEnabled,
             )
         val funds =
             config.funds().also {
@@ -901,7 +968,7 @@ class MatchingResultDeliveryAgentTest {
     private class Transport(
         val f: Fixture,
     ) : SplitResultDeliveryConnectionFactory {
-        val codec = SplitResultDeliveryCodec()
+        val codec = SplitResultDeliveryCodec(f.config.inputContractVersion)
         val connections = mutableListOf<Connection>()
         val attempts = mutableListOf<Attempt>()
         val ownerThreads = ConcurrentHashMap.newKeySet<Thread>()
@@ -1011,6 +1078,25 @@ class MatchingResultDeliveryAgentTest {
                                 .applyMatchingResult(command.result, Instant.ofEpochMilli(123), f.config.settlementCalculator())
                                 .let {
                                     reply(envelope, role, it.status.name, it.ack, it.expectedSequence)
+                                }
+                        if (holdFunds) held += response else ready += response
+                    }
+
+                    is SplitResultDeliveryCommand.ApplyBatch -> {
+                        applyOfferResult?.let { return it }
+                        applies += envelope
+                        offeredApply.countDown()
+                        val response =
+                            overrideFunds?.invoke(envelope) ?: f.funds
+                                .applyMatchingResultBatch(command.results, Instant.ofEpochMilli(123), f.config.settlementCalculator(), 64)
+                                .let { applied ->
+                                    val code =
+                                        if (applied.status == FundsResultStatus.RETRYABLE_CAPACITY) {
+                                            "NOT_READY"
+                                        } else {
+                                            applied.status.name
+                                        }
+                                    reply(envelope, role, code, applied.ack, applied.expectedSequence)
                                 }
                         if (holdFunds) held += response else ready += response
                     }

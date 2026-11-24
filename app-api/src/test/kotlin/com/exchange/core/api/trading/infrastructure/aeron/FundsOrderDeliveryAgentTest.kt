@@ -23,12 +23,17 @@ import com.exchange.core.order.Side
 import com.exchange.core.order.TimeInForce
 import com.exchange.core.trading.AdmissionReply
 import com.exchange.core.trading.ClusterLineage
+import com.exchange.core.trading.FundsDispatchLimits
 import com.exchange.core.trading.FundsDispatchRead
 import com.exchange.core.trading.FundsDispatchReadStatus
 import com.exchange.core.trading.FundsDispatchStream
 import com.exchange.core.trading.FundsMatchingAppliedAck
+import com.exchange.core.trading.FundsOrderDispatch
+import com.exchange.core.trading.MarketFundsDispatchLimits
 import com.exchange.core.trading.MarketMatchingIntakeLimits
+import com.exchange.core.trading.MatchingFundsSettledAck
 import com.exchange.core.trading.MatchingIntakeLimits
+import com.exchange.core.trading.MatchingResultAckStatus
 import com.exchange.core.trading.OrderIntent
 import com.exchange.core.trading.RequestToken
 import com.exchange.core.trading.TradingClusterManifest
@@ -55,6 +60,70 @@ import kotlin.test.assertTrue
 
 /** 네트워크 경계의 단위 검사다. 실제 복제·단편화 증거는 별도 6노드 검사에서 수집한다. */
 class FundsOrderDeliveryAgentTest {
+    @Test
+    fun `묶음 응답을 잃어도 같은 연속 주문을 재전송하고 전체 확인만 자금에 기록한다`() {
+        val f = Fixture(batchEnabled = true)
+        repeat(3) { f.admit(1) }
+        f.transport.holdMatching = true
+        f.agent.use {
+            f.cycles(8)
+            val firstFrame =
+                assertIs<SplitOrderDeliveryCommand.ApplyBatch>(
+                    f.transport.applies
+                        .single()
+                        .command,
+                )
+            assertEquals(listOf(1L, 2L, 3L), firstFrame.inputs.map { it.dispatchSequence })
+            assertEquals(3, f.matching.recoveryState().resultEntries)
+            assertEquals(3, f.pending().entries.size)
+            assertTrue(f.transport.recordedAcks.isEmpty())
+
+            f.advance(f.config.deliveryLimits.attemptTimeoutNs + 1)
+            f.cycles(1)
+            f.transport.holdMatching = false
+            f.advance(f.config.deliveryLimits.reconnectDelayNs + 1)
+            f.cycles(12)
+
+            assertEquals(listOf(firstFrame, firstFrame), f.transport.applies.map { it.command })
+            assertEquals(listOf(3L), f.transport.recordedAcks.map { it.through })
+            assertEquals(0, f.pending().entries.size)
+            assertEquals(3, f.matching.recoveryState().resultEntries)
+            assertEquals(Balance(f.user, f.quote, Amount(700), Amount(300)), f.funds.currentBalance(f.user, f.quote))
+            assertNull(f.agent.failure)
+        }
+    }
+
+    @Test
+    fun `묶음 중 두 번째 주문이 BUSY면 첫 주문만 회수하고 미적용 순번부터 다시 보낸다`() {
+        val f = Fixture(resultEntries = 1, batchEnabled = true)
+        repeat(3) { f.admit(1) }
+        f.agent.use {
+            f.cycles(12)
+            val firstFrame =
+                assertIs<SplitOrderDeliveryCommand.ApplyBatch>(
+                    f.transport.applies
+                        .single()
+                        .command,
+                )
+            assertEquals(listOf(1L, 2L, 3L), firstFrame.inputs.map { it.dispatchSequence })
+            assertEquals(listOf(1L), f.transport.recordedAcks.map { it.through })
+            assertEquals(listOf(2L, 3L), f.pending().entries.map { it.dispatchSequence })
+            assertEquals(1, f.matching.recoveryState().resultEntries)
+
+            val resultStream = f.config.matchingConfiguration.resultStream(f.market.marketId)
+            val settled = f.matching.acknowledgeFundsSettled(MatchingFundsSettledAck(resultStream, 1, f.context))
+            assertEquals(MatchingResultAckStatus.ACKNOWLEDGED, settled.status)
+            f.advance(f.config.deliveryLimits.busyMaxDelayNs + 1)
+            f.cycles(12)
+
+            val retried = assertIs<SplitOrderDeliveryCommand.Apply>(f.transport.applies[1].command)
+            assertEquals(firstFrame.inputs[1], retried.input)
+            assertEquals(listOf(1L, 2L), f.transport.recordedAcks.map { it.through })
+            assertEquals(listOf(3L), f.pending().entries.map { it.dispatchSequence })
+            assertNull(f.agent.failure)
+        }
+    }
+
     @Test
     fun `매칭 활성 상한의 최종 미실행도 전달 자료만 회수하고 두 예약을 남긴다`() {
         val f = Fixture(activeOrders = 1)
@@ -529,6 +598,7 @@ class FundsOrderDeliveryAgentTest {
         resultEntries: Int = 100,
         activeOrders: Int = 8_192,
         userName: String = "buyer",
+        batchEnabled: Boolean = false,
     ) {
         val quote = AssetId("QUOTE")
         val user = UserId(userName)
@@ -571,6 +641,16 @@ class FundsOrderDeliveryAgentTest {
                 topology,
                 fundsDeclaration,
                 matchingDeclaration,
+                dispatchLimits =
+                    if (batchEnabled) {
+                        FundsDispatchLimits(
+                            mapOf(market.marketId to MarketFundsDispatchLimits(maxDispatchBytes = 65_536, maxActiveBytes = 65_536)),
+                            maxDispatchBytes = 65_536,
+                            maxActiveBytes = 65_536,
+                        )
+                    } else {
+                        FundsDispatchLimits.defaults(manifest)
+                    },
                 matchingLimits =
                     MatchingIntakeLimits(
                         mapOf(
@@ -580,6 +660,8 @@ class FundsOrderDeliveryAgentTest {
                         maxActiveOrders = activeOrders,
                     ),
                 deliveryLimits = limits,
+                inputContractVersion = if (batchEnabled) 2 else 1,
+                transferBatchEnabled = batchEnabled,
             )
         val funds =
             config.funds().also {
@@ -664,7 +746,7 @@ class FundsOrderDeliveryAgentTest {
     private class Transport(
         val f: Fixture,
     ) : SplitOrderDeliveryConnectionFactory {
-        val codec = SplitOrderDeliveryCodec()
+        val codec = SplitOrderDeliveryCodec(f.config.inputContractVersion)
         val connections = mutableListOf<Connection>()
         val ownerThreads = ConcurrentHashMap.newKeySet<Thread>()
         val offeredApply = CountDownLatch(1)
@@ -717,6 +799,24 @@ class FundsOrderDeliveryAgentTest {
             lifecycle = if (code == "DESCRIBED") describeLifecycle else "RUNNING",
         )
 
+        private fun applyBatch(
+            envelope: SplitOrderDeliveryEnvelope,
+            entries: List<FundsOrderDispatch>,
+        ): SplitOrderDeliveryReply {
+            var ack: FundsMatchingAppliedAck? = null
+            var code = "APPLIED"
+            for (input in entries) {
+                val result = f.matching.apply(input)
+                code = result.status.name
+                when (code) {
+                    "APPLIED", "DUPLICATE", "PRUNED" -> ack = result.ack
+                    "BUSY" -> return reply(envelope, TradingServiceRole.MATCHING, code, ack, input.dispatchSequence)
+                    else -> return reply(envelope, TradingServiceRole.MATCHING, code, expected = result.expectedSequence)
+                }
+            }
+            return reply(envelope, TradingServiceRole.MATCHING, code, ack)
+        }
+
         fun releaseMatching(onlyLast: Boolean = false) {
             connections.filter { it.role == TradingServiceRole.MATCHING && !it.closed }.forEach { connection ->
                 if (onlyLast && connection.held.isNotEmpty()) {
@@ -756,6 +856,14 @@ class FundsOrderDeliveryAgentTest {
                             overrideMatching?.invoke(envelope) ?: f.matching.apply(command.input).let {
                                 reply(envelope, role, it.status.name, it.ack, it.expectedSequence)
                             }
+                        if (holdMatching) held += response else ready += response
+                    }
+
+                    is SplitOrderDeliveryCommand.ApplyBatch -> {
+                        applyOfferResult?.let { return it }
+                        applies += envelope
+                        offeredApply.countDown()
+                        val response = overrideMatching?.invoke(envelope) ?: applyBatch(envelope, command.inputs)
                         if (holdMatching) held += response else ready += response
                     }
 

@@ -91,6 +91,7 @@ internal class FundsOrderDeliveryAgent(
         var epoch = 0L
         var retryAt: Long? = null
         var busyDelay = 0L
+        var probeThrough: Long? = null
         var gapRecovery = false
         var failure: String? = null
         var batch: List<FundsOrderDispatch> = emptyList()
@@ -111,22 +112,26 @@ internal class FundsOrderDeliveryAgent(
     private data class Flight(
         val stream: Stream,
         val input: FundsOrderDispatch,
+        val through: Long,
         val epoch: Long,
         val bytes: Int,
         val sentAt: Long,
-    )
+    ) {
+        val entryCount: Int get() = (through - input.dispatchSequence + 1).toInt()
+    }
 
     private data class Read(
         val stream: Stream,
         val epoch: Long,
         val from: Long,
+        val maxEntries: Int,
         val createdAt: Long,
         val result: CompletableFuture<FundsDispatchRead>,
     )
 
     private data class Prepared(
         val stream: Stream,
-        val input: FundsOrderDispatch,
+        val entryCount: Int,
         val frame: Frame,
     )
 
@@ -148,6 +153,7 @@ internal class FundsOrderDeliveryAgent(
     private val payloadEntryLimit = limits.maxInFlightEntries - if (configuration.matchingDeclarations.size > 1) 1 else 0
     private val flights = linkedMapOf<Long, Flight>()
     private var inFlightBytes = 0L
+    private var inFlightEntries = 0
     private var read: Read? = null
     private var prepared: Prepared? = null
     private var ackRequest: AckSubmission? = null
@@ -331,36 +337,57 @@ internal class FundsOrderDeliveryAgent(
         when (reply.code) {
             "APPLIED", "DUPLICATE", "PRUNED" -> {
                 val ack = reply.ack
-                if (ack == null || ack.stream != stream.identity || ack.context != flight.input.context ||
-                    ack.through < flight.input.dispatchSequence || ack.through > stream.issued
-                ) {
+                if (ack == null || !validMatchingAck(flight, ack) || ack.through < flight.through) {
                     failStream(stream, "matching reply has an invalid cumulative ACK")
                     return
                 }
                 // 응답 correlation보다 큰 누적 prefix도 source의 issued 안이면 유효하다.
-                removeFlights(stream) { it.input.dispatchSequence <= ack.through }
-                if (ack.through > stream.confirmed) {
-                    val previous = stream.pendingAck
-                    if (previous == null) stream.ackSince = nanoTime()
-                    if (previous == null || ack.through > previous.through) stream.pendingAck = ack
-                    stream.ackCount = minOf(limits.ackBatchSize, stream.ackCount + 1)
-                }
+                rememberMatchingAck(stream, ack)
                 stream.busyDelay = 0
+                stream.probeThrough?.let { target ->
+                    if (ack.through >= target) stream.probeThrough = null
+                    stream.cursor = after(ack.through)
+                }
             }
 
             "BUSY" -> {
+                val first = flight.input.dispatchSequence
+                val blocked = reply.expectedSequence ?: first
+                val ack = reply.ack
+                if ((flight.entryCount > 1 && reply.expectedSequence == null) ||
+                    blocked !in first..flight.through ||
+                    (blocked == first && ack != null) ||
+                    (blocked > first && (ack == null || !validMatchingAck(flight, ack) || ack.through != blocked - 1))
+                ) {
+                    failStream(stream, "matching BUSY has an invalid applied prefix")
+                    return
+                }
+                if (ack != null) rememberMatchingAck(stream, ack)
                 val delay = if (stream.busyDelay == 0L) limits.busyMinDelayNs else minOf(limits.busyMaxDelayNs, stream.busyDelay * 2)
-                resetStream(stream, after(stream.confirmed), nanoTime() + delay, preserveAck = true)
+                val target = maxOf(stream.probeThrough ?: blocked, blocked)
+                val cursor =
+                    if (configuration.transferBatchEnabled) {
+                        val submittedAck = ackRequest?.takeIf { it.stream === stream }?.ack?.through ?: 0L
+                        val knownApplied = maxOf(stream.confirmed, stream.pendingAck?.through ?: 0L, submittedAck)
+                        // 응답이 유실된 앞부분부터 막힌 순번까지 단건으로 확인하고 배치 전송을 재개한다.
+                        minOf(blocked, after(knownApplied) ?: blocked)
+                    } else {
+                        after(stream.confirmed)
+                    }
+                resetStream(stream, cursor, nanoTime() + delay, preserveAck = true)
                 stream.busyDelay = delay
+                if (configuration.transferBatchEnabled) stream.probeThrough = target
             }
 
             "GAP" -> {
                 val expected = reply.expectedSequence
-                if (expected == null || expected <= stream.confirmed || expected > stream.issued) {
+                if (expected == null || expected <= stream.confirmed || expected > flight.input.dispatchSequence) {
                     failStream(stream, "matching GAP conflicts with the durable source prefix")
                     return
                 }
+                val probeThrough = stream.probeThrough
                 resetStream(stream, expected, nanoTime())
+                stream.probeThrough = probeThrough
                 stream.gapRecovery = true
             }
 
@@ -368,6 +395,25 @@ internal class FundsOrderDeliveryAgent(
                 failStream(stream, "matching delivery stopped: ${reply.code}")
             }
         }
+    }
+
+    private fun validMatchingAck(
+        flight: Flight,
+        ack: FundsMatchingAppliedAck,
+    ): Boolean = ack.stream == flight.stream.identity && ack.context == flight.input.context && ack.through <= flight.stream.issued
+
+    private fun rememberMatchingAck(
+        stream: Stream,
+        ack: FundsMatchingAppliedAck,
+    ) {
+        removeFlights(stream) { it.through <= ack.through }
+        val previous = stream.pendingAck
+        val known = maxOf(stream.confirmed, previous?.through ?: 0)
+        if (ack.through <= known) return
+        if (previous == null) stream.ackSince = nanoTime()
+        stream.pendingAck = ack
+        val count = minOf(limits.ackBatchSize.toLong(), ack.through - known).toInt()
+        stream.ackCount = minOf(limits.ackBatchSize, stream.ackCount + count)
     }
 
     private fun receiveSourceAck(reply: SplitOrderDeliveryReply) {
@@ -432,7 +478,7 @@ internal class FundsOrderDeliveryAgent(
                     bytes = Math.addExact(bytes, input.dispatchCanonicalBytes)
                     expected = after(input.dispatchSequence)
                 }
-                if (result.entries.size > limits.maxReadEntries || bytes > limits.maxReadBytes ||
+                if (result.entries.size > request.maxEntries || bytes > limits.maxReadBytes ||
                     result.nextSequence != expected
                 ) {
                     failStream(stream, "source dispatch read exceeded its bounds or cursor contract")
@@ -458,7 +504,7 @@ internal class FundsOrderDeliveryAgent(
 
     private fun scheduleRead(now: Long): Int {
         if (read != null || prepared != null || streams.any { it.batchIndex < it.batch.size } ||
-            flights.size + (if (ackRequest == null) 0 else 1) >= limits.maxInFlightEntries
+            inFlightEntries + (if (ackRequest == null) 0 else 1) >= limits.maxInFlightEntries
         ) {
             return 0
         }
@@ -466,16 +512,18 @@ internal class FundsOrderDeliveryAgent(
             val stream = streams[nextStream]
             nextStream = (nextStream + 1) % streams.size
             val cursor = stream.cursor
+            if (stream.probeThrough != null && flights.values.any { it.stream === stream }) return@repeat
             if (stream.failure == null && cursor != null && stream.retryAt?.let { now - it >= 0 } != false) {
+                val maxEntries = if (stream.probeThrough != null) 1 else limits.maxReadEntries
                 val future =
                     source.readDispatch(
                         checkNotNull(generation),
                         stream.identity,
                         cursor,
-                        limits.maxReadEntries,
+                        maxEntries,
                         limits.maxReadBytes,
                     )
-                read = Read(stream, stream.epoch, cursor, now, future)
+                read = Read(stream, stream.epoch, cursor, maxEntries, now, future)
                 return 1
             }
         }
@@ -487,23 +535,32 @@ internal class FundsOrderDeliveryAgent(
         // 한 duty cycle의 최대64건 뒤에는 반드시 두 egress로 돌아간다.
         repeat(limits.maxInFlightEntries) {
             if (source.activeGeneration() != generation || !matching.verified || !funds.verified) return work
-            if (flights.size >= payloadEntryLimit) return work
-            if (flights.size + (if (ackRequest == null) 0 else 1) >= limits.maxInFlightEntries) return work
+            val available =
+                minOf(payloadEntryLimit, limits.maxInFlightEntries - if (ackRequest == null) 0 else 1) - inFlightEntries
+            if (available <= 0) return work
             var item = prepared
             if (item == null) {
                 val stream = streams.firstOrNull { it.failure == null && it.batchIndex < it.batch.size } ?: return work
-                val input = stream.batch[stream.batchIndex]
-                item = Prepared(stream, input, frame(SplitOrderDeliveryCommand.Apply(input), now))
+                val maxEntries = if (configuration.transferBatchEnabled) available else 1
+                val byteBudget = payloadByteBudget - inFlightBytes
+                if (byteBudget <= 0) return work
+                val correlation = nextCorrelationId()
+                val (bytes, count) =
+                    codec.encodeApplyPrefix(correlation, stream.batch, stream.batchIndex, maxEntries, byteBudget.toInt()) ?: return work
+                item = Prepared(stream, count, Frame(correlation, bytes, now))
                 prepared = item
             }
             val frame = item.frame
-            if (frame.bytes.size > payloadByteBudget - inFlightBytes) return work
+            if (item.entryCount > available || frame.bytes.size > payloadByteBudget - inFlightBytes) return work
             val offered = offer(matching, frame, now)
             work += offered
             if (!frame.accepted || prepared !== item) return work
-            flights[frame.correlation] = Flight(item.stream, item.input, item.stream.epoch, frame.bytes.size, now)
+            val first = item.stream.batch[item.stream.batchIndex]
+            val through = item.stream.batch[item.stream.batchIndex + item.entryCount - 1].dispatchSequence
+            flights[frame.correlation] = Flight(item.stream, first, through, item.stream.epoch, frame.bytes.size, now)
             inFlightBytes += frame.bytes.size
-            item.stream.batchIndex++
+            inFlightEntries += item.entryCount
+            item.stream.batchIndex += item.entryCount
             if (item.stream.batchIndex == item.stream.batch.size) {
                 item.stream.cursor = item.stream.batchNext
                 item.stream.batch = emptyList()
@@ -533,7 +590,7 @@ internal class FundsOrderDeliveryAgent(
             ackRequest = request
         }
         if (request.frame.accepted) return 0
-        if (flights.size >= limits.maxInFlightEntries || request.frame.bytes.size > limits.maxInFlightBytes - inFlightBytes) return 0
+        if (inFlightEntries >= limits.maxInFlightEntries || request.frame.bytes.size > limits.maxInFlightBytes - inFlightBytes) return 0
         val work = offer(funds, request.frame, now)
         if (request.frame.accepted && ackRequest === request) inFlightBytes += request.frame.bytes.size
         return work
@@ -565,9 +622,13 @@ internal class FundsOrderDeliveryAgent(
         command: SplitOrderDeliveryCommand,
         now: Long,
     ): Frame {
-        check(nextCorrelation < Long.MAX_VALUE) { "split correlation sequence exhausted" }
-        val correlation = nextCorrelation++
+        val correlation = nextCorrelationId()
         return Frame(correlation, codec.encode(correlation, command), now)
+    }
+
+    private fun nextCorrelationId(): Long {
+        check(nextCorrelation < Long.MAX_VALUE) { "split correlation sequence exhausted" }
+        return nextCorrelation++
     }
 
     private fun removeFlights(
@@ -579,6 +640,7 @@ internal class FundsOrderDeliveryAgent(
             val entry = iterator.next()
             if (entry.value.stream === stream && predicate(entry.value)) {
                 inFlightBytes -= entry.value.bytes
+                inFlightEntries -= entry.value.entryCount
                 iterator.remove()
             }
         }
@@ -611,6 +673,7 @@ internal class FundsOrderDeliveryAgent(
         stream.batchIndex = 0
         stream.cursor = cursor
         stream.retryAt = retryAt
+        stream.probeThrough = null
         stream.gapRecovery = false
         clearPendingAck(stream)
         // BUSY는 앞서 확인한 정상 적용 prefix를 무효화하지 않는다. 재시도와 ACK 환류를 함께 진행한다.
@@ -681,6 +744,7 @@ internal class FundsOrderDeliveryAgent(
         }
         flights.clear()
         inFlightBytes = 0
+        inFlightEntries = 0
         // nanoTime은 음수 원점도 유효하므로 0을 '즉시 재시도'의 sentinel로 쓰지 않는다.
         funds.retryAt = null
         matching.retryAt = null

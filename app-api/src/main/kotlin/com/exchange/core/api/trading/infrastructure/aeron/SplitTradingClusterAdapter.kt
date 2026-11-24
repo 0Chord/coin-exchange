@@ -24,8 +24,10 @@ import com.exchange.core.trading.BoundedFundingState
 import com.exchange.core.trading.FundsDispatchRead
 import com.exchange.core.trading.FundsDispatchStream
 import com.exchange.core.trading.FundsMatchingAppliedAck
+import com.exchange.core.trading.FundsOrderDispatch
 import com.exchange.core.trading.FundsResultStatus
 import com.exchange.core.trading.MatchingFundsSettledAck
+import com.exchange.core.trading.MatchingIntakeStatus
 import com.exchange.core.trading.MatchingResultAckStatus
 import com.exchange.core.trading.MatchingResultRead
 import com.exchange.core.trading.MatchingResultStream
@@ -311,6 +313,10 @@ internal class SplitTradingClusterAdapter(
                         }
                     }
 
+                    is SplitOrderDeliveryCommand.ApplyBatch -> {
+                        applyOrderBatch(envelope.correlationId, command.inputs)
+                    }
+
                     is SplitOrderDeliveryCommand.RecordAck -> {
                         when {
                             role != TradingServiceRole.FUNDS -> {
@@ -339,6 +345,36 @@ internal class SplitTradingClusterAdapter(
         } catch (error: Throwable) {
             fail(error)
         }
+    }
+
+    private fun applyOrderBatch(
+        correlation: Long,
+        inputs: List<FundsOrderDispatch>,
+    ): SplitOrderDeliveryReply {
+        if (role != TradingServiceRole.MATCHING) return response(correlation, "WRONG_ROLE")
+        if (!tradingReady) return response(correlation, "NOT_READY")
+
+        val owner = checkNotNull(matching)
+        var ack: FundsMatchingAppliedAck? = null
+        var status = MatchingIntakeStatus.APPLIED
+        for (input in inputs) {
+            val applied = owner.apply(input)
+            status = applied.status
+            when (status) {
+                MatchingIntakeStatus.APPLIED, MatchingIntakeStatus.DUPLICATE, MatchingIntakeStatus.PRUNED -> {
+                    ack = checkNotNull(applied.ack)
+                }
+
+                MatchingIntakeStatus.BUSY -> {
+                    return response(correlation, status.name).copy(ack = ack, expectedSequence = input.dispatchSequence)
+                }
+
+                else -> {
+                    return response(correlation, status.name).copy(expectedSequence = applied.expectedSequence)
+                }
+            }
+        }
+        return response(correlation, status.name).copy(ack = ack)
     }
 
     /** 결과 적용과 회수도 상대 호출의 수신이 아니라 자기 확정 로그 callback에서만 수행한다. */
@@ -388,6 +424,22 @@ internal class SplitTradingClusterAdapter(
                                     correlation,
                                     code,
                                 ).copy(ack = applied.ack, expectedSequence = applied.expectedSequence)
+                            }
+                        }
+
+                        is SplitResultDeliveryCommand.ApplyBatch -> {
+                            if (role != TradingServiceRole.FUNDS) {
+                                resultResponse(correlation, "WRONG_ROLE")
+                            } else {
+                                val applied =
+                                    checkNotNull(funds).applyMatchingResultBatch(
+                                        command.results,
+                                        Instant.ofEpochMilli(timestamp),
+                                        settlementCalculator,
+                                        atLogPosition = appliedLogPosition,
+                                    )
+                                val code = if (applied.status == FundsResultStatus.RETRYABLE_CAPACITY) "NOT_READY" else applied.status.name
+                                resultResponse(correlation, code).copy(ack = applied.ack, expectedSequence = applied.expectedSequence)
                             }
                         }
 

@@ -3,6 +3,7 @@ package com.exchange.core.api.trading.infrastructure.codec
 import com.exchange.core.api.trading.infrastructure.codec.generated.SplitDeliveryCommand
 import com.exchange.core.api.trading.infrastructure.codec.generated.SplitDeliveryReply
 import com.exchange.core.api.trading.infrastructure.codec.generated.SplitDirection
+import com.exchange.core.api.trading.infrastructure.codec.generated.SplitDispatchBatch
 import com.exchange.core.api.trading.infrastructure.codec.generated.SplitInputKind
 import com.exchange.core.api.trading.infrastructure.codec.generated.SplitRole
 import com.exchange.core.common.Amount
@@ -51,6 +52,8 @@ import java.time.Instant
 import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
+import kotlin.test.assertNotNull
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
 import com.exchange.core.api.trading.infrastructure.codec.generated.Side as WireSide
 
@@ -64,6 +67,55 @@ class SplitOrderDeliveryCodecTest {
     private val context =
         TradingMarketContext(MarketDefinition(MarketId("BTC-USDT"), AssetId("BTC"), AssetId("USDT"), 0, 2, 3), policy, 7)
     private val calculator = OrderReservationCalculator(BuyOrderFundingQuoteCalculator(TradingFeeReserveCalculator()))
+
+    @Test
+    fun `묶음은 주문과 취소의 연속 순번을 보존하고 wire 한도에서는 단건으로 나눈다`() {
+        val batchingCodec = SplitOrderDeliveryCodec(inputContractVersion = 2)
+        val original = dispatch().copy(inputContractVersion = 2)
+        val inputs = listOf(original, cancellation(original))
+        val batch = SplitOrderDeliveryCommand.ApplyBatch(inputs)
+        val batchBytes = batchingCodec.encode(91, batch)
+        val single = SplitOrderDeliveryCommand.Apply(original)
+        val singleBytes = batchingCodec.encode(91, single)
+        assertEquals(SplitOrderDeliveryEnvelope(91, batch), batchingCodec.decode(batchBytes))
+        assertFailsWith<IllegalArgumentException> { codec.encode(91, batch) }
+
+        val (encodedBatch, batchCount) = assertNotNull(batchingCodec.encodeApplyPrefix(91, inputs, 0, 2, batchBytes.size))
+        assertContentEquals(batchBytes, encodedBatch)
+        assertEquals(2, batchCount)
+        val (encodedSingle, singleCount) = assertNotNull(batchingCodec.encodeApplyPrefix(91, inputs, 0, 2, batchBytes.size - 1))
+        assertContentEquals(singleBytes, encodedSingle)
+        assertEquals(1, singleCount)
+        assertNull(batchingCodec.encodeApplyPrefix(91, inputs, 0, 2, singleBytes.size - 1))
+    }
+
+    @Test
+    fun `wire 묶음의 누락 역순 중복 다른 소유자는 원본으로 디코딩하지 않는다`() {
+        val batchingCodec = SplitOrderDeliveryCodec(inputContractVersion = 2)
+        val original = dispatch().copy(inputContractVersion = 2)
+        val next = cancellation(original)
+        val differentOwner = next.copy(stream = next.stream.copy(matchingLineage = ClusterLineage(7, 8)))
+        val commands =
+            listOf(
+                listOf(original),
+                listOf(original, next.copy(dispatchSequence = 5)),
+                listOf(next, original),
+                listOf(original, original),
+                listOf(original, differentOwner),
+                List(65) { original.copy(dispatchSequence = original.dispatchSequence + it) },
+            )
+        for (inputs in commands) {
+            val batch = SplitDispatchBatch.newBuilder().addAllEntries(inputs.map(batchingCodec::dispatch))
+            val wire =
+                SplitDeliveryCommand
+                    .newBuilder()
+                    .setCorrelationId(91)
+                    .setApplyBatch(batch)
+                    .build()
+            assertFailsWith<AdmissionMessageException> { batchingCodec.decode(frame(1, wire, 2)) }
+            assertFailsWith<IllegalArgumentException> { batchingCodec.encode(91, SplitOrderDeliveryCommand.ApplyBatch(inputs)) }
+        }
+    }
 
     @Test
     fun `새 계약은 신규와 취소의 공통 순서와 최초 대상 원본을 바이트로 보존한다`() {
