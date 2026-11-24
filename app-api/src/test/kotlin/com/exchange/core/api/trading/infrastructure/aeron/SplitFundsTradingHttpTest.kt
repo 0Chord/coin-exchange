@@ -472,7 +472,12 @@ class SplitFundsTradingHttpTest {
         }
         SplitOrderDeliveryClient(fundsEndpoint, 10_000).use { client ->
             assertEquals("INITIALIZED", client.request(initialize).code)
-            for ((user, asset, amount) in listOf(Triple("buyer", "USDT", tradeCount * 100), Triple("seller", "BTC", tradeCount))) {
+            val openingBalances =
+                listOf(
+                    Triple("buyer", "USDT", tradeCount * 100 + 500),
+                    Triple("seller", "BTC", tradeCount + 1),
+                )
+            for ((user, asset, amount) in openingBalances) {
                 val opening = OpeningBalance("archive-mode-$user", UserId(user), AssetId(asset), Amount(amount))
                 val payload = DevelopmentBalanceCommandPayload(opening, "archive-mode-$user", Instant.EPOCH)
                 val command = SplitOrderDeliveryCommand.Control(BoundedTradingCommand.Funding(payload))
@@ -523,6 +528,7 @@ class SplitFundsTradingHttpTest {
                         "exchange.order-query.source" to "archive",
                         "exchange.order-query.consumer-id" to "archive-outage",
                         "exchange.order-query.archive-node-configs" to settingsFiles.joinToString(","),
+                        "exchange.order-query.order-book-enabled" to "true",
                         "TRADING_GATEWAY_RUN_ROOT" to directory.resolve("archive-gateway-$run").toString(),
                         "TRADING_GATEWAY_INGRESS_ENDPOINTS" to funds.settings.fundsIngressEndpoints,
                         "TRADING_GATEWAY_EGRESS_ENDPOINT" to "127.0.0.1:${basePort + 32 + run}",
@@ -536,6 +542,10 @@ class SplitFundsTradingHttpTest {
 
         val jdbc = database.jdbc()
         val sellerOrder = TradingIdentifiers.order(lineage, 1).value
+        val filledThrough = tradeCount + 1
+        val admissionThrough = filledThrough + 3
+        val bookThrough = admissionThrough + 1
+        val ledgerThrough = 2 * tradeCount + 8
 
         fun awaitSaved(
             url: String,
@@ -568,6 +578,7 @@ class SplitFundsTradingHttpTest {
             val seller = post(http, url, orderPath, orderBody("seller", "SELL", tradeCount))
             assertEquals(202, seller.statusCode(), seller.body())
             awaitSaved(url, "RESTING", 0, 3)
+            awaitOrderBook(http, url, through = 1, askQuantity = tradeCount)
 
             database.whilePaused {
                 assertFailsWith<DataAccessException> { jdbc.queryForObject("select 1", Long::class.java) }
@@ -587,6 +598,7 @@ class SplitFundsTradingHttpTest {
                         receipt
                     }
                 awaitArchiveSettlement(fundsEndpoint, half + 1)
+                awaitOrderBook(http, url, through = half + 1, askQuantity = tradeCount - half)
 
                 val oldLeader = matching.awaitLeader()
                 matching.stopLeader(oldLeader)
@@ -595,7 +607,11 @@ class SplitFundsTradingHttpTest {
 
                 for (sequence in half + 1..tradeCount) admitBuyer(sequence)
                 assertEquals(firstBuyer.path("orderId"), admitBuyer(1).path("orderId"))
-                awaitArchiveSettlement(fundsEndpoint, tradeCount + 1)
+                awaitArchiveSettlement(fundsEndpoint, filledThrough)
+                awaitOrderBook(http, url, through = filledThrough)
+                verifyArchivedBidDepth(http, url, tradeCount)
+                awaitArchiveSettlement(fundsEndpoint, admissionThrough)
+                reporter.publishEntry("공개 매수호가", "100의 잔량 5 → 4 → 2, 마지막 반영 순번 $bookThrough")
                 val matchingEndpoint =
                     fundsEndpoint.copy(
                         ingressEndpoints = matching.settings.matchingIngressEndpoints,
@@ -611,22 +627,33 @@ class SplitFundsTradingHttpTest {
                 }
                 assertFailsWith<DataAccessException> { jdbc.queryForObject("select 1", Long::class.java) }
             }
-            awaitSaved(url, "FILLED", tradeCount, 2 * tradeCount + 3)
+            awaitSaved(url, "FILLED", tradeCount, ledgerThrough)
+            await("취소 결과까지 Archive 조회에 반영") {
+                jdbc.queryForObject(
+                    "select settlement_through from order_query.feed_stream where market_id = 'BTC-USDT'",
+                    Long::class.java,
+                ) == bookThrough
+            }
         }
 
         val saved = archiveProjectionRows(jdbc)
-        assertEquals((1L..tradeCount + 1).toList(), saved.admissions)
-        assertEquals((1L..tradeCount + 1).toList(), saved.matches)
-        assertEquals((2L..tradeCount + 1).toList(), saved.settlements.map { it.getValue("result_sequence") })
+        assertEquals((1L..admissionThrough).toList(), saved.admissions)
+        assertEquals((1L..bookThrough).toList(), saved.matches)
+        assertEquals((2L..filledThrough).toList() + admissionThrough, saved.settlements.map { it.getValue("result_sequence") })
         val settlementIds = saved.settlements.mapTo(hashSetOf()) { it.getValue("settlement_id") }
-        assertEquals(tradeCount.toInt(), settlementIds.size)
-        for ((index, settlement) in saved.settlements.withIndex()) {
+        assertEquals(tradeCount.toInt() + 1, settlementIds.size)
+        for ((index, settlement) in saved.settlements.take(tradeCount.toInt()).withIndex()) {
             assertEquals(sellerOrder, settlement.getValue("maker_order_id"))
             assertEquals(TradingIdentifiers.order(lineage, index + 2L).value, settlement.getValue("taker_order_id"))
             assertEquals(100L, settlement.getValue("price"))
             assertEquals(1L, settlement.getValue("quantity"))
         }
-        assertEquals((1L..2 * tradeCount + 3).toList(), saved.ledger.map { it.getValue("sequence") })
+        val bookSettlement = saved.settlements.last()
+        assertEquals(TradingIdentifiers.order(lineage, filledThrough + 1).value, bookSettlement.getValue("maker_order_id"))
+        assertEquals(TradingIdentifiers.order(lineage, admissionThrough).value, bookSettlement.getValue("taker_order_id"))
+        assertEquals(100L, bookSettlement.getValue("price"))
+        assertEquals(1L, bookSettlement.getValue("quantity"))
+        assertEquals((1L..ledgerThrough).toList(), saved.ledger.map { it.getValue("sequence") })
         val appliedPositions = saved.ledger.mapTo(hashSetOf()) { it.getValue("log_position") }
         assertTrue(appliedPositions.size < saved.ledger.size, "묶음 정산으로 같은 로그 위치의 원장이 저장되어야 한다")
         assertArchiveTransferFrames(funds)
@@ -635,8 +662,9 @@ class SplitFundsTradingHttpTest {
         assertEquals(
             mapOf(
                 LedgerTransactionType.OPENING to 2,
-                LedgerTransactionType.RESERVE to tradeCount.toInt() + 1,
-                LedgerTransactionType.SETTLEMENT to tradeCount.toInt(),
+                LedgerTransactionType.RESERVE to tradeCount.toInt() + 4,
+                LedgerTransactionType.SETTLEMENT to tradeCount.toInt() + 1,
+                LedgerTransactionType.RELEASE to 1,
             ),
             transactions.groupingBy { it.transactionType }.eachCount(),
         )
@@ -650,14 +678,94 @@ class SplitFundsTradingHttpTest {
             matching.reopen().use { restartedMatching ->
                 restartedFunds.awaitLeader()
                 restartedMatching.awaitLeader()
-                awaitArchiveSettlement(fundsEndpoint, tradeCount + 1)
+                awaitArchiveSettlement(fundsEndpoint, admissionThrough)
                 openWas(1).use { was ->
-                    awaitSaved(wasUrl(was), "FILLED", tradeCount, 2 * tradeCount + 3)
+                    val url = wasUrl(was)
+                    awaitOrderBook(http, url, through = bookThrough, bidQuantity = 2)
+                    awaitSaved(url, "FILLED", tradeCount, ledgerThrough)
                     assertEquals(saved, archiveProjectionRows(jdbc))
                 }
                 restartedFunds.assertHealthy()
                 restartedMatching.assertHealthy()
             }
+        }
+    }
+
+    private fun verifyArchivedBidDepth(
+        http: HttpClient,
+        url: String,
+        previousTrades: Long,
+    ) {
+        val previousThrough = previousTrades + 1
+        val orderPath = "/markets/BTC-USDT/orders"
+
+        fun place(
+            user: String,
+            side: String,
+            quantity: Long,
+            sequence: Long,
+        ): JsonNode {
+            val response = post(http, url, orderPath, orderBody(user, side, quantity, sequence = sequence))
+            assertEquals(202, response.statusCode(), response.body())
+            return json.readTree(response.body())
+        }
+
+        val firstBid = place("buyer", "BUY", 3, previousTrades + 1)
+        assertEquals(TradingIdentifiers.order(lineage, previousThrough + 1).value, firstBid.path("orderId").asString())
+        val secondBid = place("buyer", "BUY", 2, previousTrades + 2)
+        val secondOrderId = secondBid.path("orderId").asString()
+        assertEquals(TradingIdentifiers.order(lineage, previousThrough + 2).value, secondOrderId)
+        awaitOrderBook(http, url, through = previousThrough + 2, bidQuantity = 5)
+
+        place("seller", "SELL", 1, sequence = 2)
+        awaitOrderBook(http, url, through = previousThrough + 3, bidQuantity = 4)
+
+        val cancelPath = "$orderPath/$secondOrderId/cancel"
+        val cancelBody =
+            """{"userId":"buyer","channel":0,"epoch":1,"sequence":${previousTrades + 3},"expectedConfigurationVersion":1}"""
+        val cancelled = post(http, url, cancelPath, cancelBody)
+        assertEquals(202, cancelled.statusCode(), cancelled.body())
+        val receipt = json.readTree(cancelled.body())
+        assertEquals("ACCEPTED", receipt.path("status").asString())
+        assertEquals(secondOrderId, receipt.path("orderId").asString())
+        awaitOrderBook(http, url, through = previousThrough + 4, bidQuantity = 2)
+
+        val repeated = post(http, url, cancelPath, cancelBody)
+        assertEquals(202, repeated.statusCode(), repeated.body())
+        val repeatedReceipt = json.readTree(repeated.body())
+        assertEquals("ACCEPTED", repeatedReceipt.path("status").asString())
+        assertEquals(secondOrderId, repeatedReceipt.path("orderId").asString())
+        assertEquals(TradingIdentifiers.cancel(lineage, 1), receipt.path("cancelId").asString())
+        assertEquals(receipt.path("cancelId"), repeatedReceipt.path("cancelId"))
+        awaitOrderBook(http, url, through = previousThrough + 4, bidQuantity = 2)
+    }
+
+    private fun awaitOrderBook(
+        http: HttpClient,
+        url: String,
+        through: Long,
+        bidQuantity: Long? = null,
+        askQuantity: Long? = null,
+    ) {
+        val request =
+            HttpRequest
+                .newBuilder(URI.create("$url/api/trading/v3/markets/BTC-USDT/order-book"))
+                .timeout(Duration.ofSeconds(5))
+                .GET()
+                .build()
+        val emptyLevels = json.readTree("[]")
+        val bids = bidQuantity?.let { json.readTree("""[{"price":100,"quantity":"$it"}]""") } ?: emptyLevels
+        val asks = askQuantity?.let { json.readTree("""[{"price":100,"quantity":"$it"}]""") } ?: emptyLevels
+        var lastResponse: HttpResponse<String>? = null
+        await("공개 주문장 반영 순번 $through", { "마지막 응답 ${lastResponse?.statusCode()}: ${lastResponse?.body()}" }) {
+            val response = http.send(request, HttpResponse.BodyHandlers.ofString())
+            lastResponse = response
+            if (response.statusCode() != 200) return@await false
+            val screen = json.readTree(response.body())
+            screen.path("code").asString() == "ORDER_BOOK_FOUND" &&
+                screen.path("marketId").asString() == "BTC-USDT" &&
+                screen.path("asOfMatchingResultSequence").longValue() == through &&
+                screen.path("bids") == bids && screen.path("asks") == asks
         }
     }
 

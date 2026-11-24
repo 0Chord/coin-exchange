@@ -4,14 +4,17 @@ import com.exchange.core.api.trading.application.BalanceQueryUseCase
 import com.exchange.core.api.trading.application.BalanceQueryUseCaseImpl
 import com.exchange.core.api.trading.application.CandleQueryUseCase
 import com.exchange.core.api.trading.application.CandleQueryUseCaseImpl
+import com.exchange.core.api.trading.application.OrderQueryCode
 import com.exchange.core.api.trading.application.OrderQueryNamespace
 import com.exchange.core.api.trading.application.OrderQueryUseCase
+import com.exchange.core.api.trading.application.PublicOrderBookQueryResult
 import com.exchange.core.api.trading.application.port.OrderQueryFeedStore
 import com.exchange.core.api.trading.application.port.OrderQueryStore
 import com.exchange.core.api.trading.infrastructure.aeron.AeronGatewaySettings
 import com.exchange.core.api.trading.infrastructure.aeron.AeronSplitArchiveSource
 import com.exchange.core.api.trading.infrastructure.aeron.ArchiveOrderQueryFeedWorker
 import com.exchange.core.api.trading.infrastructure.aeron.OrderQueryFeedWorker
+import com.exchange.core.api.trading.infrastructure.aeron.PublicOrderBookWorker
 import com.exchange.core.api.trading.infrastructure.aeron.SplitArchiveMember
 import com.exchange.core.api.trading.infrastructure.aeron.SplitTradingNodeSettings
 import com.exchange.core.api.trading.infrastructure.aeron.splitTradingSettings
@@ -65,8 +68,14 @@ class OrderQueryConfig {
         return store
     }
 
-    @Bean
-    fun orderQueryUseCase(store: OrderQueryStore): OrderQueryUseCase = OrderQueryUseCase(store)
+    @Bean("orderQueryUseCase")
+    internal fun orderQueryUseCase(
+        store: OrderQueryStore,
+        orderBook: ObjectProvider<PublicOrderBookWorker>,
+    ): OrderQueryUseCase =
+        OrderQueryUseCase(store) {
+            orderBook.ifAvailable?.read() ?: PublicOrderBookQueryResult(OrderQueryCode.QUERY_NOT_READY)
+        }
 
     @Bean
     fun orderQueryFeedStore(
@@ -141,7 +150,40 @@ class OrderQueryConfig {
         namespace: OrderQueryNamespace,
         environment: Environment,
         balances: PostgresBalanceProjection,
+        archiveNodes: OrderQueryArchiveNodes,
     ): ArchiveOrderQueryFeedWorker {
+        val configuration = archiveNodes.funds.first().configuration
+        return ArchiveOrderQueryFeedWorker(
+            store = feed,
+            namespace = namespace,
+            consumerId = environment.getRequiredProperty("exchange.order-query.consumer-id"),
+            configuration = configuration,
+            fundsSource = archiveSource(archiveNodes.funds),
+            matchingSources = mapOf(configuration.matchingLineage to archiveSource(archiveNodes.matching)),
+            applyBalances = { context -> balances.hasPendingPage() && balances.applyNextPage(context) },
+        )
+    }
+
+    @Bean(initMethod = "start", destroyMethod = "close")
+    @ConditionalOnProperty(prefix = "exchange.order-query", name = ["source"], havingValue = "archive")
+    @ConditionalOnProperty(prefix = "exchange.order-query", name = ["order-book-enabled"], havingValue = "true")
+    internal fun publicOrderBookWorker(
+        namespace: OrderQueryNamespace,
+        archiveNodes: OrderQueryArchiveNodes,
+    ): PublicOrderBookWorker {
+        val matchingNodes = archiveNodes.matching
+        val configuration = matchingNodes.first().configuration
+        val context = configuration.matchingConfiguration.markets.single()
+        val market = context.market.marketId.value
+        require(namespace.fundsLineage == configuration.fundsLineage && namespace.markets == setOf(market)) {
+            "공개 호가의 원본 계보 또는 마켓 설정이 조회 설정과 다릅니다"
+        }
+        return PublicOrderBookWorker(configuration, newSource = { archiveSource(matchingNodes) })
+    }
+
+    @Bean
+    @ConditionalOnProperty(prefix = "exchange.order-query", name = ["source"], havingValue = "archive")
+    internal fun orderQueryArchiveNodes(environment: Environment): OrderQueryArchiveNodes {
         val configFiles =
             environment.getRequiredProperty("exchange.order-query.archive-node-configs").split(',').map { Path.of(it.trim()).normalize() }
         require(configFiles.size in 2..6 && configFiles.distinct().size == configFiles.size && configFiles.all(Path::isAbsolute))
@@ -158,16 +200,7 @@ class OrderQueryConfig {
         val funds = nodes.filter { it.role == TradingServiceRole.FUNDS }
         val matching = nodes.filter { it.role == TradingServiceRole.MATCHING }
         require(funds.isNotEmpty() && matching.isNotEmpty()) { "자금·매칭 Archive 설정을 모두 지정해야 합니다" }
-        val configuration = funds.first().configuration
-        return ArchiveOrderQueryFeedWorker(
-            store = feed,
-            namespace = namespace,
-            consumerId = environment.getRequiredProperty("exchange.order-query.consumer-id"),
-            configuration = configuration,
-            fundsSource = archiveSource(funds),
-            matchingSources = mapOf(configuration.matchingLineage to archiveSource(matching)),
-            applyBalances = { context -> balances.hasPendingPage() && balances.applyNextPage(context) },
-        )
+        return OrderQueryArchiveNodes(funds = funds, matching = matching)
     }
 
     private fun archiveSource(nodes: List<SplitTradingNodeSettings>): AeronSplitArchiveSource {
@@ -183,3 +216,8 @@ class OrderQueryConfig {
         return AeronSplitArchiveSource(members, first.clusterId, first.configuration.resultTopologySha256)
     }
 }
+
+internal data class OrderQueryArchiveNodes(
+    val funds: List<SplitTradingNodeSettings>,
+    val matching: List<SplitTradingNodeSettings>,
+)

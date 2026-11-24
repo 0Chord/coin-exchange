@@ -31,6 +31,11 @@ internal fun splitArchiveAppliedLabel(
     topologySha256: String,
 ): String = "split archive applied $clusterId $memberId $topologySha256"
 
+/** 과거 읽기와 이어지지 않는 것으로 확인한 확정 기록이다. */
+internal class SplitArchiveContinuityException(
+    message: String,
+) : IllegalStateException(message)
+
 internal data class SplitArchiveRead(
     val position: Long,
     val caughtUp: Boolean,
@@ -117,7 +122,9 @@ internal class AeronSplitArchiveSource(
         val previous = frontier
         require(afterPosition == (previous?.boundary?.frame?.position ?: 0L)) { "Archive 재생 시작 위치를 이어갈 수 없습니다" }
         val leader = selectLeader()
-        check(previous == null || leader.term >= previous.leaderTerm) { "Archive 리더 임기가 이전 읽기보다 오래됐습니다" }
+        if (previous != null && leader.term < previous.leaderTerm) {
+            throw SplitArchiveContinuityException("Archive 리더 임기가 이전 읽기보다 오래됐습니다")
+        }
         if (leader.position < afterPosition) error("리더가 이전 Archive 재생 위치까지 적용하지 않았습니다")
         if (leader.position == afterPosition &&
             (
@@ -405,7 +412,10 @@ internal class AeronSplitArchiveSource(
                     val fragments = image.boundedPoll(collector::onFragment, through, 32)
                     collector.failure?.let { throw IllegalArgumentException(it) }
                     if (fragments == 0) {
-                        check(!image.isClosed && !image.isEndOfStream) { "확정된 끝 위치보다 앞에서 Archive 재생이 종료됐습니다" }
+                        if (image.isEndOfStream) {
+                            throw SplitArchiveContinuityException("확정된 끝 위치보다 앞에서 Archive 재생이 종료됐습니다")
+                        }
+                        check(!image.isClosed) { "Archive 재생 연결이 닫혔습니다" }
                         waitForReplay(deadline)
                     }
                     check(System.nanoTime() - deadline < 0L) { "Archive 재생 시간이 초과했습니다" }

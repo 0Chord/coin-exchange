@@ -9,6 +9,7 @@ import com.exchange.core.api.trading.application.OrderFillQueryResult
 import com.exchange.core.api.trading.application.OrderQueryCode
 import com.exchange.core.api.trading.application.OrderQueryResult
 import com.exchange.core.api.trading.application.OrderQueryUseCase
+import com.exchange.core.api.trading.application.PublicOrderBookQueryResult
 import jakarta.validation.constraints.NotBlank
 import jakarta.validation.constraints.Pattern
 import jakarta.validation.constraints.PositiveOrZero
@@ -120,6 +121,14 @@ internal class OrderQueryController(
         return ResponseEntity.status(status(result.code)).body(result)
     }
 
+    @GetMapping("/markets/{marketId}/order-book", produces = [MediaType.APPLICATION_JSON_VALUE])
+    fun getOrderBook(
+        @PathVariable @NotBlank @Size(max = 256) marketId: String,
+    ): ResponseEntity<PublicOrderBookQueryResult> {
+        val result = useCase.getOrderBook(marketId)
+        return ResponseEntity.status(status(result.code)).body(result)
+    }
+
     private fun queryFailure(error: RuntimeException): OrderQueryCode =
         when (error) {
             is TransactionException, is DataAccessException -> OrderQueryCode.QUERY_UNAVAILABLE
@@ -129,7 +138,7 @@ internal class OrderQueryController(
     private fun status(code: OrderQueryCode): Int =
         when (code) {
             OrderQueryCode.ORDER_FOUND, OrderQueryCode.LATEST_SETTLED_TRADE, OrderQueryCode.NO_SETTLED_TRADE_AS_OF -> 200
-            OrderQueryCode.CANDLES_FOUND -> 200
+            OrderQueryCode.CANDLES_FOUND, OrderQueryCode.ORDER_BOOK_FOUND -> 200
             OrderQueryCode.QUERY_CATCHING_UP -> 202
             OrderQueryCode.ORDER_NOT_FOUND_AS_OF -> 404
             OrderQueryCode.QUERY_NOT_READY, OrderQueryCode.QUERY_UNAVAILABLE, OrderQueryCode.QUERY_INCONSISTENT -> 503

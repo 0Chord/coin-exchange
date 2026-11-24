@@ -1,5 +1,6 @@
 package com.exchange.core.api.trading.infrastructure.aeron
 
+import com.exchange.core.api.trading.application.OrderQueryCode
 import com.exchange.core.api.trading.application.OrderQueryLifecycle
 import com.exchange.core.api.trading.application.OrderQueryNamespace
 import com.exchange.core.api.trading.application.port.OrderQueryFeedProgress
@@ -93,6 +94,7 @@ import java.util.concurrent.CompletionException
 import java.util.concurrent.ConcurrentLinkedQueue
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicLong
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
@@ -612,6 +614,165 @@ class SplitTradingClusterAdapterTest {
         val postings = ledger.transactions.single().postings
         assertEquals(300L, postings.last().amount.value)
         assertTrue(projection.isReady)
+    }
+
+    @Test
+    fun `공개 호가는 유효한 빈 화면을 열고 원본 확인이 오래 멈추면 닫는다`() {
+        val settings = configuration(inputContractVersion = 2, archiveQueryEnabled = true)
+        val bytes = SplitOrderDeliveryCodec(2).encode(1, SplitOrderDeliveryCommand.InitializeRole(settings.topologySha256))
+        val clock = AtomicLong()
+        val nextRead = CompletableFuture<Long>()
+        val resume = CountDownLatch(1)
+        val source =
+            SplitArchiveSource { afterPosition, consume ->
+                if (afterPosition == 0L) {
+                    consume(RecordedApplicationFrame(bytes, 64, 0, 1, timestamp))
+                } else {
+                    nextRead.complete(afterPosition)
+                    resume.await()
+                }
+                SplitArchiveRead(64, true)
+            }
+
+        PublicOrderBookWorker(settings, newSource = { source }, nanoTime = clock::get).use { worker ->
+            assertEquals(OrderQueryCode.QUERY_NOT_READY, worker.read().code)
+            worker.start()
+            assertEquals(64L, nextRead.get(5, TimeUnit.SECONDS))
+            val empty = worker.read()
+            assertEquals(OrderQueryCode.ORDER_BOOK_FOUND, empty.code)
+            assertEquals(0L, empty.asOfMatchingResultSequence)
+            assertEquals(emptyList(), empty.bids)
+            assertEquals(emptyList(), empty.asks)
+
+            clock.set(TimeUnit.SECONDS.toNanos(1))
+            assertEquals(OrderQueryCode.QUERY_UNAVAILABLE, worker.read().code)
+            assertNull(worker.read().bids)
+            resume.countDown()
+            awaitOrderBook(worker, OrderQueryCode.ORDER_BOOK_FOUND)
+        }
+    }
+
+    @Test
+    fun `공개 호가는 이미 공개한 Archive 경계를 검증한 뒤에만 복구를 완료한다`() {
+        val settings = configuration(inputContractVersion = 2, archiveQueryEnabled = true)
+        val funds = fixture(TradingServiceRole.FUNDS, results = true, settings = settings)
+        prepare(funds)
+        assertEquals("ACCEPTED", funds.command(admit(1, 3)).code)
+        assertEquals("ACCEPTED", funds.command(admit(2, 1)).code)
+        val orders = funds.read(1).entries
+        val archiveCodec = SplitOrderDeliveryCodec(2)
+        val initBytes = archiveCodec.encode(1, SplitOrderDeliveryCommand.InitializeRole(settings.topologySha256))
+        val firstBytes = archiveCodec.encode(2, SplitOrderDeliveryCommand.Apply(orders[0]))
+        val lastBytes = archiveCodec.encode(3, SplitOrderDeliveryCommand.Apply(orders[1]))
+        val initialized = RecordedApplicationFrame(initBytes, 64, 0, 1, timestamp)
+        val firstOrder = RecordedApplicationFrame(firstBytes, 128, 0, 1, timestamp)
+        val lastOrder = RecordedApplicationFrame(lastBytes, 192, 0, 1, timestamp)
+        val conflictingFunds = fixture(TradingServiceRole.FUNDS, results = true, settings = settings)
+        prepare(conflictingFunds)
+        assertEquals("ACCEPTED", conflictingFunds.command(admit(1, 4)).code)
+        val conflictingOrder = conflictingFunds.read(1).entries.single()
+        val conflictingBytes = archiveCodec.encode(2, SplitOrderDeliveryCommand.Apply(conflictingOrder))
+        val conflictingFrame = RecordedApplicationFrame(conflictingBytes, 128, 0, 1, timestamp)
+        val firstPagePublished = CompletableFuture<Unit>()
+        val breakPage = CountDownLatch(1)
+        val shortPageReplayed = CompletableFuture<Long>()
+        val allowConflict = CountDownLatch(1)
+        val conflictRejected = CompletableFuture<Long>()
+        val allowRecovery = CountDownLatch(1)
+        var opens = 0
+
+        PublicOrderBookWorker(
+            settings,
+            newSource = {
+                opens++
+                if (opens == 1) {
+                    SplitArchiveSource { afterPosition, consume ->
+                        if (afterPosition == 0L) {
+                            consume(initialized)
+                            consume(firstOrder)
+                            consume(lastOrder)
+                            SplitArchiveRead(192, true)
+                        } else {
+                            firstPagePublished.complete(Unit)
+                            breakPage.await()
+                            consume(RecordedApplicationFrame(initBytes, 256, 0, 1, timestamp))
+                            throw IllegalArgumentException("시험용 페이지 중간 실패")
+                        }
+                    }
+                } else if (opens == 2) {
+                    SplitArchiveSource { afterPosition, consume ->
+                        when (afterPosition) {
+                            0L -> {
+                                consume(initialized)
+                                SplitArchiveRead(64, true)
+                            }
+
+                            64L -> {
+                                shortPageReplayed.complete(afterPosition)
+                                allowConflict.await()
+                                consume(conflictingFrame)
+                                consume(lastOrder)
+                                SplitArchiveRead(192, true)
+                            }
+
+                            else -> {
+                                SplitArchiveRead(afterPosition, true)
+                            }
+                        }
+                    }
+                } else {
+                    SplitArchiveSource { afterPosition, consume ->
+                        if (afterPosition == 0L) {
+                            conflictRejected.complete(afterPosition)
+                            allowRecovery.await()
+                            consume(initialized)
+                            consume(firstOrder)
+                            consume(lastOrder)
+                        }
+                        SplitArchiveRead(192, true)
+                    }
+                }
+            },
+        ).use { worker ->
+            worker.start()
+            firstPagePublished.get(5, TimeUnit.SECONDS)
+            val original = worker.read()
+            assertEquals(2L, original.asOfMatchingResultSequence)
+            assertEquals("4", original.bids?.single()?.quantity)
+
+            breakPage.countDown()
+            assertEquals(64L, shortPageReplayed.get(5, TimeUnit.SECONDS))
+            assertEquals(OrderQueryCode.QUERY_INCONSISTENT, worker.read().code)
+            assertNull(worker.read().asOfMatchingResultSequence)
+            allowConflict.countDown()
+
+            assertEquals(0L, conflictRejected.get(5, TimeUnit.SECONDS))
+            assertEquals(OrderQueryCode.QUERY_INCONSISTENT, worker.read().code)
+            assertNull(worker.read().bids)
+            allowRecovery.countDown()
+            awaitOrderBook(worker, OrderQueryCode.ORDER_BOOK_FOUND)
+            assertEquals(original, worker.read())
+        }
+    }
+
+    @Test
+    fun `확정 Archive의 연속성 위반을 공개 호가의 일시 연결 오류와 구분한다`() {
+        val settings = configuration(inputContractVersion = 2, archiveQueryEnabled = true)
+        val source = SplitArchiveSource { _, _ -> throw SplitArchiveContinuityException("시험용 확정 로그 공백") }
+        PublicOrderBookWorker(settings, newSource = { source }).use { worker ->
+            worker.start()
+            awaitOrderBook(worker, OrderQueryCode.QUERY_INCONSISTENT)
+            assertNull(worker.read().bids)
+        }
+    }
+
+    private fun awaitOrderBook(
+        worker: PublicOrderBookWorker,
+        code: OrderQueryCode,
+    ) {
+        val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5)
+        while (worker.read().code != code && System.nanoTime() - deadline < 0L) Thread.sleep(1)
+        assertEquals(code, worker.read().code)
     }
 
     @Test
