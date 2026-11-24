@@ -54,6 +54,8 @@ object ProductionScope {
                     "com.exchange.core.matching.MatchingEvent",
                     // 도메인은 시계나 계측 라이브러리 없이 실행 단계만 알린다.
                     "com.exchange.core.trading.TradingExecutionObserver",
+                    // 자금 상태는 기록 장치에 의존하지 않고 적용한 금융 효과만 알린다.
+                    "com.exchange.core.trading.FundsArchiveFacts",
                 ),
         )
 
