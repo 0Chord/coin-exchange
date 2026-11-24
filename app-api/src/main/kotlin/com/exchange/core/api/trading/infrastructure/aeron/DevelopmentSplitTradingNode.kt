@@ -2,8 +2,11 @@ package com.exchange.core.api.trading.infrastructure.aeron
 
 import com.exchange.core.trading.ClusterLineage
 import com.exchange.core.trading.TradingServiceRole
+import io.aeron.Aeron
+import io.aeron.Counter
 import io.aeron.archive.Archive
 import io.aeron.archive.ArchiveThreadingMode
+import io.aeron.archive.client.ArchiveException
 import io.aeron.cluster.ClusterControl
 import io.aeron.cluster.ClusterMember
 import io.aeron.cluster.ConsensusModule
@@ -287,7 +290,16 @@ internal class DevelopmentSplitTradingNode private constructor(
     private var container: ClusteredServiceContainer? = null
     private var run: SplitTradingRun? = null
     private var tasks: SplitTradingDeliveryTasks? = null
-    private val service = SplitTradingClusterAdapter(settings.role, settings.configuration, ::fail, settings.resultDeliveryEnabled)
+    private var archiveProgressClient: Aeron? = null
+    private var archiveApplied: Counter? = null
+    private val service =
+        SplitTradingClusterAdapter(
+            settings.role,
+            settings.configuration,
+            ::fail,
+            settings.resultDeliveryEnabled,
+            onArchiveApplied = if (settings.configuration.archiveQueryEnabled) ::publishArchiveApplied else null,
+        )
     val error: Throwable? get() = failure.get() ?: tasks?.failure
     val isClosed: Boolean get() = stopped.get()
     val role: Cluster.Role get() = Cluster.Role.get(checkNotNull(consensus).context().clusterNodeRoleCounter().get())
@@ -306,6 +318,10 @@ internal class DevelopmentSplitTradingNode private constructor(
     fun requestSnapshot(): Boolean {
         check(service.tradingReady) { "초기화되지 않은 역할의 snapshot은 요청하지 않습니다" }
         return ClusterControl.ToggleState.SNAPSHOT.toggle(checkNotNull(consensus).context().controlToggleCounter())
+    }
+
+    private fun publishArchiveApplied(position: Long) {
+        checkNotNull(archiveApplied).setRelease(position)
     }
 
     private fun fail(error: Throwable) {
@@ -346,6 +362,16 @@ internal class DevelopmentSplitTradingNode private constructor(
                     .sharedIdleStrategy(TradingAeronRuntime.idleStrategy())
                     .errorHandler(errors),
             )
+        if (settings.configuration.archiveQueryEnabled) {
+            // 서비스가 직접 구동하는 client에서 동기 counter 등록을 기다리지 않는다.
+            val client = Aeron.connect(Aeron.Context().aeronDirectoryName(config.driverDirectory).errorHandler(errors))
+            archiveProgressClient = client
+            archiveApplied =
+                client.addCounter(
+                    SPLIT_ARCHIVE_APPLIED_TYPE_ID,
+                    splitArchiveAppliedLabel(settings.clusterId, config.memberId, settings.configuration.resultTopologySha256),
+                )
+        }
         archive =
             Archive.launch(
                 Archive
@@ -433,7 +459,7 @@ internal class DevelopmentSplitTradingNode private constructor(
     override fun close() {
         if (!stopped.compareAndSet(false, true)) return
         signal.countDown()
-        listOf(tasks, container, consensus, archive, driver, run).forEach { resource ->
+        listOf(tasks, container, archiveApplied, archiveProgressClient, consensus, archive, driver, run).forEach { resource ->
             try {
                 resource?.close()
             } catch (error: Throwable) {
@@ -487,6 +513,16 @@ internal class DevelopmentSplitTradingNode private constructor(
 /** 일시적 peer DNS 단절은 client가 재연결한다. 업무 오류는 이 분류를 거치지 않고 노드를 차단한다. */
 internal fun isSplitNodeFatalError(error: Throwable): Boolean {
     if (error is AeronException && error.category() == AeronException.Category.WARN) return false
+    if (error is ArchiveException && error.errorCode() == ArchiveException.GENERIC) {
+        val message = error.message.orEmpty()
+        // 조회 구독이 취소된 재생 요청은 거래 노드의 장애가 아니다.
+        if (message.startsWith("ERROR - no connection established for replayChannel=aeron:ipc?") &&
+            message.contains("|alias=$SPLIT_QUERY_REPLAY_ALIAS_PREFIX") &&
+            message.contains(", replayStreamId=$SPLIT_QUERY_REPLAY_STREAM_ID, recordingId=")
+        ) {
+            return false
+        }
+    }
     if (error is InvalidChannelException &&
         generateSequence(error as Throwable?) { it.cause }.any { it is UnknownHostException }
     ) {

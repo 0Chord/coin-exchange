@@ -299,6 +299,7 @@ internal class MatchingRoleSnapshotCodec {
                 // 신규 전용 지문은 그대로 두고 새 계약만 입력 버전에 결속한다.
                 if (configuration.inputContractVersion == 2) output.writeInt(configuration.inputContractVersion)
                 configuration.queryRetention?.let { QueryFactsSnapshotCodec.writeConfiguration(output, it) }
+                if (configuration.archiveQueryEnabled) output.text("archive-query-v1")
             }
             bytes.toByteArray()
         }

@@ -81,6 +81,7 @@ class MatchingIntakeConfiguration(
     val limits: MatchingIntakeLimits = MatchingIntakeLimits.defaults(topology, declaration),
     val inputContractVersion: Int = 1,
     val queryRetention: QueryRetentionConfiguration? = null,
+    val archiveQueryEnabled: Boolean = false,
 ) {
     val manifest: TradingClusterManifest = topology.fundsManifest
     val assignments: List<TradingMarketAssignment> =
@@ -127,6 +128,7 @@ class MatchingIntakeConfiguration(
 
     init {
         require(inputContractVersion in 1..2) { "unsupported matching input contract" }
+        require(!archiveQueryEnabled || (inputContractVersion == 2 && queryRetention == null))
         topology.validate(declaration, TradingServiceRole.MATCHING)
         queryRetention?.let { query ->
             require(query.marketLimits.keys == manifest.markets.map { it.market.marketId }.toSet()) {
@@ -266,6 +268,7 @@ class MatchingIntakeConfiguration(
 
     internal fun exceedsResultBudget(result: MatchingResultEnvelope): Boolean {
         if (result.canonicalBytes > limits.maxSingleResultBytes) return true
+        if (archiveQueryEnabled) return SettlementFact.creditBytes(result, result.input.context.market) > SettlementFact.MAX_CANONICAL_BYTES
         val query = queryRetention ?: return false
         if (query.capabilityVersion != 2) return false
         val credit = SettlementFact.creditBytes(result, result.input.context.market)
@@ -327,7 +330,7 @@ class MatchingIntakeConfiguration(
             declaration.configurationVersion == other.declaration.configurationVersion &&
             declaration.markets == other.declaration.markets &&
             declaration.ownershipEpochs == other.declaration.ownershipEpochs && inputContractVersion == other.inputContractVersion &&
-            queryRetention == other.queryRetention
+            queryRetention == other.queryRetention && archiveQueryEnabled == other.archiveQueryEnabled
 
     override fun hashCode(): Int =
         listOf(
@@ -339,6 +342,7 @@ class MatchingIntakeConfiguration(
             declaration.ownershipEpochs,
             inputContractVersion,
             queryRetention,
+            archiveQueryEnabled,
         ).hashCode()
 
     companion object {

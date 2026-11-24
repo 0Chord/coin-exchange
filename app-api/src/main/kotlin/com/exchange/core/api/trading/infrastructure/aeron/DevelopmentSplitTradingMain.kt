@@ -151,6 +151,8 @@ internal fun splitTradingConfiguration(
                     maxActiveOrders = activeOrders,
                 )
         }
+    val querySource = environment["EXCHANGE_ORDER_QUERY_SOURCE"] ?: "live"
+    require(querySource in setOf("live", "archive")) { "잘못된 주문 조회 원본 설정입니다" }
     return SplitTradingConfiguration(
         topology,
         declaration(TradingServiceRole.FUNDS, manifest.lineage, manifest.markets),
@@ -162,6 +164,7 @@ internal fun splitTradingConfiguration(
         matchingLimitsByLineage = matchingLimitsByLineage,
         queryRetention = splitQueryRetentionConfiguration(topology, environment, dispatchLimits, inputContractVersion),
         transferBatchEnabled = environment["SPLIT_TRANSFER_BATCH_ENABLED"]?.toBooleanStrict() ?: false,
+        archiveQueryEnabled = querySource == "archive",
     )
 }
 

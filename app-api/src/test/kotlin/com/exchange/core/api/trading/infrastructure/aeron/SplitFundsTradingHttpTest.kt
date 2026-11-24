@@ -82,6 +82,7 @@ import io.aeron.logbuffer.Header
 import org.agrona.DirectBuffer
 import org.agrona.concurrent.UnsafeBuffer
 import org.junit.jupiter.api.Test
+import org.junit.jupiter.api.TestReporter
 import org.junit.jupiter.api.io.TempDir
 import org.springframework.beans.factory.BeanCreationException
 import org.springframework.beans.factory.config.BeanPostProcessor
@@ -89,6 +90,8 @@ import org.springframework.beans.factory.support.AbstractBeanDefinition
 import org.springframework.boot.builder.SpringApplicationBuilder
 import org.springframework.boot.web.server.servlet.context.ServletWebServerApplicationContext
 import org.springframework.context.ConfigurableApplicationContext
+import org.springframework.dao.DataAccessException
+import org.springframework.jdbc.core.JdbcTemplate
 import tools.jackson.databind.JsonNode
 import tools.jackson.databind.json.JsonMapper
 import java.math.BigInteger
@@ -103,6 +106,7 @@ import java.nio.file.Path
 import java.sql.Timestamp
 import java.time.Duration
 import java.time.Instant
+import java.util.Properties
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.ThreadLocalRandom
 import java.util.concurrent.TimeUnit
@@ -118,11 +122,281 @@ import kotlin.test.assertIs
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
-/** 제품 WAS·PostgreSQL과 실제 단일 자금·매칭 노드를 연결한다. 복제 HA는 이 검사의 범위가 아니다. */
+/** 제품 WAS·PostgreSQL과 실제 자금·매칭 노드를 연결한다. Archive 장애 사례는 역할별 세 멤버로 검증한다. */
 class SplitFundsTradingHttpTest {
     @TempDir lateinit var directory: Path
     private val json = JsonMapper.builder().build()
     private val lineage = ClusterLineage(41, 42)
+
+    @Test
+    fun `PostgreSQL이 멈춘 동안 실제 삼대삼 거래와 리더 교체를 이어가고 Archive에서 복구한다`(reporter: TestReporter) {
+        val tradeCount = 8L
+        val basePort = availablePorts(ArchiveReplayCluster.additionalPortOffsets)
+        val fees = MakerTakerFeeRates(makerFeeRate = FeeRate.ZERO, takerFeeRate = FeeRate.ZERO)
+        val manifestFile = directory.resolve("archive-manifest.bin")
+        Files.write(manifestFile, BoundedTradingStateCodec().encodeManifest(manifest(fees, 8)))
+        val fundsEnvironment = settingsEnvironment(manifestFile, TradingServiceRole.FUNDS, basePort, archiveQuery = true)
+        val matchingEnvironment = settingsEnvironment(manifestFile, TradingServiceRole.MATCHING, basePort, archiveQuery = true)
+        val (funds, matching) =
+            ArchiveReplayCluster.startBoth(splitTradingSettings(fundsEnvironment), splitTradingSettings(matchingEnvironment))
+        funds.use {
+            matching.use {
+                OrderQueryTestDatabase(socketTimeoutSeconds = 2).use { database ->
+                    val settingsFiles =
+                        writeArchiveMemberProperties(funds, fundsEnvironment) + writeArchiveMemberProperties(matching, matchingEnvironment)
+                    MediaDriver
+                        .launch(
+                            MediaDriver
+                                .Context()
+                                .aeronDirectoryName(directory.resolve("archive-mode-client").toString())
+                                .dirDeleteOnShutdown(true)
+                                .threadingMode(ThreadingMode.SHARED),
+                        ).use { driver ->
+                            val fundsEndpoint = prepareArchiveTrading(driver, funds, matching, tradeCount)
+                            HttpClient.newHttpClient().use { http ->
+                                verifyArchiveOutage(
+                                    database,
+                                    funds,
+                                    matching,
+                                    fundsEndpoint,
+                                    settingsFiles,
+                                    http,
+                                    tradeCount,
+                                    basePort,
+                                    reporter,
+                                )
+                            }
+                        }
+                }
+            }
+        }
+    }
+
+    private fun prepareArchiveTrading(
+        driver: MediaDriver,
+        funds: ArchiveReplayCluster,
+        matching: ArchiveReplayCluster,
+        tradeCount: Long,
+    ): SplitOrderDeliveryEndpoint {
+        fun endpoint(
+            cluster: ArchiveReplayCluster,
+            ingress: String,
+        ) = SplitOrderDeliveryEndpoint(driver.aeronDirectoryName(), ingress, "127.0.0.1:0", cluster.settings.clusterId, 2)
+        val fundsEndpoint = endpoint(funds, funds.settings.fundsIngressEndpoints)
+        val matchingEndpoint = endpoint(matching, matching.settings.matchingIngressEndpoints)
+        val initialize = SplitOrderDeliveryCommand.InitializeRole(funds.settings.configuration.topologySha256)
+        SplitOrderDeliveryClient(matchingEndpoint, 10_000).use { client ->
+            assertEquals("INITIALIZED", client.request(initialize).code)
+        }
+        SplitOrderDeliveryClient(fundsEndpoint, 10_000).use { client ->
+            assertEquals("INITIALIZED", client.request(initialize).code)
+            for ((user, asset, amount) in listOf(Triple("buyer", "USDT", tradeCount * 100), Triple("seller", "BTC", tradeCount))) {
+                val opening = OpeningBalance("archive-mode-$user", UserId(user), AssetId(asset), Amount(amount))
+                val payload = DevelopmentBalanceCommandPayload(opening, "archive-mode-$user", Instant.EPOCH)
+                val command = SplitOrderDeliveryCommand.Control(BoundedTradingCommand.Funding(payload))
+                assertEquals("PREPARED", client.request(command).code)
+            }
+        }
+        return fundsEndpoint
+    }
+
+    private fun writeArchiveMemberProperties(
+        cluster: ArchiveReplayCluster,
+        environment: Map<String, String>,
+    ): List<Path> =
+        cluster.memberSettings.map { member ->
+            val transport = member.transport
+            val values =
+                environment +
+                    mapOf(
+                        "SPLIT_FUNDS_INGRESS" to member.fundsIngressEndpoints,
+                        "SPLIT_MATCHING_INGRESS" to member.matchingIngressEndpoints,
+                        "FUNDING_RUN_ROOT" to transport.runRoot.toString(),
+                        "FUNDING_BASE_PORT" to transport.basePort.toString(),
+                        "FUNDING_MEMBER_ID" to transport.memberId.toString(),
+                        "FUNDING_MEMBERS" to transport.members,
+                    )
+            val path = directory.resolve("archive-${member.role.name.lowercase()}-${transport.memberId}.properties")
+            Files.newOutputStream(path).use { output -> Properties().apply { putAll(values) }.store(output, null) }
+            path
+        }
+
+    private fun verifyArchiveOutage(
+        database: OrderQueryTestDatabase,
+        funds: ArchiveReplayCluster,
+        matching: ArchiveReplayCluster,
+        fundsEndpoint: SplitOrderDeliveryEndpoint,
+        settingsFiles: List<Path>,
+        http: HttpClient,
+        tradeCount: Long,
+        basePort: Int,
+        reporter: TestReporter,
+    ) {
+        fun openWas(run: Int): ConfigurableApplicationContext {
+            val properties =
+                database.properties +
+                    mapOf(
+                        "exchange.order-query.supported-markets" to "BTC-USDT",
+                        "exchange.order-query.source" to "archive",
+                        "exchange.order-query.consumer-id" to "archive-outage",
+                        "exchange.order-query.archive-node-configs" to settingsFiles.joinToString(","),
+                        "TRADING_GATEWAY_RUN_ROOT" to directory.resolve("archive-gateway-$run").toString(),
+                        "TRADING_GATEWAY_INGRESS_ENDPOINTS" to funds.settings.fundsIngressEndpoints,
+                        "TRADING_GATEWAY_EGRESS_ENDPOINT" to "127.0.0.1:${basePort + 32 + run}",
+                        "server.port" to "0",
+                        "spring.main.banner-mode" to "off",
+                        "logging.level.root" to "ERROR",
+                    )
+            return SpringApplicationBuilder(ExchangeCoreApplication::class.java)
+                .run(*properties.map { "--${it.key}=${it.value}" }.toTypedArray())
+        }
+
+        val jdbc = database.jdbc()
+        val sellerOrder = TradingIdentifiers.order(lineage, 1).value
+
+        fun awaitSaved(
+            url: String,
+            state: String,
+            filled: Long,
+            ledgerCount: Long,
+        ) {
+            var lastResponse: HttpResponse<String>? = null
+            await("Archive 주문 $sellerOrder 조회 $state", { "마지막 응답 ${lastResponse?.statusCode()} ${lastResponse?.body()}" }) {
+                val response = getQuery(http, url, sellerOrder)
+                lastResponse = response
+                response.statusCode() == 200 &&
+                    json.readTree(response.body()).let {
+                        it.path("state").asString() == state && it.path("financialStatus").asString() == "APPLIED" &&
+                            it.path("filledQuantity").longValue() == filled
+                    }
+            }
+            await("Archive 원장 $ledgerCount개 반영") {
+                jdbc.queryForObject("select count(*) from order_query.funds_ledger_batch", Long::class.java) == ledgerCount
+            }
+        }
+
+        openWas(0).use { was ->
+            val url = wasUrl(was)
+            for (user in listOf("buyer", "seller")) {
+                val epoch = post(http, url, "/channels/0/epoch", """{"userId":"$user","expectedEpoch":0}""")
+                assertEquals(200, epoch.statusCode(), epoch.body())
+            }
+            val orderPath = "/markets/BTC-USDT/orders"
+            val seller = post(http, url, orderPath, orderBody("seller", "SELL", tradeCount))
+            assertEquals(202, seller.statusCode(), seller.body())
+            awaitSaved(url, "RESTING", 0, 3)
+
+            database.whilePaused {
+                assertFailsWith<DataAccessException> { jdbc.queryForObject("select 1", Long::class.java) }
+
+                fun admitBuyer(sequence: Long): JsonNode {
+                    val response = post(http, url, orderPath, orderBody("buyer", "BUY", 1, sequence = sequence))
+                    assertEquals(202, response.statusCode(), response.body())
+                    val receipt = json.readTree(response.body())
+                    assertEquals(sequence + 1, receipt.path("admissionSequence").longValue())
+                    return receipt
+                }
+                val firstBuyer = admitBuyer(1)
+                val half = tradeCount / 2
+                for (sequence in 2L..half) admitBuyer(sequence)
+                awaitArchiveSettlement(fundsEndpoint, half + 1)
+
+                val oldLeader = matching.awaitLeader()
+                matching.stopLeader(oldLeader)
+                val newLeader = matching.awaitLeader(after = oldLeader)
+                reporter.publishEntry("매칭 리더와 임기", "${oldLeader.memberId}/${oldLeader.term} → ${newLeader.memberId}/${newLeader.term}")
+
+                for (sequence in half + 1..tradeCount) admitBuyer(sequence)
+                assertEquals(firstBuyer.path("orderId"), admitBuyer(1).path("orderId"))
+                awaitArchiveSettlement(fundsEndpoint, tradeCount + 1)
+                assertFailsWith<DataAccessException> { jdbc.queryForObject("select 1", Long::class.java) }
+            }
+            awaitSaved(url, "FILLED", tradeCount, 2 * tradeCount + 3)
+        }
+
+        val saved = archiveProjectionRows(jdbc)
+        assertEquals((1L..tradeCount + 1).toList(), saved.admissions)
+        assertEquals((1L..tradeCount + 1).toList(), saved.matches)
+        assertEquals((2L..tradeCount + 1).toList(), saved.settlements.map { it.getValue("result_sequence") })
+        val settlementIds = saved.settlements.mapTo(hashSetOf()) { it.getValue("settlement_id") }
+        assertEquals(tradeCount.toInt(), settlementIds.size)
+        for ((index, settlement) in saved.settlements.withIndex()) {
+            assertEquals(sellerOrder, settlement.getValue("maker_order_id"))
+            assertEquals(TradingIdentifiers.order(lineage, index + 2L).value, settlement.getValue("taker_order_id"))
+            assertEquals(100L, settlement.getValue("price"))
+            assertEquals(1L, settlement.getValue("quantity"))
+        }
+        assertEquals((1L..2 * tradeCount + 3).toList(), saved.ledger.map { it.getValue("sequence") })
+        val transactions = saved.ledger.flatMap { readRecoveryTransactions(it.getValue("transactions") as String) }
+        assertEquals(
+            mapOf(
+                LedgerTransactionType.OPENING to 2,
+                LedgerTransactionType.RESERVE to tradeCount.toInt() + 1,
+                LedgerTransactionType.SETTLEMENT to tradeCount.toInt(),
+            ),
+            transactions.groupingBy { it.transactionType }.eachCount(),
+        )
+        assertEquals(transactions.size, transactions.map { it.ledgerTransactionId }.toSet().size)
+
+        funds.assertHealthy()
+        matching.assertHealthy()
+        funds.close()
+        matching.close()
+        funds.reopen().use { restartedFunds ->
+            matching.reopen().use { restartedMatching ->
+                restartedFunds.awaitLeader()
+                restartedMatching.awaitLeader()
+                awaitArchiveSettlement(fundsEndpoint, tradeCount + 1)
+                openWas(1).use { was ->
+                    awaitSaved(wasUrl(was), "FILLED", tradeCount, 2 * tradeCount + 3)
+                    assertEquals(saved, archiveProjectionRows(jdbc))
+                }
+                restartedFunds.assertHealthy()
+                restartedMatching.assertHealthy()
+            }
+        }
+    }
+
+    private data class ArchiveProjectionRows(
+        val receipts: List<Map<String, Any?>>,
+        val settlements: List<Map<String, Any?>>,
+        val ledger: List<Map<String, Any?>>,
+    ) {
+        val admissions: List<Any?> get() = sourceSequences("ADMISSION")
+        val matches: List<Any?> get() = sourceSequences("MATCHING")
+
+        private fun sourceSequences(kind: String): List<Any?> =
+            receipts.filter { it.getValue("source_kind") == kind }.map { it.getValue("source_sequence") }
+    }
+
+    private fun archiveProjectionRows(jdbc: JdbcTemplate): ArchiveProjectionRows =
+        ArchiveProjectionRows(
+            receipts =
+                jdbc.queryForList(
+                    """
+                    select source_kind, source_sequence, first_revision, encode(canonical_payload, 'hex') as payload
+                    from order_query.source_receipt order by source_kind, source_sequence
+                    """.trimIndent(),
+                ),
+            settlements = jdbc.queryForList("select * from order_query.settlement_transaction order by result_sequence"),
+            ledger = storedLedgerRows(jdbc),
+        )
+
+    private fun awaitArchiveSettlement(
+        endpoint: SplitOrderDeliveryEndpoint,
+        through: Long,
+    ) {
+        SplitOrderDeliveryClient(endpoint, 10_000).use { client ->
+            val progress = SplitOrderDeliveryCommand.Control(BoundedTradingCommand.Progress)
+            await("실제 자금 클러스터의 $through 순번 정산") {
+                val reply = client.request(progress)
+                reply.control
+                    ?.markets
+                    ?.single()
+                    ?.executedThrough == through
+            }
+        }
+    }
 
     @Test
     fun `프로필 없는 제품 WAS의 주문이 자금과 매칭을 거치고 같은 WAS 조회는 미준비를 반환한다`() {
@@ -1705,8 +1979,10 @@ class SplitFundsTradingHttpTest {
         return snapshot?.ledger?.retiredThrough
     }
 
-    private fun storedLedgerRows(harness: TradingHarness): List<Map<String, Any?>> =
-        harness.database.jdbc().queryForList(
+    private fun storedLedgerRows(harness: TradingHarness): List<Map<String, Any?>> = storedLedgerRows(harness.database.jdbc())
+
+    private fun storedLedgerRows(jdbc: JdbcTemplate): List<Map<String, Any?>> =
+        jdbc.queryForList(
             "select sequence, log_position, transactions::text from order_query.funds_ledger_batch order by sequence",
         )
 
@@ -3499,34 +3775,42 @@ class SplitFundsTradingHttpTest {
         base: Int,
         consumerId: String? = null,
         persistSettlements: Boolean = false,
-    ): SplitTradingNodeSettings {
+    ): SplitTradingNodeSettings = splitTradingSettings(settingsEnvironment(manifest, role, base, consumerId, persistSettlements))
+
+    private fun settingsEnvironment(
+        manifest: Path,
+        role: TradingServiceRole,
+        base: Int,
+        consumerId: String? = null,
+        persistSettlements: Boolean = false,
+        archiveQuery: Boolean = false,
+    ): Map<String, String> {
         val port = if (role == TradingServiceRole.FUNDS) base else base + 16
         val querySettings =
             buildMap {
                 if (consumerId != null) put("EXCHANGE_ORDER_QUERY_CONSUMER_ID", consumerId)
                 if (persistSettlements) put("EXCHANGE_ORDER_QUERY_PERSIST_SETTLEMENTS", "true")
+                if (archiveQuery) put("EXCHANGE_ORDER_QUERY_SOURCE", "archive")
             }
-        return splitTradingSettings(
-            mapOf(
-                "SPLIT_MODE" to "RESULT_SETTLEMENT_DEV",
-                "SPLIT_ROLE" to role.name,
-                "SPLIT_MANIFEST" to manifest.toString(),
-                "SPLIT_INPUT_CONTRACT_VERSION" to "2",
-                "SPLIT_MAX_FUNDS_DISPATCH_BYTES" to "65536",
-                "SPLIT_MAX_FUNDS_ACTIVE_BYTES" to "65536",
-                "SPLIT_MATCHING_LINEAGE_HIGH" to "51",
-                "SPLIT_MATCHING_LINEAGE_LOW" to "52",
-                "SPLIT_OWNERSHIP_EPOCH" to "1",
-                "SPLIT_FUNDS_INGRESS" to "0=127.0.0.1:$base",
-                "SPLIT_MATCHING_INGRESS" to "0=127.0.0.1:${base + 16}",
-                "FUNDING_RUN_ROOT" to directory.resolve(role.name.lowercase()).toString(),
-                "FUNDING_BASE_PORT" to port.toString(),
-                "FUNDING_MEMBER_ID" to "0",
-                "FUNDING_HOST" to "127.0.0.1",
-                "FUNDING_MEMBERS" to "0,${(0..4).joinToString(",") { "127.0.0.1:${port + it}" }}",
-                "FUNDING_RUN_ID" to "split-http",
-            ) + querySettings,
-        )
+        return mapOf(
+            "SPLIT_MODE" to "RESULT_SETTLEMENT_DEV",
+            "SPLIT_ROLE" to role.name,
+            "SPLIT_MANIFEST" to manifest.toString(),
+            "SPLIT_INPUT_CONTRACT_VERSION" to "2",
+            "SPLIT_MAX_FUNDS_DISPATCH_BYTES" to "65536",
+            "SPLIT_MAX_FUNDS_ACTIVE_BYTES" to "65536",
+            "SPLIT_MATCHING_LINEAGE_HIGH" to "51",
+            "SPLIT_MATCHING_LINEAGE_LOW" to "52",
+            "SPLIT_OWNERSHIP_EPOCH" to "1",
+            "SPLIT_FUNDS_INGRESS" to "0=127.0.0.1:$base",
+            "SPLIT_MATCHING_INGRESS" to "0=127.0.0.1:${base + 16}",
+            "FUNDING_RUN_ROOT" to directory.resolve(role.name.lowercase()).toString(),
+            "FUNDING_BASE_PORT" to port.toString(),
+            "FUNDING_MEMBER_ID" to "0",
+            "FUNDING_HOST" to "127.0.0.1",
+            "FUNDING_MEMBERS" to "0,${(0..4).joinToString(",") { "127.0.0.1:${port + it}" }}",
+            "FUNDING_RUN_ID" to "split-http",
+        ) + querySettings
     }
 
     private fun manifest(
@@ -3563,13 +3847,13 @@ class SplitFundsTradingHttpTest {
             ),
         )
 
-    private fun availablePorts(): Int {
+    private fun availablePorts(extraOffsets: List<Int> = emptyList()): Int {
         repeat(100) {
             // 노드 기동 뒤에 바인딩하는 WAS의 고정 포트를 OS 임시 UDP 응답 포트와 분리한다.
             val base = ThreadLocalRandom.current().nextInt(16_000, 30_000)
             val sockets = mutableListOf<DatagramSocket>()
             try {
-                for (offset in (0..8) + (16..24) + (32..33)) sockets.add(DatagramSocket(base + offset))
+                for (offset in (0..8) + (16..24) + (32..33) + extraOffsets) sockets.add(DatagramSocket(base + offset))
                 return base
             } catch (_: java.net.BindException) {
             } finally {

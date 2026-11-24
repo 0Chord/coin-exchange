@@ -21,6 +21,7 @@ import com.exchange.core.trading.TradingResourceLimits
 import com.exchange.core.trading.TradingRoleDeclaration
 import com.exchange.core.trading.TradingRoleTopology
 import com.exchange.core.trading.TradingServiceRole
+import io.aeron.archive.client.ArchiveException
 import io.aeron.driver.exceptions.InvalidChannelException
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.io.TempDir
@@ -232,6 +233,18 @@ class SplitTradingRoleStartupTest {
         assertFalse(isSplitNodeFatalError(InvalidChannelException("remote endpoint unavailable", UnknownHostException("matching0"))))
         assertTrue(isSplitNodeFatalError(InvalidChannelException("malformed channel", IllegalArgumentException("bad port"))))
         assertTrue(isSplitNodeFatalError(IllegalStateException("financial failure", UnknownHostException("business"))))
+    }
+
+    @Test
+    fun `구독자가 사라진 조회 재생과 Archive 기록 오류를 구분한다`() {
+        val replay = "aeron:ipc?term-length=16m|session-id=202|alias=split-query-replay-202"
+        val absentSubscriber = "no connection established for replayChannel=$replay, replayStreamId=19999, recordingId=0"
+        val otherStream = absentSubscriber.replace("19999", "19998")
+        val otherReplay = absentSubscriber.replace("split-query-replay-", "cluster-")
+        assertFalse(isSplitNodeFatalError(ArchiveException(absentSubscriber, ArchiveException.GENERIC)))
+        assertTrue(isSplitNodeFatalError(ArchiveException(otherStream, ArchiveException.GENERIC)))
+        assertTrue(isSplitNodeFatalError(ArchiveException(otherReplay, ArchiveException.GENERIC)))
+        assertTrue(isSplitNodeFatalError(ArchiveException("unexpected end of recording at position=96", ArchiveException.GENERIC)))
     }
 
     @TempDir lateinit var directory: Path

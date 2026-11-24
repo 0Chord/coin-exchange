@@ -2,10 +2,12 @@ package com.exchange.core.api.trading.infrastructure.aeron
 
 import io.aeron.cluster.client.AeronCluster
 import io.aeron.cluster.codecs.ClusterActionRequestDecoder
+import io.aeron.cluster.codecs.ClusterTimeUnit
 import io.aeron.cluster.codecs.MembershipChangeEventDecoder
 import io.aeron.cluster.codecs.MessageHeaderDecoder
 import io.aeron.cluster.codecs.MessageHeaderEncoder
 import io.aeron.cluster.codecs.NewLeadershipTermEventDecoder
+import io.aeron.cluster.codecs.NewLeadershipTermEventEncoder
 import io.aeron.cluster.codecs.SessionCloseEventDecoder
 import io.aeron.cluster.codecs.SessionMessageHeaderEncoder
 import io.aeron.cluster.codecs.SessionOpenEventDecoder
@@ -13,6 +15,7 @@ import io.aeron.cluster.codecs.TimerEventDecoder
 import io.aeron.logbuffer.FrameDescriptor
 import io.aeron.logbuffer.Header
 import io.aeron.protocol.DataHeaderFlyweight
+import org.agrona.BitUtil.align
 import org.agrona.concurrent.UnsafeBuffer
 import java.nio.ByteOrder.LITTLE_ENDIAN
 import kotlin.test.Test
@@ -72,7 +75,7 @@ class RecordedClusterFrameParserTest {
         listOf(schema, version, template).forEach { bad ->
             assertFailsWith<Exception> { RecordedClusterFrameParser.parse(bad, 0, normal.size, 128) }
         }
-        listOf(0, 7, 8, 31, 32, 39).forEach { length ->
+        listOf(0, 7, 8, AeronCluster.SESSION_HEADER_LENGTH - 1).forEach { length ->
             assertFailsWith<IllegalArgumentException> { RecordedClusterFrameParser.parse(UnsafeBuffer(normal), 0, length, 128) }
         }
         assertFailsWith<IllegalArgumentException> { RecordedClusterFrameParser.parse(UnsafeBuffer(normal), -1, normal.size, 128) }
@@ -111,6 +114,37 @@ class RecordedClusterFrameParserTest {
         assertEquals(2, collector.inputs.single().fragmentCount)
         assertEquals(2, collector.fragmentCount)
         assertEquals(1, collector.fragmentedMessageCount)
+    }
+
+    @Test
+    fun `이어 읽는 범위에서 term 끝의 padding만 건너뛴다`() {
+        val termEnd = 64L * 1024
+        val start = termEnd - 64
+        val message = sessionMessage(ByteArray(8))
+        val next = fragment(message, 0, FrameDescriptor.UNFRAGMENTED.toInt(), termId = 11)
+        val reader =
+            RecordedReplayCollector(
+                start,
+                next.header.position(),
+                allowLeadershipChanges = true,
+                allowTermPadding = true,
+                initialLeadershipTermId = 4,
+            )
+        reader.onFragment(next.buffer, next.payloadOffset, next.payloadLength, next.header)
+        assertNull(reader.completionFailure(next.header.position()))
+        assertEquals(termEnd, reader.lastCompletedStartPosition)
+
+        val skipped = fragment(message, 32, FrameDescriptor.UNFRAGMENTED.toInt(), termId = 11)
+        val broken =
+            RecordedReplayCollector(
+                start,
+                skipped.header.position(),
+                allowLeadershipChanges = true,
+                allowTermPadding = true,
+                initialLeadershipTermId = 4,
+            )
+        broken.onFragment(skipped.buffer, skipped.payloadOffset, skipped.payloadLength, skipped.header)
+        assertTrue(assertNotNull(broken.failure).contains("공백"))
     }
 
     @Test
@@ -166,11 +200,75 @@ class RecordedClusterFrameParserTest {
         assertNotNull(collector.completionFailure(only.header.position()))
     }
 
-    private fun sessionMessage(bytes: ByteArray): ByteArray {
+    @Test
+    fun `연속된 임기 시작이 있을 때만 두 임기의 업무 입력을 재생한다`() {
+        val firstTerm = leadershipChange(term = 4, basePosition = 0, termOffset = 0)
+        val message = sessionMessage(ByteArray(8))
+        val firstInput = fragment(message, firstTerm.header.nextTermOffset(), FrameDescriptor.UNFRAGMENTED.toInt())
+        val boundary = firstInput.header.nextTermOffset()
+        val nextTerm = leadershipChange(term = 5, basePosition = boundary, termOffset = boundary)
+        val secondInput = fragment(sessionMessage(ByteArray(8), 5), nextTerm.header.nextTermOffset(), FrameDescriptor.UNFRAGMENTED.toInt())
+        val frames = listOf(firstTerm, firstInput, nextTerm, secondInput)
+        val limit = secondInput.header.position()
+        val collector = RecordedReplayCollector(0, limit, allowLeadershipChanges = true)
+        for (frame in frames) collector.onFragment(frame.buffer, frame.payloadOffset, frame.payloadLength, frame.header)
+        assertNull(collector.completionFailure(limit))
+        assertEquals(listOf(4L, 5L), collector.inputs.map { it.leadershipTermId })
+        assertEquals(listOf(0L, boundary.toLong()), collector.controls.map { it.leadershipChange?.basePosition })
+
+        val wrongBoundary = leadershipChange(term = 5, basePosition = boundary - 32, termOffset = boundary)
+        val broken = RecordedReplayCollector(0, limit, allowLeadershipChanges = true)
+        for (frame in listOf(firstTerm, firstInput, wrongBoundary)) {
+            broken.onFragment(frame.buffer, frame.payloadOffset, frame.payloadLength, frame.header)
+        }
+        assertNotNull(broken.failure)
+    }
+
+    @Test
+    fun `padding까지 확정하고 임기가 바뀌어도 다음 업무 frame을 이어 읽는다`() {
+        val boundary = 64 * 1024
+        val nextTerm = leadershipChange(term = 5, basePosition = boundary, termOffset = 0, termId = 11)
+        val input = fragment(sessionMessage(byteArrayOf(42), 5), nextTerm.header.nextTermOffset(), FrameDescriptor.UNFRAGMENTED.toInt(), 11)
+        val reader =
+            RecordedReplayCollector(
+                boundary.toLong() - 32,
+                input.header.position(),
+                allowLeadershipChanges = true,
+                allowTermPadding = true,
+                initialLeadershipTermId = 4,
+            )
+        for (frame in listOf(nextTerm, input)) reader.onFragment(frame.buffer, frame.payloadOffset, frame.payloadLength, frame.header)
+        assertNull(reader.completionFailure(input.header.position()))
+        assertContentEquals(byteArrayOf(42), reader.inputs.single().bytes)
+    }
+
+    private fun leadershipChange(
+        term: Long,
+        basePosition: Int,
+        termOffset: Int,
+        termId: Int = 10,
+    ): Fragment {
+        val bytes = ByteArray(MessageHeaderEncoder.ENCODED_LENGTH + NewLeadershipTermEventEncoder.BLOCK_LENGTH)
+        val end = termOffset + align(DataHeaderFlyweight.HEADER_LENGTH + bytes.size, FrameDescriptor.FRAME_ALIGNMENT)
+        NewLeadershipTermEventEncoder()
+            .wrapAndApplyHeader(UnsafeBuffer(bytes), 0, MessageHeaderEncoder())
+            .leadershipTermId(term)
+            .termBaseLogPosition(basePosition.toLong())
+            .logPosition((termId - 10) * 65_536L + end)
+            .leaderMemberId(term.toInt())
+            .logSessionId(99)
+            .timeUnit(ClusterTimeUnit.MILLIS)
+        return fragment(bytes, termOffset, FrameDescriptor.UNFRAGMENTED.toInt(), termId)
+    }
+
+    private fun sessionMessage(
+        bytes: ByteArray,
+        term: Long = 4,
+    ): ByteArray {
         val buffer = UnsafeBuffer(ByteArray(AeronCluster.SESSION_HEADER_LENGTH + bytes.size))
         SessionMessageHeaderEncoder()
             .wrapAndApplyHeader(buffer, 0, MessageHeaderEncoder())
-            .leadershipTermId(4)
+            .leadershipTermId(term)
             .clusterSessionId(12)
             .timestamp(9876)
         buffer.putBytes(AeronCluster.SESSION_HEADER_LENGTH, bytes)
@@ -203,6 +301,7 @@ class RecordedClusterFrameParserTest {
         payload: ByteArray,
         termOffset: Int,
         flags: Int,
+        termId: Int = 10,
     ): Fragment {
         val prefix = 13
         val buffer = UnsafeBuffer(ByteArray(prefix + DataHeaderFlyweight.HEADER_LENGTH + payload.size + 9))
@@ -213,7 +312,7 @@ class RecordedClusterFrameParserTest {
         buffer.putInt(prefix + DataHeaderFlyweight.TERM_OFFSET_FIELD_OFFSET, termOffset, LITTLE_ENDIAN)
         buffer.putInt(prefix + DataHeaderFlyweight.SESSION_ID_FIELD_OFFSET, 99, LITTLE_ENDIAN)
         buffer.putInt(prefix + DataHeaderFlyweight.STREAM_ID_FIELD_OFFSET, 19999, LITTLE_ENDIAN)
-        buffer.putInt(prefix + DataHeaderFlyweight.TERM_ID_FIELD_OFFSET, 10, LITTLE_ENDIAN)
+        buffer.putInt(prefix + DataHeaderFlyweight.TERM_ID_FIELD_OFFSET, termId, LITTLE_ENDIAN)
         val offset = prefix + DataHeaderFlyweight.HEADER_LENGTH
         buffer.putBytes(offset, payload)
         val header = Header(10, Integer.numberOfTrailingZeros(64 * 1024)).buffer(buffer).offset(prefix)

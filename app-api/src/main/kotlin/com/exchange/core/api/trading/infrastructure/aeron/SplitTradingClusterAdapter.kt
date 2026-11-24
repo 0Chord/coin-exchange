@@ -21,14 +21,17 @@ import com.exchange.core.ledger.OpeningBalanceConflictException
 import com.exchange.core.ledger.OpeningBalanceRequestConflictException
 import com.exchange.core.trading.AdmissionReply
 import com.exchange.core.trading.BoundedFundingState
+import com.exchange.core.trading.FundsArchiveFacts
 import com.exchange.core.trading.FundsDispatchRead
 import com.exchange.core.trading.FundsDispatchStream
 import com.exchange.core.trading.FundsMatchingAppliedAck
 import com.exchange.core.trading.FundsOrderDispatch
 import com.exchange.core.trading.FundsResultStatus
 import com.exchange.core.trading.MatchingFundsSettledAck
+import com.exchange.core.trading.MatchingIntakeReply
 import com.exchange.core.trading.MatchingIntakeStatus
 import com.exchange.core.trading.MatchingResultAckStatus
+import com.exchange.core.trading.MatchingResultEnvelope
 import com.exchange.core.trading.MatchingResultRead
 import com.exchange.core.trading.MatchingResultStream
 import com.exchange.core.trading.ReservedMatchingState
@@ -59,12 +62,15 @@ internal class SplitTradingClusterAdapter(
     private val configuration: SplitTradingConfiguration,
     private val onFatal: (Throwable) -> Unit = {},
     private val resultDeliveryEnabled: Boolean = false,
+    private val onArchiveApplied: ((Long) -> Unit)? = null,
+    private val fundsArchiveFacts: FundsArchiveFacts? = null,
+    private val onMatchingArchiveResult: ((MatchingResultEnvelope) -> Unit)? = null,
 ) : ClusteredService,
     FundsDispatchSource,
     MatchingResultSource {
     private val recoveryLedgerEnabled = resultDeliveryEnabled && configuration.recoveryLedgerConfigured
     private val funds: BoundedFundingState? =
-        if (role == TradingServiceRole.FUNDS) configuration.funds(persistRecoveryLedger = recoveryLedgerEnabled) else null
+        if (role == TradingServiceRole.FUNDS) configuration.funds(recoveryLedgerEnabled, fundsArchiveFacts) else null
     private val matching: ReservedMatchingState? = if (role == TradingServiceRole.MATCHING) configuration.matching() else null
     private val codec = SplitOrderDeliveryCodec(configuration.inputContractVersion)
     private val resultCodec = SplitResultDeliveryCodec(configuration.inputContractVersion)
@@ -128,6 +134,8 @@ internal class SplitTradingClusterAdapter(
 
     init {
         require(role == TradingServiceRole.FUNDS || role == TradingServiceRole.MATCHING) { "split service requires a split role" }
+        require(fundsArchiveFacts == null || (role == TradingServiceRole.FUNDS && configuration.archiveQueryEnabled))
+        require(onMatchingArchiveResult == null || (role == TradingServiceRole.MATCHING && configuration.archiveQueryEnabled))
     }
 
     override fun onStart(
@@ -171,6 +179,7 @@ internal class SplitTradingClusterAdapter(
             }
             started = true
             refreshReadiness()
+            onArchiveApplied?.invoke(appliedLogPosition)
             // onStart 뒤에는 snapshot tail 재생이 남을 수 있다. 실제 LEADER 전환 전에는 세대를 게시하지 않는다.
         } catch (error: Throwable) {
             fail(error)
@@ -185,10 +194,42 @@ internal class SplitTradingClusterAdapter(
         length: Int,
         header: Header,
     ) {
+        applyMessage(session, timestamp, buffer, offset, length)
+        onArchiveApplied?.invoke(appliedLogPosition)
+    }
+
+    fun startArchiveReplay() {
+        check(fundsArchiveFacts != null || onMatchingArchiveResult != null)
+        check(!started && failure == null && !this::cluster.isInitialized)
+        serviceThread = Thread.currentThread()
+        started = true
+        refreshReadiness()
+    }
+
+    fun replayArchiveInput(frame: RecordedApplicationFrame) {
+        check(!this::cluster.isInitialized && frame.position > appliedLogPosition)
+        val malformedBefore = malformedMessages
+        applyMessage(null, frame.timestamp, UnsafeBuffer(frame.bytes), 0, frame.bytes.size, frame.position)
+        require(malformedMessages == malformedBefore) { "Archive의 거래 입력을 해석하지 못했습니다" }
+    }
+
+    private fun applyMessage(
+        session: ClientSession?,
+        timestamp: Long,
+        buffer: DirectBuffer,
+        offset: Int,
+        length: Int,
+        replayPosition: Long? = null,
+    ) {
         ensureRunning()
         try {
-            requireMillisecondClock(cluster.timeUnit())
-            appliedLogPosition = cluster.logPosition()
+            appliedLogPosition =
+                if (replayPosition == null) {
+                    requireMillisecondClock(cluster.timeUnit())
+                    cluster.logPosition()
+                } else {
+                    replayPosition
+                }
             if (offset >= 0 && length in 4..OrderQuerySourceCodec.MAX_CONTROL_BYTES && offset <= buffer.capacity() - length &&
                 OrderQuerySourceCodec.isQueryFrame(buffer, offset, length)
             ) {
@@ -303,7 +344,7 @@ internal class SplitTradingClusterAdapter(
                             }
 
                             else -> {
-                                val applied = checkNotNull(matching).apply(command.input)
+                                val applied = applyMatchingInput(command.input)
                                 // 전체 결과는 매칭 소유자에 남긴다. 원격으로는 적용 prefix와 GAP 위치만 보낸다.
                                 response(
                                     envelope.correlationId,
@@ -347,6 +388,14 @@ internal class SplitTradingClusterAdapter(
         }
     }
 
+    private fun applyMatchingInput(input: FundsOrderDispatch): MatchingIntakeReply {
+        val applied = checkNotNull(matching).apply(input)
+        if (onMatchingArchiveResult != null && applied.status == MatchingIntakeStatus.APPLIED) {
+            onMatchingArchiveResult.invoke(checkNotNull(applied.result))
+        }
+        return applied
+    }
+
     private fun applyOrderBatch(
         correlation: Long,
         inputs: List<FundsOrderDispatch>,
@@ -354,11 +403,10 @@ internal class SplitTradingClusterAdapter(
         if (role != TradingServiceRole.MATCHING) return response(correlation, "WRONG_ROLE")
         if (!tradingReady) return response(correlation, "NOT_READY")
 
-        val owner = checkNotNull(matching)
         var ack: FundsMatchingAppliedAck? = null
         var status = MatchingIntakeStatus.APPLIED
         for (input in inputs) {
-            val applied = owner.apply(input)
+            val applied = applyMatchingInput(input)
             status = applied.status
             when (status) {
                 MatchingIntakeStatus.APPLIED, MatchingIntakeStatus.DUPLICATE, MatchingIntakeStatus.PRUNED -> {
