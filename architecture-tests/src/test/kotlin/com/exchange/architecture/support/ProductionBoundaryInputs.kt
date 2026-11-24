@@ -57,6 +57,8 @@ object ProductionBoundaryInputs {
                 "$TRADING_APPLICATION.CandleInterval",
                 "$TRADING_APPLICATION.Candle",
                 "$TRADING_APPLICATION.CandleQueryResult",
+                "$TRADING_APPLICATION.PublicOrderBookQueryResult",
+                "$TRADING_APPLICATION.PublicOrderBookLevel",
                 "$TRADING_APPLICATION.OrderFill",
                 "$TRADING_APPLICATION.OrderFillCursor",
                 "$TRADING_APPLICATION.OrderFillRole",

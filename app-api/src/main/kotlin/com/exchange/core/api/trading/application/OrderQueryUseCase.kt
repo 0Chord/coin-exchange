@@ -12,6 +12,7 @@ enum class OrderQueryCode {
     LATEST_SETTLED_TRADE,
     NO_SETTLED_TRADE_AS_OF,
     CANDLES_FOUND,
+    ORDER_BOOK_FOUND,
     QUERY_CATCHING_UP,
     ORDER_NOT_FOUND_AS_OF,
     QUERY_NOT_READY,
@@ -30,6 +31,7 @@ data class OrderQueryResult(
 /** 부재 확정보다 읽기 오류, 준비 상태, 최소 접수 prefix 검사를 먼저 한다. */
 open class OrderQueryUseCase(
     private val store: OrderQueryStore,
+    private val readOrderBook: () -> PublicOrderBookQueryResult = { PublicOrderBookQueryResult(OrderQueryCode.QUERY_NOT_READY) },
 ) {
     @Transactional(readOnly = true)
     open fun get(
@@ -111,6 +113,11 @@ open class OrderQueryUseCase(
             asOfSettlementResultSequence = snapshot.settlementThrough,
             trade = snapshot.trade,
         )
+    }
+
+    open fun getOrderBook(marketId: String): PublicOrderBookQueryResult {
+        validateMarket(marketId)
+        return readOrderBook()
     }
 
     internal open fun validateInput(

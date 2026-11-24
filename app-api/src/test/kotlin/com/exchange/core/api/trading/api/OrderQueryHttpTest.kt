@@ -415,6 +415,16 @@ class OrderQueryHttpTest {
     }
 
     @Test
+    fun `공개 호가는 원본 미설정과 잘못된 마켓을 구분한다`() {
+        val unavailable = getPath("/markets/BTC-USDT/order-book")
+        assertResponse(503, "QUERY_NOT_READY", unavailable)
+        val response = body(unavailable)
+        assertTrue(response.path("bids").isNull)
+        assertTrue(response.path("asks").isNull)
+        assertEquals(400, getPath("/markets/UNKNOWN/order-book").statusCode())
+    }
+
+    @Test
     fun `차트는 준비 중과 빈 기간을 구분하고 집계 테이블만 조회한다`() {
         assertResponse(503, "QUERY_NOT_READY", candles())
         for (query in listOf("?interval=1s", "?interval=", "?count=0", "?count=201", "?count=abc")) {
