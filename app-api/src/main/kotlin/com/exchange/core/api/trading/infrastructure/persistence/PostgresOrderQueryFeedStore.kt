@@ -5,6 +5,7 @@ import com.exchange.core.api.trading.application.OrderQueryLifecycle
 import com.exchange.core.api.trading.application.OrderQueryOrderState
 import com.exchange.core.api.trading.application.OrderQueryRecord
 import com.exchange.core.api.trading.application.OrderQueryRecoveryFailure
+import com.exchange.core.api.trading.application.port.MAX_LEDGER_PAGE_ENTRIES
 import com.exchange.core.api.trading.application.port.OrderQueryFeedProgress
 import com.exchange.core.api.trading.application.port.OrderQueryFeedStore
 import com.exchange.core.api.trading.application.port.OrderQueryInconsistentException
@@ -25,6 +26,7 @@ import com.exchange.core.ledger.LedgerTransactionType
 import com.exchange.core.ledger.ReservationHold
 import com.exchange.core.trading.FundsLedgerBatch
 import com.exchange.core.trading.FundsLedgerProgress
+import com.exchange.core.trading.FundsLedgerRecovery
 import com.exchange.core.trading.FundsOrderDispatch
 import com.exchange.core.trading.MatchingFundsSettledAck
 import com.exchange.core.trading.MatchingOrderDisposition
@@ -36,10 +38,13 @@ import com.exchange.core.trading.SettlementFact
 import com.exchange.core.trading.TradingIdentifiers
 import com.exchange.core.trading.TradingMarketContext
 import org.springframework.jdbc.core.PreparedStatementSetter
+import org.springframework.jdbc.core.RowCallbackHandler
 import org.springframework.jdbc.core.RowMapper
 import org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate
+import org.springframework.transaction.support.TransactionSynchronizationManager
 import tools.jackson.databind.json.JsonMapper
 import tools.jackson.module.kotlin.KotlinModule
+import java.sql.Statement
 import java.time.Instant
 import java.time.OffsetDateTime
 import java.time.ZoneOffset
@@ -355,10 +360,25 @@ class PostgresOrderQueryFeedStore(
         if (found != through) throw ledgerIncomplete("자금 원본에서 회수한 원장 범위에 누락이 있다")
     }
 
-    override fun applyLedger(batch: FundsLedgerBatch): Long =
-        query.withTransaction {
-            require(batch.lineage == query.namespace.fundsLineage)
-            // 동일 WAS DB를 쓰는 수집기가 여럿이어도 다음 순번의 판단과 저장을 함께 잠근다.
+    override fun applyLedgerPage(batches: List<FundsLedgerBatch>): Long {
+        require(batches.size in 1..MAX_LEDGER_PAGE_ENTRIES)
+        require(batches.sumOf { it.canonicalBytes } <= FundsLedgerRecovery.MAX_RETAINED_BYTES)
+        // 상위 트랜잭션에 참여하면 커밋 전에 확인 순번을 반환할 수 있다.
+        val dataSource = checkNotNull(jdbc.jdbcTemplate.dataSource)
+        check(!TransactionSynchronizationManager.hasResource(dataSource)) { "원장 페이지 저장은 독립적으로 커밋해야 한다" }
+
+        var previousSequence = batches.first().sequence - 1
+        var previousPosition = 0L
+        for (batch in batches) {
+            if (batch.lineage != query.namespace.fundsLineage) throw ledgerMismatch("원장 묶음 ${batch.sequence}의 출처가 다르다")
+            if (batch.sequence - 1 != previousSequence) throw ledgerIncomplete("원장 묶음 ${batch.sequence} 앞의 순번이 연속되지 않는다")
+            if (batch.logPosition <= previousPosition) throw ledgerMismatch("원장 묶음 ${batch.sequence}의 적용 위치가 역행했다")
+            previousSequence = batch.sequence
+            previousPosition = batch.logPosition
+        }
+
+        return query.withTransaction {
+            // 같은 DB를 쓰는 수집기는 namespace 잠금 안에서 현재 원장 위치를 읽고 저장한다.
             query.lockedProgress()
             val head =
                 jdbc
@@ -371,43 +391,60 @@ class PostgresOrderQueryFeedStore(
                     ) { row, _ -> row.getLong("sequence") to row.getLong("log_position") }
                     .singleOrNull()
             val (through, lastPosition) = head ?: (0L to 0L)
-            val transactions = batch.transactions.map(StoredLedgerTransaction::from)
-            val values =
-                parameters +
-                    mapOf(
-                        "sequence" to batch.sequence,
-                        "position" to batch.logPosition,
-                        "transactions" to mapper.writeValueAsString(transactions),
-                    )
-            if (batch.sequence <= through) {
-                val sameBatch =
-                    jdbc
-                        .query(
-                            """
-                            select log_position = :position
-                                and transactions::text = cast(cast(:transactions as jsonb) as text) as same_batch
-                            from order_query.funds_ledger_batch where namespace = :namespace and sequence = :sequence
-                            """.trimIndent(),
-                            values,
-                        ) { row, _ -> row.getBoolean("same_batch") }
-                        .singleOrNull()
-                if (sameBatch == null) throw ledgerIncomplete("원장 묶음 ${batch.sequence} 누락")
-                if (!sameBatch) throw ledgerMismatch("원장 묶음 ${batch.sequence} 재전송 내용과 저장 내용이 다르다")
-                return@withTransaction batch.sequence
-            }
-            if (batch.sequence != Math.addExact(through, 1)) throw ledgerIncomplete("원장 저장 순번 ${batch.sequence} 앞에 공백이 있다")
-            if (batch.logPosition <= lastPosition) throw ledgerMismatch("원장 묶음 ${batch.sequence}의 적용 위치가 역행했다")
+            val overlapCount = batches.indexOfLast { it.sequence <= through } + 1
+            if (overlapCount > 0) verifyStoredLedger(batches.subList(0, overlapCount))
+            val firstNew = batches.getOrNull(overlapCount) ?: return@withTransaction batches.last().sequence
+            if (firstNew.sequence - 1 != through) throw ledgerIncomplete("원장 저장 순번 ${firstNew.sequence} 앞에 공백이 있다")
+            if (firstNew.logPosition <= lastPosition) throw ledgerMismatch("원장 묶음 ${firstNew.sequence}의 적용 위치가 역행했다")
+
+            val rows =
+                batches.subList(overlapCount, batches.size).map { batch ->
+                    parameters +
+                        mapOf(
+                            "sequence" to batch.sequence,
+                            "position" to batch.logPosition,
+                            "transactions" to mapper.writeValueAsString(batch.transactions.map(StoredLedgerTransaction::from)),
+                        )
+                }
             val inserted =
-                jdbc.update(
+                jdbc.batchUpdate(
                     """
                     insert into order_query.funds_ledger_batch (namespace, sequence, log_position, transactions)
                     values (:namespace, :sequence, :position, cast(:transactions as jsonb))
                     """.trimIndent(),
-                    values,
+                    rows.toTypedArray(),
                 )
-            check(inserted == 1)
-            batch.sequence
+            check(inserted.size == rows.size && inserted.all { it == 1 || it == Statement.SUCCESS_NO_INFO })
+            batches.last().sequence
         }
+    }
+
+    private fun verifyStoredLedger(batches: List<FundsLedgerBatch>) {
+        val expected =
+            batches.map { batch ->
+                mapOf(
+                    "sequence" to batch.sequence,
+                    "log_position" to batch.logPosition,
+                    "transactions" to batch.transactions.map(StoredLedgerTransaction::from),
+                )
+            }
+        jdbc.query(
+            """
+            select expected.sequence,
+                actual.sequence is not null as is_present,
+                actual.log_position = expected.log_position and actual.transactions::text = expected.transactions::text as same_batch
+            from jsonb_to_recordset(cast(:expected as jsonb)) as expected(sequence bigint, log_position bigint, transactions jsonb)
+            left join order_query.funds_ledger_batch actual on actual.namespace = :namespace and actual.sequence = expected.sequence
+            order by expected.sequence
+            """.trimIndent(),
+            parameters + ("expected" to mapper.writeValueAsString(expected)),
+            RowCallbackHandler { row ->
+                val sequence = row.getLong("sequence")
+                if (!row.getBoolean("is_present")) throw ledgerIncomplete("원장 묶음 $sequence 누락")
+                if (!row.getBoolean("same_batch")) throw ledgerMismatch("원장 묶음 $sequence 재전송 내용과 저장 내용이 다르다")
+            },
+        )
+    }
 
     override fun reconcileLedger(
         scope: LedgerReconciliationScope,

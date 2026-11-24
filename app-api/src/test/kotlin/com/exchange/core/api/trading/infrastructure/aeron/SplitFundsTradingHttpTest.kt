@@ -1585,6 +1585,132 @@ class SplitFundsTradingHttpTest {
     }
 
     @Test
+    fun `원장 두 번째 저장에 실패하면 묶음을 롤백하고 커밋한 뒤 ACK한다`() {
+        withTradingNodes("query-test", persistSettlements = true) { harness ->
+            val jdbc = harness.database.jdbc()
+            queryWas(harness, decorate = { store ->
+                jdbc.execute(
+                    """
+                    create function order_query.reject_ledger_middle() returns trigger language plpgsql as '
+                        begin
+                            raise exception ''시험 원장 저장 충돌'' using errcode = ''40001'';
+                        end;
+                    '
+                    """.trimIndent(),
+                )
+                jdbc.execute(
+                    """
+                    create trigger reject_ledger_middle before insert on order_query.funds_ledger_batch
+                    for each row when (new.sequence = 2) execute function order_query.reject_ledger_middle()
+                    """.trimIndent(),
+                )
+                store
+            }).use { context ->
+                try {
+                    val blocked = awaitRecoveryVerdict(context, OrderQueryRecoveryStatus.BLOCKED)
+                    assertEquals(OrderQueryRecoveryFailure.DB_UNAVAILABLE, blocked.reason)
+                    assertTrue(storedLedgerRows(harness).isEmpty())
+                    assertEquals(0L, harness.retiredLedgerThrough())
+                    assertEquals(0, harness.sourceReplies.ledgerAcknowledgements.get())
+                } finally {
+                    jdbc.execute("drop trigger reject_ledger_middle on order_query.funds_ledger_batch")
+                    jdbc.execute("drop function order_query.reject_ledger_middle()")
+                }
+
+                assertEquals(2L, awaitRecoveryVerdict(context, OrderQueryRecoveryStatus.READY).ledgerThrough)
+                assertEquals(listOf(1L, 2L), storedLedgerRows(harness).map { it.getValue("sequence") })
+                assertEquals(2L, harness.retiredLedgerThrough())
+                assertEquals(1, harness.sourceReplies.ledgerAcknowledgements.get())
+            }
+        }
+    }
+
+    @Test
+    fun `원장 커밋 응답을 잃으면 저장된 묶음을 다시 대조한 뒤 한 번만 ACK한다`() {
+        withTradingNodes("query-test", persistSettlements = true) { harness ->
+            val firstCommit = CountDownLatch(1)
+            val storedPages = AtomicInteger()
+            val sequences = listOf(1L, 2L)
+            val replies = harness.sourceReplies
+
+            try {
+                queryWas(harness, decorate = { store ->
+                    object : OrderQueryFeedStore by store {
+                        override fun applyLedgerPage(batches: List<FundsLedgerBatch>): Long {
+                            assertEquals(sequences, batches.map { it.sequence })
+                            val through = store.applyLedgerPage(batches)
+                            if (storedPages.incrementAndGet() == 1) {
+                                replies.pauseDescriptions.set(true)
+                                firstCommit.countDown()
+                                throw IllegalStateException("시험에서 커밋 완료 응답을 유실한다")
+                            }
+                            return through
+                        }
+                    }
+                }).use { context ->
+                    assertTrue(firstCommit.await(10, TimeUnit.SECONDS), "두 지급 분개가 ACK 전에 커밋되어야 한다")
+                    val savedRows = storedLedgerRows(harness)
+                    assertEquals(sequences, savedRows.map { it.getValue("sequence") })
+                    assertEquals(0L, harness.retiredLedgerThrough())
+                    assertEquals(0, replies.ledgerAcknowledgements.get())
+
+                    replies.pauseDescriptions.set(false)
+                    assertEquals(2L, awaitRecoveryVerdict(context, OrderQueryRecoveryStatus.READY).ledgerThrough)
+                    assertEquals(2, storedPages.get())
+                    assertEquals(2L, harness.retiredLedgerThrough())
+                    assertEquals(1, replies.ledgerAcknowledgements.get())
+                    assertEquals(savedRows, storedLedgerRows(harness))
+                }
+            } finally {
+                replies.pauseDescriptions.set(false)
+            }
+        }
+    }
+
+    @Test
+    fun `원장 ACK 응답을 잃으면 회수 순번을 읽고 다음 분개를 처리한다`() {
+        withTradingNodes("query-test", persistSettlements = true) { harness ->
+            val replies = harness.sourceReplies
+            replies.dropNextLedgerAcknowledgement.set(true)
+
+            try {
+                queryWas(harness).use { context ->
+                    assertTrue(replies.dropped.await(10, TimeUnit.SECONDS), "원장 회수 뒤 ACK 응답이 유실되어야 한다")
+                    val savedRows = storedLedgerRows(harness)
+                    assertEquals(listOf(1L, 2L), savedRows.map { it.getValue("sequence") })
+                    assertEquals(2L, harness.retiredLedgerThrough())
+                    assertEquals(1, replies.ledgerAcknowledgements.get())
+
+                    replies.pauseDescriptions.set(false)
+                    assertEquals(2L, awaitRecoveryVerdict(context, OrderQueryRecoveryStatus.READY).ledgerThrough)
+                    val opening = OpeningBalance("opening-late", UserId("late"), AssetId("USDT"), Amount(1))
+                    val payload = DevelopmentBalanceCommandPayload(opening, "ledger-opening-late", Instant.EPOCH)
+                    val command = SplitOrderDeliveryCommand.Control(BoundedTradingCommand.Funding(payload))
+                    assertEquals("PREPARED", harness.funds.request(command).code)
+                    await("후속 원장 3번 회수") { harness.retiredLedgerThrough() == 3L }
+
+                    val updatedRows = storedLedgerRows(harness)
+                    assertEquals(listOf(1L, 2L, 3L), updatedRows.map { it.getValue("sequence") })
+                    assertEquals(savedRows, updatedRows.take(2))
+                    assertEquals(2, replies.ledgerAcknowledgements.get())
+                }
+            } finally {
+                replies.pauseDescriptions.set(false)
+            }
+        }
+    }
+
+    private fun TradingHarness.retiredLedgerThrough(): Long? {
+        val snapshot = fundsSnapshot.get()
+        return snapshot?.ledger?.retiredThrough
+    }
+
+    private fun storedLedgerRows(harness: TradingHarness): List<Map<String, Any?>> =
+        harness.database.jdbc().queryForList(
+            "select sequence, log_position, transactions::text from order_query.funds_ledger_batch order by sequence",
+        )
+
+    @Test
     fun `원장 ACK 전에 DB 첫 기록을 잃으면 마지막 순번이 남아 있어도 회수하지 않는다`() {
         withTradingNodes("query-test", persistSettlements = true) { harness ->
             val gate = CallbackGate()
@@ -1596,8 +1722,8 @@ class SplitFundsTradingHttpTest {
             try {
                 queryWas(harness, gatewayRoot = "ledger-ack-lost", decorate = { store ->
                     object : OrderQueryFeedStore by store {
-                        override fun applyLedger(batch: FundsLedgerBatch): Long {
-                            val committed = store.applyLedger(batch)
+                        override fun applyLedgerPage(batches: List<FundsLedgerBatch>): Long {
+                            val committed = store.applyLedgerPage(batches)
                             if (committed == 2L) gate.pause()
                             return committed
                         }
@@ -2534,6 +2660,7 @@ class SplitFundsTradingHttpTest {
     /** 실제 복제 callback 뒤 지정한 QUERY 응답만 유실시키거나 Describe 메타데이터를 바꾼다. 제품 훅은 없다. */
     private class SourceReplyGate {
         val acknowledgements = AtomicInteger()
+        val ledgerAcknowledgements = AtomicInteger()
         val descriptions = AtomicInteger()
         val recoveryDescriptions = AtomicInteger()
         val recoverySuffixRead = AtomicBoolean()
@@ -2542,6 +2669,7 @@ class SplitFundsTradingHttpTest {
         val dropNextRead = AtomicBoolean()
         val dropNextAcknowledgement = AtomicBoolean()
         val dropNextSettlementAck = AtomicBoolean()
+        val dropNextLedgerAcknowledgement = AtomicBoolean()
         val pauseDescriptions = AtomicBoolean()
         val dropped = CountDownLatch(1)
         val observeNextRead = AtomicBoolean()
@@ -2568,12 +2696,14 @@ class SplitFundsTradingHttpTest {
                             null
                         }
                     if (command is OrderQuerySourceCommand.Acknowledge) acknowledgements.incrementAndGet()
+                    if (command is OrderQuerySourceCommand.AckLedger) ledgerAcknowledgements.incrementAndGet()
                     if (command == OrderQuerySourceCommand.Describe) descriptions.incrementAndGet()
                     val loseReply =
                         when (command) {
                             is OrderQuerySourceCommand.Read -> dropNextRead.compareAndSet(true, false)
                             is OrderQuerySourceCommand.Acknowledge -> dropNextAcknowledgement.compareAndSet(true, false)
                             is OrderQuerySourceCommand.AcknowledgeSettlements -> dropNextSettlementAck.compareAndSet(true, false)
+                            is OrderQuerySourceCommand.AckLedger -> dropNextLedgerAcknowledgement.compareAndSet(true, false)
                             else -> false
                         }
                     if (loseReply) pauseDescriptions.set(true)
