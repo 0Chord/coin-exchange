@@ -248,11 +248,11 @@ class MatchingResultState {
             plan: SubmitOrderPlan,
         ) {
             requireResult(commandId.isNotBlank(), "내부 명령 ID가 비어 있습니다")
-            validate(command, plan.events.size, plan.firstEngineSequence, plan.lastEngineSequence, plan.events)
+            validateCompleteEvents(command, plan.events.size, plan.firstEngineSequence, plan.lastEngineSequence, plan.events)
         }
 
         private fun validate(result: MatchingCommandResult) =
-            validate(
+            validateCompleteEvents(
                 result.command,
                 result.expectedEventCount,
                 result.firstEngineSequence,
@@ -260,7 +260,8 @@ class MatchingResultState {
                 result.events,
             )
 
-        private fun validate(
+        /** 검증 중 내용이 바뀌지 않는 이벤트 목록을 복사 없이 검사한다. */
+        fun validateCompleteEvents(
             command: MatchingCommand,
             expectedEventCount: Int,
             firstEngineSequence: Long,

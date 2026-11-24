@@ -389,8 +389,8 @@ internal class FundsQuorumNetworkControl(
                 val script =
                     pairs.joinToString("\n") { (_, to) ->
                         val ip = addresses.getValue(to)
-                        "if ping -n -c 1 -W 1 $ip >/dev/null 2>&1; then echo '$to|$ip|1'; else echo '$to|$ip|0'; fi"
-                    }
+                        "(if ping -n -c 1 -W 1 $ip >/dev/null 2>&1; then echo '$to|$ip|1'; else echo '$to|$ip|0'; fi) &"
+                    } + "\nwait"
                 val output = execute(from, listOf("sh", "-eu", "-c", script))
                 check(output.toByteArray().size <= 8192) { "$from: 도달 관측 상한 초과" }
                 output
@@ -447,10 +447,11 @@ internal class FundsQuorumNetworkControl(
         activeServices: Set<String>,
     ) {
         for (service in (plan.services intersect activeServices).sorted() - installed) {
-            val backend = execute(service, listOf(IPTABLES, "--version")).trim()
+            val preflight = "$IPTABLES --version\n$IPTABLES -w 2 -S >/dev/null\n$IPTABLES_SAVE -c -t filter"
+            val inspection = execute(service, listOf("sh", "-eu", "-c", preflight))
+            val backend = inspection.substringBefore('\n').trim()
             check(backend == BACKEND) { "$service: 동결한 backend가 아님: $backend" }
-            command(service, "-S")
-            FundsQuorumNetworkPlan.requireCleanSnapshot(snapshot(service))
+            FundsQuorumNetworkPlan.requireCleanSnapshot(inspection.substringAfter('\n'))
             // 중간 설치 실패도 finally에서 이 namespace의 run 전용 chain만 회수한다.
             installed += service
             backends[service] = backend
@@ -523,16 +524,12 @@ internal class FundsQuorumNetworkControl(
         activeServices: Set<String>,
     ) = (plan.services intersect activeServices).sorted().associateWith(::snapshot)
 
-    private fun snapshot(service: String) = execute(service, listOf("/usr/sbin/iptables-legacy-save", "-c", "-t", "filter"))
-
-    private fun command(
-        service: String,
-        vararg arguments: String,
-    ) = execute(service, listOf(IPTABLES, "-w", "2") + arguments)
+    private fun snapshot(service: String) = execute(service, listOf(IPTABLES_SAVE, "-c", "-t", "filter"))
 
     companion object {
         const val BACKEND = "iptables v1.8.8 (legacy)"
         const val PEER_DROP_MODE = "RECEIVER_INPUT_BOTH_ENDS"
         private const val IPTABLES = "/usr/sbin/iptables-legacy"
+        private const val IPTABLES_SAVE = "/usr/sbin/iptables-legacy-save"
     }
 }

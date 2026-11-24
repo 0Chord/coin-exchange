@@ -1,6 +1,7 @@
 package com.exchange.core.trading
 
 import com.exchange.core.common.MarketId
+import com.exchange.core.order.OrderReservation
 import java.time.Instant
 import java.util.Collections
 
@@ -89,7 +90,9 @@ internal class FundsResultData(
     private val configuration: FundsDispatchConfiguration,
     val limits: FundsResultLimits,
 ) {
-    private class Progress {
+    private class Progress(
+        val stream: MatchingResultStream,
+    ) {
         var resultThrough = 0L
         var settledEngineSequence = 0L
         var retiredThrough = 0L
@@ -100,7 +103,19 @@ internal class FundsResultData(
         var retiredMarketAdmissionSequence = 0L
     }
 
-    private val markets = configuration.assignments.associate { it.marketId to Progress() }
+    private val markets =
+        configuration.assignments.associate { assignment ->
+            val source = configuration.stream(assignment.marketId)
+            val stream =
+                MatchingResultStream(
+                    source.matchingLineage,
+                    source.fundsLineage,
+                    source.marketId,
+                    source.ownershipEpoch,
+                    source.configurationVersion,
+                )
+            assignment.marketId to Progress(stream)
+        }
     private val receipts = linkedMapOf<Pair<MarketId, Long>, FundsResultReceipt>()
     private var receiptBytes = 0L
 
@@ -108,18 +123,9 @@ internal class FundsResultData(
         limits.snapshotByteUpperBound(configuration)
     }
 
-    fun stream(market: MarketId): MatchingResultStream {
-        val source = configuration.stream(market)
-        return MatchingResultStream(
-            source.matchingLineage,
-            source.fundsLineage,
-            source.marketId,
-            source.ownershipEpoch,
-            source.configurationVersion,
-        )
-    }
+    fun stream(market: MarketId): MatchingResultStream = markets.getValue(market).stream
 
-    fun matches(stream: MatchingResultStream): Boolean = markets.containsKey(stream.marketId) && stream == stream(stream.marketId)
+    fun matches(stream: MatchingResultStream): Boolean = markets[stream.marketId]?.stream == stream
 
     fun through(market: MarketId): Long = markets.getValue(market).resultThrough
 
@@ -128,17 +134,15 @@ internal class FundsResultData(
     fun ack(market: MarketId): MatchingFundsSettledAck =
         MatchingFundsSettledAck(stream(market), through(market), configuration.context(market))
 
-    fun repeated(result: MatchingResultEnvelope): FundsResultReply? {
+    fun repeated(result: MatchingResultEnvelope): FundsResultStatus? {
         val progress = markets.getValue(result.stream.marketId)
         if (result.resultSequence > progress.resultThrough) return null
         val previous = receipts[result.stream.marketId to result.resultSequence]
-        val status =
-            when {
-                previous == null -> FundsResultStatus.PRUNED
-                previous.result == result -> FundsResultStatus.DUPLICATE
-                else -> FundsResultStatus.CONTENT_CONFLICT
-            }
-        return FundsResultReply(status, if (status == FundsResultStatus.CONTENT_CONFLICT) null else ack(result.stream.marketId))
+        return when {
+            previous == null -> FundsResultStatus.PRUNED
+            previous.result == result -> FundsResultStatus.DUPLICATE
+            else -> FundsResultStatus.CONTENT_CONFLICT
+        }
     }
 
     fun record(receipt: FundsResultReceipt) {
@@ -324,30 +328,42 @@ internal class FundsResultData(
         receiptBytes = totalBytes
     }
 
-    fun requireResult(result: MatchingResultEnvelope) {
+    fun requireResult(result: MatchingResultEnvelope): Int =
         MatchingInputValidation.requireResult(
             configuration.manifest,
             stream(result.stream.marketId),
+            configuration.stream(result.stream.marketId),
             configuration.context(result.stream.marketId),
             limits.maxResultEvents,
             limits.maxSingleResultBytes,
             result,
             configuration.inputContractVersion,
         )
-    }
 }
 
 /** 실시간 적용과 복원에서 같은 로컬 최초 승인 관계를 검사한다. 현재 잔량은 호출자가 대조한다. */
 internal fun requireFundsOriginal(
     origin: FundsOrderDispatch,
     live: TradingLiveOrderSnapshot,
+) = requireFundsOriginal(origin, live.order, live.admissionSequence, live.marketAdmissionSequence, live.reservation)
+
+internal fun requireFundsOriginal(
+    origin: FundsOrderDispatch,
+    live: BoundedLiveOrder,
+) = requireFundsOriginal(origin, live.order, live.admissionSequence, live.marketAdmissionSequence, live.reservation)
+
+private fun requireFundsOriginal(
+    origin: FundsOrderDispatch,
+    order: OrderAdmissionInput,
+    admissionSequence: Long,
+    marketAdmissionSequence: Long,
+    current: OrderReservation,
 ) {
     require(
-        origin.order == live.order && origin.admissionSequence == live.admissionSequence &&
-            origin.marketAdmissionSequence == live.marketAdmissionSequence &&
-            origin.dispatchSequence >= live.marketAdmissionSequence && !origin.isCancellation,
+        origin.order == order && origin.admissionSequence == admissionSequence &&
+            origin.marketAdmissionSequence == marketAdmissionSequence &&
+            origin.dispatchSequence >= marketAdmissionSequence && !origin.isCancellation,
     ) { "matching origin differs from local financial approval" }
-    val current = live.reservation
     val initial = origin.reservation
     require(current.reservedAmount == initial.reservedAmount && current.initialFeeReserveAmount == initial.initialFeeReserveAmount)
     require(current.assetId == initial.assetId && current.feePolicySnapshot == initial.feePolicySnapshot)

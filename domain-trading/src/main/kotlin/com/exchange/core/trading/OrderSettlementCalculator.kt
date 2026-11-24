@@ -74,7 +74,7 @@ class OrderSettlementCalculator(
         val workingBalances = initialBalances.toMutableMap()
         val unrelatedHold =
             outstanding.mapValues { (key, amount) ->
-                unrelatedHoldAt(initialBalances, key, amount)
+                unrelatedHoldAt(balanceAt(initialBalances, key), amount)
             }
         val changedBalances = linkedSetOf<BalanceKey>()
 
@@ -170,6 +170,48 @@ class OrderSettlementCalculator(
         market: MarketDefinition,
     ) = OrderSettlementCandidate(order, market, emptyList(), emptyList(), emptyList())
 
+    /** 자금 소유자에서 조회한 두 주문과 서로 겹치지 않는 네 잔고로 단일 체결을 계산한다. */
+    internal fun calculateSingleFill(
+        order: OrderAdmissionInput,
+        market: MarketDefinition,
+        trade: SettlementExecution,
+        maker: OrderReservation,
+        taker: OrderReservation,
+        balanceFor: (UserId, AssetId) -> Balance,
+    ): OrderSettlementCandidate = calculateSingleFill(order, market, trade, maker, taker, null, balanceFor)
+
+    internal fun calculateSingleFill(
+        order: OrderAdmissionInput,
+        market: MarketDefinition,
+        trade: SettlementExecution,
+        maker: OrderReservation,
+        taker: OrderReservation,
+        recordFeeProof: ((Long) -> Unit)?,
+        balanceFor: (UserId, AssetId) -> Balance,
+    ): OrderSettlementCandidate {
+        validateOrder(order, market)
+        validateExecution(order, trade)
+        require(maker.orderId == trade.makerOrderId && taker.orderId == trade.takerOrderId)
+        require(maker.userId != taker.userId)
+        validateSingleReservations(order, market, maker, taker)
+
+        val makerHold = checkedBalance(maker.userId, maker.assetId, balanceFor)
+        val makerCreditAsset = if (maker.side == Side.BUY) market.baseAssetId else market.quoteAssetId
+        val makerCredit = checkedBalance(maker.userId, makerCreditAsset, balanceFor)
+        val takerHold = checkedBalance(taker.userId, taker.assetId, balanceFor)
+        val takerCreditAsset = if (taker.side == Side.BUY) market.baseAssetId else market.quoteAssetId
+        val takerCredit = checkedBalance(taker.userId, takerCreditAsset, balanceFor)
+        val makerUnrelatedHold = unrelatedHoldAt(makerHold, maker.remainingAmount.value)
+        val takerUnrelatedHold = unrelatedHoldAt(takerHold, taker.remainingAmount.value)
+
+        return calculateSingleCandidate(order, market, trade, maker, taker, recordFeeProof) { makerPlan, takerPlan ->
+            val changes = ArrayList<OrderSettlementCandidate.BalanceChange>(4)
+            appendSingleBalanceChanges(market, maker, makerPlan, makerHold, makerCredit, makerUnrelatedHold, changes)
+            appendSingleBalanceChanges(market, taker, takerPlan, takerHold, takerCredit, takerUnrelatedHold, changes)
+            changes
+        }
+    }
+
     /** 한 체결의 두 예약은 반대 방향이므로 같은 사용자여도 서로 다른 자산에 묶인다. */
     private fun calculateSingle(
         order: OrderAdmissionInput,
@@ -182,42 +224,117 @@ class OrderSettlementCalculator(
             requireNotNull(initialReservations[OrderKey(market.marketId, trade.makerOrderId)]) { "settlement reservation is missing" }
         val taker =
             requireNotNull(initialReservations[OrderKey(market.marketId, trade.takerOrderId)]) { "settlement reservation is missing" }
+        validateSingleReservations(order, market, maker, taker)
+        val makerKey = maker.balanceKey()
+        val takerKey = taker.balanceKey()
+        val makerUnrelatedHold = unrelatedHoldAt(balanceAt(initialBalances, makerKey), maker.remainingAmount.value)
+        val takerUnrelatedHold = unrelatedHoldAt(balanceAt(initialBalances, takerKey), taker.remainingAmount.value)
+
+        return calculateSingleCandidate(order, market, trade, maker, taker) { makerPlan, takerPlan ->
+            val workingBalances = SingleBalanceSlots(initialBalances)
+            accumulateSingle(market, maker, makerPlan, makerKey, makerUnrelatedHold, workingBalances)
+            accumulateSingle(market, taker, takerPlan, takerKey, takerUnrelatedHold, workingBalances)
+            workingBalances.changes()
+        }
+    }
+
+    private fun validateSingleReservations(
+        order: OrderAdmissionInput,
+        market: MarketDefinition,
+        maker: OrderReservation,
+        taker: OrderReservation,
+    ) {
         validateInitialReservation(market, maker)
         require(maker.status == OrderReservationStatus.ACTIVE) { "settlement reservation must be active" }
         validateInitialReservation(market, taker)
         require(taker.status == OrderReservationStatus.ACTIVE) { "settlement reservation must be active" }
         validateOriginal(order, taker)
-        val makerKey = maker.balanceKey()
-        val takerKey = taker.balanceKey()
-        val makerUnrelatedHold = unrelatedHoldAt(initialBalances, makerKey, maker.remainingAmount.value)
-        val takerUnrelatedHold = unrelatedHoldAt(initialBalances, takerKey, taker.remainingAmount.value)
+    }
+
+    private inline fun calculateSingleCandidate(
+        order: OrderAdmissionInput,
+        market: MarketDefinition,
+        trade: SettlementExecution,
+        maker: OrderReservation,
+        taker: OrderReservation,
+        noinline recordFeeProof: ((Long) -> Unit)? = null,
+        balanceChanges: (OrderFillSettlementPlan, OrderFillSettlementPlan) -> List<OrderSettlementCandidate.BalanceChange>,
+    ): OrderSettlementCandidate {
         validateTrade(trade, maker, taker)
         val makerPlan = fillCalculator.calculate(market, maker, trade.price, trade.quantity, LiquidityRole.MAKER)
         val takerPlan = fillCalculator.calculate(market, taker, trade.price, trade.quantity, LiquidityRole.TAKER)
-        val workingBalances = SingleBalanceSlots(initialBalances)
-        accumulateSingle(market, maker, makerPlan, makerKey, makerUnrelatedHold, workingBalances)
-        accumulateSingle(market, taker, takerPlan, takerKey, takerUnrelatedHold, workingBalances)
-        val transaction =
-            ledgerTransactions.create(
-                market,
-                trade.engineSequence,
-                maker,
-                makerPlan,
-                taker,
-                takerPlan,
-                trade.ledgerTransactionId,
-                trade.occurredAt,
-            )
+        val changes = balanceChanges(makerPlan, takerPlan)
+        val feeProof =
+            if (recordFeeProof == null) {
+                null
+            } else {
+                ledgerTransactions.proveSingleFillFee(
+                    market,
+                    trade.engineSequence,
+                    maker,
+                    makerPlan,
+                    taker,
+                    takerPlan,
+                    trade.ledgerTransactionId,
+                )
+            }
+        val settlements =
+            if (feeProof == null) {
+                val transaction =
+                    ledgerTransactions.create(
+                        market,
+                        trade.engineSequence,
+                        maker,
+                        makerPlan,
+                        taker,
+                        takerPlan,
+                        trade.ledgerTransactionId,
+                        trade.occurredAt,
+                    )
+                listOf(OrderSettlementCandidate.Settlement(trade, makerPlan, takerPlan, transaction))
+            } else {
+                checkNotNull(recordFeeProof)(feeProof)
+                emptyList()
+            }
         return OrderSettlementCandidate(
             order,
             market,
-            listOf(OrderSettlementCandidate.Settlement(trade, makerPlan, takerPlan, transaction)),
-            workingBalances.changes(),
+            settlements,
+            changes,
             listOf(
                 OrderSettlementCandidate.ReservationChange(maker, makerPlan.updatedReservation),
                 OrderSettlementCandidate.ReservationChange(taker, takerPlan.updatedReservation),
             ),
         )
+    }
+
+    private fun checkedBalance(
+        userId: UserId,
+        assetId: AssetId,
+        balanceFor: (UserId, AssetId) -> Balance,
+    ): Balance {
+        val balance = balanceFor(userId, assetId)
+        check(balance.userId == userId && balance.assetId == assetId) { "settlement balance key differs" }
+        return balance
+    }
+
+    private fun appendSingleBalanceChanges(
+        market: MarketDefinition,
+        reservation: OrderReservation,
+        plan: OrderFillSettlementPlan,
+        previousHold: Balance,
+        previousCredit: Balance,
+        unrelatedHold: Long,
+        changes: MutableList<OrderSettlementCandidate.BalanceChange>,
+    ) {
+        validatePlan(market, reservation, plan)
+        val nextHold = previousHold.applySettlementHold(plan)
+        if (previousHold != nextHold) changes.add(OrderSettlementCandidate.BalanceChange(previousHold, nextHold))
+        if (!plan.creditAmount.isZero()) {
+            val nextCredit = previousCredit.credit(plan.creditAmount)
+            changes.add(OrderSettlementCandidate.BalanceChange(previousCredit, nextCredit))
+        }
+        validateRemainingHold(reservation, plan, nextHold.hold.value, unrelatedHold)
     }
 
     private fun accumulateSingle(
@@ -231,16 +348,24 @@ class OrderSettlementCalculator(
         validatePlan(market, reservation, plan)
         val nextHold = balances.consume(key, plan)
         if (!plan.creditAmount.isZero()) balances.credit(BalanceKey(reservation.userId, plan.creditAssetId), plan.creditAmount)
+        validateRemainingHold(reservation, plan, nextHold, unrelatedHold)
+    }
+
+    private fun validateRemainingHold(
+        reservation: OrderReservation,
+        plan: OrderFillSettlementPlan,
+        nextHold: Long,
+        unrelatedHold: Long,
+    ) {
         val remaining = Math.subtractExact(reservation.remainingAmount.value, plan.reservedAmountToReduce.value)
         require(nextHold == Math.addExact(remaining, unrelatedHold)) { "settlement must preserve unrelated hold" }
     }
 
     private fun unrelatedHoldAt(
-        balances: Map<BalanceKey, Balance>,
-        key: BalanceKey,
+        balance: Balance,
         amount: Long,
     ): Long {
-        val hold = balanceAt(balances, key).hold.value
+        val hold = balance.hold.value
         require(hold >= amount) { "settlement reservations exceed current hold" }
         return hold - amount
     }
@@ -272,8 +397,7 @@ class OrderSettlementCalculator(
             plan: OrderFillSettlementPlan,
         ): Long {
             val slot = slot(key)
-            val consumed = slot.current.consumeHold(plan.holdAmountToConsume)
-            slot.current = if (plan.holdAmountToRelease.isZero()) consumed else consumed.release(plan.holdAmountToRelease)
+            slot.current = slot.current.applySettlementHold(plan)
             return slot.current.hold.value
         }
 
@@ -320,17 +444,25 @@ class OrderSettlementCalculator(
     ) {
         val ledgerIds = if (executions.size > 1) hashSetOf<String>() else null
         executions.forEachIndexed { index, trade ->
-            require(trade.marketId == order.marketId && trade.takerOrderId == order.orderId && trade.takerUserId == order.userId)
-            require(trade.side == order.side && trade.makerOrderId != trade.takerOrderId)
-            require(trade.engineSequence > 0 && trade.quantity.value > 0)
-            require(
-                trade.ledgerTransactionId.isNotBlank() && (ledgerIds == null || ledgerIds.add(trade.ledgerTransactionId)),
-            ) { "duplicate or blank settlement ledger ID" }
+            validateExecution(order, trade, ledgerIds)
             if (index > 0) {
                 val expectedSequence = Math.addExact(executions[index - 1].engineSequence, 1L)
                 require(trade.engineSequence == expectedSequence) { "settlement sequence is not contiguous" }
             }
         }
+    }
+
+    private fun validateExecution(
+        order: OrderAdmissionInput,
+        trade: SettlementExecution,
+        ledgerIds: MutableSet<String>? = null,
+    ) {
+        require(trade.marketId == order.marketId && trade.takerOrderId == order.orderId && trade.takerUserId == order.userId)
+        require(trade.side == order.side && trade.makerOrderId != trade.takerOrderId)
+        require(trade.engineSequence > 0 && trade.quantity.value > 0)
+        require(
+            trade.ledgerTransactionId.isNotBlank() && (ledgerIds == null || ledgerIds.add(trade.ledgerTransactionId)),
+        ) { "duplicate or blank settlement ledger ID" }
     }
 
     private fun validateOriginal(
@@ -429,6 +561,11 @@ class OrderSettlementCalculator(
         values.forEach { require(result.put(key(it), it) == null) { "duplicate settlement input key" } }
         return result
     }
+}
+
+private fun Balance.applySettlementHold(plan: OrderFillSettlementPlan): Balance {
+    val consumed = consumeHold(plan.holdAmountToConsume)
+    return if (plan.holdAmountToRelease.isZero()) consumed else consumed.release(plan.holdAmountToRelease)
 }
 
 /** 공개 API의 인자 오류 계약을 유지하면서 기존 예약의 손상을 구분한다. */

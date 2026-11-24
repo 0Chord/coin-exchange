@@ -9,7 +9,6 @@ import com.exchange.core.matching.OrderEnteredBook
 import com.exchange.core.matching.SubmitOrderCommand
 import com.exchange.core.matching.TradeExecuted
 import com.exchange.core.order.BuyOrderFundingQuoteCalculator
-import com.exchange.core.order.OrderReservation
 import com.exchange.core.order.OrderReservationCalculator
 import com.exchange.core.order.OrderType
 import com.exchange.core.order.Side
@@ -17,7 +16,7 @@ import com.exchange.core.order.TimeInForce
 
 /** 자금 잔고를 읽지 않고 승인 원본의 수학적 관계만 검사한다. 실제 발신자 인증은 relay의 책임이다. */
 internal object MatchingInputValidation {
-    fun reservationCalculator(): OrderReservationCalculator =
+    val reservationCalculator: OrderReservationCalculator =
         OrderReservationCalculator(BuyOrderFundingQuoteCalculator(TradingFeeReserveCalculator()))
 
     fun requireValid(
@@ -54,12 +53,15 @@ internal object MatchingInputValidation {
         }
         val order = input.order
         require(input.context == context && order.marketId == input.stream.marketId)
-        require(order.orderId == TradingIdentifiers.order(manifest.lineage, input.admissionSequence)) {
+        require(TradingIdentifiers.matchesOrder(order.orderId, manifest.lineage, input.admissionSequence)) {
             "matching approval identity differs"
         }
-        for (text in listOf(order.marketId.value, order.orderId.value, order.userId.value)) {
-            require(tradingTextBytes(text) <= manifest.limits.maxIdentifierBytes) { "matching identifier exceeds limit" }
-        }
+        val maxIdentifierBytes = manifest.limits.maxIdentifierBytes
+        require(
+            tradingTextBytes(order.marketId.value) <= maxIdentifierBytes &&
+                tradingTextBytes(order.orderId.value) <= maxIdentifierBytes &&
+                tradingTextBytes(order.userId.value) <= maxIdentifierBytes,
+        ) { "matching identifier exceeds limit" }
         require(':' !in order.userId.value) { "matching user identifier differs from admission contract" }
         input.cancel?.let { cancel ->
             require(cancel.requestToken.userId == order.userId) { "matching cancellation requester differs" }
@@ -73,25 +75,25 @@ internal object MatchingInputValidation {
         }
         require(order.orderType == OrderType.LIMIT && order.timeInForce == TimeInForce.GTC)
         val requirement =
-            reservationCalculator().calculate(
+            reservationCalculator.calculate(
                 context.market,
                 order.side,
                 order.price,
                 order.quantity,
                 context.feePolicySnapshot,
             )
-        val initial =
-            OrderReservation.create(
-                order.marketId,
-                order.orderId,
-                order.userId,
-                order.side,
-                order.price,
-                order.quantity,
-                requirement,
-                context.feePolicySnapshot,
-            )
-        require(initial == input.reservation) { "matching initial reservation differs" }
+        require(
+            input.reservation.matchesInitial(
+                marketId = order.marketId,
+                orderId = order.orderId,
+                userId = order.userId,
+                side = order.side,
+                limitPrice = order.price,
+                quantity = order.quantity,
+                requirement = requirement,
+                feePolicySnapshot = context.feePolicySnapshot,
+            ),
+        ) { "matching initial reservation differs" }
     }
 
     fun command(input: FundsOrderDispatch): SubmitOrderCommand =
@@ -127,6 +129,7 @@ internal object MatchingInputValidation {
         requireResult(
             configuration.manifest,
             configuration.resultStream(result.input.stream.marketId),
+            configuration.stream(result.input.stream.marketId),
             configuration.context(result.input.stream.marketId),
             configuration.limits.maxResultEvents,
             configuration.limits.maxSingleResultBytes,
@@ -135,26 +138,19 @@ internal object MatchingInputValidation {
         )
     }
 
-    /** 주문장과 별개인 전체 결과의 수학적 검사는 두 금융/매칭 역할이 공유한다. */
+    /** 금융·매칭 역할이 전체 결과의 수학적 관계를 확인하고 체결 이벤트 수를 반환한다. */
     fun requireResult(
         manifest: TradingClusterManifest,
         expectedStream: MatchingResultStream,
+        inputStream: FundsDispatchStream,
         context: TradingMarketContext,
         maxResultEvents: Int,
         maxSingleResultBytes: Long,
         result: MatchingResultEnvelope,
         inputContractVersion: Int = 1,
-    ) {
+    ): Int {
         require(result.formatVersion == inputContractVersion)
         require(result.stream == expectedStream)
-        val inputStream =
-            FundsDispatchStream(
-                expectedStream.fundsLineage,
-                expectedStream.matchingLineage,
-                expectedStream.marketId,
-                expectedStream.ownershipEpoch,
-                expectedStream.configurationVersion,
-            )
         require(result.eventCount <= maxResultEvents && result.effects.size <= maxResultEvents.toLong() + 1L)
         requireValid(manifest, context, inputStream, result.input, inputContractVersion)
         require(result.resultSequence > 0 && result.resultSequence == result.input.dispatchSequence)
@@ -164,17 +160,17 @@ internal object MatchingInputValidation {
         )
         if (result.input.isCancellation) {
             requireCancellationResult(manifest, context, inputStream, result, inputContractVersion)
-            return
+            return 0
         }
         require(result.outcome == MatchingOutcome.MATCHED || result.outcome == MatchingOutcome.NOT_EXECUTED)
         require(result.effects.isNotEmpty() && result.effects.first().origin == result.input) { "result taker effect differs" }
-        require(
-            result.effects
-                .map { it.orderId }
-                .distinct()
-                .size == result.effects.size,
-        ) { "duplicate result effect" }
-        for (effect in result.effects) {
+        val effects = result.effects
+        if (effects.size == 2) {
+            require(effects[0].orderId != effects[1].orderId) { "duplicate result effect" }
+        } else if (effects.size > 2) {
+            require(effects.mapTo(HashSet(effects.size)) { it.orderId }.size == effects.size) { "duplicate result effect" }
+        }
+        for (effect in effects) {
             require(!effect.origin.isCancellation) { "submit effect must contain an admission origin" }
             if (effect.origin != result.input) requireValid(manifest, context, inputStream, effect.origin, inputContractVersion)
             require(effect.origin.stream == result.input.stream)
@@ -183,30 +179,33 @@ internal object MatchingInputValidation {
         }
         val taker = result.effects.first()
         require(taker.beforeQuantity == result.input.order.quantity)
-        when (result.outcome) {
+        return when (result.outcome) {
             MatchingOutcome.NOT_EXECUTED -> {
                 require(result.reason != null && result.events.isEmpty() && result.effects.size == 1)
                 require(
                     result.engineSequenceAfter == result.engineSequenceBefore && taker.afterQuantity == taker.beforeQuantity &&
                         taker.disposition == MatchingOrderDisposition.NOT_EXECUTED,
                 )
+                0
             }
 
             MatchingOutcome.MATCHED -> {
                 require(result.reason == null && result.eventCount > 0)
                 require(result.engineSequenceAfter == Math.addExact(result.engineSequenceBefore, result.eventCount.toLong()))
-                MatchingResultState.validateCompleteResult(
-                    result.resultId,
+                MatchingResultState.validateCompleteEvents(
                     command(result.input),
                     result.eventCount,
                     Math.addExact(result.engineSequenceBefore, 1),
                     result.engineSequenceAfter,
                     result.events,
                 )
-                val trades = result.events.filterIsInstance<TradeExecuted>()
-                require(result.effects.size == trades.size + 1)
+                // 검증된 제출 결과는 순서대로 이어진 체결과 마지막의 잔량 대기 한 건으로만 구성된다.
+                val enteredBook = result.events.last() is OrderEnteredBook
+                val tradeCount = if (enteredBook) result.eventCount - 1 else result.eventCount
+                require(result.effects.size == tradeCount + 1)
                 var takerRemaining = taker.beforeQuantity.value
-                for ((index, trade) in trades.withIndex()) {
+                for (index in 0 until tradeCount) {
+                    val trade = result.events[index] as TradeExecuted
                     val maker = result.effects[index + 1]
                     require(
                         maker.origin.dispatchSequence < result.input.dispatchSequence &&
@@ -242,8 +241,8 @@ internal object MatchingInputValidation {
                 require(
                     taker.disposition == if (takerRemaining == 0L) MatchingOrderDisposition.TERMINAL else MatchingOrderDisposition.RESTING,
                 )
-                val entered = result.events.filterIsInstance<OrderEnteredBook>()
-                require((entered.size == 1) == (takerRemaining > 0))
+                require(enteredBook == (takerRemaining > 0))
+                tradeCount
             }
         }
     }
@@ -257,8 +256,7 @@ internal object MatchingInputValidation {
     ) {
         require(result.reason == null && result.eventCount == 1)
         require(result.engineSequenceAfter == Math.addExact(result.engineSequenceBefore, 1))
-        MatchingResultState.validateCompleteResult(
-            result.resultId,
+        MatchingResultState.validateCompleteEvents(
             cancelCommand(result.input),
             1,
             result.engineSequenceAfter,

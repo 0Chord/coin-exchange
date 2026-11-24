@@ -18,7 +18,8 @@ private val quoteBaseUnits =
  * 50,000,000이고 수량이 최소 단위 기준 10,000,000이며 scale이 8이면,
  * 0.1 BTC의 대금인 5,000,000을 반환한다.
  *
- * 중간 곱셈이 Long 범위 안이면 정수 연산을 사용하고, 넘으면 [BigInteger]로 계산한다. 나눗셈에
+ * 중간 곱셈이 Long 범위를 넘으면 수량의 정수부와 소수부를 나눠 계산한다. 각 곱셈과 최종
+ * 덧셈을 Long으로 표현할 수 없는 경우에는 [BigInteger]를 사용한다. 나눗셈에
  * 나머지가 있으면 quote 자산의 최소 단위로 정확히 표현할 수 없으므로 반올림하거나
  * 버리지 않고 실패시킨다. 최종 결과가 Long 범위를 넘는 경우에도 실패한다.
  *
@@ -36,11 +37,26 @@ internal fun calculateQuoteAmount(
     if (baseAssetScale !in quoteBaseUnits.indices) {
         return calculateQuoteAmountWithBigInteger(price, quantity, baseAssetScale)
     }
-    if (quantity.value > Long.MAX_VALUE / price.value) {
-        return calculateQuoteAmountWithBigInteger(price, quantity, baseAssetScale)
+    val baseUnit = quoteBaseUnits[baseAssetScale]
+    val maxQuantity = Long.MAX_VALUE / price.value
+    if (quantity.value > maxQuantity) {
+        val wholeQuantity = quantity.value / baseUnit
+        val fractionalQuantity = quantity.value % baseUnit
+        if (wholeQuantity > maxQuantity || fractionalQuantity > maxQuantity) {
+            return calculateQuoteAmountWithBigInteger(price, quantity, baseAssetScale)
+        }
+        val fractionalNumerator = price.value * fractionalQuantity
+        require(fractionalNumerator % baseUnit == 0L) {
+            "reservation amount must align with base asset scale"
+        }
+        val wholeQuote = price.value * wholeQuantity
+        val fractionalQuote = fractionalNumerator / baseUnit
+        if (wholeQuote > Long.MAX_VALUE - fractionalQuote) {
+            return calculateQuoteAmountWithBigInteger(price, quantity, baseAssetScale)
+        }
+        return Amount(wholeQuote + fractionalQuote)
     }
     val numerator = price.value * quantity.value
-    val baseUnit = quoteBaseUnits[baseAssetScale]
     require(numerator % baseUnit == 0L) {
         "reservation amount must align with base asset scale"
     }

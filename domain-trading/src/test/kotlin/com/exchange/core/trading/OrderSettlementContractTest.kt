@@ -20,6 +20,7 @@ import com.exchange.core.ledger.LedgerPostingSide
 import com.exchange.core.order.BuyOrderFundingQuoteCalculator
 import com.exchange.core.order.MarketDefinition
 import com.exchange.core.order.OrderFillSettlementCalculator
+import com.exchange.core.order.OrderFillSettlementPlan
 import com.exchange.core.order.OrderReservation
 import com.exchange.core.order.OrderReservationCalculator
 import com.exchange.core.order.OrderReservationStatus
@@ -30,6 +31,7 @@ import java.time.Instant
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 /** 실제 도메인으로 순차 계산과 실패 후 입력 보존을 대조하며, 저장이나 실제 상태 적용은 하지 않는다. */
@@ -694,6 +696,89 @@ class OrderSettlementContractTest {
         assertEquals(Quantity(2), reservation(candidate, "sell").remainingQuantity)
         assertTrue(candidate.reservationChanges.all { it.next.status == OrderReservationStatus.ACTIVE })
         assertInputsUnchanged(f)
+    }
+
+    @Test
+    fun `분리 자금의 단일 체결은 잔고 네 건을 한 번씩 읽어 기존 수수료 분개와 다음 예약을 만든다`() {
+        val rates = policy(10_000, 20_000)
+        val buyer = reservation("buy", "buyer", Side.BUY, 100, 3, rates, feeReserve = 6)
+        val seller = reservation("sell", "seller", Side.SELL, 90, 3, rates)
+        val balances =
+            listOf(
+                balance("buyer", usdt, 700, 320),
+                balance("buyer", btc, 2, 3),
+                balance("seller", btc, 4, 5),
+                balance("seller", usdt, 20, 30),
+            ).associateBy { it.userId to it.assetId }
+
+        for (side in Side.entries) {
+            val maker = if (side == Side.BUY) seller else buyer
+            val taker = if (side == Side.BUY) buyer else seller
+            val input = order(taker.orderId.value, taker.userId.value, side, taker.limitPrice.value, 3)
+            val trade = execution(10, maker, taker, maker.limitPrice.value)
+            val expected = calculator.calculate(input, market, listOf(trade), listOf(maker, taker), balances.values.toList())
+            val reads = mutableListOf<Pair<UserId, AssetId>>()
+            val actual =
+                calculator.calculateSingleFill(input, market, trade, maker, taker) { user, asset ->
+                    val key = user to asset
+                    reads.add(key)
+                    balances.getValue(key)
+                }
+            assertEquals(4, reads.size)
+            assertEquals(balances.keys, reads.toSet())
+            assertEquals(expected.balanceChanges, actual.balanceChanges)
+            assertEquals(expected.reservationChanges, actual.reservationChanges)
+            val expectedFill = expected.settlements.single()
+            val actualFill = actual.settlements.single()
+            assertEquals(expectedFill.makerPlan, actualFill.makerPlan)
+            assertEquals(expectedFill.takerPlan, actualFill.takerPlan)
+            assertEquals(expectedFill.transaction.ledgerTransactionId, actualFill.transaction.ledgerTransactionId)
+            assertEquals(expectedFill.transaction.sourceEventId, actualFill.transaction.sourceEventId)
+            assertEquals(expectedFill.transaction.postings, actualFill.transaction.postings)
+            assertTrue(feeRevenue(actual) > 0)
+
+            val fees = mutableListOf<Long>()
+            val live =
+                calculator.calculateSingleFill(
+                    input,
+                    market,
+                    trade,
+                    maker,
+                    taker,
+                    recordFeeProof = { fees.add(it) },
+                ) { user, asset ->
+                    balances.getValue(user to asset)
+                }
+            assertEquals(listOf(feeRevenue(expected)), fees)
+            assertTrue(live.settlements.isEmpty())
+            assertEquals(expected.balanceChanges, live.balanceChanges)
+            assertEquals(expected.reservationChanges, live.reservationChanges)
+        }
+    }
+
+    @Test
+    fun `청구 수수료가 0이어도 양쪽 수수료 자산이 호가 자산이어야 한다`() {
+        val ledger = SettlementLedgerTransactions()
+        val sell = reservation("sell", "seller", Side.SELL, 1, 1)
+        val buy = reservation("buy", "buyer", Side.BUY, 1, 1)
+        val sellPlan = OrderFillSettlementPlan(sell, Amount(1), Amount(1), Amount.ZERO, usdt, Amount(1), usdt, Amount.ZERO)
+        val buyPlan = OrderFillSettlementPlan(buy, Amount(1), Amount(1), Amount.ZERO, btc, Amount(1), usdt, Amount.ZERO)
+        assertEquals(0L, ledger.proveSingleFillFee(market, 1, sell, sellPlan, buy, buyPlan, "ledger-1"))
+        assertNull(ledger.proveSingleFillFee(market, 1, sell, sellPlan.copy(feeAssetId = btc), buy, buyPlan, "ledger-1"))
+        assertNull(ledger.proveSingleFillFee(market, 1, sell, sellPlan, buy, buyPlan.copy(feeAssetId = btc), "ledger-1"))
+    }
+
+    @Test
+    fun `단일 체결 분개 합산이 Long을 넘으면 기존 원장의 정확한 검증을 사용한다`() {
+        val ledger = SettlementLedgerTransactions()
+        val sell = reservation("sell", "seller", Side.SELL, 1, 1)
+        val buy = reservation("buy", "buyer", Side.BUY, 1, 1)
+        // 분개 생성 경계에서만 합산 범위를 재현한다. 실제 예약 계산은 이런 계획을 만들지 않는다.
+        val sellPlan = OrderFillSettlementPlan(sell, Amount(1), Amount(Long.MAX_VALUE), Amount(2), usdt, Amount(1), usdt, Amount.ZERO)
+        val buyPlan = OrderFillSettlementPlan(buy, Amount(1), Amount(1), Amount.ZERO, btc, Amount(Long.MAX_VALUE), usdt, Amount.ZERO)
+        assertNull(ledger.proveSingleFillFee(market, 1, sell, sellPlan, buy, buyPlan, "ledger-1"))
+        val exact = ledger.create(market, 1, sell, sellPlan, buy, buyPlan, "ledger-1", time)
+        assertEquals(listOf(Long.MAX_VALUE, 2L, 2L, 1L, 1L, Long.MAX_VALUE), exact.postings.map { it.amount.value })
     }
 
     @Test

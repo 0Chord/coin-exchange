@@ -1,8 +1,11 @@
 package com.exchange.core.trading
 
+import com.exchange.core.common.OrderId
+import kotlin.random.Random
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
+import kotlin.test.assertFalse
 import kotlin.test.assertNotEquals
 import kotlin.test.assertTrue
 
@@ -49,5 +52,35 @@ class TradingIdentifiersTest {
         assertEquals("R2AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAB", TradingIdentifiers.admission(ClusterLineage(0, 0), 1).reserveTransactionId)
         assertFailsWith<IllegalArgumentException> { TradingIdentifiers.admission(ClusterLineage(0, 0), 0) }
         assertFailsWith<IllegalArgumentException> { TradingIdentifiers.admission(ClusterLineage(0, 0), -1) }
+    }
+
+    @Test
+    fun `문자열 생성 없는 비교도 기존 주문 ID만 허용한다`() {
+        val lineages = listOf(ClusterLineage(0, 0), ClusterLineage(-1, -1), ClusterLineage(Long.MIN_VALUE, Long.MAX_VALUE))
+        for (lineage in lineages) {
+            for (sequence in listOf(1L, 255L, 256L, Long.MAX_VALUE)) {
+                val orderId = TradingIdentifiers.order(lineage, sequence)
+                assertTrue(TradingIdentifiers.matchesOrder(orderId, lineage, sequence))
+                assertFalse(TradingIdentifiers.matchesOrder(orderId, lineage, 0))
+                assertFalse(TradingIdentifiers.matchesOrder(orderId, lineage, -1))
+                assertFalse(TradingIdentifiers.matchesOrder(orderId, lineage, sequence xor 1L))
+                assertFalse(TradingIdentifiers.matchesOrder(orderId, ClusterLineage(lineage.high xor 1L, lineage.low), sequence))
+                val value = orderId.value
+                for (index in value.indices) {
+                    val different = if (value[index] == 'X') "x" else "X"
+                    val changed = OrderId(value.replaceRange(index, index + 1, different))
+                    assertFalse(TradingIdentifiers.matchesOrder(changed, lineage, sequence))
+                }
+                assertFalse(TradingIdentifiers.matchesOrder(OrderId("$value="), lineage, sequence))
+                assertFalse(TradingIdentifiers.matchesOrder(OrderId(value.dropLast(1)), lineage, sequence))
+            }
+        }
+
+        val random = Random(58)
+        repeat(512) {
+            val lineage = ClusterLineage(random.nextLong(), random.nextLong())
+            val sequence = random.nextLong(1, Long.MAX_VALUE)
+            assertTrue(TradingIdentifiers.matchesOrder(TradingIdentifiers.order(lineage, sequence), lineage, sequence))
+        }
     }
 }

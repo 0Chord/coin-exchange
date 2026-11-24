@@ -225,9 +225,13 @@ internal class BoundedTradingData(
     val assets = manifest.markets.flatMap { listOf(it.market.baseAssetId, it.market.quoteAssetId) }.toSet()
     val accounts = linkedSetOf<com.exchange.core.common.UserId>()
     val balances = linkedMapOf<TradingBalanceKey, Balance>()
-    val usedBalances = linkedSetOf<TradingBalanceKey>()
     val preparations = linkedMapOf<String, OpeningBalanceResult>()
     val feeRevenue = linkedMapOf<AssetId, BigInteger>()
+    val feeRevenueBitLimit =
+        BigInteger
+            .valueOf(manifest.limits.maxBalanceKeys.toLong())
+            .multiply(BigInteger.valueOf(Long.MAX_VALUE))
+            .bitLength()
     val liveBySequence = linkedMapOf<Long, BoundedLiveOrder>()
     val liveByOrder = hashMapOf<Pair<MarketId, com.exchange.core.common.OrderId>, BoundedLiveOrder>()
     val markets = manifest.markets.associate { it.market.marketId to BoundedMarketProgress() }
@@ -251,6 +255,8 @@ internal class BoundedLiveOrder(
     val order: OrderAdmissionInput,
     var reservation: OrderReservation,
     var phase: LiveOrderPhase,
+    // 자금 역할에서 접수할 때 더했던 논리 크기다.
+    val activeDispatchBytes: Long,
 ) {
     fun snapshot() = TradingLiveOrderSnapshot(admissionSequence, marketAdmissionSequence, order, reservation, phase)
 }

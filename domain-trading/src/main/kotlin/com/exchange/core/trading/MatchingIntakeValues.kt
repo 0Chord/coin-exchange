@@ -113,6 +113,16 @@ class MatchingIntakeConfiguration(
                     manifest.configurationVersion,
                 )
         }
+    private val resultStreams =
+        streams.mapValues { (_, stream) ->
+            MatchingResultStream(
+                stream.matchingLineage,
+                stream.fundsLineage,
+                stream.marketId,
+                stream.ownershipEpoch,
+                stream.configurationVersion,
+            )
+        }
     val snapshotByteUpperBound: Long
 
     init {
@@ -244,10 +254,7 @@ class MatchingIntakeConfiguration(
 
     fun stream(marketId: MarketId): FundsDispatchStream = requireNotNull(streams[marketId]) { "unassigned matching market" }
 
-    fun resultStream(marketId: MarketId): MatchingResultStream =
-        stream(marketId).let {
-            MatchingResultStream(it.matchingLineage, it.fundsLineage, it.marketId, it.ownershipEpoch, it.configurationVersion)
-        }
+    fun resultStream(marketId: MarketId): MatchingResultStream = requireNotNull(resultStreams[marketId]) { "unassigned matching market" }
 
     fun context(marketId: MarketId): TradingMarketContext = markets.single { it.market.marketId == marketId }
 
@@ -288,8 +295,9 @@ class MatchingIntakeConfiguration(
                 Quantity(context.market.quantityStep),
             )
         // charge는 값의 폭만 보므로 합법 숫자 중 가장 작은 예약으로 최대 문자열 원본을 구성한다.
-        val calculator = MatchingInputValidation.reservationCalculator()
-        val requirement = calculator.calculate(context.market, order.side, order.price, order.quantity, context.feePolicySnapshot)
+        val requirement =
+            MatchingInputValidation.reservationCalculator
+                .calculate(context.market, order.side, order.price, order.quantity, context.feePolicySnapshot)
         val reservation =
             com.exchange.core.order.OrderReservation.create(
                 order.marketId,
@@ -391,7 +399,19 @@ class MatchingResultEnvelope(
         "M$formatVersion:${stream.matchingLineage.high}:${stream.matchingLineage.low}:" +
             "${stream.fundsLineage.high}:${stream.fundsLineage.low}:${stream.marketId.value}:" +
             "${stream.ownershipEpoch}:${stream.configurationVersion}:$resultSequence"
-    val canonicalBytes: Long get() = MatchingResultCharge.result(this)
+
+    // 같은 불변 결과를 서비스와 전달 작업이 읽는다. 계산된 크기만 공유한다.
+    @Volatile
+    private var cachedCanonicalBytes = 0L
+
+    val canonicalBytes: Long
+        get() {
+            val cached = cachedCanonicalBytes
+            if (cached != 0L) return cached
+            val bytes = MatchingResultCharge.result(this)
+            cachedCanonicalBytes = bytes
+            return bytes
+        }
 
     override fun equals(other: Any?): Boolean =
         other is MatchingResultEnvelope && stream == other.stream && resultSequence == other.resultSequence &&
@@ -403,17 +423,24 @@ class MatchingResultEnvelope(
         listOf(stream, resultSequence, input, outcome, reason, engineSequenceBefore, engineSequenceAfter, events, effects).hashCode()
 }
 
-/** 원본을 참조로 공유해도 각 보존 의무에서 독립 계산한다. 기존 v1 charge는 유지한다. */
+/** 원본을 공유해도 보존 의무마다 같은 논리 바이트를 따로 센다. 기존 v1 charge는 유지한다. */
 object MatchingResultCharge {
+    private const val EFFECT_FIXED_BYTES = 20L
+
     fun active(input: FundsOrderDispatch): Long = input.dispatchCanonicalBytes
 
-    fun effect(effect: MatchingOrderEffect): Long = Math.addExact(20L, effect.origin.dispatchCanonicalBytes)
+    fun effect(effect: MatchingOrderEffect): Long = Math.addExact(EFFECT_FIXED_BYTES, effect.origin.dispatchCanonicalBytes)
 
     fun result(result: MatchingResultEnvelope): Long {
         // format/stream(두 lineage·epoch·version·direction)/seq/outcome/reason/범위/count/list 길이.
-        var bytes = Math.addExact(104L + text(result.stream.marketId.value) + text(result.resultId), result.input.dispatchCanonicalBytes)
+        val headerBytes = 104L + text(result.stream.marketId.value) + text(result.resultId)
+        val inputBytes = result.input.dispatchCanonicalBytes
+        var bytes = Math.addExact(headerBytes, inputBytes)
         for (event in result.events) bytes = Math.addExact(bytes, event(event))
-        for (effect in result.effects) bytes = Math.addExact(bytes, effect(effect))
+        for (effect in result.effects) {
+            val originBytes = if (effect.origin === result.input) inputBytes else effect.origin.dispatchCanonicalBytes
+            bytes = Math.addExact(bytes, Math.addExact(EFFECT_FIXED_BYTES, originBytes))
+        }
         return bytes
     }
 

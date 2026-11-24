@@ -525,8 +525,11 @@ internal class MultiMatchingRun(
                 "quorum-client $scope ${if (baseline) "baseline" else "pending"}"
         val args = listOf("quorum-client", scope, if (baseline) "baseline" else "pending")
         activeQuorumScope = scope
-        activeQuorumClient = startClient(args, script)
+        val (inspection, _) = startClient(args, script)
         quorumMark("scope-$scope", quorumNetworkStep { quorumNetwork().scope("client", allowed, quorumLive() + "client") })
+        // 컨테이너·네트워크 준비 뒤 신호를 받아야 시험 JVM의 60초 실행이 시작된다.
+        val executionDeadline = minOf(workDeadline, System.nanoTime() + TimeUnit.SECONDS.toNanos(60))
+        activeQuorumClient = inspection to executionDeadline
         Files.writeString(control.resolve("quorum-launch-$scope"), "launch")
     }
 
@@ -1160,7 +1163,10 @@ internal class MultiMatchingRun(
     ): JsonNode {
         val name = "$runId-client"
 
-        fun left() = TimeUnit.NANOSECONDS.toMillis(clientDeadline - System.nanoTime()).also { check(it > 0) }
+        fun left() =
+            TimeUnit.NANOSECONDS.toMillis(clientDeadline - System.nanoTime()).also {
+                check(it > 0) { "client $args 종료·회수 기한 초과" }
+            }
         val exit = command(listOf("docker", "wait", name), left()).stdout.trim()
         val result = command(listOf("docker", "logs", name), minOf(5_000, left()))
         check(exit == "0") { "client ${args.toList()} 종료 코드=$exit: ${result.stderr.takeLast(1600)}" }

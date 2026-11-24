@@ -827,7 +827,7 @@ class ReservedMatchingState(
             }
             val plan = engine.prepareSubmit(MatchingInputValidation.command(result.input))
             require(plan.events == result.events) { "matching recovery result does not match its book prefix" }
-            val expected = effects(result.input, plan, origins)
+            val expected = effects(result.input, plan, origins::get)
             require(expected == result.effects) { "matching recovery effects differ" }
             engine.apply(plan)
             for (effect in expected) {
@@ -868,7 +868,7 @@ class ReservedMatchingState(
                     result.engineSequenceBefore,
                     it.lastEngineSequence,
                     it.events,
-                    effects(result.input, it, origins),
+                    effects(result.input, it, origins::get),
                 )
             }
         val tooLarge = candidate == null || configuration.exceedsResultBudget(candidate)
@@ -920,9 +920,8 @@ class ReservedMatchingState(
         input: FundsOrderDispatch,
         plan: SubmitOrderPlan,
         before: Long,
-    ): MatchingResultEnvelope {
-        val origins = plan.fills.associate { fill -> fill.orderId to checkNotNull(state.active[input.stream.marketId to fill.orderId]) }
-        return MatchingResultEnvelope(
+    ): MatchingResultEnvelope =
+        MatchingResultEnvelope(
             configuration.resultStream(input.stream.marketId),
             input.dispatchSequence,
             input,
@@ -931,19 +930,18 @@ class ReservedMatchingState(
             before,
             plan.lastEngineSequence,
             plan.events,
-            effects(input, plan, origins),
+            effects(input, plan) { orderId -> state.active[input.stream.marketId to orderId] },
         )
-    }
 
-    private fun effects(
+    private inline fun effects(
         input: FundsOrderDispatch,
         plan: SubmitOrderPlan,
-        origins: Map<OrderId, FundsOrderDispatch>,
+        originFor: (OrderId) -> FundsOrderDispatch?,
     ): List<MatchingOrderEffect> {
         var remaining = input.order.quantity.value
         val makers =
             plan.fills.map { fill ->
-                val origin = checkNotNull(origins[fill.orderId])
+                val origin = checkNotNull(originFor(fill.orderId))
                 check(
                     origin.order.userId == fill.userId && origin.order.side == fill.side && origin.order.price == fill.price &&
                         origin.order.quantity == fill.originalQuantity,

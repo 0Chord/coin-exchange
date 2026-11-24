@@ -39,8 +39,9 @@ class QuoteAmountCalculatorTest {
                 Input(4_000_000_000_000_000_000L, 5, 1),
                 Input(Long.MAX_VALUE, 1_000_000_000_000_000_000L, 18),
                 Input(1_000_000_000_000_000_000L, 1_000_000_000_000_000_000L, 18),
+                Input(6_000_000L, 10_973_000_100_000L, 8),
             )
-        val amounts = listOf(2_000_000_000_000_000_000L, Long.MAX_VALUE, 1_000_000_000_000_000_000L)
+        val amounts = listOf(2_000_000_000_000_000_000L, Long.MAX_VALUE, 1_000_000_000_000_000_000L, 658_380_006_000L)
         inputs.zip(amounts).forEach { (input, amount) ->
             assertEquals(Amount(amount), calculate(input), input.toString())
             assertMatchesOracle(input)
@@ -53,6 +54,7 @@ class QuoteAmountCalculatorTest {
             listOf(
                 Input(1, 1, 1),
                 Input(Long.MAX_VALUE, 2, 1),
+                Input(Long.MAX_VALUE, 11, 1),
                 Input(Long.MAX_VALUE, Long.MAX_VALUE, 1),
             )
         inputs.forEach { input ->
@@ -68,6 +70,7 @@ class QuoteAmountCalculatorTest {
         val inputs =
             listOf(
                 Input(Long.MAX_VALUE, 2, 0),
+                Input(9_000_000_000_000_000_000L, 11, 1),
                 Input(2_000_000_000_000_000_000L, Long.MAX_VALUE, 18),
             )
         inputs.forEach { input ->

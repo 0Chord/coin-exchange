@@ -83,6 +83,15 @@ class AdmissionIdentifiers internal constructor(
 
 /** 고정 길이 숫자를 그대로 encode한다. 시장 문자열 hash나 로컬 시각에 의존하지 않는다. */
 object TradingIdentifiers {
+    private const val ORDER_BODY_BYTES = 32
+    private val orderIdEncoder = Base64.getUrlEncoder().withoutPadding()
+    private val orderIdBuffers = ThreadLocal.withInitial(::OrderIdBuffers)
+
+    private class OrderIdBuffers {
+        val source = ByteArray(3 * Long.SIZE_BYTES)
+        val encoded = ByteArray(ORDER_BODY_BYTES)
+    }
+
     /** source lineage와 전역 취소 순번의 192-bit 고정폭 표현이다. */
     fun cancel(
         lineage: ClusterLineage,
@@ -127,6 +136,25 @@ object TradingIdentifiers {
         lineage: ClusterLineage,
         sequence: Long,
     ): OrderId = OrderId(id("O2", lineage, sequence))
+
+    /** 검증할 때는 주문 ID 문자열을 다시 만들지 않고 기존 형식과 바이트 단위로 대조한다. */
+    internal fun matchesOrder(
+        orderId: OrderId,
+        lineage: ClusterLineage,
+        sequence: Long,
+    ): Boolean {
+        val value = orderId.value
+        if (sequence <= 0 || value.length != 2 + ORDER_BODY_BYTES || !value.startsWith("O2")) return false
+        val buffers = orderIdBuffers.get()
+        writeLong(buffers.source, 0, lineage.high)
+        writeLong(buffers.source, 8, lineage.low)
+        writeLong(buffers.source, 16, sequence)
+        orderIdEncoder.encode(buffers.source, buffers.encoded)
+        for (index in buffers.encoded.indices) {
+            if (value[index + 2].code != buffers.encoded[index].toInt()) return false
+        }
+        return true
+    }
 
     fun reserve(
         lineage: ClusterLineage,
