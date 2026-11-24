@@ -1,5 +1,8 @@
 package com.exchange.core.api.trading.api
 
+import com.exchange.core.api.trading.application.CandleInterval
+import com.exchange.core.api.trading.application.CandleQueryResult
+import com.exchange.core.api.trading.application.CandleQueryUseCase
 import com.exchange.core.api.trading.application.LatestSettledTradeQueryResult
 import com.exchange.core.api.trading.application.OrderFillCursor
 import com.exchange.core.api.trading.application.OrderFillQueryResult
@@ -24,6 +27,7 @@ import org.springframework.web.bind.annotation.RestController
 @RequestMapping("/api/trading/v3")
 internal class OrderQueryController(
     private val useCase: OrderQueryUseCase,
+    private val candleQuery: CandleQueryUseCase,
 ) {
     @GetMapping("/markets/{marketId}/orders/{orderId}", produces = [MediaType.APPLICATION_JSON_VALUE])
     fun get(
@@ -95,6 +99,27 @@ internal class OrderQueryController(
         return ResponseEntity.status(status(result.code)).body(result)
     }
 
+    @GetMapping("/markets/{marketId}/candles", produces = [MediaType.APPLICATION_JSON_VALUE])
+    fun getCandles(
+        @PathVariable @NotBlank @Size(max = 256) marketId: String,
+        @RequestParam(required = false) interval: String?,
+        @RequestParam(required = false) count: String?,
+    ): ResponseEntity<CandleQueryResult> {
+        useCase.validateMarket(marketId)
+        val intervalCode = interval ?: "1m"
+        val candleInterval =
+            CandleInterval.entries.firstOrNull { it.code == intervalCode } ?: throw IllegalArgumentException("unsupported candle interval")
+        val pageSize = if (count == null) 60 else requireNotNull(count.toIntOrNull()) { "invalid candle count" }
+        require(pageSize in 1..200) { "invalid candle count" }
+        val result =
+            try {
+                candleQuery.get(marketId, candleInterval, pageSize)
+            } catch (error: RuntimeException) {
+                CandleQueryResult(queryFailure(error))
+            }
+        return ResponseEntity.status(status(result.code)).body(result)
+    }
+
     private fun queryFailure(error: RuntimeException): OrderQueryCode =
         when (error) {
             is TransactionException, is DataAccessException -> OrderQueryCode.QUERY_UNAVAILABLE
@@ -104,6 +129,7 @@ internal class OrderQueryController(
     private fun status(code: OrderQueryCode): Int =
         when (code) {
             OrderQueryCode.ORDER_FOUND, OrderQueryCode.LATEST_SETTLED_TRADE, OrderQueryCode.NO_SETTLED_TRADE_AS_OF -> 200
+            OrderQueryCode.CANDLES_FOUND -> 200
             OrderQueryCode.QUERY_CATCHING_UP -> 202
             OrderQueryCode.ORDER_NOT_FOUND_AS_OF -> 404
             OrderQueryCode.QUERY_NOT_READY, OrderQueryCode.QUERY_UNAVAILABLE, OrderQueryCode.QUERY_INCONSISTENT -> 503

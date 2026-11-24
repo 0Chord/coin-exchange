@@ -4,11 +4,14 @@ import com.exchange.core.api.common.TradingOrderHttpExceptionHandler
 import com.exchange.core.api.config.OrderQueryConfig
 import com.exchange.core.api.trading.application.BoundedTradingOrderGateway
 import com.exchange.core.api.trading.application.BoundedTradingOrderUseCase
+import com.exchange.core.api.trading.application.CandleInterval
 import com.exchange.core.api.trading.application.OrderQueryBatch
 import com.exchange.core.api.trading.application.OrderQueryLifecycle
+import com.exchange.core.api.trading.application.OrderQueryNamespace
 import com.exchange.core.api.trading.application.OrderQueryOrderState
 import com.exchange.core.api.trading.application.OrderQueryRecord
 import com.exchange.core.api.trading.application.port.OrderQueryStore
+import com.exchange.core.api.trading.infrastructure.persistence.PostgresCandleProjection
 import com.exchange.core.api.trading.infrastructure.persistence.PostgresOrderQueryStore
 import com.exchange.core.common.MarketId
 import com.exchange.core.order.OrderType
@@ -33,6 +36,11 @@ import org.springframework.boot.web.server.servlet.context.ServletWebServerAppli
 import org.springframework.context.ConfigurableApplicationContext
 import org.springframework.context.annotation.Bean
 import org.springframework.context.annotation.Import
+import org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate
+import org.springframework.jdbc.datasource.DataSourceTransactionManager
+import org.springframework.transaction.TransactionSystemException
+import org.springframework.transaction.support.DefaultTransactionStatus
+import org.springframework.transaction.support.TransactionTemplate
 import tools.jackson.databind.JsonNode
 import tools.jackson.databind.json.JsonMapper
 import java.net.URI
@@ -41,8 +49,15 @@ import java.net.http.HttpRequest
 import java.net.http.HttpResponse
 import java.time.Duration
 import java.time.Instant
+import java.time.ZoneOffset
+import java.time.temporal.ChronoUnit
+import java.util.concurrent.Callable
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
 import javax.sql.DataSource
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
@@ -74,7 +89,7 @@ class OrderQueryHttpTest {
     fun resetProjection() {
         database.jdbc().execute(
             """
-            truncate order_query.balance_projection, order_query.balance_progress,
+            truncate order_query.candle, order_query.candle_progress, order_query.balance_projection, order_query.balance_progress,
                 order_query.settlement_posting, order_query.settlement_transaction, order_query.source_receipt,
                 order_query.funds_ledger_batch, order_query.feed_stream, order_query.feed_consumer, order_query.applied_batch,
                 order_query.order_record, order_query.query_progress
@@ -383,6 +398,7 @@ class OrderQueryHttpTest {
                 assertEquals(400, get(order, "/fills", market = "UNKNOWN").statusCode())
                 assertEquals(400, get(order, "/fills?limit=101").statusCode())
                 assertEquals(400, latestTrade(market = "UNKNOWN").statusCode())
+                assertEquals(400, candles(market = "UNKNOWN").statusCode())
             } finally {
                 heldConnections.forEach { it.close() }
             }
@@ -391,9 +407,264 @@ class OrderQueryHttpTest {
             assertResponse(503, "QUERY_UNAVAILABLE", get(order), hideOrder = true)
             assertResponse(503, "QUERY_UNAVAILABLE", get(order, "/fills"))
             assertResponse(503, "QUERY_UNAVAILABLE", latestTrade())
+            assertResponse(503, "QUERY_UNAVAILABLE", candles())
         } finally {
             context.close()
             openContext()
+        }
+    }
+
+    @Test
+    fun `차트는 준비 중과 빈 기간을 구분하고 집계 테이블만 조회한다`() {
+        assertResponse(503, "QUERY_NOT_READY", candles())
+        for (query in listOf("?interval=1s", "?interval=", "?count=0", "?count=201", "?count=abc")) {
+            assertEquals(400, candles(query).statusCode(), query)
+        }
+        prepareSettlementStreams()
+        assertResponse(202, "QUERY_CATCHING_UP", candles())
+
+        projection().applyNextPage("BTC-USDT")
+        val empty = candles()
+        assertResponse(200, "CANDLES_FOUND", empty)
+        assertEquals("1m", body(empty).path("interval").asString())
+        assertEquals(json.readTree("[]"), body(empty).path("candles"))
+
+        val jdbc = database.jdbc()
+        jdbc.execute("alter table order_query.settlement_transaction rename to unavailable_settlement_transaction")
+        try {
+            assertEquals(body(empty), body(candles()))
+        } finally {
+            jdbc.execute("alter table order_query.unavailable_settlement_transaction rename to settlement_transaction")
+        }
+        jdbc.execute("alter table order_query.candle rename to unavailable_candle")
+        try {
+            assertResponse(503, "QUERY_UNAVAILABLE", candles())
+        } finally {
+            jdbc.execute("alter table order_query.unavailable_candle rename to candle")
+        }
+        jdbc.execute("update order_query.query_progress set supported_markets = '[\"BTC-USDT\"]' where namespace = '41:42'")
+        try {
+            assertResponse(503, "QUERY_INCONSISTENT", latestTrade())
+            assertResponse(503, "QUERY_INCONSISTENT", candles())
+        } finally {
+            jdbc.execute(
+                "update order_query.query_progress set supported_markets = '[\"BTC-USDT\",\"ETH-USDT\"]' where namespace = '41:42'",
+            )
+        }
+        store.transitionLifecycle(OrderQueryLifecycle.BLOCKED)
+        assertResponse(503, "QUERY_INCONSISTENT", candles())
+        verifyNoInteractions(context.getBean(BoundedTradingOrderGateway::class.java))
+    }
+
+    @Test
+    fun `배치가 결과를 가르지 않고 빈 정산 결과까지 처리 순번이 전진한다`() {
+        prepareSettlementStreams()
+        val settledAt = Instant.now().minusSeconds(90)
+
+        fun insertFills(
+            first: Int,
+            last: Int,
+        ) {
+            database.jdbc().update(
+                """
+                insert into order_query.settlement_transaction
+                    (namespace, market_id, result_sequence, settlement_id, source_event_id, engine_sequence,
+                     maker_order_id, taker_order_id, maker_user_id, taker_user_id, taker_side,
+                     base_asset_id, quote_asset_id, price, quantity, maker_fee, taker_fee, occurred_at)
+                select '41:42', 'BTC-USDT',
+                    case when n <= 510 then n when n <= 520 then 511 when n = 521 then 512 else 515 end,
+                    'fill-' || n, 'source-' || n, n, 'maker-order', 'taker-order', 'maker', 'taker', 'BUY',
+                    'BASE', 'USDT', 100, 1, 0, 0, ?
+                from generate_series(?, ?) as n
+                """.trimIndent(),
+                settledAt.atOffset(ZoneOffset.UTC),
+                first,
+                last,
+            )
+        }
+
+        insertFills(1, 521)
+        advanceSettlementThrough(514)
+
+        assertTrue(projection().applyNextPage("BTC-USDT"))
+        val catchingUp = candles()
+        assertResponse(202, "QUERY_CATCHING_UP", catchingUp)
+        assertEquals(511L, body(catchingUp).path("asOfSettlementResultSequence").longValue())
+        assertEquals(514L, body(catchingUp).path("sourceSettlementResultSequence").longValue())
+        assertEquals(
+            List(8) { "520" },
+            database.jdbc().queryForList("select volume::text from order_query.candle", String::class.java),
+        )
+
+        insertFills(522, 1033)
+        advanceSettlementThrough(516)
+        assertTrue(projection().applyNextPage("BTC-USDT"))
+        val completed = candles()
+        assertResponse(200, "CANDLES_FOUND", completed)
+        assertEquals(515L, body(completed).path("asOfSettlementResultSequence").longValue())
+        assertEquals(516L, body(completed).path("sourceSettlementResultSequence").longValue())
+        val completedCandle = body(completed).path("candles").single()
+        assertEquals("1033", completedCandle.path("volume").asString())
+        assertEquals(json.readTree("[]"), body(candles("?count=1")).path("candles"))
+        assertTrue(projection().applyNextPage("BTC-USDT"))
+        val afterCancellation = body(candles())
+        assertEquals(516L, afterCancellation.path("asOfSettlementResultSequence").longValue())
+        assertEquals(body(completed).path("candles"), afterCancellation.path("candles"))
+        assertFalse(projection().applyNextPage("BTC-USDT"))
+        advanceSettlementThrough(515)
+        assertResponse(503, "QUERY_INCONSISTENT", candles())
+        assertFalse(projection().applyNextPage("BTC-USDT"))
+    }
+
+    @Test
+    fun `두 분의 새 체결을 상위 일곱 주기에 한 번씩 합산한다`() {
+        prepareSettlementStreams()
+        val minute = Instant.ofEpochSecond(Instant.now().epochSecond / 900 * 900 - 900)
+        insertSettlement(result = 1, engine = 1, price = 100, quantity = 1, at = minute)
+        insertSettlement(result = 2, engine = 2, price = 105, quantity = 2, at = minute.plusSeconds(10))
+        insertSettlement(result = 3, engine = 3, price = 90, quantity = 4, at = minute.plusSeconds(60))
+        advanceSettlementThrough(3)
+        assertTrue(projection().applyNextPage("BTC-USDT"))
+
+        val minuteResponse = candles("?interval=1m")
+        assertEquals(200, minuteResponse.statusCode())
+        val minutes = body(minuteResponse).path("candles")
+        assertEquals(2, minutes.size())
+        assertEquals(minute.toString(), minutes[0].path("startedAt").asString())
+        assertEquals("3", minutes[0].path("volume").asString())
+        assertEquals(minute.plusSeconds(60).toString(), minutes[1].path("startedAt").asString())
+        assertEquals("4", minutes[1].path("volume").asString())
+        for (interval in listOf("5m", "15m", "1h", "1d", "1w", "1mo", "1y")) {
+            val response = candles("?interval=$interval")
+            assertEquals(200, response.statusCode(), interval)
+            val candle = body(response).path("candles").single()
+            val fields = listOf("open", "high", "low", "close", "volume")
+            assertEquals(listOf("100", "105", "90", "90", "7"), fields.map { candle.path(it).asString() }, interval)
+        }
+    }
+
+    @Test
+    fun `봉과 순번은 함께 롤백하고 커밋 응답 유실 뒤 WAS를 재시작해도 수량이 중복되지 않는다`() {
+        prepareSettlementStreams()
+        val minute = Instant.now().truncatedTo(ChronoUnit.MINUTES).minusSeconds(120)
+        val sameTime = minute.plusSeconds(10)
+        insertSettlement(result = 1, engine = 2, price = 105, quantity = 2, at = sameTime)
+        insertSettlement(result = 1, engine = 1, price = 100, quantity = 1, at = sameTime)
+        advanceSettlementThrough(2)
+        assertTrue(projection().applyNextPage("BTC-USDT"))
+        assertCandleValues(projected = 2, source = 2, open = 100, low = 100, volume = "3")
+
+        insertSettlement(result = 3, engine = 3, price = 90, quantity = Long.MAX_VALUE, at = minute.plusSeconds(5))
+        advanceSettlementThrough(3)
+        assertCandleValues(projected = 2, source = 3, open = 100, low = 100, volume = "3")
+        val jdbc = database.jdbc()
+        jdbc.execute(
+            """
+            create function order_query.reject_candle_progress() returns trigger language plpgsql as
+            'begin raise exception ''chart checkpoint rejected''; end';
+            create trigger reject_candle_progress before update on order_query.candle_progress
+                for each row when (new.projected_through = 3) execute function order_query.reject_candle_progress()
+            """.trimIndent(),
+        )
+        try {
+            assertFailsWith<RuntimeException> { projection().applyNextPage("BTC-USDT") }
+        } finally {
+            jdbc.execute("drop trigger reject_candle_progress on order_query.candle_progress")
+            jdbc.execute("drop function order_query.reject_candle_progress()")
+        }
+        assertCandleValues(projected = 2, source = 3, open = 100, low = 100, volume = "3")
+
+        val dataSource = context.getBean(DataSource::class.java)
+        val commitWithLostReply =
+            object : DataSourceTransactionManager(dataSource) {
+                override fun doCommit(status: DefaultTransactionStatus) {
+                    super.doCommit(status)
+                    throw TransactionSystemException("PostgreSQL 커밋 성공 뒤 응답 유실을 가정한다")
+                }
+            }
+        val queryStore = store as PostgresOrderQueryStore
+        val chartWriter = PostgresCandleProjection(queryStore, NamedParameterJdbcTemplate(dataSource))
+        assertFailsWith<TransactionSystemException> {
+            TransactionTemplate(commitWithLostReply).executeWithoutResult {
+                check(chartWriter.applyNextPage("BTC-USDT"))
+            }
+        }
+
+        context.close()
+        openContext(sourceVerified = false)
+        assertResponse(503, "QUERY_NOT_READY", candles())
+        (store as PostgresOrderQueryStore).verifySourceReads()
+        assertFalse(projection().applyNextPage("BTC-USDT"))
+        assertCandleValues(projected = 3, source = 3, open = 90, low = 90, volume = "9223372036854775810")
+
+        insertSettlement(result = 4, engine = 4, price = 102, quantity = 7, at = sameTime.minusSeconds(1))
+        insertSettlement(result = 1, engine = 1, price = 999, quantity = 999, at = sameTime, marketId = "ETH-USDT")
+        advanceSettlementThrough(4)
+        advanceSettlementThrough(1, marketId = "ETH-USDT")
+        val start = CountDownLatch(1)
+        val worker = projection()
+        Executors.newFixedThreadPool(2).use { executors ->
+            val writers =
+                List(2) {
+                    executors.submit(
+                        Callable {
+                            check(start.await(5, TimeUnit.SECONDS))
+                            worker.applyNextPage("BTC-USDT")
+                        },
+                    )
+                }
+            start.countDown()
+            assertEquals(1, writers.count { it.get(10, TimeUnit.SECONDS) })
+        }
+        assertCandleValues(projected = 4, source = 4, open = 90, low = 90, volume = "9223372036854775817")
+        assertTrue(projection().applyNextPage("ETH-USDT"))
+        val etherCandle = body(candles(market = "ETH-USDT")).path("candles").single()
+        assertEquals("999", etherCandle.path("volume").asString())
+
+        val reopenedDataSource = context.getBean(DataSource::class.java)
+        val otherJdbc = NamedParameterJdbcTemplate(reopenedDataSource)
+        val otherTransactions = DataSourceTransactionManager(reopenedDataSource)
+        val otherNamespace = OrderQueryNamespace(ClusterLineage(51, 52), setOf("BTC-USDT"))
+        val otherSource = PostgresOrderQueryStore(otherNamespace, otherJdbc, otherTransactions)
+        otherSource.initialize()
+        otherSource.transitionLifecycle(OrderQueryLifecycle.READY)
+        jdbc.execute(
+            """
+            insert into order_query.feed_consumer (namespace, consumer_id, configuration_payload)
+            values ('51:52', 'other', '{"settlementEnabled":true}');
+            insert into order_query.feed_stream (namespace, market_id)
+            values ('51:52', 'BTC-USDT');
+            """.trimIndent(),
+        )
+        insertSettlement(result = 1, engine = 1, price = 500, quantity = 99, at = sameTime, namespace = "51:52")
+        advanceSettlementThrough(1, namespace = "51:52")
+        val otherProjection = PostgresCandleProjection(otherSource, otherJdbc)
+        TransactionTemplate(otherTransactions).executeWithoutResult {
+            assertTrue(otherProjection.applyNextPage("BTC-USDT"))
+        }
+        assertCandleValues(projected = 4, source = 4, open = 90, low = 90, volume = "9223372036854775817")
+    }
+
+    @Test
+    fun `모든 봉은 UTC 경계를 따르고 주 월 연 경계와 윤년을 올바르게 나눈다`() {
+        val boundaries =
+            listOf(
+                Triple(CandleInterval.ONE_MINUTE, "2024-02-29T23:59:00Z", "2024-03-01T00:00:00Z"),
+                Triple(CandleInterval.FIVE_MINUTES, "2024-04-01T00:00:00Z", "2024-04-01T00:05:00Z"),
+                Triple(CandleInterval.FIFTEEN_MINUTES, "2024-04-01T00:00:00Z", "2024-04-01T00:15:00Z"),
+                Triple(CandleInterval.ONE_HOUR, "2024-04-01T00:00:00Z", "2024-04-01T01:00:00Z"),
+                Triple(CandleInterval.ONE_DAY, "2024-02-29T00:00:00Z", "2024-03-01T00:00:00Z"),
+                Triple(CandleInterval.ONE_WEEK, "2024-12-23T00:00:00Z", "2024-12-30T00:00:00Z"),
+                Triple(CandleInterval.ONE_MONTH, "2024-02-01T00:00:00Z", "2024-03-01T00:00:00Z"),
+                Triple(CandleInterval.ONE_YEAR, "2024-01-01T00:00:00Z", "2025-01-01T00:00:00Z"),
+            )
+        for ((interval, previous, boundary) in boundaries) {
+            val from = Instant.parse(previous)
+            val next = Instant.parse(boundary)
+            assertEquals(from, interval.start(next.minusNanos(1_000)))
+            assertEquals(next, interval.start(next))
+            assertEquals(next, interval.shift(from, 1))
+            assertEquals(from, interval.shift(next, -1))
         }
     }
 
@@ -544,6 +815,84 @@ class OrderQueryHttpTest {
     ): HttpResponse<String> = getPath("/markets/$market/orders/$orderId$suffix")
 
     private fun latestTrade(market: String = "BTC-USDT"): HttpResponse<String> = getPath("/markets/$market/trades/latest")
+
+    private fun candles(
+        query: String = "",
+        market: String = "BTC-USDT",
+    ): HttpResponse<String> = getPath("/markets/$market/candles$query")
+
+    private fun projection() = context.getBean(PostgresCandleProjection::class.java)
+
+    private fun insertSettlement(
+        result: Long,
+        engine: Long,
+        price: Long,
+        quantity: Long,
+        at: Instant,
+        marketId: String = "BTC-USDT",
+        namespace: String = "41:42",
+    ) {
+        database.jdbc().update(
+            """
+            insert into order_query.settlement_transaction
+                (namespace, market_id, result_sequence, settlement_id, source_event_id, engine_sequence,
+                 maker_order_id, taker_order_id, maker_user_id, taker_user_id, taker_side,
+                 base_asset_id, quote_asset_id, price, quantity, maker_fee, taker_fee, occurred_at)
+            values (?, ?, ?, ?, ?, ?, 'maker-order', 'taker-order', 'maker', 'taker', 'BUY',
+                'BASE', 'USDT', ?, ?, 0, 0, ?)
+            """.trimIndent(),
+            namespace,
+            marketId,
+            result,
+            "fill-$marketId-$engine",
+            "source-$marketId-$engine",
+            engine,
+            price,
+            quantity,
+            at.atOffset(ZoneOffset.UTC),
+        )
+    }
+
+    private fun advanceSettlementThrough(
+        sequence: Long,
+        marketId: String = "BTC-USDT",
+        namespace: String = "41:42",
+    ) {
+        assertEquals(
+            1,
+            database.jdbc().update(
+                "update order_query.feed_stream set settlement_through = ? where namespace = ? and market_id = ?",
+                sequence,
+                namespace,
+                marketId,
+            ),
+        )
+    }
+
+    private fun assertCandleValues(
+        projected: Long,
+        source: Long,
+        open: Long,
+        low: Long,
+        volume: String,
+    ) {
+        for (interval in listOf("1m", "5m", "15m", "1h", "1d", "1w", "1mo", "1y")) {
+            val response = candles("?interval=$interval")
+            assertResponse(200, "CANDLES_FOUND", response)
+            val body = body(response)
+            assertEquals(interval, body.path("interval").asString())
+            assertEquals(projected, body.path("asOfSettlementResultSequence").longValue())
+            assertEquals(source, body.path("sourceSettlementResultSequence").longValue())
+            val candle = body.path("candles").single()
+            Instant.parse(candle.path("startedAt").asString())
+            assertEquals(open, candle.path("open").longValue())
+            assertEquals(105L, candle.path("high").longValue())
+            assertEquals(low, candle.path("low").longValue())
+            assertEquals(105L, candle.path("close").longValue())
+            assertTrue(candle.path("volume").isString)
+            assertEquals(volume, candle.path("volume").asString())
+        }
+    }
 
     private fun getPath(path: String): HttpResponse<String> =
         client.send(

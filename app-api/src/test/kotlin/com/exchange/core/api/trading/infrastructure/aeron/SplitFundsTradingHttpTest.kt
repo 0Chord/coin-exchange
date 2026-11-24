@@ -1368,6 +1368,7 @@ class SplitFundsTradingHttpTest {
                         awaitQuery(harness, http, url, buyId, "PARTIALLY_FILLED", filled = 1, remaining = 2, cancelled = 0)
                         assertStoredProgress(appliedThrough = 2, storedThrough = 1)
                         assertLatestTrade(settledThrough = 1)
+                        assertCommittedChart(http, url, through = 1, volume = 0)
 
                         val firstPendingResponse = readOrderFills(http, url, buyId)
                         assertNull(firstPendingResponse.settledFeeTotal)
@@ -1384,6 +1385,7 @@ class SplitFundsTradingHttpTest {
                         assertStoredFees(firstCompleted.tradeId, makerFee = first.seller, takerFee = first.buyer)
                         val firstSettledTrade = assertLatestTrade(settledThrough = 2, expectedQuantity = 1)
                         assertSettlementTime(firstCompleted.tradeId, firstSettledTrade)
+                        assertCommittedChart(http, url, through = 2, volume = 1, closingPrice = 100)
                         assertFills(buyId, firstBuyerFee, firstCompleted)
                         assertFills(firstSaleId, firstSellerFee, firstCompleted.copy(role = "MAKER", chargedFee = firstSellerFee))
 
@@ -1395,6 +1397,7 @@ class SplitFundsTradingHttpTest {
                         awaitQuery(harness, http, url, buyId, "FILLED", filled = 3, remaining = 0, cancelled = 0)
                         assertStoredProgress(3, 2, firstCompleted.tradeId)
                         assertEquals(firstSettledTrade, assertLatestTrade(settledThrough = 2, expectedQuantity = 1))
+                        assertCommittedChart(http, url, through = 2, volume = 1, closingPrice = 100)
 
                         val pendingResponse = readOrderFills(http, url, buyId)
                         assertEquals(firstBuyerFee, pendingResponse.settledFeeTotal)
@@ -1416,6 +1419,7 @@ class SplitFundsTradingHttpTest {
                         assertStoredFees(followUpCompleted.tradeId, makerFee = followUp.buyer, takerFee = followUp.seller)
                         val latestSettledTrade = assertLatestTrade(settledThrough = 3, expectedPrice = 105, expectedQuantity = 2)
                         assertSettlementTime(followUpCompleted.tradeId, latestSettledTrade)
+                        assertCommittedChart(http, url, through = 3, volume = 3, closingPrice = 105)
                         assertFills(buyId, buyerSettledTotal, firstCompleted, followUpCompleted)
                         assertFills(firstSaleId, firstSellerFee, firstCompleted.copy(role = "MAKER", chargedFee = firstSellerFee))
                         val followUpSellerFill = followUpCompleted.copy(role = "TAKER", chargedFee = followUpSellerFee)
@@ -1555,6 +1559,38 @@ class SplitFundsTradingHttpTest {
                 .GET()
                 .build()
         return http.send(request, HttpResponse.BodyHandlers.ofString())
+    }
+
+    private fun assertCommittedChart(
+        http: HttpClient,
+        url: String,
+        through: Long,
+        volume: Long,
+        closingPrice: Long? = null,
+    ) {
+        val request =
+            HttpRequest
+                .newBuilder(URI.create("$url/api/trading/v3/markets/BTC-USDT/candles?interval=1m"))
+                .timeout(Duration.ofSeconds(3))
+                .GET()
+                .build()
+        var chart = json.readTree("{}")
+        await("정산 순번 $through 차트 조회", detail = { chart.toString() }) {
+            val response = http.send(request, HttpResponse.BodyHandlers.ofString())
+            chart = json.readTree(response.body())
+            response.statusCode() == 200 &&
+                chart.path("code").asString() == "CANDLES_FOUND" &&
+                chart.path("asOfSettlementResultSequence").asLong(-1) == through
+        }
+        val candles = chart.path("candles")
+        assertTrue(candles.isArray)
+        assertEquals(volume, candles.sumOf { candle -> candle.path("volume").asString().toLong() })
+        if (closingPrice == null) {
+            assertTrue(candles.isEmpty)
+        } else {
+            assertEquals(100L, candles.first().path("open").longValue())
+            assertEquals(closingPrice, candles.last().path("close").longValue())
+        }
     }
 
     private fun verifyCancellationResponses(

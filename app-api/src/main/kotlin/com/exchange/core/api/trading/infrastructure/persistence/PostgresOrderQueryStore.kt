@@ -312,7 +312,7 @@ class PostgresOrderQueryStore(
             .singleOrNull()
             ?: throw OrderQueryWriteConflictException("order query namespace is not initialized")
 
-    private fun progress(rows: ResultSet): OrderQueryProgress =
+    internal fun progress(rows: ResultSet): OrderQueryProgress =
         stored {
             require(rows.getString("namespace") == namespaceKey)
             require(mapper.readTree(rows.getString("supported_markets")) == mapper.readTree(marketsPayload))
