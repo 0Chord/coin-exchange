@@ -295,38 +295,38 @@ class PostgresOrderQueryFeedStore(
                     require(sequence == Math.addExact(previous, 1)) { "settlement source prefix has a gap" }
                 }
 
-                for (fill in fact.fills) {
-                    val trade = fill.trade
-                    val transaction = fill.transaction
-                    val settlementId = TradingIdentifiers.settlement(fact.stream.fundsLineage, context.ordinal, trade.engineSequence)
-                    require(transaction.ledgerTransactionId == settlementId) { "settlement identity differs from the source" }
-                    require(transaction.occurredAt.nano % 1_000 == 0) { "settlement timestamp exceeds PostgreSQL precision" }
-                    val header =
-                        resultParameters +
-                            mapOf(
-                                "settlementId" to settlementId,
-                                "sourceEventId" to transaction.sourceEventId,
-                                "engineSequence" to trade.engineSequence,
-                                "makerOrderId" to trade.makerOrderId.value,
-                                "takerOrderId" to trade.takerOrderId.value,
-                                "makerUserId" to trade.makerUserId.value,
-                                "takerUserId" to trade.takerUserId.value,
-                                "takerSide" to trade.side.name,
-                                "baseAssetId" to context.market.baseAssetId.value,
-                                "quoteAssetId" to context.market.quoteAssetId.value,
-                                "price" to trade.price.value,
-                                "quantity" to trade.quantity.value,
-                                "makerFee" to fill.makerFee.value,
-                                "takerFee" to fill.takerFee.value,
-                                "occurredAt" to OffsetDateTime.ofInstant(transaction.occurredAt, ZoneOffset.UTC),
-                            )
-                    if (duplicate) {
-                        requireStoredSettlement(header, transaction.postings)
-                    } else {
-                        insertSettlement(header, settlementId, transaction.postings)
+                val settlements =
+                    fact.fills.map { fill ->
+                        val trade = fill.trade
+                        val transaction = fill.transaction
+                        val settlementId = TradingIdentifiers.settlement(fact.stream.fundsLineage, context.ordinal, trade.engineSequence)
+                        require(transaction.ledgerTransactionId == settlementId) { "settlement identity differs from the source" }
+                        require(transaction.occurredAt.nano % 1_000 == 0) { "settlement timestamp exceeds PostgreSQL precision" }
+                        val header =
+                            resultParameters +
+                                mapOf(
+                                    "settlementId" to settlementId,
+                                    "sourceEventId" to transaction.sourceEventId,
+                                    "engineSequence" to trade.engineSequence,
+                                    "makerOrderId" to trade.makerOrderId.value,
+                                    "takerOrderId" to trade.takerOrderId.value,
+                                    "makerUserId" to trade.makerUserId.value,
+                                    "takerUserId" to trade.takerUserId.value,
+                                    "takerSide" to trade.side.name,
+                                    "baseAssetId" to context.market.baseAssetId.value,
+                                    "quoteAssetId" to context.market.quoteAssetId.value,
+                                    "price" to trade.price.value,
+                                    "quantity" to trade.quantity.value,
+                                    "makerFee" to fill.makerFee.value,
+                                    "takerFee" to fill.takerFee.value,
+                                    "occurredAt" to OffsetDateTime.ofInstant(transaction.occurredAt, ZoneOffset.UTC),
+                                )
+                        SettlementWrite(header, transaction.postings)
                     }
-                }
-                if (!duplicate) {
+                if (duplicate) {
+                    for ((header, postings) in settlements) requireStoredSettlement(header, postings)
+                } else {
+                    insertSettlements(settlements)
                     jdbc.update(
                         """
                         update order_query.feed_stream set settlement_through = :resultSequence
@@ -552,13 +552,15 @@ class PostgresOrderQueryFeedStore(
         val amount: Long,
     )
 
-    private fun insertSettlement(
-        header: Map<String, Any>,
-        settlementId: String,
-        postings: List<LedgerPosting>,
-    ) {
-        val inserted =
-            jdbc.update(
+    private data class SettlementWrite(
+        val header: Map<String, Any>,
+        val postings: List<LedgerPosting>,
+    )
+
+    private fun insertSettlements(settlements: List<SettlementWrite>) {
+        if (settlements.isEmpty()) return
+        val insertedTransactions =
+            jdbc.batchUpdate(
                 """
                 insert into order_query.settlement_transaction
                     (namespace, market_id, result_sequence, settlement_id, source_event_id, engine_sequence,
@@ -567,30 +569,35 @@ class PostgresOrderQueryFeedStore(
                 values (:namespace, :market, :resultSequence, :settlementId, :sourceEventId, :engineSequence,
                         :makerOrderId, :takerOrderId, :makerUserId, :takerUserId, :takerSide, :baseAssetId,
                         :quoteAssetId, :price, :quantity, :makerFee, :takerFee, :occurredAt)
-                on conflict do nothing
                 """.trimIndent(),
-                header,
+                settlements.map { it.header }.toTypedArray(),
             )
-        if (inserted != 1) throw OrderQueryWriteConflictException("settlement $settlementId already belongs to a stored result")
-        val rows =
-            postings.mapIndexed { index, posting ->
-                parameters +
-                    mapOf(
-                        "settlementId" to settlementId,
-                        "postingSequence" to index + 1,
-                        "accountId" to posting.accountId,
-                        "assetId" to posting.assetId.value,
-                        "side" to posting.side.name,
-                        "amount" to posting.amount.value,
-                    )
+        check(insertedTransactions.size == settlements.size && insertedTransactions.all { it == 1 || it == Statement.SUCCESS_NO_INFO })
+
+        val postingRows =
+            settlements.flatMap { (header, postings) ->
+                val settlementId = header.getValue("settlementId")
+                postings.mapIndexed { index, posting ->
+                    parameters +
+                        mapOf(
+                            "settlementId" to settlementId,
+                            "postingSequence" to index + 1,
+                            "accountId" to posting.accountId,
+                            "assetId" to posting.assetId.value,
+                            "side" to posting.side.name,
+                            "amount" to posting.amount.value,
+                        )
+                }
             }
-        jdbc.batchUpdate(
-            """
-            insert into order_query.settlement_posting (namespace, settlement_id, posting_sequence, account_id, asset_id, side, amount)
-            values (:namespace, :settlementId, :postingSequence, :accountId, :assetId, :side, :amount)
-            """.trimIndent(),
-            rows.toTypedArray(),
-        )
+        val insertedPostings =
+            jdbc.batchUpdate(
+                """
+                insert into order_query.settlement_posting (namespace, settlement_id, posting_sequence, account_id, asset_id, side, amount)
+                values (:namespace, :settlementId, :postingSequence, :accountId, :assetId, :side, :amount)
+                """.trimIndent(),
+                postingRows.toTypedArray(),
+            )
+        check(insertedPostings.size == postingRows.size && insertedPostings.all { it == 1 || it == Statement.SUCCESS_NO_INFO })
     }
 
     private fun requireStoredSettlement(

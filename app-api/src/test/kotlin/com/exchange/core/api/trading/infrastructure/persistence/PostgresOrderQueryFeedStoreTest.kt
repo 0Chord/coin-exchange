@@ -715,6 +715,29 @@ class PostgresOrderQueryFeedStoreTest {
     }
 
     @Test
+    fun `새 정산 결과의 두 번째 체결 ID가 충돌하면 첫 체결과 저장 위치도 롤백한다`() {
+        val f = fixture(settlementEnabled = true)
+        val firstMaker = f.owner.apply(f.input(1, side = Side.SELL, quantity = 1)).result!!
+        val secondMaker = f.owner.apply(f.input(2, side = Side.SELL, quantity = 1)).result!!
+        val result = f.owner.apply(f.input(3, quantity = 2)).result!!
+        f.feed.applySettlement(SettlementFact(firstMaker.stream, firstMaker.resultSequence, emptyList()))
+        f.feed.applySettlement(SettlementFact(secondMaker.stream, secondMaker.resultSequence, emptyList()))
+
+        val settled = f.settlement(result)
+        assertEquals(2, settled.fills.size)
+        val storedFill = settled.fills.last()
+        f.feed.applySettlement(SettlementFact(result.stream, result.resultSequence, listOf(storedFill)))
+
+        val conflicting = SettlementFact(result.stream, result.resultSequence + 1, settled.fills)
+        assertFailsWith<OrderQueryWriteConflictException> { f.feed.applySettlement(conflicting) }
+        val progress = f.reopen().feed.progress()
+        assertEquals(OrderQueryLifecycle.BLOCKED, progress.lifecycle)
+        assertEquals(result.resultSequence, progress.settlementThrough.getValue(result.stream.marketId.value))
+        assertEquals(1L, f.settlementTransactionCount())
+        assertEquals(4L, f.settlementPostingCount())
+    }
+
+    @Test
     fun `같은 정산 원문의 동시 재시도는 한 건을 남기고 최초 시각이 바뀌면 차단한다`() {
         val f = fixture(settlementEnabled = true)
         val maker = f.owner.apply(f.input(1, side = Side.SELL, quantity = 1)).result!!
