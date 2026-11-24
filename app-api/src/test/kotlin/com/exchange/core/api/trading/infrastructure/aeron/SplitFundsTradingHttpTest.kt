@@ -135,10 +135,17 @@ class SplitFundsTradingHttpTest {
         val fees = MakerTakerFeeRates(makerFeeRate = FeeRate.ZERO, takerFeeRate = FeeRate.ZERO)
         val manifestFile = directory.resolve("archive-manifest.bin")
         Files.write(manifestFile, BoundedTradingStateCodec().encodeManifest(manifest(fees, 8)))
-        val fundsEnvironment = settingsEnvironment(manifestFile, TradingServiceRole.FUNDS, basePort, archiveQuery = true)
-        val matchingEnvironment = settingsEnvironment(manifestFile, TradingServiceRole.MATCHING, basePort, archiveQuery = true)
+        val batchEnabled = "SPLIT_TRANSFER_BATCH_ENABLED" to "true"
+        val fundsEnvironment = settingsEnvironment(manifestFile, TradingServiceRole.FUNDS, basePort, archiveQuery = true) + batchEnabled
+        val matchingEnvironment =
+            settingsEnvironment(manifestFile, TradingServiceRole.MATCHING, basePort, archiveQuery = true) + batchEnabled
+        val deliveryGate = ArchiveOrderDeliveryGate()
         val (funds, matching) =
-            ArchiveReplayCluster.startBoth(splitTradingSettings(fundsEnvironment), splitTradingSettings(matchingEnvironment))
+            ArchiveReplayCluster.startBoth(
+                splitTradingSettings(fundsEnvironment),
+                splitTradingSettings(matchingEnvironment),
+                deliveryGate,
+            )
         funds.use {
             matching.use {
                 OrderQueryTestDatabase(socketTimeoutSeconds = 2).use { database ->
@@ -163,6 +170,7 @@ class SplitFundsTradingHttpTest {
                                     http,
                                     tradeCount,
                                     basePort,
+                                    deliveryGate,
                                     reporter,
                                 )
                             }
@@ -230,6 +238,7 @@ class SplitFundsTradingHttpTest {
         http: HttpClient,
         tradeCount: Long,
         basePort: Int,
+        deliveryGate: ArchiveOrderDeliveryGate,
         reporter: TestReporter,
     ) {
         fun openWas(run: Int): ConfigurableApplicationContext {
@@ -270,7 +279,7 @@ class SplitFundsTradingHttpTest {
                             it.path("filledQuantity").longValue() == filled
                     }
             }
-            await("Archive 원장 $ledgerCount개 반영") {
+            await("Archive 원장 ${ledgerCount}개 반영") {
                 jdbc.queryForObject("select count(*) from order_query.funds_ledger_batch", Long::class.java) == ledgerCount
             }
         }
@@ -296,9 +305,13 @@ class SplitFundsTradingHttpTest {
                     assertEquals(sequence + 1, receipt.path("admissionSequence").longValue())
                     return receipt
                 }
-                val firstBuyer = admitBuyer(1)
                 val half = tradeCount / 2
-                for (sequence in 2L..half) admitBuyer(sequence)
+                val firstBuyer =
+                    deliveryGate.whilePaused {
+                        val receipt = admitBuyer(1)
+                        for (sequence in 2L..half) admitBuyer(sequence)
+                        receipt
+                    }
                 awaitArchiveSettlement(fundsEndpoint, half + 1)
 
                 val oldLeader = matching.awaitLeader()
@@ -309,6 +322,19 @@ class SplitFundsTradingHttpTest {
                 for (sequence in half + 1..tradeCount) admitBuyer(sequence)
                 assertEquals(firstBuyer.path("orderId"), admitBuyer(1).path("orderId"))
                 awaitArchiveSettlement(fundsEndpoint, tradeCount + 1)
+                val matchingEndpoint =
+                    fundsEndpoint.copy(
+                        ingressEndpoints = matching.settings.matchingIngressEndpoints,
+                        clusterId = matching.settings.clusterId,
+                    )
+                for (endpoint in listOf(fundsEndpoint, matchingEndpoint)) {
+                    OrderQuerySourceClient(endpoint, 10_000).use { source ->
+                        val disabled = source.request(OrderQuerySourceCommand.Describe)
+                        assertEquals("DISABLED", disabled.code)
+                        assertTrue(disabled.progress.isEmpty())
+                        assertNull(disabled.ledgerProgress)
+                    }
+                }
                 assertFailsWith<DataAccessException> { jdbc.queryForObject("select 1", Long::class.java) }
             }
             awaitSaved(url, "FILLED", tradeCount, 2 * tradeCount + 3)
@@ -327,6 +353,10 @@ class SplitFundsTradingHttpTest {
             assertEquals(1L, settlement.getValue("quantity"))
         }
         assertEquals((1L..2 * tradeCount + 3).toList(), saved.ledger.map { it.getValue("sequence") })
+        val appliedPositions = saved.ledger.mapTo(hashSetOf()) { it.getValue("log_position") }
+        assertTrue(appliedPositions.size < saved.ledger.size, "묶음 정산으로 같은 로그 위치의 원장이 저장되어야 한다")
+        assertArchiveTransferFrames(funds)
+        assertArchiveTransferFrames(matching)
         val transactions = saved.ledger.flatMap { readRecoveryTransactions(it.getValue("transactions") as String) }
         assertEquals(
             mapOf(
@@ -355,6 +385,46 @@ class SplitFundsTradingHttpTest {
                 restartedMatching.assertHealthy()
             }
         }
+    }
+
+    private fun assertArchiveTransferFrames(cluster: ArchiveReplayCluster) {
+        val settings = cluster.settings
+        val members =
+            cluster.memberSettings.map { member ->
+                val transport = member.transport
+                SplitArchiveMember(transport.memberId, transport.driverDirectory, transport.clusterDirectory)
+            }
+        val orderCodec = SplitOrderDeliveryCodec(2)
+        val resultCodec = SplitResultDeliveryCodec(2)
+        val entries = mutableListOf<Int>()
+        val orders = settings.role == TradingServiceRole.MATCHING
+        val schema = if (orders) 88 else 89
+        AeronSplitArchiveSource(members, settings.clusterId, settings.configuration.resultTopologySha256).use { source ->
+            var position = 0L
+            await("${settings.role} Archive의 단건 및 묶음 전송") {
+                val replayed =
+                    source.read(position) { frame ->
+                        if (UnsafeBuffer(frame.bytes).getShort(4, ByteOrder.LITTLE_ENDIAN).toInt() == schema) {
+                            if (orders) {
+                                when (val command = orderCodec.decode(frame.bytes).command) {
+                                    is SplitOrderDeliveryCommand.Apply -> entries.add(1)
+                                    is SplitOrderDeliveryCommand.ApplyBatch -> entries.add(command.inputs.size)
+                                    else -> Unit
+                                }
+                            } else {
+                                when (val command = resultCodec.decode(frame.bytes).command) {
+                                    is SplitResultDeliveryCommand.Apply -> entries.add(1)
+                                    is SplitResultDeliveryCommand.ApplyBatch -> entries.add(command.results.size)
+                                    else -> Unit
+                                }
+                            }
+                        }
+                    }
+                position = replayed.position
+                replayed.caughtUp
+            }
+        }
+        assertTrue(1 in entries && entries.any { it > 1 }, "${settings.role} Archive 전송 크기: $entries")
     }
 
     private data class ArchiveProjectionRows(

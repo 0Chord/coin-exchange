@@ -1,5 +1,9 @@
 package com.exchange.core.api.trading.infrastructure.aeron
 
+import com.exchange.core.api.trading.infrastructure.codec.SplitOrderDeliveryCodec
+import com.exchange.core.api.trading.infrastructure.codec.SplitOrderDeliveryCommand
+import com.exchange.core.api.trading.infrastructure.codec.SplitOrderDeliveryReply
+import io.aeron.Publication
 import io.aeron.cluster.ElectionState
 import io.aeron.cluster.service.ClientSession
 import io.aeron.cluster.service.Cluster
@@ -10,6 +14,7 @@ import java.util.Collections
 import java.util.concurrent.Callable
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
 import kotlin.test.assertEquals
 import kotlin.test.assertNull
@@ -95,13 +100,14 @@ internal class ArchiveReplayCluster private constructor(
         fun startBoth(
             funds: SplitTradingNodeSettings,
             matching: SplitTradingNodeSettings,
+            fundsConnectionFactory: SplitOrderDeliveryConnectionFactory = AeronSplitOrderDeliveryConnectionFactory,
         ): Pair<ArchiveReplayCluster, ArchiveReplayCluster> {
             val base = funds.transport.basePort
             val fundsPorts = listOf(base, base + replicaPortOffsets[0], base + replicaPortOffsets[1])
             val matchingPorts = listOf(matching.transport.basePort, base + replicaPortOffsets[2], base + replicaPortOffsets[3])
             val fundsIngress = ingress(funds, fundsPorts)
             val matchingIngress = ingress(matching, matchingPorts)
-            val fundsCluster = launch(members(funds, fundsPorts, fundsIngress, matchingIngress))
+            val fundsCluster = launch(members(funds, fundsPorts, fundsIngress, matchingIngress), fundsConnectionFactory)
             try {
                 return fundsCluster to launch(members(matching, matchingPorts, fundsIngress, matchingIngress))
             } catch (error: Throwable) {
@@ -143,7 +149,10 @@ internal class ArchiveReplayCluster private constructor(
             }
         }
 
-        private fun launch(settings: List<SplitTradingNodeSettings>): ArchiveReplayCluster {
+        private fun launch(
+            settings: List<SplitTradingNodeSettings>,
+            orderConnectionFactory: SplitOrderDeliveryConnectionFactory = AeronSplitOrderDeliveryConnectionFactory,
+        ): ArchiveReplayCluster {
             val applied = settings.map { AtomicLong() }
             val started = Collections.synchronizedList(mutableListOf<DevelopmentSplitTradingNode>())
             try {
@@ -152,8 +161,12 @@ internal class ArchiveReplayCluster private constructor(
                     settings.mapIndexed { memberId, member ->
                         Callable {
                             DevelopmentSplitTradingNode
-                                .start(member, serviceDecorator = { observe(it, applied[memberId]) })
-                                .also(started::add)
+                                .start(
+                                    member,
+                                    orderConnectionFactory,
+                                    AeronSplitResultDeliveryConnectionFactory,
+                                    serviceDecorator = { observe(it, applied[memberId]) },
+                                ).also(started::add)
                         }
                     }
                 val nodes =
@@ -187,5 +200,46 @@ internal class ArchiveReplayCluster private constructor(
 
                 override fun doBackgroundWork(nowNs: Long): Int = service.doBackgroundWork(nowNs)
             }
+    }
+}
+
+/** 모두 접수될 때까지 매칭 송신을 잠시 막아 실제 로그에 묶음 전송을 만든다. */
+internal class ArchiveOrderDeliveryGate : SplitOrderDeliveryConnectionFactory {
+    private val paused = AtomicBoolean()
+    private val codec = SplitOrderDeliveryCodec(2)
+
+    fun <T> whilePaused(work: () -> T): T {
+        paused.set(true)
+        try {
+            return work()
+        } finally {
+            paused.set(false)
+        }
+    }
+
+    override fun begin(
+        endpoint: SplitOrderDeliveryEndpoint,
+        timeoutNs: Long,
+        onReply: (SplitOrderDeliveryReply) -> Unit,
+    ): SplitOrderDeliveryConnectAttempt {
+        val actual = AeronSplitOrderDeliveryConnectionFactory.begin(endpoint, timeoutNs, onReply)
+        return object : SplitOrderDeliveryConnectAttempt {
+            override fun poll(): SplitOrderDeliveryConnection? =
+                actual.poll()?.let { connection ->
+                    object : SplitOrderDeliveryConnection by connection {
+                        override fun offer(bytes: ByteArray): Long {
+                            if (paused.get()) {
+                                val command = codec.decode(bytes).command
+                                if (command is SplitOrderDeliveryCommand.Apply || command is SplitOrderDeliveryCommand.ApplyBatch) {
+                                    return Publication.BACK_PRESSURED
+                                }
+                            }
+                            return connection.offer(bytes)
+                        }
+                    }
+                }
+
+            override fun close() = actual.close()
+        }
     }
 }
