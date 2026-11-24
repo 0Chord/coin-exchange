@@ -78,6 +78,16 @@ internal class ArchiveOrderQueryFeedWorker(
     }
 
     private fun run() {
+        try {
+            projectUntilClosed()
+        } finally {
+            for (source in listOf(fundsSource, matchingSource)) {
+                runCatching(source::close).onFailure { logger.warn("Archive 조회 원본을 닫지 못했습니다", it) }
+            }
+        }
+    }
+
+    private fun projectUntilClosed() {
         var initialized = false
         var verified = false
         while (running.get()) {
@@ -90,12 +100,15 @@ internal class ArchiveOrderQueryFeedWorker(
                         configuration.topologySha256,
                         settlementEnabled = true,
                     )
+                    checkRunning()
                     store.suspendProjection()
                     initialized = true
                 }
+                checkRunning()
                 val progress = store.progress()
                 val durable = savedSequences(progress)
                 if (durable.wentBackFrom(saved)) {
+                    checkRunning()
                     store.suspendProjection()
                     rewind()
                     verified = false
@@ -116,6 +129,7 @@ internal class ArchiveOrderQueryFeedWorker(
                 ) {
                     // 진행 위치를 읽은 직후 DB가 복원됐다면, 다음 쓰기에서 순번 공백이 먼저 보일 수 있다.
                     val restored = runCatching { savedSequences(store.progress()) }.getOrNull()
+                    if (!running.get()) break
                     if (restored != null && restored.wentBackFrom(saved)) {
                         runCatching { store.suspendProjection() }
                         rewind()
@@ -144,6 +158,7 @@ internal class ArchiveOrderQueryFeedWorker(
         val previousFunds = fundsRead.position
         val previousMatching = matchingRead.position
         if (admissions.isEmpty() && ledger.isEmpty() && settlements.isEmpty()) {
+            checkRunning()
             fundsRead =
                 fundsSource.read(previousFunds) { frame ->
                     val facts = funds.apply(frame)
@@ -156,12 +171,14 @@ internal class ArchiveOrderQueryFeedWorker(
                 }
         }
         while (admissions.isNotEmpty()) {
+            checkRunning()
             val fact = admissions.first()
             store.applyAdmission(fact, codec.admissionBytes(0, fact))
             saved = saved.copy(admissions = maxOf(saved.admissions, fact.admissionSequence))
             admissions.removeFirst()
         }
         while (ledger.isNotEmpty()) {
+            checkRunning()
             val page = ArrayList<FundsLedgerBatch>(MAX_LEDGER_PAGE_ENTRIES)
             var remainingBytes = FundsLedgerRecovery.MAX_RETAINED_BYTES
             for (batch in ledger) {
@@ -177,6 +194,7 @@ internal class ArchiveOrderQueryFeedWorker(
         }
 
         if (matches.isEmpty()) {
+            checkRunning()
             matchingRead =
                 matchingSource.read(previousMatching) { frame ->
                     val facts = matching.apply(frame)
@@ -190,6 +208,7 @@ internal class ArchiveOrderQueryFeedWorker(
                 fact.input.admissionSequence > saved.admissions ||
                     fact.effects.any { it.origin.admissionSequence > saved.admissions }
             if (missingAdmission) break
+            checkRunning()
             store.applyMatching(fact, codec.resultBytes(0, fact))
             saved = saved.copy(matches = maxOf(saved.matches, fact.resultSequence))
             matches.removeFirst()
@@ -199,9 +218,11 @@ internal class ArchiveOrderQueryFeedWorker(
             val fact = settlements.first()
             val through = fact.resultSequence
             if (through > saved.matches) break
+            checkRunning()
             check(store.applySettlement(fact) == through)
             saved = saved.copy(settlements = maxOf(saved.settlements, through))
             // 분개가 커밋된 뒤에만 주문에 금융 완료를 표시한다. 재시도에서는 이미 쓴 원문을 대조한다.
+            checkRunning()
             store.applyFinancial(MatchingFundsSettledAck(stream, through, context))
             saved = saved.copy(financial = maxOf(saved.financial, through))
             settlements.removeFirst()
@@ -211,14 +232,16 @@ internal class ArchiveOrderQueryFeedWorker(
 
     private fun pendingEmpty(): Boolean = admissions.isEmpty() && matches.isEmpty() && settlements.isEmpty() && ledger.isEmpty()
 
-    private fun savedSequences(progress: OrderQueryFeedProgress): SavedSequences =
-        SavedSequences(
+    private fun savedSequences(progress: OrderQueryFeedProgress): SavedSequences {
+        checkRunning()
+        return SavedSequences(
             progress.admissionThrough,
             progress.matchingThrough.getValue(market),
             progress.settlementThrough.getValue(market),
             progress.financialThrough.getValue(market),
             store.ledgerThrough(),
         )
+    }
 
     private fun rewind() {
         // DB 백업의 순번이 뒤로 이동하면 남아 있는 로그 처음부터 원문과 커밋 순번을 다시 대조한다.
@@ -237,11 +260,13 @@ internal class ArchiveOrderQueryFeedWorker(
     }
 
     private fun verifyCatchUp(): Boolean {
+        checkRunning()
         val progress = store.progress()
         require(progress.lifecycle != OrderQueryLifecycle.BLOCKED)
         val storedMatching = progress.matchingThrough.getValue(market)
         val storedSettlement = progress.settlementThrough.getValue(market)
         val storedFinancial = progress.financialThrough.getValue(market)
+        checkRunning()
         val storedLedger = store.ledgerThrough()
         if (progress.admissionThrough > admitted || storedMatching > matched || storedSettlement > settled ||
             storedFinancial > settled || storedLedger > ledgerThrough
@@ -250,7 +275,9 @@ internal class ArchiveOrderQueryFeedWorker(
         }
         require(progress.admissionThrough == admitted && storedMatching == matched)
         require(storedSettlement == settled && storedFinancial == settled && storedLedger == ledgerThrough)
+        checkRunning()
         store.verifyLedgerPrefix(ledgerThrough)
+        checkRunning()
         store.verifySources(
             OrderQuerySourceBounds(admitted, 0, completeFromGenesis = true),
             mapOf(market to OrderQuerySourceBounds(matched, 0, completeFromGenesis = true)),
@@ -260,12 +287,14 @@ internal class ArchiveOrderQueryFeedWorker(
         return true
     }
 
+    private fun checkRunning() {
+        if (!running.get()) throw InterruptedException()
+    }
+
     override fun close() {
         running.set(false)
         thread.interrupt()
         thread.join(10_000)
-        fundsSource.close()
-        matchingSource.close()
         check(!thread.isAlive) { "Archive 조회 작업을 종료하지 못했습니다" }
     }
 }

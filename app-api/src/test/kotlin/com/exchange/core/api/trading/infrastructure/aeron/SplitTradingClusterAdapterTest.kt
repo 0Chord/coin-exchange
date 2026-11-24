@@ -1,5 +1,9 @@
 package com.exchange.core.api.trading.infrastructure.aeron
 
+import com.exchange.core.api.trading.application.OrderQueryLifecycle
+import com.exchange.core.api.trading.application.OrderQueryNamespace
+import com.exchange.core.api.trading.application.port.OrderQueryFeedProgress
+import com.exchange.core.api.trading.application.port.OrderQueryFeedStore
 import com.exchange.core.api.trading.infrastructure.codec.BoundedTradingCommand
 import com.exchange.core.api.trading.infrastructure.codec.DevelopmentBalanceCommandPayload
 import com.exchange.core.api.trading.infrastructure.codec.SplitOrderDeliveryCodec
@@ -84,7 +88,10 @@ import java.io.ByteArrayOutputStream
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.time.Instant
+import java.util.concurrent.CompletableFuture
 import java.util.concurrent.CompletionException
+import java.util.concurrent.ConcurrentLinkedQueue
+import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
@@ -602,8 +609,74 @@ class SplitTradingClusterAdapterTest {
         val ledger = accepted.ledger.single()
         assertEquals(2L, ledger.sequence)
         assertEquals(live.position, ledger.logPosition)
-        assertEquals(300L, ledger.transactions.single().postings.last().amount.value)
+        val postings = ledger.transactions.single().postings
+        assertEquals(300L, postings.last().amount.value)
         assertTrue(projection.isReady)
+    }
+
+    @Test
+    fun `DB 응답 대기 중 종료하면 추가 Archive를 읽지 않고 작업 스레드에서 원본을 닫는다`() {
+        val settings = configuration(inputContractVersion = 2, archiveQueryEnabled = true)
+        val marketId = market.marketId.value
+        val positions = mapOf(marketId to 0L)
+        val progress = OrderQueryFeedProgress("archive", 0, positions, positions, OrderQueryLifecycle.INITIALIZING, 0, positions)
+        val store = mock(OrderQueryFeedStore::class.java)
+        val readingDb = CompletableFuture<Thread>()
+        val shutdownRequested = CountDownLatch(1)
+        val releaseDb = CountDownLatch(1)
+        doAnswer {
+            readingDb.complete(Thread.currentThread())
+            try {
+                releaseDb.await()
+            } catch (_: InterruptedException) {
+                shutdownRequested.countDown()
+                releaseDb.await()
+            }
+            progress
+        }.`when`(store).progress()
+
+        val closedOn = ConcurrentLinkedQueue<Thread>()
+        val reads = ConcurrentLinkedQueue<Long>()
+
+        fun source(): SplitArchiveSource =
+            object : SplitArchiveSource {
+                override fun read(
+                    afterPosition: Long,
+                    consume: (RecordedApplicationFrame) -> Unit,
+                ): SplitArchiveRead {
+                    reads.add(afterPosition)
+                    return SplitArchiveRead(0, false)
+                }
+
+                override fun close() {
+                    closedOn.add(Thread.currentThread())
+                }
+            }
+        val worker =
+            ArchiveOrderQueryFeedWorker(
+                store,
+                OrderQueryNamespace(settings.fundsLineage, setOf(marketId)),
+                "archive",
+                settings,
+                source(),
+                mapOf(settings.matchingLineage to source()),
+            )
+        try {
+            val workerThread = readingDb.get(5, TimeUnit.SECONDS)
+            val close = CompletableFuture.runAsync(worker::close)
+            try {
+                assertTrue(shutdownRequested.await(5, TimeUnit.SECONDS))
+                assertTrue(closedOn.isEmpty())
+            } finally {
+                releaseDb.countDown()
+                close.get(5, TimeUnit.SECONDS)
+            }
+            assertTrue(reads.isEmpty())
+            assertEquals(listOf(workerThread, workerThread), closedOn.toList())
+        } finally {
+            releaseDb.countDown()
+            worker.close()
+        }
     }
 
     @Test
