@@ -60,6 +60,19 @@ object NamingRules {
 
     private fun suffixTargets(suffix: String) = target("$suffix 접미사") { it.simpleName.endsWith(suffix) }
 
+    internal fun isUseCaseEntry(
+        type: JavaClass,
+        implementation: JavaClass?,
+    ): Boolean {
+        if (!type.simpleName.endsWith("UseCase")) return false
+        if (!type.isInterface) return concreteApplicationType(type)
+        return !type.isAnnotation && implementation != null && implementation.name == "${type.name}Impl" &&
+            concreteApplicationType(implementation) && implementation.rawInterfaces.any { it.name == type.name }
+    }
+
+    private fun concreteApplicationType(type: JavaClass): Boolean =
+        !type.isInterface && !type.isEnum && !type.isAnnotation && JavaModifier.ABSTRACT !in type.modifiers
+
     private val storePorts = target("Store 인터페이스") { it.isInterface && it.simpleName.endsWith("Store") }
 
     private fun storeImplementationTargets(input: NamingPlacementInput) =
@@ -241,14 +254,21 @@ object NamingRules {
             .that(suffixTargets(suffix))
             .should(
                 condition("$suffix 선언·이름·애플리케이션 위치를 지킨다") { t ->
+                    val validShape =
+                        if (suffix == "UseCase") {
+                            val implementation = input.classes["${t.name}Impl"]?.takeIf { input.modules[it.name] == input.modules[t.name] }
+                            isUseCaseEntry(t, implementation)
+                        } else {
+                            concreteApplicationType(t)
+                        }
+                    val expectedShape =
+                        if (suffix == "UseCase") {
+                            "구체 클래스 또는 같은 패키지의 구체 UseCaseImpl이 구현하는 인터페이스"
+                        } else {
+                            "구체 클래스 또는 object"
+                        }
                     name(t, input, suffix, suffix) +
-                        shape(
-                            t,
-                            input,
-                            suffix,
-                            !t.isInterface && !t.isEnum && !t.isAnnotation && JavaModifier.ABSTRACT !in t.modifiers,
-                            "구체 클래스 또는 object",
-                        ) +
+                        shape(t, input, suffix, validShape, expectedShape) +
                         position(t, input, suffix, locations.map { area(policy, it) })
                 },
             ).allowEmptyShould(true)

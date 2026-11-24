@@ -1,6 +1,7 @@
 package com.exchange.core.api.config
 
 import com.exchange.core.api.trading.application.BalanceQueryUseCase
+import com.exchange.core.api.trading.application.BalanceQueryUseCaseImpl
 import com.exchange.core.api.trading.application.OrderQueryNamespace
 import com.exchange.core.api.trading.application.OrderQueryUseCase
 import com.exchange.core.api.trading.application.port.OrderQueryFeedStore
@@ -82,7 +83,7 @@ class OrderQueryConfig {
         balances: ObjectProvider<PostgresBalanceProjection>,
         archive: ObjectProvider<ArchiveOrderQueryFeedWorker>,
     ): BalanceQueryUseCase =
-        BalanceQueryUseCase({ archive.ifAvailable?.balanceStatus }) { userId, assetId ->
+        BalanceQueryUseCaseImpl({ archive.ifAvailable?.balanceStatus }) { userId, assetId ->
             balances.getObject().read(userId, assetId)
         }
 
@@ -145,7 +146,7 @@ class OrderQueryConfig {
             configuration = configuration,
             fundsSource = archiveSource(funds),
             matchingSources = mapOf(configuration.matchingLineage to archiveSource(matching)),
-            applyBalances = balances::applyNextPage,
+            applyBalances = { context -> balances.hasPendingPage() && balances.applyNextPage(context) },
         )
     }
 

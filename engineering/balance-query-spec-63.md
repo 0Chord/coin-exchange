@@ -65,6 +65,8 @@ flowchart LR
 
 잔고 반영 트랜잭션에서 PostgreSQL 행 잠금 대기는 2초로 제한한다. 잠금 충돌로 시간을 넘기면 잔고 조회에서 일시 오류를 알리고 다음 반복에서 재시도한다. 반영할 원장이 없는 반복은 행 잠금 없이 순번만 확인한다.
 
+잔고 조회 Controller는 `BalanceQueryUseCase` 계약을 호출하고, `BalanceQueryUseCaseImpl`이 응답 상태를 결정한다. Archive 상태를 확인한 뒤 호출하는 PostgreSQL 읽기 진입점에서 `@Transactional(readOnly = true, propagation = REQUIRES_NEW)`를 적용한다. 읽기가 끝난 뒤 Archive 상태를 다시 확인한다. 잔고 쓰기는 기존 Archive 작업이 호출하는 반영 진입점의 `@Transactional(propagation = REQUIRES_NEW)`로 적용한다. 반영 순번과 금액은 페이지 단위로 함께 커밋한다.
+
 ## 수용 사례와 검증 순서
 
 ### 첫 HTTP 사례
@@ -111,3 +113,16 @@ cd /Users/0chord/Desktop/exchange-core
 - 실제 자금 1노드·매칭 1노드, WAS와 PostgreSQL에서 지급 → 미체결 매수 → 취소·반환을 확인했다. 이어 같은 취소 재전송, WAS 재시작 전후, 반영 지연의 202, 실제 PostgreSQL 중단과 복구를 확인했다. 잔고 테이블 쓰기만 실패하게 만든 뒤 잔고 GET은 503을 반환했고, 후속 주문 조회와 원장 순번은 진행했다. 시험용 WAS의 커넥션 획득 제한을 1.5초로 맞춰 실제 DB 중단 중 연결 실패 응답을 확인했다. [HTTP 시험](../app-api/src/test/kotlin/com/exchange/core/api/trading/infrastructure/aeron/SplitFundsTradingHttpTest.kt#L136)
 - 관련 API 107건과 아키텍처 386건이 통과했다. 건너뜀은 0건이다. CI 테스트 분류 검사, 필수 운영 구조 검사와 `ktlintCheck`도 통과했다. 전체 회귀 뒤 시험용 DB 대기 설정만 변경하고 해당 HTTP 시험과 분류·스타일 검사를 다시 실행했다.
 - 작성 대화를 상속하지 않은 검토에서 HTTP 경계 타입, V17 검증 기준, 기존 사용자 식별자 호환, HTTP 오류 분기, 기존 상대 자산 보존을 점검했다. 지적을 수정하고 최종 코드와 시험 변경을 재검토했다. 검토 범위에서 확인된 미해결 결함은 없다.
+
+## UseCase 선언 확인과 트랜잭션 조정
+
+PR 최초 커밋 `49e03a0`의 운영 소스에 있는 UseCase 9개는 모두 구체 클래스였다.
+
+| 연결 범위 | UseCase |
+| --- | --- |
+| 운영 WAS 4개 | `BalanceQueryUseCase`, `BoundedTradingOrderUseCase`, `OrderQueryUseCase`, `MarketConfigurationUseCase` |
+| 운영 소스에 있고 레거시·통합 시험에서 조립하는 5개 | `SubmitOrderUseCase`, `CancelOrderUseCase`, `SubmitTradingOrderUseCase`, `PrepareDevelopmentBalanceUseCase`, `ReconcileLedgerUseCase` |
+
+이번 변경은 #63의 Controller가 `BalanceQueryUseCase` 인터페이스에 의존하도록 조립하고, 잔고를 읽고 쓰는 Spring 빈의 메서드에 선언적 트랜잭션을 적용한다. 구조 검사는 같은 모듈·패키지에서 계약을 직접 구현하는 구체 `UseCaseImpl`이 있을 때 그 인터페이스를 진입점으로 인식한다.
+
+선언적 트랜잭션 전환 후 API 108건, 구조 검사 388건이 실패·건너뜀 없이 통과했다. CI 테스트 분류, 필수 P01~P09, ktlint 검사도 통과했다. PostgreSQL 시험에서는 바깥 읽기 트랜잭션이 이전 시점을 유지하는 동안 새 쓰기가 독립 커밋되고, 바깥 트랜잭션을 롤백한 뒤에도 확인 순번과 잔고가 유지됨을 대조했다. 별도 컨텍스트의 코드 리뷰에서 위반을 확인하지 못했다. [독립 커밋 PostgreSQL 시험](../app-api/src/test/kotlin/com/exchange/core/api/trading/infrastructure/persistence/PostgresOrderQueryFeedStoreTest.kt#L1116)

@@ -5,6 +5,8 @@ import com.exchange.core.api.trading.application.port.OrderQueryUnavailableExcep
 import com.exchange.core.common.AssetId
 import com.exchange.core.common.UserId
 import com.exchange.core.ledger.OpeningBalance
+import org.springframework.dao.DataAccessException
+import org.springframework.transaction.TransactionException
 
 internal enum class BalanceQueryCode(
     val status: Int,
@@ -45,11 +47,18 @@ internal data class BalanceQueryResult(
     val reserved: Long? = null,
 )
 
-internal class BalanceQueryUseCase(
+internal interface BalanceQueryUseCase {
+    fun get(
+        userId: String,
+        assetId: String,
+    ): BalanceQueryResult
+}
+
+internal class BalanceQueryUseCaseImpl(
     private val sourceStatus: () -> BalanceSourceStatus?,
     private val read: (userId: String, assetId: String) -> BalanceQuerySnapshot,
-) {
-    fun get(
+) : BalanceQueryUseCase {
+    override fun get(
         userId: String,
         assetId: String,
     ): BalanceQueryResult {
@@ -64,6 +73,10 @@ internal class BalanceQueryUseCase(
                 return BalanceQueryResult(BalanceQueryCode.QUERY_UNAVAILABLE)
             } catch (_: OrderQueryInconsistentException) {
                 return BalanceQueryResult(BalanceQueryCode.QUERY_INCONSISTENT)
+            } catch (_: TransactionException) {
+                return BalanceQueryResult(BalanceQueryCode.QUERY_UNAVAILABLE)
+            } catch (_: DataAccessException) {
+                return BalanceQueryResult(BalanceQueryCode.QUERY_UNAVAILABLE)
             }
         if (snapshot.lifecycle == OrderQueryLifecycle.BLOCKED || snapshot.projectedThrough > snapshot.ledgerThrough) {
             return BalanceQueryResult(BalanceQueryCode.QUERY_INCONSISTENT)

@@ -1,7 +1,7 @@
 package com.exchange.architecture.support
 
+import com.exchange.architecture.rules.NamingRules
 import com.tngtech.archunit.core.domain.JavaClass
-import com.tngtech.archunit.core.domain.JavaModifier
 
 /**
  * 전체 운영 수집 결과를 기존 HTTP·application 검사 입력으로 연결한다.
@@ -139,6 +139,7 @@ object ProductionBoundaryInputs {
     private fun select(scope: ScopeImportResult): Map<HttpRole, Set<String>> {
         val groups = mutableMapOf<HttpRole, MutableSet<String>>()
         scope.classesByModule.forEach { (module, classes) ->
+            val classesByName = classes.associateBy { it.name }
             classes.forEach { type ->
                 // 중첩·합성 타입은 기존 검사기가 실제 포함 관계로 따라간다. 독립 역할 단서가 있으면 함께 남긴다.
                 val explicit = explicitRoles(type)
@@ -153,7 +154,7 @@ object ProductionBoundaryInputs {
 
                             business -> {
                                 if (type.packageName in useCasePackages &&
-                                    concreteUseCase(type)
+                                    NamingRules.isUseCaseEntry(type, classesByName["${type.name}Impl"])
                                 ) {
                                     HttpRole.USE_CASE
                                 } else {
@@ -213,10 +214,6 @@ object ProductionBoundaryInputs {
         module == "domain-common" ||
             type.name in httpContracts || type.allRawInterfaces.any { it.name in httpContracts } ||
             type.name in httpEnums || type.isAssignableTo("java.lang.Throwable")
-
-    private fun concreteUseCase(type: JavaClass) =
-        type.simpleName.endsWith("UseCase") &&
-            !type.isInterface && !type.isEnum && !type.isAnnotation && JavaModifier.ABSTRACT !in type.modifiers
 
     private fun tagged(
         type: JavaClass,

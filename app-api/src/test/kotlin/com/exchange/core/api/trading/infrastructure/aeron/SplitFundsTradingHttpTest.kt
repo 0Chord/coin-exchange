@@ -82,12 +82,11 @@ import io.aeron.driver.ThreadingMode
 import io.aeron.logbuffer.Header
 import org.agrona.DirectBuffer
 import org.agrona.concurrent.UnsafeBuffer
+import org.aopalliance.intercept.MethodInterceptor
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.TestReporter
 import org.junit.jupiter.api.io.TempDir
-import org.mockito.ArgumentMatchers.any
-import org.mockito.Mockito.doAnswer
-import org.mockito.Mockito.spy
+import org.springframework.aop.framework.Advised
 import org.springframework.beans.factory.BeanCreationException
 import org.springframework.beans.factory.config.BeanPostProcessor
 import org.springframework.beans.factory.support.AbstractBeanDefinition
@@ -285,33 +284,30 @@ class SplitFundsTradingHttpTest {
                     "--spring.datasource.hikari.connection-timeout=1500",
                     "--spring.datasource.hikari.validation-timeout=1000",
                 )
-        val application = SpringApplicationBuilder(ExchangeCoreApplication::class.java)
+        val was = SpringApplicationBuilder(ExchangeCoreApplication::class.java).run(*args)
         if (pauseBalanceProjection != null) {
-            val market =
-                harness.fundsSettings.configuration.topology.fundsManifest.markets
-                    .single()
-            application.initializers({ context ->
-                context.addBeanFactoryPostProcessor { factory ->
-                    factory.addBeanPostProcessor(
-                        object : BeanPostProcessor {
-                            override fun postProcessAfterInitialization(
-                                bean: Any,
-                                beanName: String,
-                            ): Any {
-                                if (bean !is PostgresBalanceProjection) return bean
-                                val projection = spy(bean)
-                                // 원장 재생은 계속 진행하고 시험 중에는 잔고 반영만 건너뛴다.
-                                doAnswer { invocation ->
-                                    if (pauseBalanceProjection.get()) false else invocation.callRealMethod()
-                                }.`when`(projection).applyNextPage(any(TradingMarketContext::class.java) ?: market)
-                                return projection
-                            }
-                        },
-                    )
+            try {
+                val projection = was.getBean(PostgresBalanceProjection::class.java) as Advised
+                // 실제 Spring 빈의 트랜잭션 앞에서 시험 중인 잔고 쓰기만 보류한다.
+                val pauseWrites =
+                    MethodInterceptor { invocation ->
+                        if (invocation.method.name == PostgresBalanceProjection::applyNextPage.name && pauseBalanceProjection.get()) {
+                            false
+                        } else {
+                            invocation.proceed()
+                        }
+                    }
+                projection.addAdvice(0, pauseWrites)
+            } catch (failure: Throwable) {
+                try {
+                    was.close()
+                } catch (closeFailure: Throwable) {
+                    failure.addSuppressed(closeFailure)
                 }
-            })
+                throw failure
+            }
         }
-        return application.run(*args)
+        return was
     }
 
     private fun submitWhileBalanceProjectionWaits(

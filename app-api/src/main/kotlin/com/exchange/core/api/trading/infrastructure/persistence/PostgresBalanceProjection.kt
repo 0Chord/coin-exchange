@@ -20,18 +20,22 @@ import com.exchange.core.ledger.ReconciliationItem
 import com.exchange.core.trading.FundsLedgerBatch
 import com.exchange.core.trading.TradingMarketContext
 import org.springframework.dao.DataAccessException
+import org.springframework.dao.DataIntegrityViolationException
 import org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate
+import org.springframework.transaction.annotation.Propagation
+import org.springframework.transaction.annotation.Transactional
 import java.math.BigInteger
 
 /** 자금 원장의 연속 범위를 사용자·자산별 잔고로 반영한다. */
-internal class PostgresBalanceProjection(
+internal open class PostgresBalanceProjection(
     private val query: PostgresOrderQueryStore,
     private val ledger: PostgresOrderQueryFeedStore,
     private val jdbc: NamedParameterJdbcTemplate,
 ) {
     private val namespace = mapOf("namespace" to query.namespaceKey)
 
-    fun read(
+    @Transactional(readOnly = true, propagation = Propagation.REQUIRES_NEW)
+    open fun read(
         userId: String,
         assetId: String,
     ): BalanceQuerySnapshot =
@@ -73,65 +77,68 @@ internal class PostgresBalanceProjection(
             throw OrderQueryInconsistentException("저장된 잔고 조회 상태를 해석할 수 없습니다", error)
         }
 
-    fun applyNextPage(context: TradingMarketContext): Boolean {
+    @Transactional(propagation = Propagation.REQUIRES_NEW)
+    open fun applyNextPage(context: TradingMarketContext): Boolean {
         require(query.namespace.markets == setOf(context.market.marketId.value)) { "잔고 반영에는 단일 마켓이 필요합니다" }
-        if (isCaughtUp()) return false
         return try {
-            query.withTransaction {
-                // 잔고 행 잠금이 길어지면 원래 Archive 반영 작업으로 돌아간다.
-                jdbc.jdbcTemplate.execute("set local lock_timeout = '2s'")
-                val progress = query.lockedProgress()
-                if (progress.lifecycle == OrderQueryLifecycle.BLOCKED) return@withTransaction false
-                val projectedThrough = projectedThrough()
-                val ledgerThrough = ledger.ledgerThrough()
-                if (projectedThrough > ledgerThrough) missingLedger(projectedThrough)
-                if (projectedThrough == ledgerThrough) return@withTransaction false
+            // 잔고 행 잠금이 길어지면 원래 Archive 반영 작업으로 돌아간다.
+            jdbc.jdbcTemplate.execute("set local lock_timeout = '2s'")
+            val progress = query.lockedProgress()
+            if (progress.lifecycle == OrderQueryLifecycle.BLOCKED) return false
+            val projectedThrough = projectedThrough()
+            val ledgerThrough = ledger.ledgerThrough()
+            if (projectedThrough > ledgerThrough) missingLedger(projectedThrough)
+            if (projectedThrough == ledgerThrough) return false
 
-                val batches = ledger.readLedgerPage(projectedThrough)
-                if (batches.isEmpty()) missingLedger(projectedThrough + 1)
-                var expectedSequence = projectedThrough + 1
-                var previousPosition = ledgerPosition(projectedThrough)
-                val changes = ArrayList<Map<BalanceAccount, BalanceDelta>>(batches.size)
-                for (batch in batches) {
-                    if (batch.sequence != expectedSequence) missingLedger(expectedSequence)
-                    require(batch.followsLogPosition(previousPosition)) { "원장 로그 위치가 올바르지 않습니다" }
-                    changes.add(balanceChanges(batch, context))
-                    expectedSequence = batch.sequence + 1
-                    previousPosition = batch.logPosition
-                }
-
-                val balances = readAffectedBalances(changes.flatMapTo(linkedSetOf()) { it.keys })
-                for (batchChanges in changes) {
-                    for ((account, delta) in batchChanges) {
-                        val previous = balances[account] ?: BalanceAmounts(0, 0)
-                        val available = (BigInteger.valueOf(previous.available) + delta.available).longValueExact()
-                        val reserved = (BigInteger.valueOf(previous.reserved) + delta.reserved).longValueExact()
-                        require(available >= 0 && reserved >= 0) { "반영한 잔고가 음수입니다" }
-                        balances[account] = BalanceAmounts(available, reserved)
-                    }
-                }
-                writeBalances(balances)
-                jdbc.update(
-                    """
-                    insert into order_query.balance_progress (namespace, projected_through) values (:namespace, :through)
-                    on conflict (namespace) do update set projected_through = excluded.projected_through
-                    """.trimIndent(),
-                    namespace + ("through" to batches.last().sequence),
-                )
-                true
+            val batches = ledger.readLedgerPage(projectedThrough)
+            if (batches.isEmpty()) missingLedger(projectedThrough + 1)
+            var expectedSequence = projectedThrough + 1
+            var previousPosition = ledgerPosition(projectedThrough)
+            val changes = ArrayList<Map<BalanceAccount, BalanceDelta>>(batches.size)
+            for (batch in batches) {
+                if (batch.sequence != expectedSequence) missingLedger(expectedSequence)
+                require(batch.followsLogPosition(previousPosition)) { "원장 로그 위치가 올바르지 않습니다" }
+                changes.add(balanceChanges(batch, context))
+                expectedSequence = batch.sequence + 1
+                previousPosition = batch.logPosition
             }
-        } catch (error: OrderQueryWriteConflictException) {
-            // 주문·원장 자체에 대한 충돌과 구분해 잔고 조회만 차단한다.
-            throw OrderQueryInconsistentException("원장에서 잔고를 반영할 수 없습니다", error)
-        } catch (error: OpeningBalanceStateException) {
-            throw OrderQueryInconsistentException("개시 원장을 해석할 수 없습니다", error)
+
+            val balances = readAffectedBalances(changes.flatMapTo(linkedSetOf()) { it.keys })
+            for (batchChanges in changes) {
+                for ((account, delta) in batchChanges) {
+                    val previous = balances[account] ?: BalanceAmounts(0, 0)
+                    val available = (BigInteger.valueOf(previous.available) + delta.available).longValueExact()
+                    val reserved = (BigInteger.valueOf(previous.reserved) + delta.reserved).longValueExact()
+                    require(available >= 0 && reserved >= 0) { "반영한 잔고가 음수입니다" }
+                    balances[account] = BalanceAmounts(available, reserved)
+                }
+            }
+            writeBalances(balances)
+            jdbc.update(
+                """
+                insert into order_query.balance_progress (namespace, projected_through) values (:namespace, :through)
+                on conflict (namespace) do update set projected_through = excluded.projected_through
+                """.trimIndent(),
+                namespace + ("through" to batches.last().sequence),
+            )
+            true
+        } catch (error: RuntimeException) {
+            throw when (error) {
+                is DataIntegrityViolationException, is OrderQueryWriteConflictException, is OpeningBalanceStateException,
+                is IllegalArgumentException, is ArithmeticException,
+                -> OrderQueryInconsistentException("원장에서 잔고를 반영할 수 없습니다", error)
+
+                is DataAccessException -> OrderQueryUnavailableException("잔고 반영 DB 작업에 실패했습니다", error)
+
+                else -> error
+            }
         }
     }
 
-    private fun isCaughtUp(): Boolean =
+    open fun hasPendingPage(): Boolean =
         jdbc.queryForObject(
             """
-            select coalesce((select max(sequence) from order_query.funds_ledger_batch where namespace = :namespace), 0) =
+            select coalesce((select max(sequence) from order_query.funds_ledger_batch where namespace = :namespace), 0) <>
                 coalesce((select projected_through from order_query.balance_progress where namespace = :namespace), 0)
             """.trimIndent(),
             namespace,

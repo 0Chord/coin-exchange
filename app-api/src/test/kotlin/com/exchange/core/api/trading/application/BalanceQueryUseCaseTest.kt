@@ -1,6 +1,7 @@
 package com.exchange.core.api.trading.application
 
 import com.exchange.core.api.trading.application.port.OrderQueryUnavailableException
+import org.springframework.transaction.CannotCreateTransactionException
 import java.util.concurrent.TimeUnit
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -14,7 +15,7 @@ class BalanceQueryUseCaseTest {
     fun `잔고 행을 읽는 동안 확인된 원장이 앞서면 반영 중이다`() {
         var source = currentSource()
         val useCase =
-            BalanceQueryUseCase({ source }) { _, _ ->
+            BalanceQueryUseCaseImpl({ source }) { _, _ ->
                 source = source.copy(observation = observation(ledgerThrough = 4))
                 stored
             }
@@ -31,7 +32,7 @@ class BalanceQueryUseCaseTest {
     fun `원본을 재검증하는 동안 읽은 DB 잔고를 보내지 않는다`() {
         var source = currentSource()
         val useCase =
-            BalanceQueryUseCase({ source }) { _, _ ->
+            BalanceQueryUseCaseImpl({ source }) { _, _ ->
                 source = currentSource()
                 stored
             }
@@ -45,7 +46,7 @@ class BalanceQueryUseCaseTest {
     @Test
     fun `재생 범위를 덜 읽었으면 두 순번이 같아도 반영 중이다`() {
         val source = BalanceSourceStatus(observation(ledgerThrough = 3).copy(caughtUp = false))
-        val useCase = BalanceQueryUseCase({ source }) { _, _ -> stored }
+        val useCase = BalanceQueryUseCaseImpl({ source }) { _, _ -> stored }
 
         assertEquals(BalanceQueryCode.QUERY_CATCHING_UP, useCase.get("buyer", "USDT").code)
     }
@@ -53,11 +54,16 @@ class BalanceQueryUseCaseTest {
     @Test
     fun `관측 만료와 DB 연결 실패를 503으로 판단한다`() {
         val expired = BalanceSourceStatus(observation(ledgerThrough = 3).copy(expiresAtNs = System.nanoTime()))
-        val expiredUseCase = BalanceQueryUseCase({ expired }) { _, _ -> error("만료된 원본으로 DB를 읽었다") }
-        val unavailableUseCase = BalanceQueryUseCase(::currentSource) { _, _ -> throw OrderQueryUnavailableException("DB 읽기 실패") }
+        val expiredUseCase = BalanceQueryUseCaseImpl({ expired }) { _, _ -> error("만료된 원본으로 DB를 읽었다") }
+        val unavailableUseCase = BalanceQueryUseCaseImpl(::currentSource) { _, _ -> throw OrderQueryUnavailableException("DB 읽기 실패") }
 
         assertEquals(BalanceQueryCode.QUERY_UNAVAILABLE, expiredUseCase.get("buyer", "USDT").code)
         assertEquals(BalanceQueryCode.QUERY_UNAVAILABLE, unavailableUseCase.get("buyer", "USDT").code)
+        val beginFailure =
+            BalanceQueryUseCaseImpl(::currentSource) { _, _ ->
+                throw CannotCreateTransactionException("읽기 트랜잭션 시작 실패")
+            }
+        assertEquals(BalanceQueryCode.QUERY_UNAVAILABLE, beginFailure.get("buyer", "USDT").code)
     }
 
     @Test
@@ -65,7 +71,7 @@ class BalanceQueryUseCaseTest {
         val source = currentSource()
         val fundedUser = "desk\u0085A"
         val useCase =
-            BalanceQueryUseCase({ source }) { userId, assetId ->
+            BalanceQueryUseCaseImpl({ source }) { userId, assetId ->
                 assertEquals(fundedUser, userId)
                 assertEquals("USDT", assetId)
                 stored

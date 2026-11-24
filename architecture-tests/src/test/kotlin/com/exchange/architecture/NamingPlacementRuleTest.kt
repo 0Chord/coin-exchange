@@ -24,6 +24,8 @@ import com.exchange.architecture.fixtures.naming.OrderConfig
 import com.exchange.architecture.fixtures.naming.OrderResponse
 import com.exchange.architecture.fixtures.naming.OrderState
 import com.exchange.architecture.fixtures.naming.OrderSubmissionService
+import com.exchange.architecture.fixtures.naming.QueryWalletUseCase
+import com.exchange.architecture.fixtures.naming.QueryWalletUseCaseImpl
 import com.exchange.architecture.fixtures.naming.Request
 import com.exchange.architecture.fixtures.naming.ReserveOrderUseCase
 import com.exchange.architecture.fixtures.naming.RuleCalculator
@@ -36,6 +38,7 @@ import com.exchange.architecture.fixtures.naming.Wiring
 import com.exchange.architecture.fixtures.naming.WrongAdvice
 import com.exchange.architecture.fixtures.naming.WrongService
 import com.exchange.architecture.fixtures.naming.WrongUseCase
+import com.exchange.architecture.fixtures.naming.WrongUseCaseImpl
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
@@ -95,6 +98,18 @@ class NamingPlacementRuleTest {
             r.assertReady()
             assertTrue("module" in r.items(CancelOrderUseCase::class.java))
         }
+    }
+
+    @Test fun `UseCase 인터페이스에는 같은 패키지에서 실제 구현한 구체 타입이 필요하다`() {
+        val policy = namingPolicy("order-application" to namingPkg)
+        val accepted = namingInspect(policy, QueryWalletUseCase::class.java, QueryWalletUseCaseImpl::class.java)
+        accepted.assertReady()
+        assertEquals(emptyList(), accepted.violations)
+        assertEquals(setOf(QueryWalletUseCase::class.java.name), accepted.selected("UseCase"))
+        assertEquals(
+            setOf("declaration"),
+            namingInspect(policy, WrongUseCase::class.java, WrongUseCaseImpl::class.java).items(WrongUseCase::class.java),
+        )
     }
 
     @Test fun `Calculator와 Resolver는 fee order의 일반 클래스나 인터페이스다`() {

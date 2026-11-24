@@ -1096,7 +1096,7 @@ class PostgresOrderQueryFeedStoreTest {
     @Test
     fun `기존 원장에서 잔고를 채우고 같은 페이지를 다시 읽어도 지급은 한 번만 반영한다`() {
         val f = migratedBalanceFixture.reopen()
-        val projection = PostgresBalanceProjection(f.query, f.feed, jdbc)
+        val projection = balanceProjection(f)
         assertEquals(1L, projection.read("u1", "QUOTE").ledgerThrough)
         assertEquals(0L, projection.read("u1", "QUOTE").projectedThrough)
 
@@ -1106,16 +1106,43 @@ class PostgresOrderQueryFeedStoreTest {
         assertNull(projection.read("another-user", "QUOTE").available)
 
         val restarted = f.reopen()
-        val reopenedProjection = PostgresBalanceProjection(restarted.query, restarted.feed, jdbc)
+        val reopenedProjection = balanceProjection(restarted)
         assertEquals(1L, restarted.feed.applyLedgerPage(listOf(f.ledgerBatch(1))))
         assertFalse(reopenedProjection.applyNextPage(f.a))
         assertProjectedBalance(reopenedProjection, "u1", "QUOTE", 100, 0, through = 1)
     }
 
     @Test
+    fun `잔고를 반영하고 읽는 트랜잭션은 호출자의 조회 스냅샷과 분리된다`() {
+        val f = fixture(supportedOnlyA = true)
+        f.feed.applyLedgerPage(listOf(f.ledgerBatch(1)))
+        val transactionManager = DataSourceTransactionManager(requireNotNull(jdbc.jdbcTemplate.dataSource))
+        val projection = balanceProjection(f, transactionManager)
+        val outer =
+            TransactionTemplate(transactionManager).apply {
+                isolationLevel = TransactionDefinition.ISOLATION_REPEATABLE_READ
+                isReadOnly = true
+            }
+        val projectedThroughSql =
+            """
+            select coalesce(max(projected_through), 0) from order_query.balance_progress
+            where namespace = :namespace
+            """.trimIndent()
+
+        outer.executeWithoutResult { transaction ->
+            assertEquals(0L, jdbc.queryForObject(projectedThroughSql, f.parameters, Long::class.java))
+            assertTrue(projection.applyNextPage(f.a))
+            assertEquals(0L, jdbc.queryForObject(projectedThroughSql, f.parameters, Long::class.java))
+            assertProjectedBalance(projection, "u1", "QUOTE", 100, 0, through = 1)
+            transaction.setRollbackOnly()
+        }
+        assertProjectedBalance(projection, "u1", "QUOTE", 100, 0, through = 1)
+    }
+
+    @Test
     fun `부분 정산과 잔량 반환의 분개를 같은 로그 위치에서도 순번대로 반영한다`() {
         val f = fixture(supportedOnlyA = true)
-        val projection = PostgresBalanceProjection(f.query, f.feed, jdbc)
+        val projection = balanceProjection(f)
         val seller = UserId("seller")
         val buyer = UserId("buyer")
         val base = f.a.market.baseAssetId
@@ -1181,7 +1208,7 @@ class PostgresOrderQueryFeedStoreTest {
     @Test
     fun `잔고 반영 순번 쓰기가 실패하면 돈과 순번을 함께 되돌리고 이어 적용한다`() {
         val f = fixture(supportedOnlyA = true)
-        val projection = PostgresBalanceProjection(f.query, f.feed, jdbc)
+        val projection = balanceProjection(f)
         f.feed.applyLedgerPage(listOf(f.ledgerBatch(1)))
         jdbc.jdbcTemplate.execute(
             """
@@ -1216,8 +1243,8 @@ class PostgresOrderQueryFeedStoreTest {
                 pool
                     .invokeAll(
                         listOf(
-                            Callable { PostgresBalanceProjection(first.query, first.feed, jdbc).applyNextPage(f.a) },
-                            Callable { PostgresBalanceProjection(second.query, second.feed, jdbc).applyNextPage(f.a) },
+                            Callable { balanceProjection(first).applyNextPage(f.a) },
+                            Callable { balanceProjection(second).applyNextPage(f.a) },
                         ),
                     ).map { it.get(5, TimeUnit.SECONDS) }
             assertEquals(1, applied.count { it })
@@ -1231,7 +1258,7 @@ class PostgresOrderQueryFeedStoreTest {
     fun `손상된 분개는 잔고만 막고 이미 확인한 주문 조회 상태는 유지한다`() {
         val f = fixture(supportedOnlyA = true)
         f.verify(0, 0)
-        val projection = PostgresBalanceProjection(f.query, f.feed, jdbc)
+        val projection = balanceProjection(f)
         f.feed.applyLedgerPage(listOf(f.ledgerBatch(1), f.ledgerBatch(2)))
         jdbc.update(
             """
@@ -1248,7 +1275,7 @@ class PostgresOrderQueryFeedStoreTest {
         assertEquals(OrderQueryLifecycle.READY, f.feed.progress().lifecycle)
 
         val incomplete = fixture(supportedOnlyA = true)
-        val incompleteProjection = PostgresBalanceProjection(incomplete.query, incomplete.feed, jdbc)
+        val incompleteProjection = balanceProjection(incomplete)
         incomplete.verify(0, 0)
         incomplete.feed.applyLedgerPage(listOf(incomplete.ledgerBatch(1), incomplete.ledgerBatch(2)))
         jdbc.update("delete from order_query.funds_ledger_batch where namespace = :namespace and sequence = 1", incomplete.parameters)
@@ -1262,7 +1289,7 @@ class PostgresOrderQueryFeedStoreTest {
     fun `범위를 넘는 잔고를 감지하면 마지막으로 반영한 잔고와 순번을 유지한다`() {
         val f = fixture(supportedOnlyA = true)
         f.verify(0, 0)
-        val projection = PostgresBalanceProjection(f.query, f.feed, jdbc)
+        val projection = balanceProjection(f)
         f.feed.applyLedgerPage(listOf(f.ledgerBatch(1, amount = Long.MAX_VALUE)))
         assertTrue(projection.applyNextPage(f.a))
         val extraOpening = OpeningBalance("extra", UserId("u1"), AssetId("QUOTE"), Amount(1))
@@ -1273,6 +1300,21 @@ class PostgresOrderQueryFeedStoreTest {
         assertProjectedBalance(projection, "u1", "QUOTE", Long.MAX_VALUE, 0, through = 1)
         assertEquals(2L, projection.read("u1", "QUOTE").ledgerThrough)
         assertEquals(OrderQueryLifecycle.READY, f.feed.progress().lifecycle)
+    }
+
+    private fun balanceProjection(
+        fixture: Fixture,
+        transactionManager: DataSourceTransactionManager = DataSourceTransactionManager(requireNotNull(jdbc.jdbcTemplate.dataSource)),
+    ): PostgresBalanceProjection {
+        val projection = PostgresBalanceProjection(fixture.query, fixture.feed, jdbc)
+        val advice =
+            TransactionInterceptor().apply {
+                setTransactionManager(transactionManager)
+                setTransactionAttributeSource(AnnotationTransactionAttributeSource())
+            }
+        val factory = ProxyFactory(projection)
+        factory.addAdvice(advice)
+        return factory.proxy as PostgresBalanceProjection
     }
 
     private fun assertProjectedBalance(

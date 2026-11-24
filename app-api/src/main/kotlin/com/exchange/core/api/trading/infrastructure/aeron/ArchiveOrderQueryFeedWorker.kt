@@ -25,6 +25,7 @@ import com.exchange.core.trading.TradingMarketContext
 import com.exchange.core.trading.TradingServiceRole
 import org.slf4j.LoggerFactory
 import org.springframework.dao.DataAccessException
+import org.springframework.dao.DataIntegrityViolationException
 import org.springframework.transaction.TransactionException
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
@@ -277,9 +278,17 @@ internal class ArchiveOrderQueryFeedWorker(
         } catch (failure: RuntimeException) {
             val code =
                 when (failure) {
-                    is OrderQueryInconsistentException, is OrderQueryLedgerException -> BalanceQueryCode.QUERY_INCONSISTENT
-                    is DataAccessException, is TransactionException, is OrderQueryUnavailableException -> BalanceQueryCode.QUERY_UNAVAILABLE
-                    else -> throw failure
+                    is OrderQueryInconsistentException, is OrderQueryLedgerException, is DataIntegrityViolationException -> {
+                        BalanceQueryCode.QUERY_INCONSISTENT
+                    }
+
+                    is DataAccessException, is TransactionException, is OrderQueryUnavailableException -> {
+                        BalanceQueryCode.QUERY_UNAVAILABLE
+                    }
+
+                    else -> {
+                        throw failure
+                    }
                 }
             if (balanceProjectionError != code) logger.warn("PostgreSQL 잔고 반영 실패", failure)
             balanceProjectionError = code
