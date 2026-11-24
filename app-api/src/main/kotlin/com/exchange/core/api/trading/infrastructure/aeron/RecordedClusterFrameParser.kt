@@ -3,6 +3,7 @@ package com.exchange.core.api.trading.infrastructure.aeron
 import io.aeron.FragmentAssembler
 import io.aeron.cluster.client.AeronCluster
 import io.aeron.cluster.codecs.ClusterActionRequestDecoder
+import io.aeron.cluster.codecs.ClusterTimeUnit
 import io.aeron.cluster.codecs.MembershipChangeEventDecoder
 import io.aeron.cluster.codecs.MessageHeaderDecoder
 import io.aeron.cluster.codecs.NewLeadershipTermEventDecoder
@@ -13,6 +14,7 @@ import io.aeron.cluster.codecs.TimerEventDecoder
 import io.aeron.logbuffer.FrameDescriptor
 import io.aeron.logbuffer.Header
 import io.aeron.protocol.DataHeaderFlyweight
+import org.agrona.BitUtil
 import org.agrona.DirectBuffer
 import java.nio.ByteOrder.LITTLE_ENDIAN
 
@@ -34,7 +36,16 @@ internal data class RecordedControlFrame(
     val templateId: Int,
     override val position: Long,
     override val leadershipTermId: Long,
+    val leadershipChange: RecordedLeadershipChange? = null,
 ) : RecordedClusterFrame
+
+internal data class RecordedLeadershipChange(
+    val basePosition: Long,
+    val endPosition: Long,
+    val leaderMemberId: Int,
+    val logSessionId: Int,
+    val timeUnit: ClusterTimeUnit,
+)
 
 /** Parses only the current Cluster schema, preserving all application bytes, including its own header. */
 internal object RecordedClusterFrameParser {
@@ -54,7 +65,7 @@ internal object RecordedClusterFrameParser {
         val templateId = header.templateId()
         if (templateId == SessionMessageHeaderDecoder.TEMPLATE_ID) {
             require(header.blockLength() == SessionMessageHeaderDecoder.BLOCK_LENGTH) { "잘못된 session wrapper blockLength" }
-            require(length >= AeronCluster.SESSION_HEADER_LENGTH + 8) { "잘린 session wrapper 또는 application header" }
+            require(length >= AeronCluster.SESSION_HEADER_LENGTH) { "잘린 session wrapper" }
             val session = SessionMessageHeaderDecoder().wrap(buffer, body, header.blockLength(), header.version())
             val bytes = ByteArray(length - AeronCluster.SESSION_HEADER_LENGTH)
             buffer.getBytes(offset + AeronCluster.SESSION_HEADER_LENGTH, bytes)
@@ -88,6 +99,18 @@ internal object RecordedClusterFrameParser {
             cursor += fieldLength.toInt()
         }
         require(cursor == length) { "해석되지 않은 control trailing bytes template=$templateId" }
+        if (templateId == NewLeadershipTermEventDecoder.TEMPLATE_ID) {
+            val term = NewLeadershipTermEventDecoder().wrap(buffer, body, header.blockLength(), header.version())
+            val change =
+                RecordedLeadershipChange(
+                    basePosition = term.termBaseLogPosition(),
+                    endPosition = term.logPosition(),
+                    leaderMemberId = term.leaderMemberId(),
+                    logSessionId = term.logSessionId(),
+                    timeUnit = term.timeUnit(),
+                )
+            return RecordedControlFrame(templateId, position, term.leadershipTermId(), change)
+        }
         // Every supported control starts with the same SBE leadershipTermId field.
         return RecordedControlFrame(templateId, position, buffer.getLong(body, LITTLE_ENDIAN))
     }
@@ -99,6 +122,9 @@ internal class RecordedReplayCollector(
     private val limitPosition: Long,
     private val retainFrames: Boolean = true,
     private val maximumMessageBytes: Int = Int.MAX_VALUE,
+    private val allowLeadershipChanges: Boolean = false,
+    private val allowTermPadding: Boolean = false,
+    initialLeadershipTermId: Long? = null,
     private val onValidatedMessage: (RecordedClusterFrame, DirectBuffer, Int, Int, Int) -> Unit = { _, _, _, _, _ -> },
 ) {
     init {
@@ -111,6 +137,8 @@ internal class RecordedReplayCollector(
         private set
     var lastCompletedPosition: Long = startPosition
         private set
+    var lastCompletedStartPosition: Long = startPosition
+        private set
     var fragmentCount: Int = 0
         private set
     var fragmentedMessageCount: Int = 0
@@ -119,7 +147,8 @@ internal class RecordedReplayCollector(
     private var nextTermOffset = 0
     private var fragmentTermId = 0
     private var lastFragmentPosition = startPosition
-    private var leadershipTermId: Long? = null
+    private var leadershipTermId: Long? = initialLeadershipTermId
+    private var messageStartPosition = startPosition
     private var messageFragmentCount = 0
     private var messageBytes = 0L
     private var applicationCount = 0L
@@ -128,8 +157,8 @@ internal class RecordedReplayCollector(
         FragmentAssembler { buffer, offset, length, header ->
             val frame = RecordedClusterFrameParser.parse(buffer, offset, length, header.position())
             require(frame.position > lastCompletedPosition && frame.position <= limitPosition) { "완성 메시지 위치가 범위를 벗어났습니다" }
-            require(leadershipTermId == null || leadershipTermId == frame.leadershipTermId) { "여러 leadership term의 기록은 지원하지 않습니다" }
-            leadershipTermId = frame.leadershipTermId
+            verifyLeadershipTerm(frame)
+            lastCompletedStartPosition = messageStartPosition
             when (frame) {
                 is RecordedApplicationFrame -> {
                     applicationCount++
@@ -145,6 +174,27 @@ internal class RecordedReplayCollector(
             lastCompletedPosition = frame.position
         }
 
+    private fun verifyLeadershipTerm(frame: RecordedClusterFrame) {
+        val previousTerm = leadershipTermId
+        val change = (frame as? RecordedControlFrame)?.leadershipChange
+        if (allowLeadershipChanges) {
+            if (previousTerm != frame.leadershipTermId) {
+                // Aeron은 term 끝을 padding으로 마친 뒤 새 리더의 첫 프레임 위치를 기준으로 삼을 수 있다.
+                require(change != null && (change.basePosition == lastCompletedPosition || change.basePosition == messageStartPosition)) {
+                    "이어지는 임기 시작 위치가 없습니다"
+                }
+                require(previousTerm == null || frame.leadershipTermId > previousTerm) { "자금 로그 임기가 역행했습니다" }
+                require(change.endPosition == frame.position) { "기록된 임기 변경의 끝 위치가 다릅니다" }
+                require(change.timeUnit == ClusterTimeUnit.MILLIS) { "기록된 임기 변경의 시각은 밀리초여야 합니다" }
+            } else {
+                require(change == null) { "같은 임기 안에 임기 시작 기록이 반복됩니다" }
+            }
+        } else {
+            require(previousTerm == null || previousTerm == frame.leadershipTermId) { "여러 leadership term의 기록은 지원하지 않습니다" }
+        }
+        leadershipTermId = frame.leadershipTermId
+    }
+
     fun onFragment(
         buffer: DirectBuffer,
         offset: Int,
@@ -157,11 +207,19 @@ internal class RecordedReplayCollector(
             require(header.frameLength() == length + DataHeaderFlyweight.HEADER_LENGTH) { "fragment 전송 헤더 길이가 다릅니다" }
             val position = header.position()
             require(position > lastFragmentPosition && position <= limitPosition) { "fragment가 고정한 L을 초과하거나 역행했습니다" }
+            val alignedLength = BitUtil.align(header.frameLength(), FrameDescriptor.FRAME_ALIGNMENT)
+            val fragmentStart = position - alignedLength
+            if (allowLeadershipChanges) {
+                require(fragmentStart == lastFragmentPosition || isTermPadding(header, fragmentStart)) {
+                    "Archive 재생 범위에 공백이 있습니다"
+                }
+            }
             val flags = header.flags().toInt() and 0xff
             val begin = flags and FrameDescriptor.BEGIN_FRAG_FLAG.toInt() != 0
             val end = flags and FrameDescriptor.END_FRAG_FLAG.toInt() != 0
             if (begin) {
                 require(!pending) { "이전 메시지가 재조립되기 전에 BEGIN을 받았습니다" }
+                messageStartPosition = fragmentStart
                 messageFragmentCount = 0
                 messageBytes = 0
                 pending = !end
@@ -182,6 +240,16 @@ internal class RecordedReplayCollector(
         } catch (error: Exception) {
             failure = error.message ?: error.javaClass.simpleName
         }
+    }
+
+    private fun isTermPadding(
+        header: Header,
+        fragmentStart: Long,
+    ): Boolean {
+        if (!allowTermPadding || pending || header.termOffset() != 0) return false
+        val termLength = 1L shl header.positionBitsToShift()
+        val previousOffset = lastFragmentPosition and (termLength - 1)
+        return previousOffset != 0L && fragmentStart - lastFragmentPosition == termLength - previousOffset
     }
 
     fun completionFailure(consumedPosition: Long): String? =

@@ -6,10 +6,18 @@ import org.testcontainers.postgresql.PostgreSQLContainer
 import java.time.Duration
 
 /** 조회 테스트만 DB를 준비하며 제품에는 fixture 입력 경로를 추가하지 않는다. */
-internal class OrderQueryTestDatabase : AutoCloseable {
+internal class OrderQueryTestDatabase(
+    socketTimeoutSeconds: Int? = null,
+) : AutoCloseable {
     private val database =
         PostgreSQLContainer("postgres:16-alpine")
             .withStartupTimeout(Duration.ofSeconds(60))
+            .apply {
+                if (socketTimeoutSeconds != null) {
+                    withUrlParam("sslmode", "disable")
+                    withUrlParam("socketTimeout", socketTimeoutSeconds.toString())
+                }
+            }
 
     init {
         try {
@@ -32,6 +40,23 @@ internal class OrderQueryTestDatabase : AutoCloseable {
             )
 
     fun jdbc(): JdbcTemplate = JdbcTemplate(DriverManagerDataSource(database.jdbcUrl, database.username, database.password))
+
+    /** 일시 정지한 컨테이너를 같은 연결 설정과 데이터로 재개한다. */
+    fun whilePaused(work: () -> Unit) {
+        val id = database.containerId
+        database.dockerClient.pauseContainerCmd(id).exec()
+        try {
+            check(
+                database.dockerClient
+                    .inspectContainerCmd(id)
+                    .exec()
+                    .state.paused == true,
+            )
+            work()
+        } finally {
+            database.dockerClient.unpauseContainerCmd(id).exec()
+        }
+    }
 
     override fun close() = database.stop()
 }

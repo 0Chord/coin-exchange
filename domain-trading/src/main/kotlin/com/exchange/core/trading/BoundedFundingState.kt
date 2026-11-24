@@ -19,6 +19,18 @@ import java.time.Instant
 
 private val appliedFundsResult = FundsResultReply(FundsResultStatus.APPLIED)
 
+/** Archive 재생에서만 새로 적용된 금융 효과를 전달한다. */
+interface FundsArchiveFacts {
+    fun admission(fact: FundsOrderDispatch)
+
+    fun settlement(fact: SettlementFact)
+
+    fun ledger(
+        position: Long,
+        transactions: List<LedgerTransaction>,
+    )
+}
+
 /** 매칭 엔진 없이 공통 잔고·예약·접수와 정산 효과를 배타적으로 쓰는 금융 소유자다. */
 class BoundedFundingState(
     private val admissionCalculator: OrderAdmissionCalculator,
@@ -26,6 +38,7 @@ class BoundedFundingState(
     private val dispatchConfiguration: FundsDispatchConfiguration? = null,
     private val resultLimits: FundsResultLimits = FundsResultLimits(),
     private val persistRecoveryLedger: Boolean = false,
+    private val archiveFacts: FundsArchiveFacts? = null,
 ) {
     private var bounded: BoundedTradingData? = null
     private var dispatch: FundsDispatchData? = dispatchConfiguration?.let(::FundsDispatchData)
@@ -43,6 +56,10 @@ class BoundedFundingState(
     init {
         require(dispatchConfiguration == null || expectedManifest == dispatchConfiguration.manifest) {
             "funds dispatch requires the assembled financial manifest"
+        }
+        if (archiveFacts != null) {
+            val configuration = requireNotNull(dispatchConfiguration)
+            require(!persistRecoveryLedger && configuration.inputContractVersion == 2 && configuration.queryRetention == null)
         }
         if (persistRecoveryLedger) {
             val configuration = requireNotNull(dispatchConfiguration)
@@ -159,7 +176,7 @@ class BoundedFundingState(
         val marketSequence = Math.addExact(progress.lastAssigned, 1L)
         val lineage = current.manifest.lineage
         val ledgerIdentifiers =
-            if (ledger != null) TradingIdentifiers.admission(lineage, sequence) else null
+            if (ledger != null || archiveFacts != null) TradingIdentifiers.admission(lineage, sequence) else null
         val input =
             OrderAdmissionInput(
                 intent.marketId,
@@ -234,6 +251,10 @@ class BoundedFundingState(
                 approvalInputs[sequence] = it
             }
             ledgerBatch?.let { checkNotNull(ledger).record(it) }
+        }
+        if (archiveFacts != null) {
+            archiveFacts.admission(checkNotNull(delivery))
+            archiveFacts.ledger(atLogPosition, listOf(checkNotNull(transaction)))
         }
         return AdmissionReply.Recorded(receipt, newlyRecorded = true)
     }
@@ -375,6 +396,7 @@ class BoundedFundingState(
             nextTotal?.let { assetTotals[opening.assetId] = it }
             ledgerBatch?.let { checkNotNull(ledger).record(it) }
         }
+        archiveFacts?.ledger(atLogPosition, listOf(transaction))
         return result
     }
 
@@ -717,7 +739,9 @@ class BoundedFundingState(
                                     participants[1].reservation,
                                     taker.reservation,
                                     recordFeeProof =
-                                        if (configuration.inputContractVersion == 2 && ledger == null && querySettlements == null) {
+                                        if (configuration.inputContractVersion == 2 && ledger == null && querySettlements == null &&
+                                            archiveFacts == null
+                                        ) {
                                             // 원장 또는 조회에 결과를 공급하는 경우에는 기존 분개를 사용한다.
                                             { amount -> singleFillFee = amount }
                                         } else {
@@ -776,17 +800,23 @@ class BoundedFundingState(
                     }
                 validateResultConservation(settlement, feeAsset, fee, provedFee)
                 val settlementFact =
-                    querySettlements?.let { retained ->
+                    if (querySettlements != null || archiveFacts != null) {
                         val fact = settlementFact(result, settlement)
-                        if (!retained.canRecord(result.stream.marketId, fact.canonicalBytes)) {
+                        if (querySettlements?.canRecord(result.stream.marketId, fact.canonicalBytes) == false) {
                             return FundsResultReply(FundsResultStatus.RETRYABLE_CAPACITY)
                         }
                         fact
+                    } else {
+                        null
+                    }
+                val ledgerTransactions =
+                    when {
+                        ledger == null && archiveFacts == null -> emptyList()
+                        releaseTransaction != null -> listOf(releaseTransaction)
+                        else -> settlement.settlements.map { it.transaction }
                     }
                 val ledgerBatch =
                     ledger?.let { journal ->
-                        val ledgerTransactions =
-                            if (releaseTransaction != null) listOf(releaseTransaction) else settlement.settlements.map { it.transaction }
                         if (ledgerTransactions.isEmpty()) {
                             null
                         } else {
@@ -804,6 +834,7 @@ class BoundedFundingState(
                     receipt,
                     settlementFact,
                     ledgerBatch,
+                    ledgerTransactions,
                 )
             } catch (_: IllegalArgumentException) {
                 return FundsResultReply(FundsResultStatus.INVALID_RESULT)
@@ -849,9 +880,13 @@ class BoundedFundingState(
             current.pendingCount--
             progress.executedThrough = result.input.marketAdmissionSequence
             currentResults.record(candidate.receipt)
-            candidate.settlementFact?.let { checkNotNull(querySettlements).record(it) }
+            candidate.settlementFact?.let { querySettlements?.record(it) }
             candidate.ledgerBatch?.let { checkNotNull(ledger).record(it) }
             checkNotNull(dispatch).acknowledgeSettled(result.stream.marketId, result.input.dispatchSequence)
+        }
+        if (archiveFacts != null) {
+            archiveFacts.settlement(checkNotNull(candidate.settlementFact))
+            if (candidate.ledgerTransactions.isNotEmpty()) archiveFacts.ledger(atLogPosition, candidate.ledgerTransactions)
         }
         return appliedFundsResult
     }
@@ -870,13 +905,18 @@ class BoundedFundingState(
         var released: OrderReservation? = null
         var nextBalance: Balance? = null
         var releaseTransaction: LedgerTransaction? = null
-        val settlementFact = querySettlements?.let { SettlementFact(result.stream, result.resultSequence, emptyList()) }
+        val settlementFact =
+            if (querySettlements != null || archiveFacts != null) {
+                SettlementFact(result.stream, result.resultSequence, emptyList())
+            } else {
+                null
+            }
         try {
             currentResults.requireResult(result)
             require(result.engineSequenceBefore == currentResults.engine(key.first))
             require(obligation.input == result.input) { "cancellation input differs from recorded obligation" }
             settlementFact?.let {
-                if (!checkNotNull(querySettlements).canRecord(key.first, it.canonicalBytes)) {
+                if (querySettlements?.canRecord(key.first, it.canonicalBytes) == false) {
                     return FundsResultReply(FundsResultStatus.RETRYABLE_CAPACITY)
                 }
             }
@@ -953,9 +993,13 @@ class BoundedFundingState(
             check(cancellations.remove(key) == obligation)
             cancellationBytes -= obligation.canonicalBytes
             currentResults.record(receipt)
-            settlementFact?.let { checkNotNull(querySettlements).record(it) }
+            settlementFact?.let { querySettlements?.record(it) }
             ledgerBatch?.let { checkNotNull(ledger).record(it) }
             checkNotNull(dispatch).acknowledgeSettled(key.first, result.input.dispatchSequence)
+        }
+        if (archiveFacts != null) {
+            archiveFacts.settlement(checkNotNull(settlementFact))
+            releaseTransaction?.let { archiveFacts.ledger(atLogPosition, listOf(it)) }
         }
         return appliedFundsResult
     }
@@ -969,6 +1013,7 @@ class BoundedFundingState(
         val receipt: FundsResultReceipt,
         val settlementFact: SettlementFact?,
         val ledgerBatch: FundsLedgerBatch?,
+        val ledgerTransactions: List<LedgerTransaction>,
     )
 
     private fun settlementFact(

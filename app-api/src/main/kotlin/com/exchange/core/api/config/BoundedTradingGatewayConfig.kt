@@ -36,6 +36,9 @@ class BoundedTradingGatewayConfig {
         require(protection in setOf("local", "remote"))
         val settings = AeronGatewaySettings.from(environment)
         val requiresRecoveryReady = source.getProperty("exchange.order-query.require-recovery-ready", Boolean::class.java, false)
+        require(!requiresRecoveryReady || source.getProperty("exchange.order-query.source", "live") == "live") {
+            "복구 대사 승인으로 접수를 제한하는 설정은 실시간 조회 모드에서 사용합니다"
+        }
         val recoveryGate =
             if (requiresRecoveryReady) {
                 require(namespace.markets.size == 1) { "복구 접수 보호는 단일 마켓 설정이 필요합니다" }
