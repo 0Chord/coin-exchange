@@ -23,6 +23,7 @@ import java.util.concurrent.atomic.AtomicBoolean
 internal const val SPLIT_ARCHIVE_APPLIED_TYPE_ID = 4_059
 internal const val SPLIT_QUERY_REPLAY_STREAM_ID = 19_999
 internal const val SPLIT_QUERY_REPLAY_ALIAS_PREFIX = "split-query-replay-"
+internal const val SPLIT_ARCHIVE_READ_TIMEOUT_MS = 3_000L
 
 internal fun splitArchiveAppliedLabel(
     clusterId: Int,
@@ -60,7 +61,7 @@ internal class AeronSplitArchiveSource(
     members: List<SplitArchiveMember>,
     private val clusterId: Int,
     private val topologySha256: String,
-    private val timeoutMs: Long = 3_000,
+    private val timeoutMs: Long = SPLIT_ARCHIVE_READ_TIMEOUT_MS,
 ) : SplitArchiveSource {
     private class Connection(
         val member: SplitArchiveMember,

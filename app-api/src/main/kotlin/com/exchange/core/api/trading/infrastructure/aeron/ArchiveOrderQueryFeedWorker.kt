@@ -1,5 +1,8 @@
 package com.exchange.core.api.trading.infrastructure.aeron
 
+import com.exchange.core.api.trading.application.BalanceArchiveObservation
+import com.exchange.core.api.trading.application.BalanceQueryCode
+import com.exchange.core.api.trading.application.BalanceSourceStatus
 import com.exchange.core.api.trading.application.OrderQueryLifecycle
 import com.exchange.core.api.trading.application.OrderQueryNamespace
 import com.exchange.core.api.trading.application.port.MAX_LEDGER_PAGE_ENTRIES
@@ -8,6 +11,7 @@ import com.exchange.core.api.trading.application.port.OrderQueryFeedStore
 import com.exchange.core.api.trading.application.port.OrderQueryInconsistentException
 import com.exchange.core.api.trading.application.port.OrderQueryLedgerException
 import com.exchange.core.api.trading.application.port.OrderQuerySourceBounds
+import com.exchange.core.api.trading.application.port.OrderQueryUnavailableException
 import com.exchange.core.api.trading.application.port.OrderQueryWriteConflictException
 import com.exchange.core.api.trading.infrastructure.codec.OrderQuerySourceCodec
 import com.exchange.core.trading.ClusterLineage
@@ -17,8 +21,12 @@ import com.exchange.core.trading.FundsOrderDispatch
 import com.exchange.core.trading.MatchingFundsSettledAck
 import com.exchange.core.trading.MatchingResultEnvelope
 import com.exchange.core.trading.SettlementFact
+import com.exchange.core.trading.TradingMarketContext
 import com.exchange.core.trading.TradingServiceRole
 import org.slf4j.LoggerFactory
+import org.springframework.dao.DataAccessException
+import org.springframework.transaction.TransactionException
+import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 
 /** 확정 로그를 독립 상태에 재생한다. 저장 확인은 이 작업의 진행에만 쓰인다. */
@@ -29,6 +37,7 @@ internal class ArchiveOrderQueryFeedWorker(
     private val configuration: SplitTradingConfiguration,
     private val fundsSource: SplitArchiveSource,
     matchingSources: Map<ClusterLineage, SplitArchiveSource>,
+    private val applyBalances: ((TradingMarketContext) -> Boolean)? = null,
 ) : AutoCloseable {
     private val context =
         configuration.topology.fundsManifest.markets
@@ -43,6 +52,11 @@ internal class ArchiveOrderQueryFeedWorker(
     private val logger = LoggerFactory.getLogger(javaClass)
     private val thread: Thread
 
+    @Volatile
+    var balanceStatus = BalanceSourceStatus()
+        private set
+
+    private var balanceProjectionError: BalanceQueryCode? = null
     private var fundsRead = SplitArchiveRead(0, false)
     private var matchingRead = SplitArchiveRead(0, false)
     private var admitted = 0L
@@ -81,6 +95,7 @@ internal class ArchiveOrderQueryFeedWorker(
         try {
             projectUntilClosed()
         } finally {
+            if (balanceStatus.error != BalanceQueryCode.QUERY_INCONSISTENT) balanceStatus = BalanceSourceStatus()
             for (source in listOf(fundsSource, matchingSource)) {
                 runCatching(source::close).onFailure { logger.warn("Archive 조회 원본을 닫지 못했습니다", it) }
             }
@@ -109,6 +124,7 @@ internal class ArchiveOrderQueryFeedWorker(
                 val durable = savedSequences(progress)
                 if (durable.wentBackFrom(saved)) {
                     checkRunning()
+                    balanceStatus = BalanceSourceStatus()
                     store.suspendProjection()
                     rewind()
                     verified = false
@@ -118,12 +134,14 @@ internal class ArchiveOrderQueryFeedWorker(
                 if (!verified && fundsRead.caughtUp && matchingRead.caughtUp && pendingEmpty() && funds.isReady && matching.isReady) {
                     verified = verifyCatchUp()
                 }
-                if (!advanced) Thread.sleep(20)
+                val balancesAdvanced = projectBalances()
+                if (!advanced && !balancesAdvanced) Thread.sleep(20)
             } catch (_: InterruptedException) {
                 Thread.currentThread().interrupt()
                 break
             } catch (failure: Exception) {
                 if (!running.get()) break
+                balanceStatus = BalanceSourceStatus(error = BalanceQueryCode.QUERY_UNAVAILABLE)
                 if (failure is IllegalArgumentException || failure is OrderQueryWriteConflictException ||
                     failure is OrderQueryInconsistentException || failure is OrderQueryLedgerException
                 ) {
@@ -137,6 +155,7 @@ internal class ArchiveOrderQueryFeedWorker(
                         verified = false
                         continue
                     }
+                    balanceStatus = BalanceSourceStatus(error = BalanceQueryCode.QUERY_INCONSISTENT)
                     runCatching { store.block(failure.message ?: "Archive 조회 원본 불일치") }
                     logger.error("Archive 조회 반영을 중단합니다", failure)
                     break
@@ -169,6 +188,18 @@ internal class ArchiveOrderQueryFeedWorker(
                     facts.ledger.lastOrNull()?.let { ledgerThrough = it.sequence }
                     facts.settlements.lastOrNull()?.let { settled = it.resultSequence }
                 }
+            if (applyBalances != null) {
+                balanceStatus =
+                    balanceStatus.copy(
+                        observation =
+                            BalanceArchiveObservation(
+                                ledgerThrough = ledgerThrough,
+                                caughtUp = fundsRead.caughtUp,
+                                expiresAtNs = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(SPLIT_ARCHIVE_READ_TIMEOUT_MS),
+                            ),
+                        error = balanceProjectionError,
+                    )
+            }
         }
         while (admissions.isNotEmpty()) {
             checkRunning()
@@ -232,6 +263,31 @@ internal class ArchiveOrderQueryFeedWorker(
 
     private fun pendingEmpty(): Boolean = admissions.isEmpty() && matches.isEmpty() && settlements.isEmpty() && ledger.isEmpty()
 
+    private fun projectBalances(): Boolean {
+        val applyPage = applyBalances ?: return false
+        if (balanceProjectionError == BalanceQueryCode.QUERY_INCONSISTENT) return false
+        checkRunning()
+        return try {
+            val advanced = applyPage(context)
+            if (balanceProjectionError != null) {
+                balanceProjectionError = null
+                balanceStatus = balanceStatus.copy(error = null)
+            }
+            advanced
+        } catch (failure: RuntimeException) {
+            val code =
+                when (failure) {
+                    is OrderQueryInconsistentException, is OrderQueryLedgerException -> BalanceQueryCode.QUERY_INCONSISTENT
+                    is DataAccessException, is TransactionException, is OrderQueryUnavailableException -> BalanceQueryCode.QUERY_UNAVAILABLE
+                    else -> throw failure
+                }
+            if (balanceProjectionError != code) logger.warn("PostgreSQL 잔고 반영 실패", failure)
+            balanceProjectionError = code
+            balanceStatus = balanceStatus.copy(error = code, session = Any())
+            false
+        }
+    }
+
     private fun savedSequences(progress: OrderQueryFeedProgress): SavedSequences {
         checkRunning()
         return SavedSequences(
@@ -253,6 +309,7 @@ internal class ArchiveOrderQueryFeedWorker(
         matched = 0
         settled = 0
         ledgerThrough = 0
+        balanceProjectionError = null
         admissions.clear()
         matches.clear()
         settlements.clear()

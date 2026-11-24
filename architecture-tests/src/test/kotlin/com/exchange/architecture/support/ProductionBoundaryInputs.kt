@@ -42,6 +42,8 @@ object ProductionBoundaryInputs {
                 "$TRADING_APPLICATION.BoundedTradingCancellation",
                 "$TRADING_APPLICATION.OrderQueryCode",
                 "$TRADING_APPLICATION.OrderQueryResult",
+                "$TRADING_APPLICATION.BalanceQueryCode",
+                "$TRADING_APPLICATION.BalanceQueryResult",
                 "$TRADING_APPLICATION.OrderQueryRecord",
                 "$TRADING_APPLICATION.OrderQueryProgress",
                 "$TRADING_APPLICATION.OrderQueryLifecycle",
@@ -61,6 +63,7 @@ object ProductionBoundaryInputs {
     val requiredTypes =
         setOf(
             "$BASE.api.trading.api.OrderQueryController",
+            "$BASE.api.trading.api.BalanceQueryController",
             "$BASE.api.trading.api.BoundedTradingOrderController",
             "${TRADING_APPLICATION}.SubmitTradingOrderUseCase",
             "$BASE.api.market.api.MarketConfigurationController",
