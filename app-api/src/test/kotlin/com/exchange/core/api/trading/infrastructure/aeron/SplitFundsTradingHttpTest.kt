@@ -399,12 +399,13 @@ class SplitFundsTradingHttpTest {
         val entries = mutableListOf<Int>()
         val orders = settings.role == TradingServiceRole.MATCHING
         val schema = if (orders) 88 else 89
+        val schemaOffset = if (orders) 4 else 0
         AeronSplitArchiveSource(members, settings.clusterId, settings.configuration.resultTopologySha256).use { source ->
             var position = 0L
             await("${settings.role} Archive의 단건 및 묶음 전송") {
                 val replayed =
                     source.read(position) { frame ->
-                        if (UnsafeBuffer(frame.bytes).getShort(4, ByteOrder.LITTLE_ENDIAN).toInt() == schema) {
+                        if (UnsafeBuffer(frame.bytes).getShort(schemaOffset, ByteOrder.LITTLE_ENDIAN).toInt() == schema) {
                             if (orders) {
                                 when (val command = orderCodec.decode(frame.bytes).command) {
                                     is SplitOrderDeliveryCommand.Apply -> entries.add(1)
