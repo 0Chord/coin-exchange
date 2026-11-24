@@ -552,38 +552,6 @@ class BoundedFundingState(
         }
     }
 
-    /** 코덱이 한 마켓의 연속 순번을 확인한 묶음을 적용하고, 처리한 구간의 누적 ACK를 만든다. */
-    fun applyMatchingResultBatch(
-        batch: List<MatchingResultEnvelope>,
-        appliedAt: Instant,
-        settlementCalculator: OrderSettlementCalculator,
-        atLogPosition: Long,
-    ): FundsResultReply {
-        require(batch.size >= 2)
-        var lastSuccessfulStream: MatchingResultStream? = null
-        var status = FundsResultStatus.APPLIED
-        for (result in batch) {
-            val reply = applyFinancialResult(result, appliedAt, settlementCalculator, atLogPosition)
-            status = reply.status
-            when (status) {
-                FundsResultStatus.APPLIED, FundsResultStatus.DUPLICATE, FundsResultStatus.PRUNED -> {
-                    lastSuccessfulStream = result.stream
-                }
-
-                FundsResultStatus.RETRYABLE_CAPACITY -> {
-                    val ack = lastSuccessfulStream?.let { checkNotNull(results).ack(it.marketId) }
-                    return reply.copy(ack = ack, expectedSequence = result.resultSequence)
-                }
-
-                else -> {
-                    return reply
-                }
-            }
-        }
-        val market = checkNotNull(lastSuccessfulStream).marketId
-        return FundsResultReply(status, checkNotNull(results).ack(market))
-    }
-
     /** 전체 후보를 검사한 뒤 금융·결과 prefix·전달 확인을 한 소유자의 변경으로 반영한다. */
     private fun applyFinancialResult(
         result: MatchingResultEnvelope,

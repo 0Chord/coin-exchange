@@ -14,29 +14,36 @@ import kotlin.test.assertTrue
 
 class FundsLedgerTest {
     @Test
-    fun `같은 로그 위치의 원장은 순번별로 확인하고 스냅샷에서 이어 복원한다`() {
+    fun `원장 묶음의 로그 위치 중복을 거절하고 확인한 다음 순번부터 복원한다`() {
         val lineage = ClusterLineage(1, 2)
         val ledger = FundsLedger(lineage)
-        for (index in 1..2) {
-            val opening = OpeningBalance("opening-$index", UserId("user-$index"), AssetId("USDT"), Amount(100))
-            val transaction = opening.transaction("ledger-$index", Instant.EPOCH)
-            val batch = assertNotNull(ledger.prepare(64L, listOf(transaction)))
-            ledger.record(batch)
-        }
+        val first = OpeningBalance("opening-1", UserId("user-1"), AssetId("USDT"), Amount(100))
+        val second = OpeningBalance("opening-2", UserId("user-2"), AssetId("USDT"), Amount(100))
+        val firstTransaction = first.transaction("ledger-1", Instant.EPOCH)
+        val secondTransactions = listOf(second.transaction("ledger-2", Instant.EPOCH))
+        ledger.record(assertNotNull(ledger.prepare(64L, listOf(firstTransaction))))
+
+        val originalProgress = ledger.progress()
+        assertFailsWith<IllegalArgumentException> { ledger.prepare(64L, secondTransactions) }
+        assertFailsWith<IllegalArgumentException> { ledger.record(FundsLedgerBatch(lineage, 2L, 64L, secondTransactions)) }
+        assertEquals(originalProgress, ledger.progress())
+
+        ledger.record(assertNotNull(ledger.prepare(65L, secondTransactions)))
 
         assertTrue(ledger.acknowledge(1L))
         val saved = ledger.snapshot()
         assertEquals(1L, saved.retiredThrough)
         assertEquals(64L, saved.retiredLogPosition)
         assertEquals(2L, saved.batches.single().sequence)
-        assertEquals(64L, saved.batches.single().logPosition)
+        assertEquals(65L, saved.batches.single().logPosition)
 
         val restored = FundsLedger(lineage)
         restored.restore(saved)
         assertEquals(ledger.progress(), restored.progress())
         assertNull(restored.read(1L))
-        val second = assertNotNull(restored.read(2L))
-        assertFailsWith<IllegalArgumentException> { restored.prepare(63L, second.transactions) }
+        assertEquals(secondTransactions, assertNotNull(restored.read(2L)).transactions)
+        assertFailsWith<IllegalArgumentException> { restored.prepare(64L, secondTransactions) }
+        assertFailsWith<IllegalArgumentException> { restored.prepare(65L, secondTransactions) }
         assertTrue(restored.acknowledge(2L))
         assertEquals(2L, restored.progress().retiredThrough)
         assertNull(restored.read(2L))
