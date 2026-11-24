@@ -208,9 +208,8 @@ internal class SplitTradingClusterAdapter(
 
     fun replayArchiveInput(frame: RecordedApplicationFrame) {
         check(!this::cluster.isInitialized && frame.position > appliedLogPosition)
-        val malformedBefore = malformedMessages
+        // 로그에 기록된 잘못된 업무 입력도 실제 서비스와 같은 거절을 재생한다.
         applyMessage(null, frame.timestamp, UnsafeBuffer(frame.bytes), 0, frame.bytes.size, frame.position)
-        require(malformedMessages == malformedBefore) { "Archive의 거래 입력을 해석하지 못했습니다" }
     }
 
     private fun applyMessage(

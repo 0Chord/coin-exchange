@@ -572,6 +572,41 @@ class SplitTradingClusterAdapterTest {
     }
 
     @Test
+    fun `잘못된 업무 메시지 뒤의 확정 접수도 Archive에서 재생한다`() {
+        val settings = configuration(inputContractVersion = 2, archiveQueryEnabled = true)
+        val live = fixture(TradingServiceRole.FUNDS, results = true, settings = settings)
+        val projection = SplitArchiveProjection(TradingServiceRole.FUNDS, settings)
+        val archiveCodec = SplitOrderDeliveryCodec(2)
+
+        fun apply(bytes: ByteArray): ArchiveProjectionFacts {
+            live.position += 64
+            live.service.onSessionMessage(live.session, timestamp, UnsafeBuffer(bytes), 0, bytes.size, Header(0, 0))
+            return projection.apply(RecordedApplicationFrame(bytes, live.position, 0, 1, timestamp))
+        }
+
+        apply(archiveCodec.encode(1, SplitOrderDeliveryCommand.InitializeRole(settings.topologySha256)))
+        val opening = OpeningBalance("archive-opening", user, quote, Amount(1_000))
+        val funding = DevelopmentBalanceCommandPayload(opening, "unused-legacy-id", Instant.EPOCH)
+        val opened = apply(archiveCodec.encode(2, control(BoundedTradingCommand.Funding(funding))))
+        assertEquals(1L, opened.ledger.single().sequence)
+
+        val malformed = apply(ByteArray(8))
+        assertEquals(1L, live.service.malformedMessages)
+        assertTrue(malformed.admissions.isEmpty() && malformed.ledger.isEmpty())
+
+        apply(archiveCodec.encode(3, control(BoundedTradingCommand.Rotate(user, 0, 0))))
+        val accepted = apply(archiveCodec.encode(4, admit(1, 3)))
+        assertEquals("ACCEPTED", live.replies.last().code)
+        assertEquals(Balance(user, quote, Amount(700), Amount(300)), live.funds().currentBalance(user, quote))
+        assertEquals(1L, accepted.admissions.single().admissionSequence)
+        val ledger = accepted.ledger.single()
+        assertEquals(2L, ledger.sequence)
+        assertEquals(live.position, ledger.logPosition)
+        assertEquals(300L, ledger.transactions.single().postings.last().amount.value)
+        assertTrue(projection.isReady)
+    }
+
+    @Test
     fun `초기화 전 snapshot과 다른 framework 위치 복원은 정상 완료하지 않는다`() {
         val uninitialized = fixture(TradingServiceRole.FUNDS)
         assertFailsWith<AgentTerminationException> { uninitialized.snapshot() }
@@ -1093,6 +1128,7 @@ class SplitTradingClusterAdapterTest {
         inputContractVersion: Int = 1,
         maxMatchingResults: Int = 8_192,
         queryRetention: QueryRetentionConfiguration? = null,
+        archiveQueryEnabled: Boolean = false,
     ): SplitTradingConfiguration {
         val context =
             TradingMarketContext(
@@ -1133,6 +1169,7 @@ class SplitTradingClusterAdapterTest {
             declaration(TradingServiceRole.FUNDS, manifest.lineage),
             declaration(TradingServiceRole.MATCHING, matchingLineage),
             inputContractVersion = inputContractVersion,
+            archiveQueryEnabled = archiveQueryEnabled,
             dispatchLimits =
                 if (inputContractVersion == 2) {
                     FundsDispatchLimits(
