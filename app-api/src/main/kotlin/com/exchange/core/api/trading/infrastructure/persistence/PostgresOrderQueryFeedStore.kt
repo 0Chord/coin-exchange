@@ -43,6 +43,7 @@ import org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate
 import org.springframework.transaction.support.TransactionSynchronizationManager
 import tools.jackson.databind.json.JsonMapper
 import tools.jackson.module.kotlin.KotlinModule
+import java.sql.ResultSet
 import java.sql.Statement
 import java.time.Instant
 import java.time.OffsetDateTime
@@ -54,7 +55,7 @@ class PostgresOrderQueryFeedStore(
     private val jdbc: NamedParameterJdbcTemplate,
 ) : OrderQueryFeedStore {
     private val mapper = JsonMapper.builder().addModule(KotlinModule.Builder().build()).build()
-    private val parameters = mapOf("namespace" to "${query.namespace.fundsLineage.high}:${query.namespace.fundsLineage.low}")
+    private val parameters = mapOf("namespace" to query.namespaceKey)
     private lateinit var consumerId: String
     private lateinit var streams: Map<String, MatchingResultStream>
     private lateinit var contexts: Map<String, TradingMarketContext>
@@ -359,6 +360,33 @@ class PostgresOrderQueryFeedStore(
         if (found != through) throw ledgerIncomplete("자금 원본에서 회수한 원장 범위에 누락이 있다")
     }
 
+    /** 호출자가 namespace 잠금을 쥔 트랜잭션에서, 이미 커밋된 분개만 제한해 읽는다. */
+    internal fun readLedgerPage(after: Long): List<FundsLedgerBatch> {
+        val page = ArrayList<FundsLedgerBatch>(MAX_LEDGER_PAGE_ENTRIES)
+        var remainingBytes = FundsLedgerRecovery.MAX_RETAINED_BYTES
+        jdbc.jdbcTemplate
+            .queryForStream(
+                """
+                select sequence, log_position, transactions from order_query.funds_ledger_batch
+                where namespace = ? and sequence > ? order by sequence limit ?
+                """.trimIndent(),
+                PreparedStatementSetter { statement ->
+                    statement.fetchSize = 1
+                    statement.setString(1, parameters.getValue("namespace"))
+                    statement.setLong(2, after)
+                    statement.setInt(3, MAX_LEDGER_PAGE_ENTRIES)
+                },
+                RowMapper { row, _ -> decodeStoredLedgerBatch(row) },
+            ).use { stream ->
+                for (batch in stream.iterator()) {
+                    if (batch.canonicalBytes > remainingBytes) break
+                    page.add(batch)
+                    remainingBytes -= batch.canonicalBytes
+                }
+            }
+        return page
+    }
+
     override fun applyLedgerPage(batches: List<FundsLedgerBatch>): Long {
         require(batches.size in 1..MAX_LEDGER_PAGE_ENTRIES)
         require(batches.sumOf { it.canonicalBytes } <= FundsLedgerRecovery.MAX_RETAINED_BYTES)
@@ -466,23 +494,7 @@ class PostgresOrderQueryFeedStore(
                         statement.setString(1, parameters.getValue("namespace"))
                         statement.setLong(2, ledger.issued)
                     },
-                    RowMapper { row, _ ->
-                        try {
-                            val payload = mapper.readTree(row.getString("transactions"))
-                            val stored = mapper.treeToValue(payload, Array<StoredLedgerTransaction>::class.java)
-                            // JSON 숫자나 문자열이 Kotlin 값으로 강제 변환되며 손상이 숨겨지지 않게 한다.
-                            val canonical = mapper.readTree(mapper.writeValueAsString(stored))
-                            require(payload == canonical) { "저장된 원장 필드의 타입이 올바르지 않다" }
-                            FundsLedgerBatch(
-                                query.namespace.fundsLineage,
-                                row.getLong("sequence"),
-                                row.getLong("log_position"),
-                                stored.map(StoredLedgerTransaction::toTransaction),
-                            )
-                        } catch (failure: RuntimeException) {
-                            throw ledgerMismatch("저장된 분개를 해석할 수 없다", failure)
-                        }
-                    },
+                    RowMapper { row, _ -> decodeStoredLedgerBatch(row) },
                 )
             source.use {
                 var previousSequence = 0L
@@ -510,6 +522,23 @@ class PostgresOrderQueryFeedStore(
         }
 
     private fun ledgerIncomplete(message: String) = OrderQueryLedgerException(OrderQueryRecoveryFailure.LEDGER_INCOMPLETE, message)
+
+    private fun decodeStoredLedgerBatch(row: ResultSet): FundsLedgerBatch =
+        try {
+            val payload = mapper.readTree(row.getString("transactions"))
+            val stored = mapper.treeToValue(payload, Array<StoredLedgerTransaction>::class.java)
+            // JSON 숫자나 문자열이 Kotlin 값으로 강제 변환되며 손상이 숨겨지지 않게 한다.
+            val canonical = mapper.readTree(mapper.writeValueAsString(stored))
+            require(payload == canonical) { "저장된 원장 필드의 타입이 올바르지 않다" }
+            FundsLedgerBatch(
+                query.namespace.fundsLineage,
+                row.getLong("sequence"),
+                row.getLong("log_position"),
+                stored.map(StoredLedgerTransaction::toTransaction),
+            )
+        } catch (failure: RuntimeException) {
+            throw ledgerMismatch("저장된 분개를 해석할 수 없다", failure)
+        }
 
     private fun ledgerMismatch(
         message: String,

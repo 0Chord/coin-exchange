@@ -588,6 +588,38 @@ class ProductionBoundaryInputsTest {
         assertEquals(emptyList(), a.violations)
     }
 
+    @Test fun `HTTP는 짝이 있는 UseCase 인터페이스를 호출하고 구체 구현에는 직접 의존할 수 없다`() {
+        val useCase = "$app.LookupOrderUseCase"
+        val implementation = "${useCase}Impl"
+        val directController = "$http.DirectLookupOrderController"
+        val input =
+            scope(
+                useCase to "public interface LookupOrderUseCase { void lookup(); }",
+                implementation to
+                    "public class LookupOrderUseCaseImpl implements LookupOrderUseCase { public void lookup() {} }",
+                "$http.LookupOrderController" to
+                    """
+                    @org.springframework.web.bind.annotation.RestController
+                    public class LookupOrderController {
+                        private $useCase useCase;
+                        public void lookup() { useCase.lookup(); }
+                    }
+                    """.trimIndent(),
+                directController to
+                    """
+                    @org.springframework.web.bind.annotation.RestController
+                    public class DirectLookupOrderController { private $implementation useCase; }
+                    """.trimIndent(),
+            )
+        val http = HttpEntryBoundary.inspect(input, ProductionBoundaryInputs.http(input))
+        val application = ApplicationImplementationIndependence.inspect(input, ProductionBoundaryInputs.application(input))
+        assertTrue(http.evaluated, http.problems.toString())
+        assertTrue(application.evaluated, application.problems.toString())
+        assertEquals(setOf(directController to implementation), http.violations.map { it.originType to it.targetType }.toSet())
+        assertTrue(setOf(useCase, implementation).all { it in application.applicationTypes })
+        assertEquals(emptyList(), application.violations)
+    }
+
     @Test fun `일반 OrderManager도 application 금지 구현 참조를 검사한다`() {
         val target = "com.exchange.core.api.ledger.infrastructure.persistence.PostgresBalanceStore"
         val input = scope("$app.OrderManager" to "public class OrderManager { private $target store; }")

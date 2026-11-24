@@ -22,6 +22,7 @@ import com.exchange.core.api.trading.infrastructure.codec.SplitResultDeliveryCod
 import com.exchange.core.api.trading.infrastructure.codec.SplitResultDeliveryCommand
 import com.exchange.core.api.trading.infrastructure.codec.SplitResultDeliveryReply
 import com.exchange.core.api.trading.infrastructure.history.BoundedTradingStateCodec
+import com.exchange.core.api.trading.infrastructure.persistence.PostgresBalanceProjection
 import com.exchange.core.common.Amount
 import com.exchange.core.common.AssetId
 import com.exchange.core.common.MarketId
@@ -81,9 +82,11 @@ import io.aeron.driver.ThreadingMode
 import io.aeron.logbuffer.Header
 import org.agrona.DirectBuffer
 import org.agrona.concurrent.UnsafeBuffer
+import org.aopalliance.intercept.MethodInterceptor
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.TestReporter
 import org.junit.jupiter.api.io.TempDir
+import org.springframework.aop.framework.Advised
 import org.springframework.beans.factory.BeanCreationException
 import org.springframework.beans.factory.config.BeanPostProcessor
 import org.springframework.beans.factory.support.AbstractBeanDefinition
@@ -127,6 +130,277 @@ class SplitFundsTradingHttpTest {
     @TempDir lateinit var directory: Path
     private val json = JsonMapper.builder().build()
     private val lineage = ClusterLineage(41, 42)
+
+    @Test
+    fun `Archive 잔고는 미체결 매수 예약과 잔량 반환을 실제 HTTP로 확인한다`() {
+        withTradingNodes(archiveQuery = true) { harness ->
+            val pauseBalanceProjection = AtomicBoolean()
+            HttpClient.newHttpClient().use { http ->
+                archiveBalanceWas(harness, 0, pauseBalanceProjection).use { was ->
+                    val url = wasUrl(was)
+                    awaitBalance(http, url, "USDT", sequence = 2, available = 1_000, reserved = 0)
+                    val invalid = getBalance(http, url, "A".repeat(257))
+                    assertEquals(400, invalid.statusCode(), invalid.body())
+                    val absent = getBalance(http, url, "BTC")
+                    assertEquals(404, absent.statusCode(), absent.body())
+                    val missing = json.readTree(absent.body())
+                    assertEquals("BALANCE_NOT_FOUND", missing.path("code").asString())
+                    assertEquals(2L, missing.path("asOfLedgerSequence").longValue())
+                    assertFalse(missing.has("available"))
+                    assertFalse(missing.has("reserved"))
+
+                    val epoch = post(http, url, "/channels/0/epoch", """{"userId":"buyer","expectedEpoch":0}""")
+                    assertEquals(200, epoch.statusCode(), epoch.body())
+                    pauseBalanceProjection.set(true)
+                    val orderId =
+                        try {
+                            submitWhileBalanceProjectionWaits(harness, http, url)
+                        } finally {
+                            pauseBalanceProjection.set(false)
+                        }
+                    awaitBalance(http, url, "USDT", sequence = 3, available = 700, reserved = 300)
+                    awaitBalance(http, url, "BTC", sequence = 3, available = 0, reserved = 0)
+
+                    val cancelPath = "/markets/BTC-USDT/orders/$orderId/cancel"
+                    val cancelBody = """{"userId":"buyer","channel":0,"epoch":1,"sequence":2,"expectedConfigurationVersion":1}"""
+                    harness.settlementGate.paused.set(true)
+                    val cancelId =
+                        try {
+                            val cancel = post(http, url, cancelPath, cancelBody)
+                            assertEquals(202, cancel.statusCode(), cancel.body())
+                            awaitQuery(harness, http, url, orderId, "CANCELLED", 0, 0, 3, "PENDING", "RELEASE")
+                            awaitBalance(http, url, "USDT", sequence = 3, available = 700, reserved = 300)
+                            val receipt = json.readTree(cancel.body())
+                            assertEquals("ACCEPTED", receipt.path("status").asString())
+                            receipt.path("cancelId").asString().also { assertTrue(it.isNotBlank()) }
+                        } finally {
+                            harness.settlementGate.paused.set(false)
+                        }
+                    awaitQuery(harness, http, url, orderId, "CANCELLED", 0, 0, 3)
+                    awaitBalance(http, url, "USDT", sequence = 4, available = 1_000, reserved = 0)
+
+                    val repeated = post(http, url, cancelPath, cancelBody)
+                    assertEquals(202, repeated.statusCode(), repeated.body())
+                    val receipt = json.readTree(repeated.body())
+                    assertEquals("ACCEPTED", receipt.path("status").asString())
+                    assertEquals(cancelId, receipt.path("cancelId").asString())
+                    awaitBalance(http, url, "USDT", sequence = 4, available = 1_000, reserved = 0)
+                }
+
+                verifyBalanceRecoveryAndFailure(harness, http)
+            }
+        }
+    }
+
+    private fun verifyBalanceRecoveryAndFailure(
+        harness: TradingHarness,
+        http: HttpClient,
+    ) {
+        val jdbc = harness.database.jdbc()
+        assertEquals("READY", jdbc.queryForObject("select lifecycle from order_query.query_progress", String::class.java))
+        // 이전 WAS의 READY가 남아 있어도 새 WAS가 원본 검증을 커밋하기 전에는 금액을 내주지 않는다.
+        withLockedQueryRow(jdbc, "select 1 from order_query.feed_consumer where namespace = '41:42' for update") { unlock ->
+            archiveBalanceWas(harness, 1).use { restarted ->
+                val url = wasUrl(restarted)
+                try {
+                    awaitBalanceUnavailable(http, url, "QUERY_NOT_READY")
+                } finally {
+                    unlock()
+                }
+                awaitBalance(http, url, "USDT", sequence = 4, available = 1_000, reserved = 0)
+                awaitBalance(http, url, "BTC", sequence = 4, available = 0, reserved = 0)
+                assertEquals(4L, jdbc.queryForObject("select count(*) from order_query.funds_ledger_batch", Long::class.java))
+
+                harness.database.whilePaused {
+                    assertFailsWith<DataAccessException> { jdbc.queryForObject("select 1", Int::class.java) }
+                    awaitBalanceUnavailable(http, url, "QUERY_UNAVAILABLE")
+                }
+                awaitBalance(http, url, "USDT", sequence = 4, available = 1_000, reserved = 0)
+                verifyBalanceProjectionFailure(harness, http, url)
+            }
+        }
+    }
+
+    private fun verifyBalanceProjectionFailure(
+        harness: TradingHarness,
+        http: HttpClient,
+        url: String,
+    ) {
+        val jdbc = harness.database.jdbc()
+        jdbc.execute(
+            """
+            create function order_query.reject_test_balance_write() returns trigger language plpgsql as $$
+            begin
+                raise exception '시험 잔고 쓰기 거절' using errcode = '23514';
+            end;
+            $$
+            """.trimIndent(),
+        )
+        jdbc.execute(
+            """
+            create trigger reject_test_balance_write before insert or update on order_query.balance_projection
+            for each row execute function order_query.reject_test_balance_write()
+            """.trimIndent(),
+        )
+        try {
+            val first = post(http, url, "/markets/BTC-USDT/orders", orderBody("buyer", "BUY", 1, sequence = 3))
+            assertEquals(202, first.statusCode(), first.body())
+            awaitBalanceUnavailable(http, url, "QUERY_INCONSISTENT")
+
+            val later = post(http, url, "/markets/BTC-USDT/orders", orderBody("buyer", "BUY", 1, sequence = 4))
+            assertEquals(202, later.statusCode(), later.body())
+            val laterOrder = json.readTree(later.body()).path("orderId").asString()
+            awaitQuery(harness, http, url, laterOrder, "RESTING", 0, 1, 0)
+            assertEquals(6L, jdbc.queryForObject("select count(*) from order_query.funds_ledger_batch", Long::class.java))
+            assertEquals(4L, jdbc.queryForObject("select projected_through from order_query.balance_progress", Long::class.java))
+            awaitBalanceUnavailable(http, url, "QUERY_INCONSISTENT")
+        } finally {
+            jdbc.execute("drop trigger reject_test_balance_write on order_query.balance_projection")
+            jdbc.execute("drop function order_query.reject_test_balance_write()")
+        }
+    }
+
+    private fun archiveBalanceWas(
+        harness: TradingHarness,
+        run: Int,
+        pauseBalanceProjection: AtomicBoolean? = null,
+    ): ConfigurableApplicationContext {
+        val manifest = directory.resolve("manifest.bin")
+        val settingsFiles =
+            listOf(TradingServiceRole.FUNDS, TradingServiceRole.MATCHING).map { role ->
+                val values = settingsEnvironment(manifest, role, harness.basePort, archiveQuery = true)
+                val file = directory.resolve("balance-${role.name.lowercase()}.properties")
+                val properties = Properties()
+                properties.putAll(values)
+                Files.newOutputStream(file).use { output -> properties.store(output, null) }
+                file
+            }
+        val args =
+            wasArguments(harness, gatewayRoot = "balance-gateway-$run", egressOffset = 32 + run) +
+                arrayOf(
+                    "--exchange.order-query.source=archive",
+                    "--exchange.order-query.consumer-id=balance-test",
+                    "--exchange.order-query.archive-node-configs=${settingsFiles.joinToString(",")}",
+                    "--spring.datasource.hikari.connection-timeout=1500",
+                    "--spring.datasource.hikari.validation-timeout=1000",
+                )
+        val was = SpringApplicationBuilder(ExchangeCoreApplication::class.java).run(*args)
+        if (pauseBalanceProjection != null) {
+            try {
+                val projection = was.getBean(PostgresBalanceProjection::class.java) as Advised
+                // 실제 Spring 빈의 트랜잭션 앞에서 시험 중인 잔고 쓰기만 보류한다.
+                val pauseWrites =
+                    MethodInterceptor { invocation ->
+                        if (invocation.method.name == PostgresBalanceProjection::applyNextPage.name && pauseBalanceProjection.get()) {
+                            false
+                        } else {
+                            invocation.proceed()
+                        }
+                    }
+                projection.addAdvice(0, pauseWrites)
+            } catch (failure: Throwable) {
+                try {
+                    was.close()
+                } catch (closeFailure: Throwable) {
+                    failure.addSuppressed(closeFailure)
+                }
+                throw failure
+            }
+        }
+        return was
+    }
+
+    private fun submitWhileBalanceProjectionWaits(
+        harness: TradingHarness,
+        http: HttpClient,
+        url: String,
+    ): String {
+        val jdbc = harness.database.jdbc()
+        val submitted = post(http, url, "/markets/BTC-USDT/orders", orderBody("buyer", "BUY", 3))
+        assertEquals(202, submitted.statusCode(), submitted.body())
+        await("잔고 반영을 보류해도 예약 원장은 커밋된다") {
+            jdbc.queryForObject("select max(sequence) from order_query.funds_ledger_batch", Long::class.java) == 3L
+        }
+        val pending = getBalance(http, url, "USDT")
+        assertEquals(202, pending.statusCode(), pending.body())
+        val body = json.readTree(pending.body())
+        assertEquals("QUERY_CATCHING_UP", body.path("code").asString())
+        assertEquals(2L, body.path("projectedThroughLedgerSequence").longValue())
+        assertEquals(3L, body.path("observedLedgerSequence").longValue())
+        assertFalse(body.has("available"))
+        assertFalse(body.has("reserved"))
+        val orderId = json.readTree(submitted.body()).path("orderId").asString()
+        assertTrue(orderId.isNotBlank())
+        return orderId
+    }
+
+    private fun <T> withLockedQueryRow(
+        jdbc: JdbcTemplate,
+        sql: String,
+        work: (() -> Unit) -> T,
+    ): T =
+        checkNotNull(jdbc.dataSource).connection.use { connection ->
+            connection.autoCommit = false
+            try {
+                connection.prepareStatement(sql).use { statement -> statement.executeQuery().use { assertTrue(it.next()) } }
+                work(connection::rollback)
+            } finally {
+                connection.rollback()
+            }
+        }
+
+    private fun awaitBalanceUnavailable(
+        http: HttpClient,
+        url: String,
+        code: String,
+    ) {
+        var last: HttpResponse<String>? = null
+        await("잔고 조회 불가 $code", { "마지막 응답 ${last?.statusCode()}: ${last?.body()}" }) {
+            val response = getBalance(http, url, "USDT", timeout = Duration.ofSeconds(10))
+            last = response
+            val body = json.readTree(response.body())
+            if (response.statusCode() != 503 || body.path("code").asString() != code) return@await false
+            assertFalse(body.has("available"), response.body())
+            assertFalse(body.has("reserved"), response.body())
+            true
+        }
+    }
+
+    private fun awaitBalance(
+        http: HttpClient,
+        url: String,
+        asset: String,
+        sequence: Long,
+        available: Long,
+        reserved: Long,
+    ) {
+        var last: HttpResponse<String>? = null
+        await("$asset 잔고 $available/$reserved, 원장 $sequence", { "마지막 응답 ${last?.statusCode()}: ${last?.body()}" }) {
+            val response = getBalance(http, url, asset)
+            last = response
+            val body = json.readTree(response.body())
+            response.statusCode() == 200 && body.path("code").asString() == "BALANCE_FOUND" &&
+                body.path("userId").asString() == "buyer" && body.path("assetId").asString() == asset &&
+                body.path("asOfLedgerSequence").longValue() == sequence &&
+                body.path("available").isIntegralNumber && body.path("available").longValue() == available &&
+                body.path("reserved").isIntegralNumber && body.path("reserved").longValue() == reserved
+        }
+    }
+
+    private fun getBalance(
+        http: HttpClient,
+        url: String,
+        asset: String,
+        timeout: Duration = Duration.ofSeconds(3),
+    ): HttpResponse<String> {
+        val request =
+            HttpRequest
+                .newBuilder(URI.create("$url/api/trading/v3/users/buyer/balances/$asset"))
+                .timeout(timeout)
+                .GET()
+                .build()
+        return http.send(request, HttpResponse.BodyHandlers.ofString())
+    }
 
     @Test
     fun `PostgreSQL이 멈춘 동안 실제 삼대삼 거래와 리더 교체를 이어가고 Archive에서 복구한다`(reporter: TestReporter) {
@@ -3328,6 +3602,7 @@ class SplitFundsTradingHttpTest {
         takerFeeRate: FeeRate = feeRate,
         persistSettlements: Boolean = false,
         maxFundingAccounts: Int = 8,
+        archiveQuery: Boolean = false,
         decorateFunds: (ClusteredService) -> ClusteredService = { it },
         verify: (TradingHarness) -> Unit,
     ) {
@@ -3335,12 +3610,12 @@ class SplitFundsTradingHttpTest {
         val feeRates = MakerTakerFeeRates(makerFeeRate = feeRate, takerFeeRate = takerFeeRate)
         val manifest = manifest(feeRates, maxFundingAccounts)
         val manifestFile = directory.resolve("manifest.bin").also { Files.write(it, BoundedTradingStateCodec().encodeManifest(manifest)) }
-        val fundsSettings = settings(manifestFile, TradingServiceRole.FUNDS, basePort, consumerId, persistSettlements)
-        val matchingSettings = settings(manifestFile, TradingServiceRole.MATCHING, basePort, consumerId, persistSettlements)
+        val fundsSettings = settings(manifestFile, TradingServiceRole.FUNDS, basePort, consumerId, persistSettlements, archiveQuery)
+        val matchingSettings = settings(manifestFile, TradingServiceRole.MATCHING, basePort, consumerId, persistSettlements, archiveQuery)
         val fundsSnapshot = AtomicReference<FundsRoleRecoveryState?>()
         val settlementGate = SettlementGate()
         val sourceReplies = SourceReplyGate()
-        OrderQueryTestDatabase().use { database ->
+        OrderQueryTestDatabase(socketTimeoutSeconds = if (archiveQuery) 2 else null).use { database ->
             DevelopmentSplitTradingNode
                 .start(
                     fundsSettings,
@@ -3846,7 +4121,9 @@ class SplitFundsTradingHttpTest {
         base: Int,
         consumerId: String? = null,
         persistSettlements: Boolean = false,
-    ): SplitTradingNodeSettings = splitTradingSettings(settingsEnvironment(manifest, role, base, consumerId, persistSettlements))
+        archiveQuery: Boolean = false,
+    ): SplitTradingNodeSettings =
+        splitTradingSettings(settingsEnvironment(manifest, role, base, consumerId, persistSettlements, archiveQuery))
 
     private fun settingsEnvironment(
         manifest: Path,

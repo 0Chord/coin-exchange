@@ -276,7 +276,7 @@ ARCH-01/02/03/04/06/08의 의존·호출 검사 입력은 그대로 유지한다
 | 검사 묶음 | 전체 입력에서 고르는 조건 | 검사할 조건 | 정확한 허용 영역 |
 | --- | --- | --- | --- |
 | 컨트롤러 | 이름이 `Controller`로 끝나거나 표준 Controller/RestController 어노테이션이 있음 | `…Controller` 이름과 표준 어노테이션 모두 필요 | app-api · `api/order/api` |
-| 유즈케이스·내부 작업·조율 | 이름이 `UseCase`/`Service`/`Coordinator`로 끝남 | 비어 있지 않은 앞 이름. 실제 구현 선언이어야 함: 인터페이스·enum·어노테이션·abstract 선언 거절 | UseCase·Service: app-api · `api/order/application`. Coordinator: app-api · `api/matching/application` |
+| 유즈케이스·내부 작업·조율 | 이름이 `UseCase`/`Service`/`Coordinator`로 끝남 | 비어 있지 않은 앞 이름. 구체 구현을 허용한다. `UseCase` 인터페이스는 같은 모듈·패키지에 이름이 대응하는 구체 `UseCaseImpl`이 직접 구현해야 한다. | UseCase·Service: app-api · `api/order/application`. Coordinator: app-api · `api/matching/application` |
 | 계산·결정 | 이름이 `Calculator`/`Resolver`로 끝남 | 비어 있지 않은 앞 이름. 클래스 또는 일반 인터페이스 허용, enum·어노테이션 선언 거절 | domain-fee · `fee`, domain-order · `order` |
 | 저장 포트 | 인터페이스 선언이고 이름이 `Store`로 끝남 | 어노테이션이 아닌 일반 인터페이스와 `…Store` 이름 | domain-order · `order`, domain-ledger · `ledger`, app-api · `api/matching/application/port` |
 | 저장 구현 | 비인터페이스의 `Store` 접미사 또는 실제 내부 Store 포트 구현 관계 | 실제 포트 구현과 `Postgres…Store`/`Jpa…Store` 이름. enum·어노테이션 선언 거절 | 아래 Store 영역 매핑 적용 |
@@ -404,7 +404,7 @@ flowchart TD
 | 입력·짝 예제 | 기대 결과와 근거 |
 | --- | --- |
 | application에 새 `CancelOrderUseCase` 추가 / 허용된 persistence로 이동 | 등록 없이 선택하여 정상 / UseCase 위치 위반. fixture에 새 운영 클래스를 복제하지 않음 |
-| `interface CancelOrderUseCase`, 이름이 `UseCase`뿐인 클래스 / 정상 구체 UseCase | 각각 선언 형태·이름 위반 / 정상. 접미사 선택과 형태 검사를 분리하여 확인 |
+| 짝이 없는 `interface CancelOrderUseCase`, 이름이 `UseCase`뿐인 클래스 / 정상 구체 UseCase 또는 직접 구현체가 있는 계약 | 각각 선언 형태·이름 위반 / 정상. 접미사 선택과 형태 검사를 분리하여 확인 |
 | 정상 `data class CancelOrderUseCase`, 단서 없는 `data class InternalState` | data라는 이유만으로 거절하지 않음. 각각 해당 이름 규칙 / 이름 규칙 미적용과 파일 검사 |
 | Service·Coordinator·Calculator·Resolver의 정상 위치 / 다른 허용 위치 | 각 묶음이 정상 대상을 선택하고 위치 반례를 보고함. Calculator/Resolver의 일반 인터페이스 정상 예제도 포함 |
 | 정상 내부 Store 포트와 실제 구현 / 이름이 잘못된 실제 구현 | 정상 / 실제 상속으로 선택한 구현의 이름 위반. 단순 접미사 선택만으로 구현을 놓치지 않음 |
@@ -608,7 +608,7 @@ flowchart TD
 
 | 분류 단서 | 추가 검사 | 허용 위치 |
 | --- | --- | --- |
-| 이름이 `…UseCase`, `…Service`, `…Coordinator` | 구체 클래스 또는 Kotlin object. interface·annotation·data/value class·enum은 역할 형태 위반. 접미사만으로 된 `UseCase` 등도 이름 위반 | 각각 order-application / order-application / matching-application |
+| 이름이 `…UseCase`, `…Service`, `…Coordinator` | 구체 클래스 또는 Kotlin object. `UseCase` 인터페이스는 같은 모듈·패키지의 구체 `UseCaseImpl`이 직접 구현할 때 허용한다. HTTP는 이 경우 계약 타입을 사용한다. 접미사만으로 된 이름은 위반이다. | 각각 order-application / order-application / matching-application |
 | 이름이 `…Calculator`, `…Resolver` | 이름 부분이 비지 않았는지 확인. 클래스·object·인터페이스 형태 허용 | 해당 domain-fee 또는 domain-order의 정확한 위치 |
 | 인터페이스이며 이름이 `…Store` | Spring Data 상속 신호가 함께 있으면 Store와 Repository 충돌 | domain-order, domain-ledger 또는 matching-ports |
 | 비인터페이스가 `…Store` 이름을 쓰거나, 내부 Store 포트를 구현 | 구현 포트가 확인돼야 함. `Postgres` 또는 `Jpa` + 비어 있지 않은 대상 + `Store` | 포트 소속 영역의 persistence 위치 |

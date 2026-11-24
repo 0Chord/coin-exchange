@@ -95,6 +95,7 @@ import kotlin.test.Test
 import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
+import kotlin.test.assertFalse
 import kotlin.test.assertNotEquals
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
@@ -107,6 +108,7 @@ class PostgresOrderQueryFeedStoreTest {
     private lateinit var jdbc: NamedParameterJdbcTemplate
     private lateinit var migratedFillFixture: Fixture
     private lateinit var migratedLedgerFixture: Fixture
+    private lateinit var migratedBalanceFixture: Fixture
 
     @BeforeAll
     fun start() {
@@ -118,6 +120,8 @@ class PostgresOrderQueryFeedStoreTest {
         migrations.target("15").load().migrate()
         migratedLedgerFixture = fixture()
         migratedLedgerFixture.feed.applyLedgerPage(listOf(migratedLedgerFixture.ledgerBatch(1)))
+        migratedBalanceFixture = fixture(supportedOnlyA = true)
+        migratedBalanceFixture.feed.applyLedgerPage(listOf(migratedBalanceFixture.ledgerBatch(1)))
         migrations.target(MigrationVersion.LATEST).load().migrate()
     }
 
@@ -1087,6 +1091,265 @@ class PostgresOrderQueryFeedStoreTest {
 
         assertEquals(0L, f.feed.ledgerThrough())
         assertEquals(1L, f.feed.applyLedgerPage(page))
+    }
+
+    @Test
+    fun `기존 원장에서 잔고를 채우고 같은 페이지를 다시 읽어도 지급은 한 번만 반영한다`() {
+        val f = migratedBalanceFixture.reopen()
+        val projection = balanceProjection(f)
+        assertEquals(1L, projection.read("u1", "QUOTE").ledgerThrough)
+        assertEquals(0L, projection.read("u1", "QUOTE").projectedThrough)
+
+        assertTrue(projection.applyNextPage(f.a))
+        assertProjectedBalance(projection, "u1", "QUOTE", 100, 0, through = 1)
+        assertNull(projection.read("u1", "A").available)
+        assertNull(projection.read("another-user", "QUOTE").available)
+
+        val restarted = f.reopen()
+        val reopenedProjection = balanceProjection(restarted)
+        assertEquals(1L, restarted.feed.applyLedgerPage(listOf(f.ledgerBatch(1))))
+        assertFalse(reopenedProjection.applyNextPage(f.a))
+        assertProjectedBalance(reopenedProjection, "u1", "QUOTE", 100, 0, through = 1)
+    }
+
+    @Test
+    fun `잔고를 반영하고 읽는 트랜잭션은 호출자의 조회 스냅샷과 분리된다`() {
+        val f = fixture(supportedOnlyA = true)
+        f.feed.applyLedgerPage(listOf(f.ledgerBatch(1)))
+        val transactionManager = DataSourceTransactionManager(requireNotNull(jdbc.jdbcTemplate.dataSource))
+        val projection = balanceProjection(f, transactionManager)
+        val outer =
+            TransactionTemplate(transactionManager).apply {
+                isolationLevel = TransactionDefinition.ISOLATION_REPEATABLE_READ
+                isReadOnly = true
+            }
+        val projectedThroughSql =
+            """
+            select coalesce(max(projected_through), 0) from order_query.balance_progress
+            where namespace = :namespace
+            """.trimIndent()
+
+        outer.executeWithoutResult { transaction ->
+            assertEquals(0L, jdbc.queryForObject(projectedThroughSql, f.parameters, Long::class.java))
+            assertTrue(projection.applyNextPage(f.a))
+            assertEquals(0L, jdbc.queryForObject(projectedThroughSql, f.parameters, Long::class.java))
+            assertProjectedBalance(projection, "u1", "QUOTE", 100, 0, through = 1)
+            transaction.setRollbackOnly()
+        }
+        assertProjectedBalance(projection, "u1", "QUOTE", 100, 0, through = 1)
+    }
+
+    @Test
+    fun `부분 정산과 잔량 반환의 분개를 같은 로그 위치에서도 순번대로 반영한다`() {
+        val f = fixture(supportedOnlyA = true)
+        val projection = balanceProjection(f)
+        val seller = UserId("seller")
+        val buyer = UserId("buyer")
+        val base = f.a.market.baseAssetId
+        val quote = f.a.market.quoteAssetId
+
+        fun batch(
+            sequence: Long,
+            transaction: LedgerTransaction,
+            position: Long = sequence * 32,
+        ) = FundsLedgerBatch(f.namespace.fundsLineage, sequence, position, listOf(transaction))
+
+        f.feed.applyLedgerPage(
+            listOf(
+                batch(1, OpeningBalance("buyer-quote", buyer, quote, Amount(1_000)).transaction("fund-buyer", Instant.EPOCH)),
+                batch(2, OpeningBalance("seller-base", seller, base, Amount(1)).transaction("fund-seller", Instant.EPOCH)),
+            ),
+        )
+        assertTrue(projection.applyNextPage(f.a))
+        assertNull(projection.read(buyer.value, base.value).available)
+        assertNull(projection.read(seller.value, quote.value).available)
+
+        f.feed.applyLedgerPage(
+            listOf(
+                batch(3, balanceTransfer(seller, base, 1, LedgerTransactionType.RESERVE)),
+                batch(4, balanceTransfer(buyer, quote, 300, LedgerTransactionType.RESERVE)),
+            ),
+        )
+        assertTrue(projection.applyNextPage(f.a))
+        assertProjectedBalance(projection, buyer.value, quote.value, 700, 300, through = 4)
+        assertProjectedBalance(projection, buyer.value, base.value, 0, 0, through = 4)
+        assertProjectedBalance(projection, seller.value, base.value, 0, 1, through = 4)
+        assertProjectedBalance(projection, seller.value, quote.value, 0, 0, through = 4)
+
+        f.owner.apply(f.input(1, side = Side.SELL, quantity = 1, userId = seller))
+        val matching = assertNotNull(f.owner.apply(f.input(2, quantity = 3, userId = buyer)).result)
+        val settlement =
+            f
+                .settlement(matching)
+                .fills
+                .single()
+                .transaction
+        f.feed.applyLedgerPage(listOf(batch(5, settlement)))
+        assertTrue(projection.applyNextPage(f.a))
+        assertProjectedBalance(projection, buyer.value, quote.value, 700, 200, through = 5)
+        assertProjectedBalance(projection, buyer.value, base.value, 1, 0, through = 5)
+        assertProjectedBalance(projection, seller.value, base.value, 0, 0, through = 5)
+        assertProjectedBalance(projection, seller.value, quote.value, 100, 0, through = 5)
+
+        val release = batch(6, balanceTransfer(buyer, quote, 200, LedgerTransactionType.RELEASE), position = 160)
+        f.feed.applyLedgerPage(listOf(release))
+        assertTrue(projection.applyNextPage(f.a))
+        assertFalse(projection.applyNextPage(f.a))
+        assertProjectedBalance(projection, buyer.value, quote.value, 900, 0, through = 6)
+        assertProjectedBalance(projection, buyer.value, base.value, 1, 0, through = 6)
+        assertProjectedBalance(projection, seller.value, quote.value, 100, 0, through = 6)
+
+        f.feed.applyLedgerPage(listOf(batch(7, balanceTransfer(buyer, quote, 100, LedgerTransactionType.RESERVE))))
+        assertTrue(projection.applyNextPage(f.a))
+        assertProjectedBalance(projection, buyer.value, quote.value, 800, 100, through = 7)
+        assertProjectedBalance(projection, buyer.value, base.value, 1, 0, through = 7)
+    }
+
+    @Test
+    fun `잔고 반영 순번 쓰기가 실패하면 돈과 순번을 함께 되돌리고 이어 적용한다`() {
+        val f = fixture(supportedOnlyA = true)
+        val projection = balanceProjection(f)
+        f.feed.applyLedgerPage(listOf(f.ledgerBatch(1)))
+        jdbc.jdbcTemplate.execute(
+            """
+            create function order_query.reject_balance_progress() returns trigger language plpgsql as $$
+            begin
+                raise exception 'balance cursor write failed' using errcode = '08006';
+            end
+            $$
+            """.trimIndent(),
+        )
+        jdbc.jdbcTemplate.execute(
+            """
+            create trigger reject_balance_progress before insert or update on order_query.balance_progress
+            for each row execute function order_query.reject_balance_progress()
+            """.trimIndent(),
+        )
+        try {
+            assertFailsWith<OrderQueryUnavailableException> { projection.applyNextPage(f.a) }
+            val unchanged = projection.read("u1", "QUOTE")
+            assertNull(unchanged.available)
+            assertEquals(0L, unchanged.projectedThrough)
+            assertEquals(1L, unchanged.ledgerThrough)
+        } finally {
+            jdbc.jdbcTemplate.execute("drop trigger reject_balance_progress on order_query.balance_progress")
+            jdbc.jdbcTemplate.execute("drop function order_query.reject_balance_progress()")
+        }
+        val first = f.reopen()
+        val second = f.reopen()
+        val pool = Executors.newFixedThreadPool(2)
+        try {
+            val applied =
+                pool
+                    .invokeAll(
+                        listOf(
+                            Callable { balanceProjection(first).applyNextPage(f.a) },
+                            Callable { balanceProjection(second).applyNextPage(f.a) },
+                        ),
+                    ).map { it.get(5, TimeUnit.SECONDS) }
+            assertEquals(1, applied.count { it })
+        } finally {
+            pool.shutdownNow()
+        }
+        assertProjectedBalance(projection, "u1", "QUOTE", 100, 0, through = 1)
+    }
+
+    @Test
+    fun `손상된 분개는 잔고만 막고 이미 확인한 주문 조회 상태는 유지한다`() {
+        val f = fixture(supportedOnlyA = true)
+        f.verify(0, 0)
+        val projection = balanceProjection(f)
+        f.feed.applyLedgerPage(listOf(f.ledgerBatch(1), f.ledgerBatch(2)))
+        jdbc.update(
+            """
+            update order_query.funds_ledger_batch set transactions =
+                jsonb_set(transactions, '{0,postings,0,amount}', '"200"'::jsonb)
+            where namespace = :namespace and sequence = 2
+            """.trimIndent(),
+            f.parameters,
+        )
+        val malformed = assertFailsWith<OrderQueryLedgerException> { projection.applyNextPage(f.a) }
+        assertEquals(OrderQueryRecoveryFailure.LEDGER_MISMATCH, malformed.reason)
+        assertEquals(0L, projection.read("u1", "QUOTE").projectedThrough)
+        assertNull(projection.read("u1", "QUOTE").available)
+        assertEquals(OrderQueryLifecycle.READY, f.feed.progress().lifecycle)
+
+        val incomplete = fixture(supportedOnlyA = true)
+        val incompleteProjection = balanceProjection(incomplete)
+        incomplete.verify(0, 0)
+        incomplete.feed.applyLedgerPage(listOf(incomplete.ledgerBatch(1), incomplete.ledgerBatch(2)))
+        jdbc.update("delete from order_query.funds_ledger_batch where namespace = :namespace and sequence = 1", incomplete.parameters)
+        val gap = assertFailsWith<OrderQueryLedgerException> { incompleteProjection.applyNextPage(incomplete.a) }
+        assertEquals(OrderQueryRecoveryFailure.LEDGER_INCOMPLETE, gap.reason)
+        assertEquals(0L, incompleteProjection.read("u2", "QUOTE").projectedThrough)
+        assertEquals(OrderQueryLifecycle.READY, incomplete.feed.progress().lifecycle)
+    }
+
+    @Test
+    fun `범위를 넘는 잔고를 감지하면 마지막으로 반영한 잔고와 순번을 유지한다`() {
+        val f = fixture(supportedOnlyA = true)
+        f.verify(0, 0)
+        val projection = balanceProjection(f)
+        f.feed.applyLedgerPage(listOf(f.ledgerBatch(1, amount = Long.MAX_VALUE)))
+        assertTrue(projection.applyNextPage(f.a))
+        val extraOpening = OpeningBalance("extra", UserId("u1"), AssetId("QUOTE"), Amount(1))
+        val extra = FundsLedgerBatch(f.namespace.fundsLineage, 2, 64, listOf(extraOpening.transaction("extra", Instant.EPOCH)))
+        f.feed.applyLedgerPage(listOf(extra))
+
+        assertFailsWith<OrderQueryInconsistentException> { projection.applyNextPage(f.a) }
+        assertProjectedBalance(projection, "u1", "QUOTE", Long.MAX_VALUE, 0, through = 1)
+        assertEquals(2L, projection.read("u1", "QUOTE").ledgerThrough)
+        assertEquals(OrderQueryLifecycle.READY, f.feed.progress().lifecycle)
+    }
+
+    private fun balanceProjection(
+        fixture: Fixture,
+        transactionManager: DataSourceTransactionManager = DataSourceTransactionManager(requireNotNull(jdbc.jdbcTemplate.dataSource)),
+    ): PostgresBalanceProjection {
+        val projection = PostgresBalanceProjection(fixture.query, fixture.feed, jdbc)
+        val advice =
+            TransactionInterceptor().apply {
+                setTransactionManager(transactionManager)
+                setTransactionAttributeSource(AnnotationTransactionAttributeSource())
+            }
+        val factory = ProxyFactory(projection)
+        factory.addAdvice(advice)
+        return factory.proxy as PostgresBalanceProjection
+    }
+
+    private fun assertProjectedBalance(
+        projection: PostgresBalanceProjection,
+        userId: String,
+        assetId: String,
+        available: Long,
+        reserved: Long,
+        through: Long,
+    ) {
+        val result = projection.read(userId, assetId)
+        assertEquals(available, result.available)
+        assertEquals(reserved, result.reserved)
+        assertEquals(through, result.projectedThrough)
+    }
+
+    private fun balanceTransfer(
+        userId: UserId,
+        assetId: AssetId,
+        amount: Long,
+        type: LedgerTransactionType,
+    ): LedgerTransaction {
+        val account = "USER:${userId.value}:${assetId.value}"
+        val debitAccount = if (type == LedgerTransactionType.RESERVE) "AVAILABLE" else "HOLD"
+        val creditAccount = if (type == LedgerTransactionType.RESERVE) "HOLD" else "AVAILABLE"
+        return LedgerTransaction(
+            "$type-$userId",
+            "$type:$userId",
+            type,
+            Instant.EPOCH,
+            listOf(
+                LedgerPosting("$account:$debitAccount", assetId, DEBIT, Amount(amount)),
+                LedgerPosting("$account:$creditAccount", assetId, CREDIT, Amount(amount)),
+            ),
+        )
     }
 
     private fun durableLifecycle(f: Fixture): String =

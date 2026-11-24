@@ -1,5 +1,7 @@
 package com.exchange.core.api.config
 
+import com.exchange.core.api.trading.application.BalanceQueryUseCase
+import com.exchange.core.api.trading.application.BalanceQueryUseCaseImpl
 import com.exchange.core.api.trading.application.OrderQueryNamespace
 import com.exchange.core.api.trading.application.OrderQueryUseCase
 import com.exchange.core.api.trading.application.port.OrderQueryFeedStore
@@ -11,11 +13,13 @@ import com.exchange.core.api.trading.infrastructure.aeron.OrderQueryFeedWorker
 import com.exchange.core.api.trading.infrastructure.aeron.SplitArchiveMember
 import com.exchange.core.api.trading.infrastructure.aeron.SplitTradingNodeSettings
 import com.exchange.core.api.trading.infrastructure.aeron.splitTradingSettings
+import com.exchange.core.api.trading.infrastructure.persistence.PostgresBalanceProjection
 import com.exchange.core.api.trading.infrastructure.persistence.PostgresOrderQueryFeedStore
 import com.exchange.core.api.trading.infrastructure.persistence.PostgresOrderQueryStore
 import com.exchange.core.trading.ClusterLineage
 import com.exchange.core.trading.TradingServiceRole
 import io.aeron.cluster.ClusterMember
+import org.springframework.beans.factory.ObjectProvider
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty
 import org.springframework.context.annotation.Bean
 import org.springframework.context.annotation.Configuration
@@ -49,7 +53,7 @@ class OrderQueryConfig {
         namespace: OrderQueryNamespace,
         jdbc: NamedParameterJdbcTemplate,
         transactionManager: PlatformTransactionManager,
-    ): OrderQueryStore {
+    ): PostgresOrderQueryStore {
         val store = PostgresOrderQueryStore(namespace, jdbc, transactionManager)
         store.initialize()
         // 기존 DB가 READY여도 이 WAS의 원본 재검증 전에는 조회를 열지 않는다.
@@ -62,9 +66,26 @@ class OrderQueryConfig {
 
     @Bean
     fun orderQueryFeedStore(
-        store: OrderQueryStore,
+        store: PostgresOrderQueryStore,
         jdbc: NamedParameterJdbcTemplate,
-    ): OrderQueryFeedStore = PostgresOrderQueryFeedStore(store as PostgresOrderQueryStore, jdbc)
+    ): PostgresOrderQueryFeedStore = PostgresOrderQueryFeedStore(store, jdbc)
+
+    @Bean
+    @ConditionalOnProperty(prefix = "exchange.order-query", name = ["source"], havingValue = "archive")
+    internal fun balanceProjection(
+        store: PostgresOrderQueryStore,
+        ledger: PostgresOrderQueryFeedStore,
+        jdbc: NamedParameterJdbcTemplate,
+    ): PostgresBalanceProjection = PostgresBalanceProjection(store, ledger, jdbc)
+
+    @Bean
+    internal fun balanceQueryUseCase(
+        balances: ObjectProvider<PostgresBalanceProjection>,
+        archive: ObjectProvider<ArchiveOrderQueryFeedWorker>,
+    ): BalanceQueryUseCase =
+        BalanceQueryUseCaseImpl({ archive.ifAvailable?.balanceStatus }) { userId, assetId ->
+            balances.getObject().read(userId, assetId)
+        }
 
     /** 원본 보존 capability와 같은 consumer 설정이 공급되면 동일 WAS에서 반영을 시작한다. */
     @Bean(destroyMethod = "close")
@@ -99,6 +120,7 @@ class OrderQueryConfig {
         feed: OrderQueryFeedStore,
         namespace: OrderQueryNamespace,
         environment: Environment,
+        balances: PostgresBalanceProjection,
     ): ArchiveOrderQueryFeedWorker {
         val configFiles =
             environment.getRequiredProperty("exchange.order-query.archive-node-configs").split(',').map { Path.of(it.trim()).normalize() }
@@ -124,6 +146,7 @@ class OrderQueryConfig {
             configuration = configuration,
             fundsSource = archiveSource(funds),
             matchingSources = mapOf(configuration.matchingLineage to archiveSource(matching)),
+            applyBalances = { context -> balances.hasPendingPage() && balances.applyNextPage(context) },
         )
     }
 

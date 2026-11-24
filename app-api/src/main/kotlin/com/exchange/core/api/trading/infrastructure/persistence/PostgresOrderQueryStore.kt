@@ -50,6 +50,9 @@ class PostgresOrderQueryStore(
         sourceReadGate.compareAndSet(OrderQueryLifecycle.INITIALIZING, null)
     }
 
+    internal fun sourceLifecycle(lifecycle: OrderQueryLifecycle): OrderQueryLifecycle =
+        if (lifecycle == OrderQueryLifecycle.BLOCKED) lifecycle else sourceReadGate.get() ?: lifecycle
+
     private val mapper =
         JsonMapper
             .builder()
@@ -64,7 +67,7 @@ class PostgresOrderQueryStore(
                 listOf(CoercionInputShape.Integer, CoercionInputShape.Float, CoercionInputShape.Boolean)
                     .forEach { config.setCoercion(it, CoercionAction.Fail) }
             }.build()
-    private val namespaceKey = "${namespace.fundsLineage.high}:${namespace.fundsLineage.low}"
+    internal val namespaceKey = "${namespace.fundsLineage.high}:${namespace.fundsLineage.low}"
     private val namespaceParameters = mapOf("namespace" to namespaceKey)
     private val marketsPayload = mapper.writeValueAsString(namespace.markets.sorted())
     private val fills = PostgresOrderFillReader(jdbc, namespaceKey)
@@ -221,13 +224,8 @@ class PostgresOrderQueryStore(
                     val progress = progress(rows)
                     val record = if (rows.getString("record_payload") == null) null else record(rows)
                     if (record != null && record.admissionSequence > progress.coveredAdmissionSequence) inconsistent()
-                    val gate = sourceReadGate.get()
-                    val readable =
-                        if (gate != null && progress.lifecycle != OrderQueryLifecycle.BLOCKED) {
-                            progress.copy(lifecycle = gate)
-                        } else {
-                            progress
-                        }
+                    val lifecycle = sourceLifecycle(progress.lifecycle)
+                    val readable = if (lifecycle == progress.lifecycle) progress else progress.copy(lifecycle = lifecycle)
                     OrderQuerySnapshot(readable, record)
                 }.singleOrNull() ?: OrderQuerySnapshot(null, null)
         } catch (error: OrderQueryInconsistentException) {

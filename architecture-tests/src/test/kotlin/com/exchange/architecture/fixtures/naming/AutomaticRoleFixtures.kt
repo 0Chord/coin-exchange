@@ -11,6 +11,12 @@ import org.springframework.web.bind.annotation.RestControllerAdvice
 
 interface WrongUseCase
 
+class WrongUseCaseImpl
+
+interface QueryWalletUseCase
+
+class QueryWalletUseCaseImpl : QueryWalletUseCase
+
 data class WrongService(
     val value: Int,
 )
