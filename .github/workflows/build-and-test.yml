@@ -133,12 +133,12 @@ jobs:
         with:
           cache-provider: basic
           cache-read-only: ${{ github.event_name == 'pull_request' }}
-      - name: Resolve Gradle build plugins
+      - name: Resolve Gradle dependencies
         shell: bash
         run: |
           gradle_log="$(mktemp)"
           trap 'rm -f "$gradle_log"' EXIT
-          # 플러그인 준비의 저장소 요청 제한만 재시도한다.
+          # 의존성 준비에서 저장소 요청 제한이 발생할 때만 재시도한다.
           for retry_delay in 15 35 0
           do
             gradle_status=0
@@ -151,7 +151,7 @@ jobs:
               exit "$gradle_status"
             fi
             wait_seconds=$((retry_delay + RANDOM % 10))
-            echo "Gradle plugin repository returned HTTP 429. Retrying in ${wait_seconds}s."
+            echo "Gradle repository returned HTTP 429. Retrying in ${wait_seconds}s."
             sleep "$wait_seconds"
           done
       - name: Check Kotlin formatting
