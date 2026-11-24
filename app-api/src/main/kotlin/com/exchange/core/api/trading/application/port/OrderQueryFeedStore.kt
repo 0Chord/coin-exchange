@@ -15,6 +15,8 @@ import com.exchange.core.trading.MatchingResultStream
 import com.exchange.core.trading.SettlementFact
 import com.exchange.core.trading.TradingMarketContext
 
+internal const val MAX_LEDGER_PAGE_ENTRIES = 32
+
 /** 소스가 보존한 범위다. genesis 증명 없이 빈 DB를 과거 전체 조회로 활성화하지 않는다. */
 data class OrderQuerySourceBounds(
     val issued: Long,
@@ -77,8 +79,8 @@ interface OrderQueryFeedStore {
 
     fun verifyLedgerPrefix(through: Long)
 
-    /** 분개 묶음을 커밋한 뒤에만 원본에 확인할 수 있는 순번을 반환한다. */
-    fun applyLedger(batch: FundsLedgerBatch): Long
+    /** 연속된 분개 묶음을 한 트랜잭션으로 검증·저장하고 커밋 뒤 마지막 순번을 반환한다. */
+    fun applyLedgerPage(batches: List<FundsLedgerBatch>): Long
 
     fun reconcileLedger(
         scope: LedgerReconciliationScope,

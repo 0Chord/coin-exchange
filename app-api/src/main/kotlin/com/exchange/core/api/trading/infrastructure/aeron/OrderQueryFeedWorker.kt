@@ -5,6 +5,7 @@ import com.exchange.core.api.trading.application.OrderQueryNamespace
 import com.exchange.core.api.trading.application.OrderQueryRecoveryFailure
 import com.exchange.core.api.trading.application.OrderQueryRecoveryStatus
 import com.exchange.core.api.trading.application.OrderQueryRecoveryVerdict
+import com.exchange.core.api.trading.application.port.MAX_LEDGER_PAGE_ENTRIES
 import com.exchange.core.api.trading.application.port.OrderQueryFeedStore
 import com.exchange.core.api.trading.application.port.OrderQueryInconsistentException
 import com.exchange.core.api.trading.application.port.OrderQueryLedgerException
@@ -20,7 +21,9 @@ import com.exchange.core.ledger.LedgerReconciliationScope
 import com.exchange.core.ledger.ReconciliationStatus
 import com.exchange.core.ledger.ReservationHold
 import com.exchange.core.trading.ClusterLineage
+import com.exchange.core.trading.FundsLedgerBatch
 import com.exchange.core.trading.FundsLedgerProgress
+import com.exchange.core.trading.FundsLedgerRecovery
 import com.exchange.core.trading.MatchingFundsSettledAck
 import com.exchange.core.trading.MatchingResultStream
 import com.exchange.core.trading.QueryFactsProgress
@@ -467,16 +470,18 @@ internal class OrderQueryFeedWorker(
         if (store.ledgerThrough() < bounds.retiredThrough) {
             throw OrderQueryLedgerException(OrderQueryRecoveryFailure.LEDGER_INCOMPLETE, "원본에서 이미 정리한 분개가 DB에 없다")
         }
-        var verifiedThrough = bounds.retiredThrough
-        var applied = 0
-        while (applied < 32 && verifiedThrough < bounds.issued) {
-            val next = Math.addExact(verifiedThrough, 1L)
+        if (bounds.retiredThrough == bounds.issued) return 0
+        val batches = ArrayList<FundsLedgerBatch>(MAX_LEDGER_PAGE_ENTRIES)
+        var readThrough = bounds.retiredThrough
+        var remainingBytes = FundsLedgerRecovery.MAX_RETAINED_BYTES
+        while (batches.size < MAX_LEDGER_PAGE_ENTRIES && readThrough < bounds.issued) {
+            val next = Math.addExact(readThrough, 1L)
             val reply = client.request(OrderQuerySourceCommand.ReadLedger(consumerId, next))
             val batch = reply.ledgerBatch
             if (batch == null) {
                 if (reply.code == "PRUNED" && store.ledgerThrough() >= next) {
                     // 다른 WAS가 확인한 새 회수 위치를 다음 Describe에서 다시 읽는다.
-                    return applied
+                    return 0
                 }
                 if (reply.code == "NOT_READY") throw IllegalStateException("query ledger source is not ready")
                 throw OrderQueryLedgerException(
@@ -487,14 +492,18 @@ internal class OrderQueryFeedWorker(
             if (batch.lineage != namespace.fundsLineage || batch.sequence != next) {
                 throw OrderQueryLedgerException(OrderQueryRecoveryFailure.LEDGER_MISMATCH, "분개 묶음의 출처나 순번이 다르다")
             }
-            // ACK가 유실된 구간도 DB의 마지막 번호만 믿지 않고 남아 있는 원본과 행을 다시 대조한다.
-            verifiedThrough = store.applyLedger(batch)
-            applied++
+            if (batch.canonicalBytes > remainingBytes) break
+            batches.add(batch)
+            remainingBytes -= batch.canonicalBytes
+            readThrough = next
         }
-        if (verifiedThrough > bounds.retiredThrough) {
-            requireAcknowledged(client.request(OrderQuerySourceCommand.AckLedger(consumerId, verifiedThrough)))
-        }
-        return applied
+        if (batches.isEmpty()) return 0
+
+        // DB에 이미 저장된 원본도 대조하고, 전체 묶음을 커밋한 순번만 확인한다.
+        val committedThrough = store.applyLedgerPage(batches)
+        check(committedThrough == readThrough) { "원장 묶음의 커밋 순번이 다르다" }
+        requireAcknowledged(client.request(OrderQuerySourceCommand.AckLedger(consumerId, committedThrough)))
+        return batches.size
     }
 
     private fun reconcileRecovery(

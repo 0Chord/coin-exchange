@@ -11,8 +11,10 @@ import com.exchange.core.api.trading.application.OrderQueryFreshness
 import com.exchange.core.api.trading.application.OrderQueryLifecycle
 import com.exchange.core.api.trading.application.OrderQueryNamespace
 import com.exchange.core.api.trading.application.OrderQueryOrderState
+import com.exchange.core.api.trading.application.OrderQueryRecoveryFailure
 import com.exchange.core.api.trading.application.OrderQueryUseCase
 import com.exchange.core.api.trading.application.port.OrderQueryInconsistentException
+import com.exchange.core.api.trading.application.port.OrderQueryLedgerException
 import com.exchange.core.api.trading.application.port.OrderQueryOriginsPendingException
 import com.exchange.core.api.trading.application.port.OrderQuerySourceBounds
 import com.exchange.core.api.trading.application.port.OrderQueryStore
@@ -39,6 +41,7 @@ import com.exchange.core.ledger.LedgerPostingSide.CREDIT
 import com.exchange.core.ledger.LedgerPostingSide.DEBIT
 import com.exchange.core.ledger.LedgerTransaction
 import com.exchange.core.ledger.LedgerTransactionType
+import com.exchange.core.ledger.OpeningBalance
 import com.exchange.core.matching.TradeExecuted
 import com.exchange.core.order.BuyOrderFundingQuoteCalculator
 import com.exchange.core.order.MarketDefinition
@@ -50,6 +53,7 @@ import com.exchange.core.order.TimeInForce
 import com.exchange.core.trading.ClusterLineage
 import com.exchange.core.trading.FundsCancelDispatch
 import com.exchange.core.trading.FundsDispatchStream
+import com.exchange.core.trading.FundsLedgerBatch
 import com.exchange.core.trading.FundsOrderDispatch
 import com.exchange.core.trading.MatchingFundsSettledAck
 import com.exchange.core.trading.MatchingIntakeConfiguration
@@ -980,6 +984,81 @@ class PostgresOrderQueryFeedStoreTest {
         assertEquals(0L, f.feed.progress().admissionThrough)
     }
 
+    @Test
+    fun `원장 페이지 안과 저장 경계에서 같은 로그 위치나 이전 위치를 거절한다`() {
+        val f = fixture()
+        val first = f.ledgerBatch(1)
+        val second = f.ledgerBatch(2)
+        assertEquals(1L, f.feed.applyLedgerPage(listOf(first)))
+
+        for (position in listOf(first.logPosition, first.logPosition - 1)) {
+            val failure = assertFailsWith<OrderQueryLedgerException> { f.feed.applyLedgerPage(listOf(f.ledgerBatch(2, position))) }
+            assertEquals(OrderQueryRecoveryFailure.LEDGER_MISMATCH, failure.reason)
+        }
+        for (position in listOf(second.logPosition, second.logPosition - 1)) {
+            val failure =
+                assertFailsWith<OrderQueryLedgerException> { f.feed.applyLedgerPage(listOf(second, f.ledgerBatch(3, position))) }
+            assertEquals(OrderQueryRecoveryFailure.LEDGER_MISMATCH, failure.reason)
+        }
+        assertEquals(1L, f.feed.ledgerThrough())
+        f.feed.verifyLedgerPrefix(1)
+    }
+
+    @Test
+    fun `원장 재전송은 같은 원문만 허용하고 공백이나 원문 차이 뒤의 묶음을 저장하지 않는다`() {
+        val f = fixture()
+        val second = f.ledgerBatch(2)
+        val third = f.ledgerBatch(3)
+        val fourth = f.ledgerBatch(4)
+        val committed = listOf(f.ledgerBatch(1), second)
+        assertEquals(2L, f.feed.applyLedgerPage(committed))
+
+        val reopened = f.reopen().feed
+        assertEquals(2L, reopened.applyLedgerPage(committed))
+        for (page in listOf(listOf(second, fourth), listOf(fourth))) {
+            val gap = assertFailsWith<OrderQueryLedgerException> { reopened.applyLedgerPage(page) }
+            assertEquals(OrderQueryRecoveryFailure.LEDGER_INCOMPLETE, gap.reason)
+        }
+        val changed = f.ledgerBatch(2, amount = 201)
+        val conflict = assertFailsWith<OrderQueryLedgerException> { reopened.applyLedgerPage(listOf(changed, third)) }
+        assertEquals(OrderQueryRecoveryFailure.LEDGER_MISMATCH, conflict.reason)
+        assertEquals(2L, f.feed.ledgerThrough())
+        f.feed.verifyLedgerPrefix(2)
+
+        assertEquals(3L, reopened.applyLedgerPage(listOf(second, third)))
+        assertEquals(3L, f.feed.ledgerThrough())
+        f.feed.verifyLedgerPrefix(3)
+    }
+
+    @Test
+    fun `저장된 원장이 DB 유일성 제약과 충돌하면 원장 위치를 전진시키지 않는다`() {
+        val f = fixture()
+        val third = f.ledgerBatch(3)
+        assertEquals(2L, f.feed.applyLedgerPage(listOf(f.ledgerBatch(1), f.ledgerBatch(2))))
+        assertEquals(
+            1,
+            jdbc.update(
+                "update order_query.funds_ledger_batch set log_position = :position where namespace = :namespace and sequence = 1",
+                f.parameters + ("position" to third.logPosition),
+            ),
+        )
+
+        assertFailsWith<OrderQueryWriteConflictException> { f.feed.applyLedgerPage(listOf(third)) }
+        assertEquals(2L, f.feed.ledgerThrough())
+    }
+
+    @Test
+    fun `상위 DB 트랜잭션이 있으면 커밋 전 원장 확인 순번을 반환하지 않는다`() {
+        val f = fixture()
+        val transaction = TransactionTemplate(DataSourceTransactionManager(jdbc.jdbcTemplate.dataSource!!))
+        val page = listOf(f.ledgerBatch(1))
+
+        assertFailsWith<IllegalStateException> { transaction.executeWithoutResult { f.feed.applyLedgerPage(page) } }
+
+        assertEquals(0L, f.feed.ledgerThrough())
+        assertEquals(1L, f.feed.applyLedgerPage(page))
+    }
+
     private fun durableLifecycle(f: Fixture): String =
         jdbc.queryForObject(
             "select lifecycle from order_query.query_progress where namespace = :namespace",
@@ -1092,6 +1171,16 @@ class PostgresOrderQueryFeedStoreTest {
             }
 
         fun reopen() = Fixture(namespace, contexts, streams, owner, sourceIdentity, settlementEnabled)
+
+        fun ledgerBatch(
+            sequence: Long,
+            position: Long = sequence * 32,
+            amount: Long = sequence * 100,
+        ): FundsLedgerBatch {
+            val opening = OpeningBalance("open-$sequence", UserId("u$sequence"), AssetId("QUOTE"), Amount(amount))
+            val transaction = opening.transaction("ledger-$sequence", Instant.EPOCH)
+            return FundsLedgerBatch(namespace.fundsLineage, sequence, position, listOf(transaction))
+        }
 
         fun verify(
             admissions: Long,

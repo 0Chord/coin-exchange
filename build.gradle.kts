@@ -22,6 +22,10 @@ allprojects {
     version = "0.0.1-SNAPSHOT"
 
     repositories {
+        if (providers.environmentVariable("GITHUB_ACTIONS").orNull == "true") {
+            // CI의 프로젝트 의존성도 Maven Central 미러를 먼저 조회한다.
+            maven("https://maven-central.storage-download.googleapis.com/maven2/")
+        }
         mavenCentral()
     }
 }
