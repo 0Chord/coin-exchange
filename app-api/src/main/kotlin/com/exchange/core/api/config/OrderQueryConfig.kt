@@ -2,6 +2,8 @@ package com.exchange.core.api.config
 
 import com.exchange.core.api.trading.application.BalanceQueryUseCase
 import com.exchange.core.api.trading.application.BalanceQueryUseCaseImpl
+import com.exchange.core.api.trading.application.CandleQueryUseCase
+import com.exchange.core.api.trading.application.CandleQueryUseCaseImpl
 import com.exchange.core.api.trading.application.OrderQueryNamespace
 import com.exchange.core.api.trading.application.OrderQueryUseCase
 import com.exchange.core.api.trading.application.port.OrderQueryFeedStore
@@ -13,7 +15,9 @@ import com.exchange.core.api.trading.infrastructure.aeron.OrderQueryFeedWorker
 import com.exchange.core.api.trading.infrastructure.aeron.SplitArchiveMember
 import com.exchange.core.api.trading.infrastructure.aeron.SplitTradingNodeSettings
 import com.exchange.core.api.trading.infrastructure.aeron.splitTradingSettings
+import com.exchange.core.api.trading.infrastructure.persistence.CandleProjectionWorker
 import com.exchange.core.api.trading.infrastructure.persistence.PostgresBalanceProjection
+import com.exchange.core.api.trading.infrastructure.persistence.PostgresCandleProjection
 import com.exchange.core.api.trading.infrastructure.persistence.PostgresOrderQueryFeedStore
 import com.exchange.core.api.trading.infrastructure.persistence.PostgresOrderQueryStore
 import com.exchange.core.trading.ClusterLineage
@@ -69,6 +73,22 @@ class OrderQueryConfig {
         store: PostgresOrderQueryStore,
         jdbc: NamedParameterJdbcTemplate,
     ): PostgresOrderQueryFeedStore = PostgresOrderQueryFeedStore(store, jdbc)
+
+    @Bean
+    internal fun candleProjection(
+        store: PostgresOrderQueryStore,
+        jdbc: NamedParameterJdbcTemplate,
+    ): PostgresCandleProjection = PostgresCandleProjection(store, jdbc)
+
+    @Bean
+    internal fun candleQueryUseCase(projection: PostgresCandleProjection): CandleQueryUseCase = CandleQueryUseCaseImpl(projection)
+
+    @Bean(initMethod = "start", destroyMethod = "close")
+    @ConditionalOnProperty(prefix = "exchange.order-query", name = ["consumer-id"])
+    internal fun candleProjectionWorker(
+        namespace: OrderQueryNamespace,
+        projection: PostgresCandleProjection,
+    ): CandleProjectionWorker = CandleProjectionWorker(namespace.markets, projection)
 
     @Bean
     @ConditionalOnProperty(prefix = "exchange.order-query", name = ["source"], havingValue = "archive")
