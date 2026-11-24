@@ -140,37 +140,66 @@ class PostgresOrderQueryStore(
             require(batch.expectedRevision == progress.appliedRevision)
             val nextRevision = Math.addExact(progress.appliedRevision, 1)
             require(nextRevision <= progress.observedRevision)
-            require(batch.coveredAdmissionSequence >= progress.coveredAdmissionSequence)
-            batch.records.forEach { record ->
-                namespace.requireRecord(record)
-                require(record.admissionSequence <= batch.coveredAdmissionSequence)
-                findRecord(record.marketId, record.orderId)?.let { previous -> record.requireSuccessorOf(previous) }
-                save(record)
-            }
+            saveNewBatch(progress, batch, payload, nextRevision)
+        }
+
+    /** 수집기는 원본의 재전송을 처리한 뒤 같은 트랜잭션에서 다음 조회 버전을 저장한다. */
+    internal fun applyNextFeedBatch(
+        coveredAdmissionSequence: Long,
+        records: List<OrderQueryRecord>,
+    ): Long =
+        write {
+            val progress = lockedProgress()
+            require(progress.lifecycle != OrderQueryLifecycle.BLOCKED)
+            val nextRevision = Math.addExact(progress.appliedRevision, 1)
+            val batch =
+                OrderQueryBatch(
+                    batchId = "feed:revision:$nextRevision",
+                    expectedRevision = progress.appliedRevision,
+                    coveredAdmissionSequence = coveredAdmissionSequence,
+                    records = records,
+                )
+            saveNewBatch(progress, batch, batchPayload(batch), nextRevision)
+        }
+
+    private fun saveNewBatch(
+        progress: OrderQueryProgress,
+        batch: OrderQueryBatch,
+        payload: String,
+        nextRevision: Long,
+    ): Long {
+        require(batch.coveredAdmissionSequence >= progress.coveredAdmissionSequence)
+        batch.records.forEach { record ->
+            namespace.requireRecord(record)
+            require(record.admissionSequence <= batch.coveredAdmissionSequence)
+            findRecord(record.marketId, record.orderId)?.let { previous -> record.requireSuccessorOf(previous) }
+            save(record)
+        }
+        jdbc.update(
+            """
+            insert into order_query.applied_batch(namespace, batch_id, batch_payload, first_revision)
+            values (:namespace, :batchId, cast(:payload as jsonb), :revision)
+            """.trimIndent(),
+            namespaceParameters + mapOf("batchId" to batch.batchId, "payload" to payload, "revision" to nextRevision),
+        )
+        check(
             jdbc.update(
                 """
-                insert into order_query.applied_batch(namespace, batch_id, batch_payload, first_revision)
-                values (:namespace, :batchId, cast(:payload as jsonb), :revision)
+                update order_query.query_progress
+                set applied_revision = :revision, observed_revision = greatest(observed_revision, :revision),
+                    covered_admission_sequence = :covered, updated_at = current_timestamp
+                where namespace = :namespace and applied_revision = :expected
                 """.trimIndent(),
-                namespaceParameters + mapOf("batchId" to batch.batchId, "payload" to payload, "revision" to nextRevision),
-            )
-            check(
-                jdbc.update(
-                    """
-                    update order_query.query_progress
-                    set applied_revision = :revision, covered_admission_sequence = :covered, updated_at = current_timestamp
-                    where namespace = :namespace and applied_revision = :expected
-                    """.trimIndent(),
-                    namespaceParameters +
-                        mapOf(
-                            "revision" to nextRevision,
-                            "covered" to batch.coveredAdmissionSequence,
-                            "expected" to batch.expectedRevision,
-                        ),
-                ) == 1,
-            )
-            nextRevision
-        }
+                namespaceParameters +
+                    mapOf(
+                        "revision" to nextRevision,
+                        "covered" to batch.coveredAdmissionSequence,
+                        "expected" to batch.expectedRevision,
+                    ),
+            ) == 1,
+        )
+        return nextRevision
+    }
 
     override fun read(
         marketId: String,

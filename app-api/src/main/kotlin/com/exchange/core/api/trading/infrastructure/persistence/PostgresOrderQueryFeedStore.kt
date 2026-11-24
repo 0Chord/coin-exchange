@@ -1,6 +1,5 @@
 package com.exchange.core.api.trading.infrastructure.persistence
 
-import com.exchange.core.api.trading.application.OrderQueryBatch
 import com.exchange.core.api.trading.application.OrderQueryLifecycle
 import com.exchange.core.api.trading.application.OrderQueryOrderState
 import com.exchange.core.api.trading.application.OrderQueryRecord
@@ -197,7 +196,7 @@ class PostgresOrderQueryFeedStore(
             require(!fact.isCancellation && fact.admissionSequence == Math.addExact(current.admissionThrough, 1))
             requireOrigin(fact)
             val records = if (fact.order.marketId.value in query.namespace.markets) listOf(admissionRecord(fact)) else emptyList()
-            applyBatch(fact.admissionSequence, records)
+            query.applyNextFeedBatch(fact.admissionSequence, records)
         }
 
     override fun applyMatching(
@@ -234,7 +233,7 @@ class PostgresOrderQueryFeedStore(
                 } else {
                     emptyList()
                 }
-            applyBatch(current.admissionThrough, records)
+            query.applyNextFeedBatch(current.admissionThrough, records)
         }
 
     override fun applyFinancial(watermark: MatchingFundsSettledAck): Long =
@@ -257,7 +256,7 @@ class PostgresOrderQueryFeedStore(
                         require(record.resultStream == watermark.stream)
                         record.copy(financialThrough = through)
                     }
-                val revision = applyBatch(current.admissionThrough, records)
+                val revision = query.applyNextFeedBatch(current.admissionThrough, records)
                 jdbc.update(
                     "update order_query.feed_stream set financial_through = :through where namespace = :namespace and market_id = :market",
                     parameters + mapOf("market" to market, "through" to through),
@@ -721,23 +720,6 @@ class PostgresOrderQueryFeedStore(
                 revision
             }
         }
-    }
-
-    private fun applyBatch(
-        coveredAdmissionSequence: Long,
-        records: List<OrderQueryRecord>,
-    ): Long {
-        val progress = query.lockedProgress()
-        val nextRevision = Math.addExact(progress.appliedRevision, 1)
-        query.observe(maxOf(progress.observedRevision, nextRevision))
-        val batch =
-            OrderQueryBatch(
-                batchId = "feed:revision:$nextRevision",
-                expectedRevision = progress.appliedRevision,
-                coveredAdmissionSequence = coveredAdmissionSequence,
-                records = records,
-            )
-        return query.apply(batch)
     }
 
     private fun requireOrigin(origin: FundsOrderDispatch) {
