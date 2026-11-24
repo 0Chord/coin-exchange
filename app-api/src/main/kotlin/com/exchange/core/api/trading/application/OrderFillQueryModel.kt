@@ -1,5 +1,7 @@
 package com.exchange.core.api.trading.application
 
+import java.time.Instant
+
 data class OrderFillCursor(
     val resultSequence: Long,
     val engineSequence: Long,
@@ -46,4 +48,23 @@ data class OrderFillQueryResult(
     val fills: List<OrderFill> = emptyList(),
     val nextCursor: OrderFillCursor? = null,
     val settledFeeTotal: OrderChargedFee? = null,
+)
+
+data class LatestSettledTrade(
+    val price: Long,
+    val quantity: Long,
+    val settledAt: Instant,
+)
+
+data class LatestSettledTradeSnapshot(
+    val lifecycle: OrderQueryLifecycle,
+    val settlementThrough: Long?,
+    val trade: LatestSettledTrade?,
+)
+
+data class LatestSettledTradeQueryResult(
+    val code: OrderQueryCode,
+    val marketId: String? = null,
+    val asOfSettlementResultSequence: Long? = null,
+    val trade: LatestSettledTrade? = null,
 )

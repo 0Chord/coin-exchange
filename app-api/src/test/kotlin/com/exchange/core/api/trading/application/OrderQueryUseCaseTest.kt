@@ -148,6 +148,8 @@ class OrderQueryUseCaseTest {
             after: OrderFillCursor?,
         ): OrderFillQuerySnapshot = OrderFillQuerySnapshot(read(marketId, orderId), settlementEnabled = false)
 
+        override fun readLatestSettledTrade(marketId: String): LatestSettledTradeSnapshot? = error("unexpected latest trade read")
+
         private fun unexpectedWrite() {
             writes++
             error("queries must not write")

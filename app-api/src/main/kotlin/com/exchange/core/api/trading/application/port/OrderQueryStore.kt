@@ -1,5 +1,6 @@
 package com.exchange.core.api.trading.application.port
 
+import com.exchange.core.api.trading.application.LatestSettledTradeSnapshot
 import com.exchange.core.api.trading.application.OrderFillCursor
 import com.exchange.core.api.trading.application.OrderFillQuerySnapshot
 import com.exchange.core.api.trading.application.OrderQueryBatch
@@ -34,6 +35,9 @@ interface OrderQueryStore {
         limit: Int,
         after: OrderFillCursor?,
     ): OrderFillQuerySnapshot
+
+    /** 마켓의 정산 반영 위치와 마지막 체결을 같은 DB 시점에서 읽는다. */
+    fun readLatestSettledTrade(marketId: String): LatestSettledTradeSnapshot?
 }
 
 class OrderQueryWriteConflictException(

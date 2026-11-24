@@ -242,6 +242,7 @@ class OrderQueryHttpTest {
                 get(orderId(1), market = "UNKNOWN"),
                 get(orderId(1), market = "a".repeat(257)),
                 get("O2%27%20OR%201%3D1%20--"),
+                latestTrade(market = "UNKNOWN"),
             )
         val invalidPost =
             post(
@@ -278,6 +279,99 @@ class OrderQueryHttpTest {
     }
 
     @Test
+    fun `최근 체결가는 체결 없음과 조회 준비 및 DB 오류를 구분한다`() {
+        store.transitionLifecycle(OrderQueryLifecycle.READY)
+        assertResponse(503, "QUERY_NOT_READY", latestTrade())
+        prepareSettlementStreams()
+
+        val empty = latestTrade()
+        assertResponse(200, "NO_SETTLED_TRADE_AS_OF", empty)
+        val emptyBody = body(empty)
+        assertTrue(emptyBody.path("trade").isNull)
+        assertEquals(json.readTree("0"), emptyBody.path("asOfSettlementResultSequence"))
+
+        val queryStore = store as PostgresOrderQueryStore
+        queryStore.suspendSourceReads()
+        assertResponse(503, "QUERY_NOT_READY", latestTrade())
+        queryStore.verifySourceReads()
+
+        database.jdbc().execute("alter table order_query.settlement_transaction rename to unavailable_settlement_transaction")
+        try {
+            val unavailable = latestTrade()
+            assertResponse(503, "QUERY_UNAVAILABLE", unavailable)
+            assertTrue(body(unavailable).path("trade").isNull)
+            assertTrue(body(unavailable).path("asOfSettlementResultSequence").isNull)
+        } finally {
+            database.jdbc().execute("alter table order_query.unavailable_settlement_transaction rename to settlement_transaction")
+        }
+
+        store.transitionLifecycle(OrderQueryLifecycle.BLOCKED)
+        assertResponse(503, "QUERY_INCONSISTENT", latestTrade())
+        verifyNoInteractions(context.getBean(BoundedTradingOrderGateway::class.java))
+    }
+
+    @Test
+    fun `최근 체결가는 같은 마켓과 계보의 정산 범위에서 가장 높은 엔진 순번을 읽는다`() {
+        val jdbc = database.jdbc()
+        prepareSettlementStreams()
+        jdbc.execute(
+            """
+            insert into order_query.query_progress
+                (namespace, supported_markets, lifecycle, applied_revision, observed_revision, covered_admission_sequence)
+            select '51:52', supported_markets, lifecycle, applied_revision, observed_revision, covered_admission_sequence
+            from order_query.query_progress where namespace = '41:42';
+            insert into order_query.feed_consumer (namespace, consumer_id, configuration_payload)
+            values ('51:52', 'other', '{"settlementEnabled":true}');
+            insert into order_query.feed_stream (namespace, market_id, settlement_through)
+            values ('51:52', 'BTC-USDT', 10);
+            update order_query.feed_stream set settlement_through = 2 where namespace = '41:42';
+            insert into order_query.settlement_transaction
+                (namespace, market_id, result_sequence, settlement_id, source_event_id, engine_sequence,
+                 maker_order_id, taker_order_id, maker_user_id, taker_user_id, taker_side,
+                 base_asset_id, quote_asset_id, price, quantity, maker_fee, taker_fee, occurred_at)
+            select namespace, market_id, result_sequence, 'fill-' || engine_sequence, 'source-' || engine_sequence,
+                engine_sequence, 'maker-order', 'taker-order', 'maker', 'taker', 'BUY',
+                'BASE', 'USDT', price, quantity, 0, 0, timestamptz '2026-11-24 10:00:02+00'
+            from (values
+                ('41:42', 'BTC-USDT', 2, 6, 105, 2),
+                ('41:42', 'BTC-USDT', 2, 5, 100, 1),
+                ('41:42', 'BTC-USDT', 4, 12, 999, 1),
+                ('41:42', 'ETH-USDT', 2, 9, 222, 1),
+                ('51:52', 'BTC-USDT', 10, 13, 333, 1)
+            ) as fills(namespace, market_id, result_sequence, engine_sequence, price, quantity)
+            """.trimIndent(),
+        )
+
+        fun assertLatestTrade(through: Long) {
+            val response = latestTrade()
+            assertEquals(200, response.statusCode(), response.body())
+            val expected =
+                json.readTree(
+                    """
+                    {"code":"LATEST_SETTLED_TRADE","marketId":"BTC-USDT","asOfSettlementResultSequence":$through,
+                     "trade":{"price":105,"quantity":2,"settledAt":"2026-11-24T10:00:02Z"}}
+                    """.trimIndent(),
+                )
+            assertEquals(expected, body(response))
+        }
+        assertLatestTrade(2)
+        jdbc.execute(
+            "update order_query.feed_stream set settlement_through = 3 where namespace = '41:42' and market_id = 'BTC-USDT'",
+        )
+        repeat(2) { assertLatestTrade(3) }
+        assertEquals(222L, body(latestTrade(market = "ETH-USDT")).path("trade").path("price").asLong())
+        assertEquals(
+            listOf(5L, 6L, 9L, 12L, 13L),
+            jdbc.queryForList("select engine_sequence from order_query.settlement_transaction order by engine_sequence", Long::class.java),
+        )
+        assertEquals(
+            listOf(3L, 2L, 10L),
+            jdbc.queryForList("select settlement_through from order_query.feed_stream order by namespace, market_id", Long::class.java),
+        )
+        verifyNoInteractions(context.getBean(BoundedTradingOrderGateway::class.java))
+    }
+
+    @Test
     fun `트랜잭션을 시작할 수 없으면 두 조회가 503을 반환하고 잘못된 입력은 400을 유지한다`() {
         val order = orderId(1)
         val pool = context.getBean(DataSource::class.java).unwrap(HikariDataSource::class.java)
@@ -288,6 +382,7 @@ class OrderQueryHttpTest {
                 assertEquals(400, get(order, market = "UNKNOWN").statusCode())
                 assertEquals(400, get(order, "/fills", market = "UNKNOWN").statusCode())
                 assertEquals(400, get(order, "/fills?limit=101").statusCode())
+                assertEquals(400, latestTrade(market = "UNKNOWN").statusCode())
             } finally {
                 heldConnections.forEach { it.close() }
             }
@@ -295,6 +390,7 @@ class OrderQueryHttpTest {
             pool.close()
             assertResponse(503, "QUERY_UNAVAILABLE", get(order), hideOrder = true)
             assertResponse(503, "QUERY_UNAVAILABLE", get(order, "/fills"))
+            assertResponse(503, "QUERY_UNAVAILABLE", latestTrade())
         } finally {
             context.close()
             openContext()
@@ -429,16 +525,31 @@ class OrderQueryHttpTest {
 
     private fun orderId(sequence: Long): String = TradingIdentifiers.order(lineage, sequence).value
 
+    private fun prepareSettlementStreams() {
+        database.jdbc().execute(
+            """
+            insert into order_query.feed_consumer (namespace, consumer_id, configuration_payload)
+            values ('41:42', 'http-test', '{"settlementEnabled":true}');
+            insert into order_query.feed_stream (namespace, market_id)
+            values ('41:42', 'BTC-USDT'), ('41:42', 'ETH-USDT');
+            """.trimIndent(),
+        )
+        store.transitionLifecycle(OrderQueryLifecycle.READY)
+    }
+
     private fun get(
         orderId: String,
         suffix: String = "",
         market: String = "BTC-USDT",
-    ): HttpResponse<String> =
+    ): HttpResponse<String> = getPath("/markets/$market/orders/$orderId$suffix")
+
+    private fun latestTrade(market: String = "BTC-USDT"): HttpResponse<String> = getPath("/markets/$market/trades/latest")
+
+    private fun getPath(path: String): HttpResponse<String> =
         client.send(
             HttpRequest
-                .newBuilder(
-                    URI.create("$url/api/trading/v3/markets/$market/orders/$orderId$suffix"),
-                ).timeout(Duration.ofSeconds(5))
+                .newBuilder(URI.create("$url/api/trading/v3$path"))
+                .timeout(Duration.ofSeconds(5))
                 .GET()
                 .build(),
             HttpResponse.BodyHandlers.ofString(),

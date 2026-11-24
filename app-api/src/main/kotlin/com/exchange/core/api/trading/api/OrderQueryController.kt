@@ -1,5 +1,6 @@
 package com.exchange.core.api.trading.api
 
+import com.exchange.core.api.trading.application.LatestSettledTradeQueryResult
 import com.exchange.core.api.trading.application.OrderFillCursor
 import com.exchange.core.api.trading.application.OrderFillQueryResult
 import com.exchange.core.api.trading.application.OrderQueryCode
@@ -80,6 +81,20 @@ internal class OrderQueryController(
         return ResponseEntity.status(status(result.code)).body(body)
     }
 
+    @GetMapping("/markets/{marketId}/trades/latest", produces = [MediaType.APPLICATION_JSON_VALUE])
+    fun getLatestSettledTrade(
+        @PathVariable @NotBlank @Size(max = 256) marketId: String,
+    ): ResponseEntity<LatestSettledTradeQueryResult> {
+        useCase.validateMarket(marketId)
+        val result =
+            try {
+                useCase.getLatestSettledTrade(marketId)
+            } catch (error: RuntimeException) {
+                LatestSettledTradeQueryResult(queryFailure(error))
+            }
+        return ResponseEntity.status(status(result.code)).body(result)
+    }
+
     private fun queryFailure(error: RuntimeException): OrderQueryCode =
         when (error) {
             is TransactionException, is DataAccessException -> OrderQueryCode.QUERY_UNAVAILABLE
@@ -88,7 +103,7 @@ internal class OrderQueryController(
 
     private fun status(code: OrderQueryCode): Int =
         when (code) {
-            OrderQueryCode.ORDER_FOUND -> 200
+            OrderQueryCode.ORDER_FOUND, OrderQueryCode.LATEST_SETTLED_TRADE, OrderQueryCode.NO_SETTLED_TRADE_AS_OF -> 200
             OrderQueryCode.QUERY_CATCHING_UP -> 202
             OrderQueryCode.ORDER_NOT_FOUND_AS_OF -> 404
             OrderQueryCode.QUERY_NOT_READY, OrderQueryCode.QUERY_UNAVAILABLE, OrderQueryCode.QUERY_INCONSISTENT -> 503

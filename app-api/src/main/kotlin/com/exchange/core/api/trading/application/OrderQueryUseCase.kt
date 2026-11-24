@@ -9,6 +9,8 @@ import org.springframework.transaction.annotation.Transactional
 
 enum class OrderQueryCode {
     ORDER_FOUND,
+    LATEST_SETTLED_TRADE,
+    NO_SETTLED_TRADE_AS_OF,
     QUERY_CATCHING_UP,
     ORDER_NOT_FOUND_AS_OF,
     QUERY_NOT_READY,
@@ -83,15 +85,46 @@ open class OrderQueryUseCase(
         )
     }
 
+    @Transactional(readOnly = true)
+    open fun getLatestSettledTrade(marketId: String): LatestSettledTradeQueryResult {
+        validateMarket(marketId)
+        val snapshot =
+            try {
+                store.readLatestSettledTrade(marketId)
+            } catch (_: OrderQueryUnavailableException) {
+                return LatestSettledTradeQueryResult(OrderQueryCode.QUERY_UNAVAILABLE)
+            } catch (_: OrderQueryInconsistentException) {
+                return LatestSettledTradeQueryResult(OrderQueryCode.QUERY_INCONSISTENT)
+            }
+        if (snapshot?.lifecycle == OrderQueryLifecycle.BLOCKED) {
+            return LatestSettledTradeQueryResult(OrderQueryCode.QUERY_INCONSISTENT)
+        }
+        if (snapshot?.lifecycle != OrderQueryLifecycle.READY || snapshot.settlementThrough == null) {
+            return LatestSettledTradeQueryResult(OrderQueryCode.QUERY_NOT_READY)
+        }
+
+        val code = if (snapshot.trade == null) OrderQueryCode.NO_SETTLED_TRADE_AS_OF else OrderQueryCode.LATEST_SETTLED_TRADE
+        return LatestSettledTradeQueryResult(
+            code = code,
+            marketId = marketId,
+            asOfSettlementResultSequence = snapshot.settlementThrough,
+            trade = snapshot.trade,
+        )
+    }
+
     internal open fun validateInput(
         marketId: String,
         orderId: String,
         minAdmissionSequence: Long,
     ) {
-        requireOrderQueryText(marketId)
-        require(marketId in store.namespace.markets) { "unsupported query market" }
+        validateMarket(marketId)
         require(ORDER_ID.matches(orderId)) { "invalid order ID" }
         require(minAdmissionSequence >= 0) { "invalid minimum admission sequence" }
+    }
+
+    internal open fun validateMarket(marketId: String) {
+        requireOrderQueryText(marketId)
+        require(marketId in store.namespace.markets) { "unsupported query market" }
     }
 
     private fun resolveOrder(

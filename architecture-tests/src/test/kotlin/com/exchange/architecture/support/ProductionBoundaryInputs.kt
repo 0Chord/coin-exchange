@@ -52,6 +52,8 @@ object ProductionBoundaryInputs {
                 "$TRADING_APPLICATION.OrderQueryPendingReason",
                 "$TRADING_APPLICATION.OrderQueryOrderState",
                 "$TRADING_APPLICATION.OrderFillQueryResult",
+                "$TRADING_APPLICATION.LatestSettledTradeQueryResult",
+                "$TRADING_APPLICATION.LatestSettledTrade",
                 "$TRADING_APPLICATION.OrderFill",
                 "$TRADING_APPLICATION.OrderFillCursor",
                 "$TRADING_APPLICATION.OrderFillRole",
