@@ -1,6 +1,6 @@
 # 거래 백엔드 상세 설계 (LLD)
 
-주문을 코드로 따라갈 때 확인할 **입력, 상태 변경, 완료 응답, 재시도 기준**을 정리합니다. 먼저 WAS·자금·매칭이 맡는 범위와 주문 한 건의 흐름을 볼 수 있습니다. [전체 설계 (HLD)](../README.md#전체-설계-hld) · [주문 한 건의 흐름](../README.md#주문-한-건의-흐름)
+주문을 코드로 따라갈 때 확인할 **입력, 상태 변경, 완료 응답, 재시도 기준**을 정리합니다. README에서 실행 배치와 패키지·멀티모듈 의존성을 먼저 볼 수 있습니다. [전체 설계 (HLD)](../README.md#전체-설계-hld) · [주문 한 건의 흐름](../README.md#주문-한-건의-흐름) · [패키지와 모듈](../README.md#상세-설계-lld)
 
 [모듈](#실행-단위와-모듈) · [접수](#주문-접수와-요청-토큰) · [매칭과 정산](#마켓별-매칭과-정산) · [클러스터 복제](#클러스터-내부) · [조회](#조회-반영과-응답) · [DB 중단 복구](#장애에서-이어가는-흐름)
 
@@ -115,16 +115,16 @@ sequenceDiagram
 유효한 스냅샷이 없고 처음부터의 로그가 남아 있으면 로그부터 재생합니다. 기존 통합 시험에서는 자금·매칭 양쪽에 스냅샷을 남기고 추가 명령을 처리한 뒤, 같은 기록으로 두 역할을 재시작해 상태와 처리 위치를 대조합니다. [Aeron 복구 계획](https://github.com/aeron-io/aeron/blob/1.53.3/aeron-cluster/src/main/java/io/aeron/cluster/RecordingLog.java#L1731-L1765) · [우리 복원 코드](../app-api/src/main/kotlin/com/exchange/core/api/trading/infrastructure/aeron/SplitTradingClusterAdapter.kt#L141) · [양쪽 역할 복원 시험](../app-api/src/test/kotlin/com/exchange/core/api/trading/infrastructure/aeron/SplitFundsTradingHttpTest.kt#L2095)
 
 <details>
-<summary>거래 배치와 클러스터 내부 그림의 Mermaid 원본</summary>
+<summary>거래 배치·주문·조회·클러스터 그림의 Mermaid 원본</summary>
 
 **거래 클러스터 배치**
 
 ```text
 flowchart TB
     client["클라이언트"] --> was["WAS"]
-    was --> funds["공통 자금"]
-    funds <--> matchingA["매칭 A"]
-    funds <--> matchingB["매칭 B"]
+    was --> funds["공통 자금 · 3노드"]
+    funds <--> matchingA["매칭 A · 3노드"]
+    funds <--> matchingB["매칭 B · 3노드"]
 ```
 
 **명령 복제와 과반 커밋**
@@ -166,6 +166,49 @@ sequenceDiagram
     node->>archive: P 이후 로그 재생
     archive-->>node: 이어서 적용할 명령
     node->>node: 확정 로그를 순서대로 적용
+```
+
+**Archive 조회 경로**
+
+```text
+flowchart TB
+    fundsArchive["자금 Archive"] --> projection["주문·원장 반영"]
+    matchingArchive["매칭 Archive"] --> projection
+    matchingArchive --> bookWorker["공개 호가 작업"]
+    projection --> db["PostgreSQL"]
+    bookWorker --> memory["WAS 메모리"]
+    db --> query["WAS 조회 API"]
+    memory --> query
+```
+
+**주문 접수부터 정산 조회까지**
+
+```text
+sequenceDiagram
+    actor client as 클라이언트
+    participant was as WAS
+    participant funds as 공통 자금
+    participant matching as 담당 매칭
+    participant db as PostgreSQL
+    client->>was: 주문 POST와 요청 토큰
+    was->>funds: 주문 접수 요청
+    funds->>funds: 확정 로그 적용, 예약과 접수 결과 기록
+    funds-->>was: 주문 ID와 접수 순번
+    was-->>client: 202 접수
+    funds->>matching: 예약된 주문 전송
+    matching->>matching: 주문장 변경과 체결 결과 확정
+    matching->>funds: 체결 결과와 마켓 결과 순번 전송
+    funds->>funds: 연속 순번 확인 후 잔고·수수료 정산
+    funds-->>matching: 자금에 적용한 결과 순번
+    matching->>matching: 정산 확인 기록과 보관 결과 정리
+    opt 조회는 준비됐고 접수 순번 반영을 기다리는 중
+        client->>was: 접수 순번을 포함한 주문 GET
+        was-->>client: 202 QUERY_CATCHING_UP
+    end
+    was->>db: 조회 작업에서 체결·정산 상태 반영
+    client->>was: 주문 GET
+    was->>db: 주문과 자금 반영 상태 조회
+    was-->>client: 200, 체결과 정산 완료
 ```
 
 </details>

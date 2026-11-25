@@ -20,9 +20,9 @@ Kotlin으로 구현한 가상자산 거래 백엔드입니다. 현재 현물 거
 
 ## 구현 현황
 
-| 주문·거래 | 사용자 조회 | 공개 시장 조회 |
-| --- | --- | --- |
-| 지정가 GTC, 가격·시간 우선 매칭, 부분·후속 체결, 잔량 취소·반환 | 주문 상세·목록, 체결별 수수료, 사용 가능·예약 잔고 | 최근 정산 체결가, 8개 주기 차트, 매수·매도 상위 10호가 |
+- **주문·거래** — 지정가 GTC, 가격·시간 우선 매칭, 부분·후속 체결, 잔량 취소·반환.
+- **사용자 조회** — 주문 상세·목록, 체결별 수수료, 사용 가능·예약 잔고.
+- **공개 시장 조회** — 최근 정산 체결가, 8개 주기 차트, 매수·매도 상위 10호가.
 
 ## 아키텍처
 
@@ -36,11 +36,9 @@ WAS는 주문·취소와 조회의 진입점입니다. 거래 상태는 자금·
 
 [![클라이언트 → WAS → 공통 자금. 공통 자금과 매칭 A·B가 주문과 결과를 교환](.github/assets/trading-topology.svg)](.github/assets/trading-topology.svg)
 
-| 구성요소 | 소유하는 상태와 판단 |
-| --- | --- |
-| **WAS** | HTTP 요청을 검증하고 Aeron으로 자금 클러스터에 전달합니다. 주문·취소 응답은 자금의 접수 결과를 반환합니다. |
-| **공통 자금** | 가용·예약 잔고와 요청별 최초 접수 결과를 보존합니다. 공유 잔고에서 예약을 순서대로 판단하고 체결 대금·수수료를 정산하거나 취소 잔량의 예약을 반환합니다. [공유 자금 설계](engineering/multi-matching-shared-funds-spec.md) |
-| **마켓 담당 매칭** | 마켓별 주문장과 결과 순번을 보존합니다. 가격·시간 우선으로 체결을 확정하고, 취소 명령이 적용되면 그 시점의 잔량을 주문장에서 제거합니다. [매칭·정산 계약](engineering/funds-result-settlement-spec.md) |
+- **WAS**는 HTTP를 받아 자금 접수 결과를 반환하고, 별도 반영 작업이 만든 조회 데이터를 제공합니다.
+- **공통 자금**은 가용·예약 잔고와 요청별 최초 접수 결과를 보존합니다. 거래 대금·수수료를 정산하고 취소 잔량의 예약을 반환합니다. [공유 자금 설계](engineering/multi-matching-shared-funds-spec.md)
+- **마켓 담당 매칭**은 배치된 마켓별 주문장과 결과 순번을 보존합니다. 가격·시간 우선으로 체결하고, 취소가 적용되면 그 시점의 잔량을 주문장에서 제거합니다. [매칭·정산 계약](engineering/funds-result-settlement-spec.md)
 
 공통 자금이 예약을 모으므로 여러 마켓이 같은 잔고를 사용해도 초과 예약을 막을 수 있습니다. 마켓마다 주문장이 분리돼 한 담당의 장애 중에도 다른 담당은 공통 자금이 정상일 때 거래를 이어갑니다. 자금 리더가 주문·취소를 보내고 매칭 리더가 확정 결과를 돌려보냅니다. [주문 전달](engineering/funds-order-delivery-review.md) · [전송 배치](https://github.com/0Chord/coin-exchange/pull/204)
 
@@ -48,86 +46,108 @@ WAS는 주문·취소와 조회의 진입점입니다. 거래 상태는 자금·
 
 아래는 `exchange.order-query.source=archive`를 사용하는 **단일 마켓 Archive 조회 모드**입니다. WAS가 같은 호스트에서 자금·매칭 로그를 재생해 접수·체결·분개·정산 상태를 재구성합니다. [Archive 조회 반영](https://github.com/0Chord/coin-exchange/pull/205)
 
-```mermaid
-flowchart TB
-    fundsArchive["자금 Archive"] --> projection["주문·원장 반영"]
-    matchingArchive["매칭 Archive"] --> projection
-    matchingArchive --> bookWorker["공개 호가 작업"]
-    projection --> db["PostgreSQL"]
-    bookWorker --> memory["WAS 메모리"]
-    db --> query["WAS 조회 API"]
-    memory --> query
-```
+[![자금·매칭 Archive의 확정 입력이 조회 반영으로, 매칭 Archive가 별도로 호가 작업을 거쳐 WAS 메모리로 향한다](.github/assets/archive-query-flow.svg)](.github/assets/archive-query-flow.svg)
 
 Archive 모드의 PostgreSQL은 주문·체결·분개·잔고·차트의 조회에 사용합니다. 공개 호가는 매칭 로그를 따로 따라가는 작업이 WAS 메모리에 공개합니다. 조회의 최신성은 각 작업의 반영 위치에 따라 달라집니다. 이 구성을 검증한 3+3노드 시험은 단일 마켓에서 실행했습니다. [Archive 모드 통합 시험](app-api/src/test/kotlin/com/exchange/core/api/trading/infrastructure/aeron/SplitFundsTradingHttpTest.kt#L406) · [조회 반영의 상세 설계](engineering/exchange-architecture-lld.md#조회-반영과-응답)
 
 #### 클러스터 내부
 
-자금·매칭의 3노드 구성은 리더 1대와 팔로워 2대입니다. 노드마다 **Media Driver · Consensus Module · 거래 서비스 · Archive**를 실행하고 별도 경로에 로그와 스냅샷을 보관합니다. 리더는 자신을 포함한 과반이 기록한 위치를 커밋하고, 각 노드의 서비스는 커밋된 순서대로 거래 상태를 갱신합니다. 공통 자금이 과반을 잃으면 신규 예약 확정이 멈춥니다.
+자금·매칭 클러스터는 각각 **리더 1대와 팔로워 2대**로 구성합니다. 같은 클러스터에 속한 노드마다 **Media Driver · Consensus Module · 거래 서비스 · Archive**를 실행합니다. JVM마다 자기 거래 상태와 기록을 유지합니다.
 
-[노드 구성과 복제·커밋 시퀀스](engineering/exchange-architecture-lld.md#클러스터-내부) · [파일 구조·sync=2·스냅샷 복구](engineering/exchange-architecture-lld.md#노드별-저장과-스냅샷-복구)
+1. **복제·적용** — 리더가 명령 순서를 정하고, 자신을 포함한 과반이 기록한 위치를 커밋합니다. 각 거래 서비스가 자기 로그의 커밋 범위를 순서대로 적용하므로 같은 위치에서 상태가 일치합니다. 자금이 과반을 잃으면 새 예약 확정이 멈춥니다.
+2. **저장** — 노드마다 `archive/`에 명령 로그·스냅샷 본문을 두고, `cluster/recording.log`에 기록 ID와 로그 위치를 남깁니다. 검증 구성의 `sync=2`는 기록 데이터와 파일 메타데이터를 동기화합니다.
+3. **복구** — 최신 유효 스냅샷을 읽고 그 위치 이후의 로그를 다시 적용합니다. 리더가 바뀌면 새 리더의 전달 작업은 복원한 미확인 주문·결과부터 이어서 보냅니다.
 
-## 주문 한 건의 흐름
+<details>
+<summary>과반 커밋과 스냅샷 복구 시퀀스</summary>
 
-### 주문 접수부터 정산 조회까지
+**리더와 팔로워 한 대가 위치 P까지 기록한 경우**
+
+[![리더가 위치 P를 과반 커밋하고 각 노드가 도달한 범위까지 적용](.github/assets/cluster-quorum.svg)](.github/assets/cluster-quorum.svg)
+
+**노드 재시작 시 저장 위치를 찾고 상태를 복원하는 순서**
+
+[![recording.log에서 스냅샷 기록 ID와 로그 위치를 찾고 Archive를 재생](.github/assets/cluster-snapshot-recovery.svg)](.github/assets/cluster-snapshot-recovery.svg)
+
+</details>
+
+[노드별 파일·동기화·복구 코드](engineering/exchange-architecture-lld.md#노드별-저장과-스냅샷-복구)
+
+### 주문 한 건의 흐름
+
+#### 주문 접수부터 정산 조회까지
 
 바로 체결될 수 있는 지정가 주문 한 건의 예입니다. 접수 응답 전달과 내부 주문 전달은 각각 진행됩니다. 연결한 HTTP 시험은 기본 조회 수집 모드에서 정산 반영 뒤의 주문 상태를 확인합니다. [실제 HTTP 후속 체결 시험](app-api/src/test/kotlin/com/exchange/core/api/trading/infrastructure/aeron/SplitFundsTradingHttpTest.kt#L1204)
 
-```mermaid
-sequenceDiagram
-    actor client as 클라이언트
-    participant was as WAS
-    participant funds as 공통 자금
-    participant matching as 담당 매칭
-    participant db as PostgreSQL
-    client->>was: 주문 POST와 요청 토큰
-    was->>funds: 주문 접수 요청
-    funds->>funds: 확정 로그 적용, 예약과 접수 결과 기록
-    funds-->>was: 주문 ID와 접수 순번
-    was-->>client: 202 접수
-    funds->>matching: 예약된 주문 전송
-    matching->>matching: 주문장 변경과 체결 결과 확정
-    matching->>funds: 체결 결과와 마켓 결과 순번 전송
-    funds->>funds: 연속 순번 확인 후 잔고·수수료 정산
-    funds-->>matching: 자금에 적용한 결과 순번
-    matching->>matching: 정산 확인 기록과 보관 결과 정리
-    opt 조회는 준비됐고 접수 순번 반영을 기다리는 중
-        client->>was: 접수 순번을 포함한 주문 GET
-        was-->>client: 202 QUERY_CATCHING_UP
-    end
-    was->>db: 조회 작업에서 체결·정산 상태 반영
-    client->>was: 주문 GET
-    was->>db: 주문과 자금 반영 상태 조회
-    was-->>client: 200, 체결과 정산 완료
-```
+[![주문 접수, 매칭과 정산, PostgreSQL 반영과 HTTP 조회의 세 시퀀스](.github/assets/order-lifecycle.svg)](.github/assets/order-lifecycle.svg)
+
+조회가 준비됐지만 접수 순번까지 아직 반영하지 못한 요청은 `202 QUERY_CATCHING_UP`을 받습니다. 그림의 마지막 GET은 정산까지 반영된 상태를 조회하는 예입니다.
 
 매칭의 **주문 적용 확인**은 자금이 보관한 발송용 주문을 정리하는 기준입니다. 자금의 **정산 적용 확인**은 매칭 로그에 기록된 뒤 매칭이 보관한 체결·취소 결과를 정리하는 기준입니다. 체결 결과가 주문 적용 확인보다 먼저 도착하면, 자금은 검증을 통과한 결과를 주문이 적용됐다는 증거로 함께 사용합니다. 조회 작업은 각 클러스터에 확정된 입력을 따라갑니다. [적용 확인과 정산 확인](engineering/funds-result-settlement-spec.md)
 
-### 부분 체결 후 잔량 취소
+#### 부분 체결 후 잔량 취소
 
 매도 3개를 접수하고, 1개가 체결된 뒤 남은 2개를 취소하는 실제 HTTP 시험입니다. 이 사례의 가격은 개당 100이고 수수료는 0입니다. [시험 코드](app-api/src/test/kotlin/com/exchange/core/api/trading/infrastructure/aeron/SplitFundsTradingHttpTest.kt#L951)
 
-| 시점 | 엔진이 한 일 | 조회 결과와 매도 자산의 사용 가능 / 예약 |
-| --- | --- | --- |
-| 매도 3개 접수 | 자금이 매도 자산 3개를 예약하고 매칭이 주문장에 올립니다. | `RESTING` · 잔량 3 · **0 / 3** |
-| 1개 체결·정산 | 매칭이 1개를 체결하고 자금이 대금 100을 반영합니다. | `PARTIALLY_FILLED` · 체결 1, 잔량 2 · **0 / 2** |
-| 잔량 2개 취소 확정 | 매칭이 주문장에서 잔량을 제거합니다. 자금 적용을 기다리는 동안 예약은 유지됩니다. | `CANCELLED / PENDING(RELEASE)` · 체결 1, 취소 2 · **0 / 2** |
-| 반환 완료 | 자금이 앞선 체결을 유지한 채 남은 예약 2개를 반환합니다. | `CANCELLED / APPLIED` · 취소 2 · **2 / 0** |
+매도 자산의 **사용 가능 / 예약** 잔액은 다음과 같이 바뀝니다.
+
+1. **매도 3개 접수** — 자금이 3개를 예약하고 매칭이 주문장에 올립니다. `RESTING` · 잔량 3 · **0 / 3**.
+2. **1개 체결·정산** — 매칭이 1개를 체결하고 자금이 대금 100을 반영합니다. `PARTIALLY_FILLED` · 잔량 2 · **0 / 2**.
+3. **잔량 2개 취소 확정** — 매칭이 주문장에서 잔량을 제거합니다. 자금에 적용될 때까지 예약을 유지합니다. `CANCELLED / PENDING(RELEASE)` · **0 / 2**.
+4. **반환 완료** — 자금이 남은 예약 2개를 반환합니다. `CANCELLED / APPLIED` · **2 / 0**.
 
 시험에서는 같은 취소 요청을 다시 보내도 최초 취소 ID가 돌아오고, 자금 결과 순번은 반환 시 한 번만 전진했습니다. 같은 PostgreSQL을 사용해 WAS를 다시 시작한 뒤에도 최종 조회 결과가 일치했습니다. [취소·반환 검증 기록](engineering/split-cancel-http-spec.md)
 
 [상세 취소·재전송 시퀀스](engineering/exchange-architecture-lld.md#부분-체결-후-잔량-취소)
 
-## 상세 설계 (LLD)
+### 상세 설계 (LLD)
 
-[상세 설계 문서](engineering/exchange-architecture-lld.md)에서 각 처리 경계의 **입력 → 상태 변경 → 응답 → 재시도·복원 기준**을 실제 코드와 연결합니다.
+[패키지 구조](#패키지-구조) · [모듈 의존성](#모듈-의존성) · [주문과 조회의 추상화](#주문과-조회의-추상화) · [상태와 재시도](#상태와-재시도)
 
-| 읽는 순서 | 구현에서 확인할 것 |
-| --- | --- |
-| **접수와 요청 토큰** | HTTP Controller → UseCase → Gateway → 자금 상태. 같은 토큰으로 재전송할 때 최초 결과를 찾고 예약을 중복 적용하지 않는 경로. [접수 설계](engineering/exchange-architecture-lld.md#주문-접수와-요청-토큰) |
-| **매칭과 정산** | 마켓별 전달 순번과 결과 순번, 가격·시간 우선 주문장, 정산 적용 확인 뒤 보관 결과를 정리하는 기준. [매칭·정산 설계](engineering/exchange-architecture-lld.md#마켓별-매칭과-정산) |
-| **복제와 저장** | 노드의 네 구성요소, 과반 커밋과 서비스 적용, 노드별 Archive와 `recording.log`, 스냅샷 이후 로그 재생. [클러스터 내부](engineering/exchange-architecture-lld.md#클러스터-내부) |
-| **조회 반영과 응답** | Archive 재생 상한, PostgreSQL의 원문·반영 위치 대조, 호가 메모리 갱신과 조회 응답 판정. [조회 설계](engineering/exchange-architecture-lld.md#조회-반영과-응답) |
+#### 패키지 구조
+
+Spring Boot WAS와 자금·매칭 노드의 기동 코드는 **같은 `app-api` 모듈**에 있습니다. WAS는 Spring Boot 진입점으로, 거래 노드는 역할과 배치 설정으로 기동합니다. [WAS 진입점](app-api/src/main/kotlin/com/exchange/core/ExchangeCoreApplication.kt) · [거래 노드 진입점](app-api/src/main/kotlin/com/exchange/core/api/trading/infrastructure/aeron/DevelopmentSplitTradingMain.kt)
+
+`app-api`의 `com.exchange.core.api.trading` 아래는 현물 거래 코드의 예입니다.
+
+- [`api`](app-api/src/main/kotlin/com/exchange/core/api/trading/api) — HTTP Controller와 요청·응답 타입. 요청 형식을 검사하고 접수·조회 결과를 HTTP 상태로 바꿉니다.
+- [`application`](app-api/src/main/kotlin/com/exchange/core/api/trading/application) — 주문·조회 UseCase와 결과 모델. 조회에 필요한 저장소 계약은 [`application.port`](app-api/src/main/kotlin/com/exchange/core/api/trading/application/port)에 둡니다.
+- [`infrastructure`](app-api/src/main/kotlin/com/exchange/core/api/trading/infrastructure) — `aeron`에서 전송·거래 노드·Archive 재생을, `codec`에서 전송 메시지 변환을, `persistence`에서 PostgreSQL 저장·조회를 구현합니다.
+- [`com.exchange.core.api.config`](app-api/src/main/kotlin/com/exchange/core/api/config) — Spring 설정에서 UseCase에 Gateway와 저장소 구현체를 연결합니다.
+
+거래 상태와 계산은 `domain-*` 모듈에 둡니다. 각 모듈은 `com.exchange.core` 아래의 `trading`, `matching`, `order`, `fee`, `ledger`, `common` 패키지에 대응합니다. 예를 들어 `domain-trading`의 [역할 조립](domain-trading/src/main/kotlin/com/exchange/core/trading/TradingRoleAssembly.kt#L98)이 자금 상태와 매칭 상태를 구성하고, 각 상태가 필요한 계산을 하위 모듈로 넘깁니다.
+
+#### 모듈 의존성
+
+아래는 **Gradle이 직접 선언한 운영 모듈 의존성**입니다. 화살표는 사용하는 모듈에서 가져오는 모듈을 가리킵니다.
+
+- [`app-api`](app-api/build.gradle.kts#L47) → `domain-trading`, `domain-matching`, `domain-order`, `domain-ledger`, `domain-common`. HTTP·Aeron·PostgreSQL을 여기서 연결합니다.
+- [`domain-trading`](domain-trading/build.gradle.kts#L18) → `domain-matching`, `domain-order`, `domain-fee`, `domain-ledger`, `domain-common`. 접수와 예약, 체결과 정산, 취소와 반환을 순서대로 연결합니다.
+- [`domain-matching`](domain-matching/build.gradle.kts#L18) → `domain-order`, `domain-common`. [`domain-order`](domain-order/build.gradle.kts#L18) → `domain-fee`, `domain-common`. 매칭이 주문 모델을 쓰고, 주문의 예약 계산이 수수료 규칙을 씁니다.
+- [`domain-fee`](domain-fee/build.gradle.kts#L18)와 [`domain-ledger`](domain-ledger/build.gradle.kts#L18) → `domain-common`. 수수료 계산과 복식 분개가 공통 금액·자산 타입을 공유합니다. `domain-common`은 다른 프로젝트 모듈을 참조하지 않습니다.
+
+`architecture-tests`는 Gradle의 직접 선언과 컴파일된 코드의 타입 참조를 함께 검사합니다. CI에서 모듈 의존 방향, 도메인의 외부 기술 독립성, HTTP 진입점과 Bean 조립을 검증합니다. `benchmark-jmh`는 거래 규칙의 성능을 측정합니다. [아키텍처 검사](architecture-tests/src/test/kotlin/com/exchange/architecture/ProductionArchitectureTest.kt#L101) · [CI](.github/workflows/build-and-test.yml#L42) · [벤치마크](benchmark-jmh/README.md)
+
+#### 주문과 조회의 추상화
+
+**주문·취소 POST**
+
+1. [`BoundedTradingOrderController`](app-api/src/main/kotlin/com/exchange/core/api/trading/api/BoundedTradingOrderController.kt#L21)가 HTTP 입력과 응답을 맡습니다. [`BoundedTradingOrderUseCase`](app-api/src/main/kotlin/com/exchange/core/api/trading/application/BoundedTradingOrderUseCase.kt#L71)는 현재 `BoundedTradingOrderGateway`에 위임합니다.
+2. [Spring 설정](app-api/src/main/kotlin/com/exchange/core/api/config/BoundedTradingGatewayConfig.kt#L54)이 Gateway 계약에 `BoundedAeronGateway`를 연결합니다. Gateway는 대기열과 미응답 요청 한도를 관리하고 응답을 원래 요청에 연결합니다. `SplitFundsGatewayTransport`가 Aeron 세션과 전송 형식을 맡습니다. [Gateway 구현](app-api/src/main/kotlin/com/exchange/core/api/trading/infrastructure/aeron/BoundedAeronGateway.kt#L104) · [Transport](app-api/src/main/kotlin/com/exchange/core/api/trading/infrastructure/aeron/SplitFundsGatewayTransport.kt#L200)
+3. 거래 노드의 [`SplitTradingClusterAdapter`](app-api/src/main/kotlin/com/exchange/core/api/trading/infrastructure/aeron/SplitTradingClusterAdapter.kt#L189)가 커밋된 명령을 역할별 상태에 전달합니다. 금액을 예약하거나 주문장을 변경하는 판단은 [`BoundedFundingState`](domain-trading/src/main/kotlin/com/exchange/core/trading/BoundedFundingState.kt#L140)와 [`ReservedMatchingState`](domain-trading/src/main/kotlin/com/exchange/core/trading/ReservedMatchingState.kt#L74)가 맡습니다.
+
+**주문·체결 GET과 조회 반영**
+
+- [`OrderQueryUseCase`](app-api/src/main/kotlin/com/exchange/core/api/trading/application/OrderQueryUseCase.kt#L40)는 [`OrderQueryStore`](app-api/src/main/kotlin/com/exchange/core/api/trading/application/port/OrderQueryStore.kt#L13)를 통해 주문을 읽고 조회 준비 상태와 반영 순번을 판정합니다. [`PostgresOrderQueryStore`](app-api/src/main/kotlin/com/exchange/core/api/trading/infrastructure/persistence/PostgresOrderQueryStore.kt#L34)가 SQL을 맡습니다. 체결 목록의 조회 상태·체결·정산 반영은 UseCase의 읽기 전용 `REPEATABLE_READ` 트랜잭션에서 함께 읽습니다. [트랜잭션 선언](app-api/src/main/kotlin/com/exchange/core/api/trading/application/OrderQueryUseCase.kt#L93)
+- Archive 모드의 WAS는 재생 전용 상태를 만들어 거래 노드와 **같은 명령 적용 코드**로 접수·체결·정산 정보를 다시 계산합니다. 조회 반영 작업은 그 결과를 PostgreSQL에 저장하고, 공개 호가 작업은 별도로 WAS 메모리를 갱신합니다. [Archive 명령 재생](app-api/src/main/kotlin/com/exchange/core/api/trading/infrastructure/aeron/SplitArchiveProjection.kt#L57) · [조회 반영과 DB 복구](engineering/exchange-architecture-lld.md#조회-반영과-응답)
+
+#### 상태와 재시도
+
+- **접수** — 사용자·채널·세대·순번이 요청의 식별자입니다. 같은 토큰과 내용이면 보관 중인 최초 결과를 돌려주고, 이미 정리한 순번이나 이전 세대의 토큰은 다시 실행하지 않습니다. [요청 토큰 규칙](engineering/exchange-architecture-lld.md#주문-접수와-요청-토큰)
+- **매칭** — `OrderBook`은 매수 고가순·매도 저가순으로 가격대를 탐색하고, 같은 가격대는 삽입 순서로 체결합니다. [가격 선택](domain-matching/src/main/kotlin/com/exchange/core/matching/OrderBook.kt#L15) · [같은 가격의 주문 순서](domain-matching/src/main/kotlin/com/exchange/core/matching/PriceLevel.kt#L29)
+- **전달** — 마켓별 주문 전달 순번과 결과 순번이 각각 어디까지 적용됐는지 나타냅니다. 적용한 연속 순번까지만 확인하며, 확인을 잃거나 리더가 바뀌면 미확인 구간부터 이어서 보냅니다. [정산·전달 순번과 리더 교체](engineering/exchange-architecture-lld.md#마켓별-매칭과-정산)
+
+[상세 설계 문서](engineering/exchange-architecture-lld.md)에서 각 단계의 코드 위치, 복제·복구 파일 구조와 검증 사례를 더 볼 수 있습니다.
 
 ## 정합성과 장애 검증
 
