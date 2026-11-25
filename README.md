@@ -1,14 +1,14 @@
-![Exchange Core 프로젝트 배너](.github/assets/exchange-core-hero.svg)
+![Exchange Core 가상자산 거래 백엔드](.github/assets/exchange-core-hero.svg)
 
-# 현물 거래 백엔드
+# 가상자산 거래 백엔드
 
-**잔고는 공유하고, 주문장은 마켓별로 운영합니다.** 한 사용자가 여러 마켓에 동시에 주문해도 공통 자금 클러스터가 초과 예약을 막습니다. 각 매칭 클러스터는 주문장의 체결 순서를 관리하고, WAS는 확정 로그를 재생해 조회 데이터를 갱신합니다.
+**현재는 현물 거래를 지원합니다.** 한 사용자가 여러 마켓에 동시에 주문해도 공통 자금 클러스터가 초과 예약을 막습니다. 각 매칭 클러스터는 주문장의 체결 순서를 관리하고, WAS는 확정 로그를 재생해 조회 데이터를 갱신합니다.
 
 | 5분 평균 정산 | 정산 p99 관측 상한 | 최종 전량 정산 |
 | :---: | :---: | :---: |
 | **51,349.61 TPS** | **51.3 ms** | **15,406,387건** |
 
-자금 3노드 + 매칭 3노드 · `sync=2` · 단일 마켓 Aeron 직접 입력 · 당시 로컬 고정 빌드. [측정 조건·분별 결과·Archive 대조](engineering/results/split-3x3-aeron-20261123/README.md)
+자금 3노드 + 매칭 3노드 · `sync=2` · 현물 단일 마켓 Aeron 직접 입력 · 당시 로컬 고정 빌드. [측정 조건·분별 결과·Archive 대조](engineering/results/split-3x3-aeron-20261123/README.md)
 
 [**아키텍처**](#아키텍처) · [**주문 한 건의 흐름**](#주문-한-건의-흐름) · [**성능 기록**](#공개-성능-기록) · [**테스트 실행**](#설정과-실행) · [CI 실행 기록](https://github.com/0Chord/coin-exchange/actions/workflows/build-and-test.yml?query=event%3Apull_request)
 
@@ -136,6 +136,7 @@ PR의 Checks에서 실패한 작업 이름과 로그를 확인합니다. 구조 
 
 ## 남은 범위
 
+- 선물 거래 지원을 후속 기능으로 계획하고 있습니다.
 - 사용자별 주문·잔고 조회는 개발용입니다. 인증·인가와 공개 호가 WebSocket·다중 WAS 배포는 후속 범위입니다.
 - Archive 조회와 공개 호가 복구는 전체 로그가 남아 있는 동일 호스트의 단일 마켓 구성에서 검증했습니다. 별도 호스트의 저장소 전체 유실 복구는 후속 설계 범위입니다. [외부 보존](https://github.com/0Chord/coin-exchange/issues/139)
 - Archive 조회 모드에 원장 대사 결과를 HTTP 주문·취소 접수 조건으로 연결하는 작업이 남아 있습니다. [복구 후 접수 재개](https://github.com/0Chord/coin-exchange/issues/59)
