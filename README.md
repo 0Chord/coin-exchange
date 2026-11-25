@@ -1,18 +1,24 @@
-# Exchange Core
+![Exchange Core 프로젝트 배너](.github/assets/exchange-core-hero.svg)
 
-**주문 접수부터 체결·정산·조회까지 구현한 현물 거래 백엔드**
+# 현물 거래 백엔드
 
-여러 마켓에서 같은 사용자 잔고를 쓰는 동안 초과 예약을 막고, 한 마켓의 매칭 장애가 다른 마켓으로 번지는 범위를 줄이기 위해 **공통 자금과 마켓별 매칭을 분리**했습니다. 조회는 확정된 거래 로그를 따라 PostgreSQL과 WAS 메모리에 반영할 수 있습니다.
+**잔고는 공유하고, 주문장은 마켓별로 운영합니다.** 한 사용자가 여러 마켓에 동시에 주문해도 공통 자금 클러스터가 초과 예약을 막습니다. 각 매칭 클러스터는 주문장의 체결 순서를 관리하고, WAS는 확정 로그를 재생해 조회 데이터를 갱신합니다.
 
-> **5분 평균 51,349.61 정산 TPS** · 자금 3노드 + 매칭 3노드 · `sync=2`
->
-> 로컬 고정 빌드에서 단일 마켓에 Aeron으로 직접 입력한 결과입니다. 접수 15,406,387건은 종료 후 대기분까지 전량 정산했습니다. [측정 조건·분별 결과·Archive 대조](engineering/results/split-3x3-aeron-20261123/README.md)
+| 5분 평균 정산 | 정산 p99 관측 상한 | 최종 전량 정산 |
+| :---: | :---: | :---: |
+| **51,349.61 TPS** | **51.3 ms** | **15,406,387건** |
 
-**현재 단계** 지정가 주문의 부분 체결·후속 체결·잔량 취소와 주문·잔고 조회를 HTTP로 확인할 수 있습니다. 시장 조회는 최근 정산 체결가, 8개 주기 차트, 공개 호가를 제공하며 사용자별 주문 목록도 조회할 수 있습니다.
+자금 3노드 + 매칭 3노드 · `sync=2` · 단일 마켓 Aeron 직접 입력 · 당시 로컬 고정 빌드. [측정 조건·분별 결과·Archive 대조](engineering/results/split-3x3-aeron-20261123/README.md)
+
+[**아키텍처**](#아키텍처) · [**주문 한 건의 흐름**](#주문-한-건의-흐름) · [**성능 기록**](#공개-성능-기록) · [**테스트 실행**](#설정과-실행) · [CI 실행 기록](https://github.com/0Chord/coin-exchange/actions/workflows/build-and-test.yml?query=event%3Apull_request)
+
+## 구현 현황
+
+| 주문·거래 | 사용자 조회 | 공개 시장 조회 |
+| --- | --- | --- |
+| 지정가 GTC, 가격·시간 우선 매칭, 부분·후속 체결, 잔량 취소·반환 | 주문 상세·목록, 체결별 수수료, 사용 가능·예약 잔고 | 최근 정산 체결가, 8개 주기 차트, 매수·매도 상위 10호가 |
 
 Kotlin · Java 25 · Spring Boot · Aeron Cluster · Protobuf · PostgreSQL · Flyway
-
-[아키텍처](#아키텍처) · [주문 한 건의 흐름](#주문-한-건의-흐름) · [공개 성능 기록](#공개-성능-기록) · [테스트 실행](#설정과-실행) · [CI 실행 기록](https://github.com/0Chord/coin-exchange/actions/workflows/build-and-test.yml?query=event%3Apull_request)
 
 ## 아키텍처
 
@@ -38,6 +44,13 @@ flowchart TB
     MatchingArchive --> Depth
     Replay --> DB["PostgreSQL · 주문·체결·원장·잔고·차트"]
     Depth --> Memory["WAS 메모리 · 가격별 잔량"]
+
+    classDef trading fill:#24396b,stroke:#7797ff,stroke-width:1.5px,color:#f5f7ff
+    classDef archive fill:#243050,stroke:#a5b6df,color:#f5f7ff
+    classDef query fill:#12413d,stroke:#59e4cb,stroke-width:1.5px,color:#e8fff9
+    class Funds,Matching trading
+    class FundsArchive,MatchingArchive archive
+    class Replay,Depth,DB,Memory query
 ```
 
 | 설계 결정 | 이유와 영향 |
@@ -87,13 +100,17 @@ API 경로의 공통 접두사는 `/api/trading/v3`입니다.
 
 ## 공개 성능 기록
 
+![분별 정산 처리량. 1분 46,410, 2분 53,067, 3분 52,853, 4분 53,698, 5분 50,720건/s](.github/assets/settlement-throughput-5min.svg)
+
+15초 예열 뒤 300초 동안 **정산 15,404,883건**을 관측했습니다. 4분차의 **53,698건/s**는 1분 구간 평균입니다. 종료 후 대기분까지 정산해 최종 접수 건수와 일치했고, 자금 리더의 Archive를 재생해 잔고·원장·수수료·스냅샷과 자금 복제본 3개의 적용 위치를 대조했습니다. [검증 기록과 원본 지문](engineering/results/split-3x3-aeron-20261123/README.md)
+
 | 측정 조건 | 관측 결과 |
 | --- | --- |
-| 자금 3노드·매칭 3노드 · 모든 노드 `sync=2` · 단일 마켓 Aeron 직접 입력 5분 | 로컬 고정 Gradle 실행물에서 평균 **51,349.61 정산 TPS**, 정산 p95 **36.7ms**·p99 **51.3ms** 관측 상한. 한 Mac의 Docker에서 15초 예열 뒤 300초를 측정했습니다. 종료 후 접수 **15,406,387건** 전량 정산과 자금 Archive 재생을 대조했습니다. [측정 조건·분별 집계·정합성 근거](engineering/results/split-3x3-aeron-20261123/README.md) |
+| 분리형 자금 3노드·매칭 3노드 · `sync=2` · Aeron 직접 입력 5분 | 로컬 고정 빌드에서 평균 **51,349.61 정산 TPS**. 정산 p95 **36.7ms**·p99 **51.3ms** 관측 상한. [접수·정산 지표](engineering/results/split-3x3-aeron-20261123/README.md#처리량과-지연) |
 | 이전 통합형 거래 클러스터 3노드 · `sync=2` · Aeron 직접 입력 10분 | 평균 **35,487.4건/s**. 세 복제본의 매칭·정산 완료 관측 p99 **87.29ms**. 한 Mac의 Docker에서 실행했고 HTTP Gateway와 PostgreSQL 조회 반영은 측정 경로에서 제외했습니다. [측정 방법·원시 집계](engineering/trading-performance-summary-142.md) |
 | 분리형 자금 3노드·매칭 3노드 · `sync=2` · 주문 입력 200건/s | 공개 호가 HTTP GET p99 **4.65ms**, 매칭 적용부터 WAS 메모리 갱신까지 p99 **224.14ms**. [호가 측정](engineering/public-order-book-archive-spec.md#동일-입출력을-확인한-200건s-비교) |
 
-5분 결과는 접수·정산 배치 최적화를 포함한 당시 로컬 실행물에서 관측했습니다. 현재 기본 브랜치와 HTTP·PostgreSQL을 포함하는 경로의 처리량은 별도 측정 범위입니다.
+5분 결과는 Mac Docker의 로컬 고정 빌드에서 Aeron 입력부터 정산까지를 측정한 값입니다. 현재 기본 브랜치와 HTTP·PostgreSQL을 포함하는 경로의 처리량은 별도 측정 범위입니다.
 
 ## 설정과 실행
 

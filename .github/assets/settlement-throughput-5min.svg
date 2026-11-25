@@ -1,0 +1,58 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1040 400" width="1040" height="400" role="img" aria-labelledby="chart-title chart-description">
+  <title id="chart-title">Settlement throughput</title>
+  <desc id="chart-description">Five-minute local benchmark with three funds nodes, three matching nodes, sync level 2 and direct Aeron input. Settlements per second, by minute: 46,410; 53,067; 52,853; 53,698; 50,720. Average: 51,349.61 settlements per second.</desc>
+  <defs>
+    <linearGradient id="panel-fill" x2="1" y2="1">
+      <stop stop-color="#111d39"/>
+      <stop offset=".65" stop-color="#080f22"/>
+    </linearGradient>
+    <linearGradient id="bar-fill" x2="0" y2="1">
+      <stop stop-color="#7797ff"/>
+      <stop offset="1" stop-color="#3853a1"/>
+    </linearGradient>
+  </defs>
+
+  <rect x="1" y="1" width="1038" height="398" rx="22" fill="url(#panel-fill)" stroke="#30426a" stroke-width="2"/>
+
+  <g font-family="Arial, Helvetica, sans-serif">
+    <text x="40" y="59" fill="#f5f7ff" font-size="38" font-weight="700">Settlement throughput</text>
+    <text x="42" y="93" fill="#b3c0db" font-size="22">Aeron direct input · 3 + 3 nodes · sync=2</text>
+    <text x="997" y="55" text-anchor="end" fill="#59e4cb" font-size="36" font-weight="700">51,349.61</text>
+    <text x="997" y="85" text-anchor="end" fill="#b3c0db" font-size="20">5-minute average (settlements/s)</text>
+    <text x="40" y="117" fill="#a3b5d7" font-size="19">Settlements/s</text>
+
+    <path d="M112 134H131 M112 199.333H997 M112 264.667H997" fill="none" stroke="#2d3b5c" stroke-width="1.5"/>
+    <g fill="#acbad5" font-size="20" text-anchor="end">
+      <text x="99" y="141">60k</text>
+      <text x="99" y="206">40k</text>
+      <text x="99" y="271">20k</text>
+      <text x="99" y="337">0</text>
+    </g>
+
+    <!-- Bar heights use the observed counts divided by 60 from the benchmark summary. -->
+    <g fill="url(#bar-fill)">
+      <rect x="151" y="178.395" width="106" height="151.605" rx="6"/>
+      <rect x="327" y="156.647" width="106" height="173.353" rx="6"/>
+      <rect x="503" y="157.346" width="106" height="172.654" rx="6"/>
+      <rect x="679" y="154.587" width="106" height="175.413" rx="6"/>
+      <rect x="855" y="164.315" width="106" height="165.685" rx="6"/>
+    </g>
+    <path d="M158 179.395h92 M334 157.647h92 M510 158.346h92 M686 155.587h92 M862 165.315h92" fill="none" stroke="#59e4cb" stroke-width="2" stroke-linecap="round"/>
+    <path d="M112 330H997" fill="none" stroke="#8296c0" stroke-width="1.5"/>
+
+    <g fill="#f5f7ff" font-size="24" font-weight="700" text-anchor="middle">
+      <text x="204" y="166">46,410</text>
+      <text x="380" y="144">53,067</text>
+      <text x="556" y="145">52,853</text>
+      <text x="732" y="142">53,698</text>
+      <text x="908" y="152">50,720</text>
+    </g>
+    <g fill="#b3c0db" font-size="22" text-anchor="middle">
+      <text x="204" y="371">1 min</text>
+      <text x="380" y="371">2 min</text>
+      <text x="556" y="371">3 min</text>
+      <text x="732" y="371">4 min</text>
+      <text x="908" y="371">5 min</text>
+    </g>
+  </g>
+</svg>
