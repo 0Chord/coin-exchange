@@ -106,27 +106,21 @@ Archive 모드의 PostgreSQL은 주문·체결·분개·잔고·차트의 조회
 
 #### 패키지 구조
 
-Spring Boot WAS와 자금·매칭 노드의 기동 코드는 **같은 `app-api` 모듈**에 있습니다. WAS는 Spring Boot 진입점으로, 거래 노드는 역할과 배치 설정으로 기동합니다. [WAS 진입점](app-api/src/main/kotlin/com/exchange/core/ExchangeCoreApplication.kt) · [거래 노드 진입점](app-api/src/main/kotlin/com/exchange/core/api/trading/infrastructure/aeron/DevelopmentSplitTradingMain.kt)
+`app-api`는 Spring Boot WAS와 역할별 거래 노드의 실행 코드가 들어 있는 모듈입니다. 아래는 현물 거래 패키지와 별도 도메인 모듈의 배치입니다.
 
-`app-api`의 `com.exchange.core.api.trading` 아래는 현물 거래 코드의 예입니다.
+[![현물 거래 패키지 구조. app-api의 config와 trading은 같은 깊이에 있고, trading에는 api·application.port·infrastructure가 있습니다. 별도 도메인 모듈에는 trading·matching·order·fee·ledger·common 패키지가 있습니다.](.github/assets/trading-package-layout.svg)](.github/assets/trading-package-layout.svg)
 
-- [`api`](app-api/src/main/kotlin/com/exchange/core/api/trading/api) — HTTP Controller와 요청·응답 타입. 요청 형식을 검사하고 접수·조회 결과를 HTTP 상태로 바꿉니다.
-- [`application`](app-api/src/main/kotlin/com/exchange/core/api/trading/application) — 주문·조회 UseCase와 결과 모델. 조회에 필요한 저장소 계약은 [`application.port`](app-api/src/main/kotlin/com/exchange/core/api/trading/application/port)에 둡니다.
-- [`infrastructure`](app-api/src/main/kotlin/com/exchange/core/api/trading/infrastructure) — `aeron`에서 전송·거래 노드·Archive 재생을, `codec`에서 전송 메시지 변환을, `persistence`에서 PostgreSQL 저장·조회를 구현합니다.
-- [`com.exchange.core.api.config`](app-api/src/main/kotlin/com/exchange/core/api/config) — Spring 설정에서 UseCase에 Gateway와 저장소 구현체를 연결합니다.
-
-거래 상태와 계산은 `domain-*` 모듈에 둡니다. 각 모듈은 `com.exchange.core` 아래의 `trading`, `matching`, `order`, `fee`, `ledger`, `common` 패키지에 대응합니다. 예를 들어 `domain-trading`의 [역할 조립](domain-trading/src/main/kotlin/com/exchange/core/trading/TradingRoleAssembly.kt#L98)이 자금 상태와 매칭 상태를 구성하고, 각 상태가 필요한 계산을 하위 모듈로 넘깁니다.
+`config`에서 UseCase에 Gateway와 저장소 구현체를 연결합니다. `domain-trading`은 역할 설정에 따라 자금·매칭 상태를 조립합니다. [현물 거래 패키지](app-api/src/main/kotlin/com/exchange/core/api/trading) · [Spring 설정](app-api/src/main/kotlin/com/exchange/core/api/config) · [거래 노드 진입점](app-api/src/main/kotlin/com/exchange/core/api/trading/infrastructure/aeron/DevelopmentSplitTradingMain.kt) · [역할별 상태 조립](domain-trading/src/main/kotlin/com/exchange/core/trading/TradingRoleAssembly.kt#L98)
 
 #### 모듈 의존성
 
-아래는 **Gradle이 직접 선언한 운영 모듈 의존성**입니다. 화살표는 사용하는 모듈에서 가져오는 모듈을 가리킵니다.
+화살표는 **사용하는 모듈 → Gradle에서 직접 가져오는 모듈** 방향입니다. `app-api`는 `implementation`으로, 하위 도메인 의존은 `api`로 선언합니다.
 
-- [`app-api`](app-api/build.gradle.kts#L47) → `domain-trading`, `domain-matching`, `domain-order`, `domain-ledger`, `domain-common`. HTTP·Aeron·PostgreSQL을 여기서 연결합니다.
-- [`domain-trading`](domain-trading/build.gradle.kts#L18) → `domain-matching`, `domain-order`, `domain-fee`, `domain-ledger`, `domain-common`. 접수와 예약, 체결과 정산, 취소와 반환을 순서대로 연결합니다.
-- [`domain-matching`](domain-matching/build.gradle.kts#L18) → `domain-order`, `domain-common`. [`domain-order`](domain-order/build.gradle.kts#L18) → `domain-fee`, `domain-common`. 매칭이 주문 모델을 쓰고, 주문의 예약 계산이 수수료 규칙을 씁니다.
-- [`domain-fee`](domain-fee/build.gradle.kts#L18)와 [`domain-ledger`](domain-ledger/build.gradle.kts#L18) → `domain-common`. 수수료 계산과 복식 분개가 공통 금액·자산 타입을 공유합니다. `domain-common`은 다른 프로젝트 모듈을 참조하지 않습니다.
+[![운영 모듈 7개의 Gradle 직접 의존성. app-api의 5개 직접 의존과 도메인 모듈 사이의 11개 직접 의존을 모듈별로 표시합니다.](.github/assets/gradle-project-dependencies.svg)](.github/assets/gradle-project-dependencies.svg)
 
-`architecture-tests`는 Gradle의 직접 선언과 컴파일된 코드의 타입 참조를 함께 검사합니다. CI에서 모듈 의존 방향, 도메인의 외부 기술 독립성, HTTP 진입점과 Bean 조립을 검증합니다. `benchmark-jmh`는 거래 규칙의 성능을 측정합니다. [아키텍처 검사](architecture-tests/src/test/kotlin/com/exchange/architecture/ProductionArchitectureTest.kt#L101) · [CI](.github/workflows/build-and-test.yml#L42) · [벤치마크](benchmark-jmh/README.md)
+`app-api`가 HTTP·Aeron·PostgreSQL을 연결하고, `domain-trading`은 주문·매칭·수수료·원장 규칙을 조합합니다. [app-api Gradle 선언](app-api/build.gradle.kts#L47) · [domain-trading Gradle 선언](domain-trading/build.gradle.kts#L18)
+
+`architecture-tests`는 Gradle의 직접 선언과 컴파일된 코드의 참조 방향을 검사합니다. `benchmark-jmh`는 거래 규칙의 성능을 측정합니다. [아키텍처 검사](architecture-tests/src/test/kotlin/com/exchange/architecture/ProductionArchitectureTest.kt#L101) · [CI](.github/workflows/build-and-test.yml#L42) · [벤치마크](benchmark-jmh/README.md)
 
 #### 주문과 조회의 추상화
 
