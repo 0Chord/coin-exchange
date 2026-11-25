@@ -22,14 +22,14 @@
     <use href="#arrow" y="70"/>
     <rect class="chip" x="128" y="43" width="72" height="23" rx="4"/>
     <rect class="chip" x="205" y="43" width="81" height="23" rx="4"/>
-    <rect class="chip" x="128" y="71" width="54" height="23" rx="4"/>
-    <rect class="chip" x="187" y="71" width="58" height="23" rx="4"/>
-    <rect class="chip" x="250" y="71" width="59" height="23" rx="4"/>
+    <rect class="chip" x="128" y="71" width="52" height="23" rx="4"/>
+    <rect class="chip" x="184" y="71" width="58" height="23" rx="4"/>
+    <rect class="chip" x="246" y="71" width="66" height="23" rx="4"/>
     <text class="target" x="164" y="60">trading</text>
     <text class="target" x="245.5" y="60">matching</text>
-    <text class="target" x="155" y="88">order</text>
-    <text class="target" x="216" y="88">ledger</text>
-    <text class="target" x="279.5" y="88">common</text>
+    <text class="target" x="154" y="88">order</text>
+    <text class="target" x="213" y="88">ledger</text>
+    <text class="target" x="279" y="88">common</text>
   </g>
 
   <g id="domain-trading" class="module">
@@ -39,44 +39,44 @@
     <rect class="chip" x="214" y="108" width="54" height="23" rx="4"/>
     <rect class="chip" x="128" y="136" width="38" height="23" rx="4"/>
     <rect class="chip" x="171" y="136" width="58" height="23" rx="4"/>
-    <rect class="chip" x="234" y="136" width="59" height="23" rx="4"/>
+    <rect class="chip" x="234" y="136" width="66" height="23" rx="4"/>
     <text class="target" x="168.5" y="125">matching</text>
     <text class="target" x="241" y="125">order</text>
     <text class="target" x="147" y="153">fee</text>
     <text class="target" x="200" y="153">ledger</text>
-    <text class="target" x="263.5" y="153">common</text>
+    <text class="target" x="267" y="153">common</text>
   </g>
 
   <g id="domain-matching" class="module">
     <text class="source" x="15" y="192">matching</text>
     <use href="#arrow" y="187"/>
     <rect class="chip" x="128" y="175" width="54" height="23" rx="4"/>
-    <rect class="chip" x="187" y="175" width="59" height="23" rx="4"/>
+    <rect class="chip" x="187" y="175" width="66" height="23" rx="4"/>
     <text class="target" x="155" y="192">order</text>
-    <text class="target" x="216.5" y="192">common</text>
+    <text class="target" x="220" y="192">common</text>
   </g>
 
   <g id="domain-order" class="module">
     <text class="source" x="15" y="232">order</text>
     <use href="#arrow" y="227"/>
     <rect class="chip" x="128" y="215" width="38" height="23" rx="4"/>
-    <rect class="chip" x="171" y="215" width="59" height="23" rx="4"/>
+    <rect class="chip" x="171" y="215" width="66" height="23" rx="4"/>
     <text class="target" x="147" y="232">fee</text>
-    <text class="target" x="200.5" y="232">common</text>
+    <text class="target" x="204" y="232">common</text>
   </g>
 
   <g id="domain-fee" class="module">
     <text class="source" x="15" y="272">fee</text>
     <use href="#arrow" y="267"/>
-    <rect class="chip" x="128" y="255" width="59" height="23" rx="4"/>
-    <text class="target" x="157.5" y="272">common</text>
+    <rect class="chip" x="128" y="255" width="66" height="23" rx="4"/>
+    <text class="target" x="161" y="272">common</text>
   </g>
 
   <g id="domain-ledger" class="module">
     <text class="source" x="15" y="312">ledger</text>
     <use href="#arrow" y="307"/>
-    <rect class="chip" x="128" y="295" width="59" height="23" rx="4"/>
-    <text class="target" x="157.5" y="312">common</text>
+    <rect class="chip" x="128" y="295" width="66" height="23" rx="4"/>
+    <text class="target" x="161" y="312">common</text>
   </g>
 
   <g id="domain-common" class="module">
