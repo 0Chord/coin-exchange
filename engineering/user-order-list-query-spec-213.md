@@ -99,3 +99,16 @@ PostgreSQL 16.15에서 인덱스가 없는 상태로 두 자금 계보·두 마�
 같은 최종 변경에서 아키텍처 검사 388건이 실패·건너뜀 없이 통과했다. 필수 운영 구조 P01~P09, 앱 테스트 분할 검사, 앱·아키텍처 Kotlin 서식 검사도 통과했다.
 
 기준 `6e6cfaa6`과 코드·테스트 패치 SHA-256 `9980e24bc4119032afadfca207581aa379d6b1b3cbcc00540284ce13a9c473e3`를 고정해 별도 컨텍스트와 복제본에서 독립 검토를 받았다. 경로 인코딩과 반복 파라미터의 두 결함을 수정했고, 마지막 검토에서 추가 결함은 확인되지 않았다.
+
+### V19 마이그레이션 회귀
+
+첫 CI의 일반·DB 그룹에서 신규 DB 부팅과 V9 DB 업그레이드 테스트가 실패했다. 실패 보고서에서 V19는 이미 적용됐고, 두 테스트가 V18까지의 목록과 개수를 기대하는 것을 확인했다. 두 기대값을 V19까지로 갱신하고 신규 DB에서 주문 목록 인덱스가 생성되는 검증을 추가했다. V9 마켓 설정 보존 검증을 함께 실행했다. [실패한 CI 그룹](https://github.com/0Chord/coin-exchange/actions/runs/45539339507/job/138953766915) · [마이그레이션 테스트](../app-api/src/test/kotlin/com/exchange/core/api/config/OrderQueryConfigurationTest.kt#L84)
+
+JDK 25에서 아래 명령을 실행해 마이그레이션 구성 테스트 6건을 포함한 앱 회귀 70건이 실패·건너뜀 없이 통과했다. 앱 Kotlin 서식과 테스트 분할 검사도 통과했다.
+
+```sh
+./gradlew --no-daemon --max-workers=2 :app-api:test \
+  --tests '*OrderQueryConfigurationTest' --tests '*OrderQueryHttpTest' \
+  --tests '*OrderQueryUseCaseTest' --tests '*PostgresOrderQueryFeedStoreTest' \
+  :app-api:ktlintCheck :app-api:verifyCiTestPartition --continue --console=plain
+```
