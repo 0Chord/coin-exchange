@@ -1,0 +1,996 @@
+package com.exchange.core.trading
+
+import com.exchange.core.common.Amount
+import com.exchange.core.common.AssetId
+import com.exchange.core.common.MarketId
+import com.exchange.core.common.OrderId
+import com.exchange.core.common.UserId
+import com.exchange.core.fee.TradingFeePolicySnapshot
+import com.exchange.core.ledger.Balance
+import com.exchange.core.ledger.LedgerTransaction
+import com.exchange.core.ledger.LedgerTransactionType
+import com.exchange.core.ledger.OpeningBalance
+import com.exchange.core.ledger.OpeningBalanceResult
+import com.exchange.core.matching.MatchingCommandResult
+import com.exchange.core.matching.MatchingEngine
+import com.exchange.core.matching.MatchingResultState
+import com.exchange.core.matching.OrderEnteredBook
+import com.exchange.core.matching.RestingOrderSnapshot
+import com.exchange.core.matching.SubmitOrderCommand
+import com.exchange.core.matching.SubmitOrderPlan
+import com.exchange.core.matching.TradeExecuted
+import com.exchange.core.order.MarketDefinition
+import com.exchange.core.order.OrderReservation
+import com.exchange.core.order.OrderReservationStatus
+import com.exchange.core.order.Side
+import java.time.Instant
+import java.util.Base64
+import java.util.Collections
+
+enum class TradingExecutionPhase {
+    MATCHING_CANDIDATE,
+    SETTLEMENT_INPUT_VALIDATION,
+    SETTLEMENT_CANDIDATE,
+    RESULT_VALIDATION,
+    APPLY,
+    COMPLETION,
+}
+
+/**
+ * 실행 단계의 선택적 관측 경계다. 시간·저장·집계는 호출자가 소유하며 도메인 상태에는 보관하지 않는다.
+ * 콜백 실패는 거래 결과와 차단 판정에 영향을 주지 않는다. 관측자는 실행 상태를 변경하지 않아야 한다.
+ */
+interface TradingExecutionObserver {
+    fun onPhaseStarted(
+        admissionSequence: Long,
+        phase: TradingExecutionPhase,
+    ) {}
+
+    fun onPhaseCompleted(
+        admissionSequence: Long,
+        phase: TradingExecutionPhase,
+        failure: Throwable?,
+    ) {}
+
+    companion object {
+        val NONE: TradingExecutionObserver = object : TradingExecutionObserver {}
+    }
+}
+
+/**
+ * 한 실행자가 접수·매칭·정산을 순서대로 처리하는 공통 소유자.
+ * 계산을 모두 검사한 뒤 실제 상태를 쓰며, 쓰기 중 오류는 원상복구 대신 모든 정상 입구를 차단한다.
+ * 복구 값의 검증·반영을 제공하며, Aeron 실행·저장 매체·로그 재생은 바깥 실행자가 소유한다.
+ */
+class TradingState(
+    private val admissionCalculator: OrderAdmissionCalculator,
+    private val settlementCalculator: OrderSettlementCalculator,
+    historyStore: TradingHistoryStore? = null,
+    historyBatchLimit: Int = 1_024,
+    val boundedMode: Boolean = false,
+) {
+    private lateinit var admission: OrderAdmissionState
+
+    init {
+        require(!boundedMode || historyStore == null) { "bounded mode cannot own a historical index" }
+        if (!boundedMode) {
+            admission = OrderAdmissionState(emptyList(), admissionCalculator, historyStore, historyBatchLimit, ::evictHistory)
+        }
+    }
+
+    private var engine = MatchingEngine()
+    private var resultState = MatchingResultState()
+    private val completions: MutableMap<Long, Completion> = linkedMapOf()
+    private var funding: BoundedFundingState? = if (boundedMode) BoundedFundingState(admissionCalculator) else null
+    val lifecycle: TradingLifecycle
+        get() = if (!boundedMode) TradingLifecycle.RUNNING else funding?.lifecycle ?: TradingLifecycle.UNINITIALIZED
+
+    var isBlocked: Boolean = false
+        private set
+
+    /** 최초 처리의 불변 결과다. 이후 maker 체결로 달라진 현재 예약과는 구분한다. */
+    class Completion internal constructor(
+        val admission: OrderAdmissionState.Record,
+        val executionId: String,
+        val occurredAt: Instant,
+        val matchingResult: MatchingCommandResult,
+        val settlement: OrderSettlementCandidate,
+    )
+
+    @ConsistentCopyVisibility
+    data class Snapshot internal constructor(
+        val balances: List<Balance>,
+        val reservations: List<OrderReservation>,
+        val pendingOrders: List<OrderAdmissionState.Record>,
+        val completions: List<Completion>,
+        val ledgerTransactions: List<LedgerTransaction>,
+        val matchingResults: List<MatchingCommandResult>,
+        val lastAdmissionSequence: Long,
+        val requests: List<OrderAdmissionState.RequestRecord>,
+        val preparations: List<OrderAdmissionState.PreparationRecord>,
+    )
+
+    fun prepareDevelopmentBalance(
+        opening: OpeningBalance,
+        ledgerTransactionId: String,
+        occurredAt: Instant,
+    ): OpeningBalanceResult =
+        if (boundedMode) {
+            fundingCall { it.prepareDevelopmentBalance(opening, occurredAt) }
+        } else {
+            admissionCall {
+                admission.prepareDevelopmentBalance(opening, ledgerTransactionId, occurredAt)
+            }
+        }
+
+    fun admit(
+        requestId: String,
+        order: OrderAdmissionInput,
+        market: MarketDefinition,
+        feePolicySnapshot: TradingFeePolicySnapshot,
+        ledgerTransactionId: String,
+        occurredAt: Instant,
+    ): OrderAdmissionState.Result =
+        admissionCall { admission.admit(requestId, order, market, feePolicySnapshot, ledgerTransactionId, occurredAt) }
+
+    fun admitWithContextCheck(
+        requestId: String,
+        order: OrderAdmissionInput,
+        market: MarketDefinition,
+        feePolicySnapshot: TradingFeePolicySnapshot,
+        ledgerTransactionId: String,
+        occurredAt: Instant,
+        checkContext: (knownRequest: Boolean) -> Boolean,
+    ): OrderAdmissionState.Result? =
+        admissionCall {
+            admission.admitWithContextCheck(requestId, order, market, feePolicySnapshot, ledgerTransactionId, occurredAt, checkContext)
+        }
+
+    fun admit(
+        order: OrderAdmissionInput,
+        market: MarketDefinition,
+        feePolicySnapshot: TradingFeePolicySnapshot,
+        ledgerTransactionId: String,
+        occurredAt: Instant,
+    ): OrderAdmissionState.Result = admissionCall { admission.admit(order, market, feePolicySnapshot, ledgerTransactionId, occurredAt) }
+
+    fun hasRequest(
+        userId: UserId,
+        requestId: String,
+    ): Boolean = admissionCall { admission.hasRequest(userId, requestId) }
+
+    fun pendingOrders(marketId: MarketId): List<OrderAdmissionState.Record> {
+        checkUsable()
+        return admission.pendingOrders(marketId)
+    }
+
+    /** 완료를 먼저 재사용하므로 후속 이벤트가 순번을 전진시켜도 다시 계산하지 않는다. */
+    @JvmOverloads
+    fun executePending(
+        admissionSequence: Long,
+        occurredAt: Instant,
+        observer: TradingExecutionObserver = TradingExecutionObserver.NONE,
+    ): Completion {
+        checkUsable()
+        completions[admissionSequence]?.let { return it }
+        admissionCall { admission.completion(admissionSequence) }?.let { return it }
+        admissionCall { admission.prepareHistoryCapacity() }
+        require(admissionSequence > 0) { "승인 순번은 양수여야 합니다" }
+        val record = requireNotNull(admissionCall { admission.accepted(admissionSequence) }) { "승인된 주문이 없습니다" }
+        val first = admission.firstPending(record.candidate.order.marketId)
+        if (first != null) require(first.sequence == admissionSequence) { "같은 마켓의 앞선 대기 주문부터 처리해야 합니다" }
+
+        // 대상 선택 오류와 달리, 승인된 주문의 내부 계산·관계 오류는 공통 상태를 불신하게 한다.
+        try {
+            check(first === record) { "승인 원본과 처리 대기가 연결되지 않습니다" }
+            val original = record.candidate
+            val order = original.order
+            val command =
+                SubmitOrderCommand(
+                    order.marketId,
+                    order.orderId,
+                    order.userId,
+                    order.side,
+                    order.orderType,
+                    order.timeInForce,
+                    order.price,
+                    order.quantity,
+                )
+            val plan =
+                observedExecutionPhase(admissionSequence, TradingExecutionPhase.MATCHING_CANDIDATE, observer) {
+                    engine.prepareSubmit(command)
+                }
+            val reservations =
+                observedExecutionPhase(admissionSequence, TradingExecutionPhase.SETTLEMENT_INPUT_VALIDATION, observer) {
+                    validateParticipants(record, plan)
+                }
+            val executions = ArrayList<SettlementExecution>(plan.fills.size)
+            val settlement =
+                observedExecutionPhase(admissionSequence, TradingExecutionPhase.SETTLEMENT_CANDIDATE, observer) {
+                    val balances = participantBalances(reservations, original.market)
+                    for (event in plan.events) {
+                        if (event is TradeExecuted) executions.add(event.toSettlement(occurredAt))
+                    }
+                    settlementCalculator.calculate(order, original.market, executions, reservations, balances)
+                }
+            val executionId = "EXECUTE:v1:$admissionSequence"
+            lateinit var preparedSettlement: OrderAdmissionState.PreparedSettlement
+            lateinit var completedSettlement: OrderSettlementCandidate
+            val registration =
+                observedExecutionPhase(admissionSequence, TradingExecutionPhase.RESULT_VALIDATION, observer) {
+                    validateJointResult(record, plan, settlement, executions)
+                    check(resultState.find(order.marketId, executionId) == null) { "전체 완료 없이 매칭 결과만 존재합니다" }
+                    check(engine.lastEngineSequence(order.marketId) == resultState.lastEngineSequence(order.marketId)) {
+                        "주문장과 결과 이력의 이전 순번이 다릅니다"
+                    }
+                    val preparedRegistration =
+                        resultState.prepareRegistration(
+                            executionId,
+                            command,
+                            plan.events.size,
+                            plan.firstEngineSequence,
+                            plan.lastEngineSequence,
+                            plan.events,
+                        )
+                    // 실제 쓰기 전에 이력 보관 공간도 준비한다. 조회는 당시 값만 복원한다.
+                    completedSettlement = settlement.compactForHistory()
+                    preparedSettlement = admission.prepareSettlement(settlement)
+                    preparedRegistration
+                }
+
+            // 여기부터 실제 값이 바뀐다. 완료 기록까지 끝나기 전에 정상 사용을 허용하지 않는다.
+            val matchingResult =
+                observedExecutionPhase(admissionSequence, TradingExecutionPhase.APPLY, observer) {
+                    isBlocked = true
+                    admission.applySettlement(preparedSettlement) { engine.apply(plan) }
+                    resultState.register(registration)
+                }
+            return observedExecutionPhase(admissionSequence, TradingExecutionPhase.COMPLETION, observer) {
+                admission.completePending(record)
+                val completion = Completion(record, executionId, occurredAt, matchingResult, completedSettlement)
+                completions[admissionSequence] = completion
+                admission.recordCompletion(completion)
+                isBlocked = false
+                completion
+            }
+        } catch (failure: Throwable) {
+            isBlocked = true
+            admission.block()
+            throw failure
+        }
+    }
+
+    private inline fun <T> observedExecutionPhase(
+        admissionSequence: Long,
+        phase: TradingExecutionPhase,
+        observer: TradingExecutionObserver,
+        action: () -> T,
+    ): T {
+        if (observer === TradingExecutionObserver.NONE) return action()
+        try {
+            observer.onPhaseStarted(admissionSequence, phase)
+        } catch (_: Exception) {
+            // 관측 실패는 금융 상태를 변경하거나 정상 실행을 차단하지 않는다.
+        }
+        var failure: Throwable? = null
+        try {
+            return action()
+        } catch (businessFailure: Throwable) {
+            failure = businessFailure
+            throw businessFailure
+        } finally {
+            try {
+                observer.onPhaseCompleted(admissionSequence, phase, failure)
+            } catch (_: Exception) {
+                // 원래의 업무 실패 또는 성공을 그대로 유지한다.
+            } catch (observerFailure: Error) {
+                // VM 오류는 숨기지 않는다. 업무 실패가 있으면 원본을 유지하며 함께 전달한다.
+                val businessFailure = failure
+                if (businessFailure == null) throw observerFailure
+                // 검증 실패가 분류되어 있어도 치명적인 observer 오류를 복구 가능한 격리 상태로 바꾸어서는 안 된다.
+                isBlocked = true
+                if (observerFailure !== businessFailure) businessFailure.addSuppressed(observerFailure)
+            }
+        }
+    }
+
+    /** 정상 조회만 복사한다. 주문 실행 중에는 전체 상태 snapshot을 만들지 않는다. */
+    fun snapshot(): Snapshot =
+        admissionCall {
+            val current = admission.snapshot()
+            val coldHistory = admission.completionHistory()
+            val history = if (coldHistory == null) immutableList(completions.values) else immutableList(coldHistory)
+            Snapshot(
+                current.balances,
+                admission.reservations(),
+                current.pendingOrders,
+                history,
+                admission.transactions(),
+                if (coldHistory == null) resultState.snapshot().results else immutableList(history.map { it.matchingResult }),
+                current.lastSequence,
+                current.requests,
+                current.preparations,
+            )
+        }
+
+    /** 이력의 영속 저장을 기다린 뒤 저장이 확인된 과거 객체를 해제한다. */
+    fun flushHistory() = admissionCall { admission.flushHistory() }
+
+    fun historyRetention(): TradingHistoryRetention =
+        admissionCall { admission.historyRetention().copy(retainedCompletions = completions.size) }
+
+    /** 한도가 있는 대기 공간의 연속 구간을 flush한 뒤 현재 잔고·주문·활성 최초 결과만 복사한다. */
+    fun checkpoint(): TradingCheckpoint =
+        admissionCall {
+            admission.flushHistory()
+            admission.checkpoint(engine.activeCheckpoint(), completions.values.sortedBy { it.admission.sequence })
+        }
+
+    /**
+     * 외부 Snapshot reader가 먼저 이 빈 소유자의 저장소에 정확한 과거 이력을 복원한다.
+     * 검증이 실패하면 소유자를 차단하며, 일부만 복원한 상태를 정상 조회에 공개하지 않는다.
+     */
+    fun restoreCheckpoint(checkpoint: TradingCheckpoint) {
+        checkUsable()
+        try {
+            admission.validateCheckpointForRestore(checkpoint)
+            check(completions.isEmpty() && resultState.snapshot().results.isEmpty()) { "trading checkpoint requires an empty owner" }
+            val restoredCompletions = validateCheckpoint(checkpoint)
+            val restoredEngine = MatchingEngine().also { it.restoreActiveCheckpoint(checkpoint.matching) }
+            val restoredResults =
+                MatchingResultState().also {
+                    it.restoreActiveCheckpoint(
+                        checkpoint.matching.markets.associate { market -> market.marketId to market.lastEngineSequence },
+                        restoredCompletions.values.map { completion -> completion.matchingResult },
+                    )
+                }
+            isBlocked = true
+            admission.applyCheckpoint(checkpoint)
+            engine = restoredEngine
+            resultState = restoredResults
+            completions.putAll(restoredCompletions)
+            isBlocked = false
+        } catch (failure: Throwable) {
+            isBlocked = true
+            admission.block()
+            throw failure
+        }
+    }
+
+    private fun validateCheckpoint(checkpoint: TradingCheckpoint): Map<Long, Completion> {
+        val records = checkpoint.admissions.associateBy { it.sequence }
+        val orderRecords = checkpoint.admissions.associateBy { it.candidate.order.marketId to it.candidate.order.orderId }
+        val reservations = checkpoint.reservations.associateBy { it.marketId to it.orderId }
+        val pending = checkpoint.pendingAdmissionSequences.toHashSet()
+        val restoredCompletions = linkedMapOf<Long, Completion>()
+        val markets = linkedMapOf<MarketId, MarketDefinition>()
+        val expectedHold = hashMapOf<TradingBalanceKey, Long>()
+        for (record in checkpoint.admissions) {
+            val candidate = record.candidate
+            val previousMarket = markets.putIfAbsent(candidate.market.marketId, candidate.market)
+            require(previousMarket == null || previousMarket == candidate.market) { "checkpoint market definitions differ" }
+            val reservation = reservations.getValue(candidate.order.marketId to candidate.order.orderId)
+            validateReservation(record, reservation)
+            settlementCalculator.validateReservation(candidate.market, reservation)
+            if (record.sequence in pending) {
+                require(reservation == candidate.reservation) { "checkpoint pending reservation differs from admission" }
+            }
+            val balanceKey = TradingBalanceKey(reservation.userId, reservation.assetId)
+            expectedHold[balanceKey] = Math.addExact(expectedHold[balanceKey] ?: 0L, reservation.remainingAmount.value)
+        }
+        for (balance in checkpoint.balances) {
+            val key = TradingBalanceKey(balance.userId, balance.assetId)
+            require(balance.hold.value == (expectedHold.remove(key) ?: 0L)) { "checkpoint hold does not match active reservations" }
+        }
+        require(expectedHold.isEmpty()) { "checkpoint reservation balance is missing" }
+        for (completion in checkpoint.completions) {
+            val record = requireNotNull(records[completion.admission.sequence]) { "checkpoint completion has no live admission" }
+            require(record.sequence !in pending) { "checkpoint order is both pending and complete" }
+            requireSameAdmission(record, completion.admission)
+            val historical = checkNotNull(admission.completion(record.sequence)) { "checkpoint completion is absent from history" }
+            requireSameCompletion(completion, historical)
+            val canonical =
+                TradingHistoryValues.completion(
+                    record,
+                    completion.executionId,
+                    completion.occurredAt,
+                    completion.matchingResult,
+                    completion.settlement,
+                )
+            require(restoredCompletions.put(record.sequence, canonical) == null) { "duplicate checkpoint completion" }
+        }
+        require(restoredCompletions.keys + pending == records.keys) { "checkpoint admission has no execution status" }
+        val resting = hashSetOf<Long>()
+        for (market in checkpoint.matching.markets) {
+            val lastAtPrice = hashMapOf<Pair<Side, com.exchange.core.common.Price>, Long>()
+            for (order in market.orders) {
+                val record = requireNotNull(orderRecords[market.marketId to order.orderId]) { "checkpoint book order has no admission" }
+                require(
+                    record.sequence in restoredCompletions && resting.add(record.sequence),
+                ) { "checkpoint book order is not a distinct maker" }
+                val reservation = reservations.getValue(market.marketId to order.orderId)
+                require(
+                    order.userId == reservation.userId && order.side == reservation.side && order.price == reservation.limitPrice &&
+                        order.originalQuantity == reservation.initialQuantity && order.remainingQuantity == reservation.remainingQuantity,
+                ) { "checkpoint book and reservation differ" }
+                val key = order.side to order.price
+                require(record.sequence > (lastAtPrice[key] ?: 0L)) { "checkpoint book FIFO differs from admission order" }
+                lastAtPrice[key] = record.sequence
+            }
+            val firstPending =
+                checkpoint.admissions.firstOrNull {
+                    it.sequence in pending && it.candidate.order.marketId == market.marketId
+                }
+            require(
+                firstPending == null ||
+                    restoredCompletions.values.none {
+                        it.admission.candidate.order.marketId == market.marketId && it.admission.sequence > firstPending.sequence
+                    },
+            ) { "checkpoint pending order precedes a completed order in its market" }
+        }
+        require(resting == restoredCompletions.keys) { "checkpoint active completions and resting orders differ" }
+        return restoredCompletions
+    }
+
+    private fun evictHistory(batch: TradingHistoryBatch) {
+        for (reservation in batch.reservations) {
+            if (reservation.status != OrderReservationStatus.ACTIVE) {
+                val record = admission.retainedAdmission(reservation.marketId, reservation.orderId)
+                if (record != null) {
+                    completions.remove(record.sequence)?.let { completion ->
+                        resultState.releaseHistory(reservation.marketId, completion.executionId, reservation.orderId)
+                    }
+                    engine.releaseTerminalOrderIdentity(reservation.marketId, reservation.orderId)
+                }
+            }
+        }
+    }
+
+    fun book(marketId: MarketId): List<RestingOrderSnapshot> {
+        checkUsable()
+        return engine.restingOrders(marketId)
+    }
+
+    fun lastEngineSequence(marketId: MarketId): Long {
+        checkUsable()
+        return engine.lastEngineSequence(marketId)
+    }
+
+    private fun validateParticipants(
+        record: OrderAdmissionState.Record,
+        plan: SubmitOrderPlan,
+    ): List<OrderReservation> {
+        val original = record.candidate
+        val taker = admission.currentReservation(original.order.marketId, original.order.orderId)
+        check(taker == original.reservation) { "최초 매칭 전 예약이 최초 승인과 다릅니다" }
+        validateReservation(record, taker)
+        val reservations = mutableListOf(taker)
+        for (fill in plan.fills) {
+            val makerRecord = admission.accepted(original.order.marketId, fill.orderId)
+            val maker = admission.currentReservation(original.order.marketId, fill.orderId)
+            check(completions[makerRecord.sequence]?.admission === makerRecord) { "maker의 최초 처리가 완료되지 않았습니다" }
+            check(makerRecord.candidate.market == original.market) { "maker와 taker의 마켓 정의가 다릅니다" }
+            validateReservation(makerRecord, maker)
+            check(
+                maker.userId == fill.userId && maker.side == fill.side && maker.limitPrice == fill.price &&
+                    maker.initialQuantity == fill.originalQuantity && maker.remainingQuantity == fill.remainingQuantity,
+            ) { "주문장 maker와 현재 예약이 다릅니다" }
+            reservations.add(maker)
+        }
+        // 체결이 있으면 정산 계산기가 참여자의 예약 합계와 현재 hold를 함께 검사한다.
+        // 체결 없는 신규 대기 주문도 최초 예약을 실제로 보유하는지는 확인한다.
+        if (plan.fills.isEmpty()) {
+            settlementCalculator.validateReservation(original.market, taker)
+            check(admission.currentBalance(taker.userId, taker.assetId).hold >= taker.remainingAmount) { "현재 hold가 예약보다 작습니다" }
+        }
+        return reservations
+    }
+
+    private fun validateReservation(
+        record: OrderAdmissionState.Record,
+        current: OrderReservation,
+    ) {
+        // 보관한 최초 원본의 손상도 차단한다. 검증은 비교용 분개를 만들지 않는다.
+        record.candidate.validate()
+        val original = record.candidate.reservation
+        check(
+            current.marketId == original.marketId && current.orderId == original.orderId && current.userId == original.userId &&
+                current.side == original.side && current.assetId == original.assetId && current.limitPrice == original.limitPrice &&
+                current.initialQuantity == original.initialQuantity && current.reservedAmount == original.reservedAmount &&
+                current.initialFeeReserveAmount == original.initialFeeReserveAmount &&
+                current.feePolicySnapshot == original.feePolicySnapshot,
+        ) { "현재 예약의 원본·정책이 승인과 다릅니다" }
+        check(current.status == OrderReservationStatus.ACTIVE) { "현재 예약이 활성 상태가 아닙니다" }
+        // 현재 금액의 계산 검증은 이어지는 정산 계산기에서 한 번 수행한다.
+    }
+
+    private fun participantBalances(
+        reservations: List<OrderReservation>,
+        market: MarketDefinition,
+    ): List<Balance> {
+        val keys = linkedSetOf<Pair<UserId, AssetId>>()
+        for (reservation in reservations) {
+            keys.add(reservation.userId to market.baseAssetId)
+            keys.add(reservation.userId to market.quoteAssetId)
+        }
+        return keys.map { admission.currentBalance(it.first, it.second) }
+    }
+
+    private fun validateJointResult(
+        record: OrderAdmissionState.Record,
+        plan: SubmitOrderPlan,
+        candidate: OrderSettlementCandidate,
+        executions: List<SettlementExecution>,
+    ) {
+        check(candidate.order == record.candidate.order && candidate.market == record.candidate.market)
+        check(candidate.settlements.size == executions.size) { "정산 체결과 실제 매칭 개수가 다릅니다" }
+        candidate.settlements.forEachIndexed { index, settlement ->
+            check(settlement.execution == executions[index]) { "정산 체결과 실제 매칭 순서가 다릅니다" }
+        }
+        if (executions.isNotEmpty()) {
+            val nextReservations =
+                if (executions.size > 1) candidate.reservationChanges.associate { it.next.orderId to it.next } else null
+
+            fun nextReservation(orderId: OrderId): OrderReservation {
+                if (nextReservations != null) return nextReservations.getValue(orderId)
+                // associate와 동일하게 마지막 키를 선택하고, 누락된 키는 getValue의 예외로 거절한다.
+                for (index in candidate.reservationChanges.lastIndex downTo 0) {
+                    val next = candidate.reservationChanges[index].next
+                    if (next.orderId == orderId) return next
+                }
+                return emptyMap<OrderId, OrderReservation>().getValue(orderId)
+            }
+
+            plan.fills.forEach {
+                check(
+                    nextReservation(it.orderId).remainingQuantity.value == it.remainingQuantity.value - it.filledQuantity.value,
+                ) {
+                    "정산 후 maker 잔량이 주문장 후보와 다릅니다"
+                }
+            }
+            val remaining = (plan.events.last() as? OrderEnteredBook)?.remainingQuantity?.value ?: 0L
+            check(nextReservation(record.candidate.order.orderId).remainingQuantity.value == remaining) {
+                "정산 후 taker 잔량이 주문장 후보와 다릅니다"
+            }
+        } else {
+            check(candidate.balanceChanges.isEmpty() && candidate.reservationChanges.isEmpty())
+        }
+        candidate.settlements.forEach {
+            val execution = it.execution
+            val transaction = it.transaction
+            check(transaction.transactionType == LedgerTransactionType.SETTLEMENT)
+            check(transaction.ledgerTransactionId == execution.ledgerTransactionId && transaction.occurredAt == execution.occurredAt)
+            check(transaction.sourceEventId == "MATCHING:${execution.marketId.value}:${execution.engineSequence}")
+            check(
+                it.makerPlan.updatedReservation.orderId == execution.makerOrderId &&
+                    it.takerPlan.updatedReservation.orderId == execution.takerOrderId,
+            )
+        }
+    }
+
+    private fun TradeExecuted.toSettlement(occurredAt: Instant) =
+        toSettlement(occurredAt, settlementTransactionId(marketId, engineSequence))
+
+    private fun TradeExecuted.toSettlement(
+        occurredAt: Instant,
+        ledgerTransactionId: String,
+    ) = SettlementExecution(
+        marketId,
+        engineSequence,
+        makerOrderId,
+        takerOrderId,
+        makerUserId,
+        takerUserId,
+        side,
+        price,
+        quantity,
+        ledgerTransactionId,
+        occurredAt,
+    )
+
+    /** 명시적으로 선택한 최초 상태다. 이 모드의 소유자는 기존 이력 저장소를 생성하지 않는다. */
+    fun initialize(manifest: TradingClusterManifest): InitializationReceipt = fundingCall { it.initialize(manifest) }
+
+    fun rotateEpoch(
+        userId: UserId,
+        channel: Int,
+        expectedEpoch: Long,
+    ): EpochReceipt = fundingCall { it.rotateEpoch(userId, channel, expectedEpoch) }
+
+    fun acknowledgeReceipts(
+        userId: UserId,
+        channel: Int,
+        epoch: Long,
+        through: Long,
+    ): AckReceipt = fundingCall { it.acknowledgeReceipts(userId, channel, epoch, through) }
+
+    fun admit(
+        token: RequestToken,
+        intent: OrderIntent,
+        at: Instant,
+    ): AdmissionReply = fundingCall { it.admit(token, intent, at) }
+
+    @JvmOverloads
+    fun executePending(
+        command: ExecuteAdmission,
+        at: Instant,
+        observer: TradingExecutionObserver = TradingExecutionObserver.NONE,
+    ): ExecutionReply {
+        checkUsable()
+        val owner = checkNotNull(funding)
+        val input = owner.executionInput(command) ?: return ExecutionReply.AlreadyPassed
+        val context = input.context
+        val live = input.live
+        var applying = false
+        try {
+            validateBoundedStage(TradingInvariantReason.PARTICIPANT_RELATION_INVALID, TradingExecutionPhase.SETTLEMENT_INPUT_VALIDATION) {
+                check(live.phase == LiveOrderPhase.PENDING)
+            }
+            val order = live.order
+            val matchingCommand =
+                SubmitOrderCommand(
+                    order.marketId,
+                    order.orderId,
+                    order.userId,
+                    order.side,
+                    order.orderType,
+                    order.timeInForce,
+                    order.price,
+                    order.quantity,
+                )
+            val plan =
+                observedExecutionPhase(command.admissionSequence, TradingExecutionPhase.MATCHING_CANDIDATE, observer) {
+                    validateBoundedStage(TradingInvariantReason.MATCHING_CANDIDATE_INVALID, TradingExecutionPhase.MATCHING_CANDIDATE) {
+                        engine.prepareSubmit(matchingCommand)
+                    }
+                }
+            val restingQuantity =
+                (plan.events.lastOrNull() as? OrderEnteredBook)?.remainingQuantity ?: com.exchange.core.common.Quantity.ZERO
+            val participants = ArrayList<OrderReservation>(plan.fills.size + 1)
+            val participantBalances =
+                observedExecutionPhase(command.admissionSequence, TradingExecutionPhase.SETTLEMENT_INPUT_VALIDATION, observer) {
+                    validateBoundedStage(
+                        TradingInvariantReason.PARTICIPANT_RELATION_INVALID,
+                        TradingExecutionPhase.SETTLEMENT_INPUT_VALIDATION,
+                    ) {
+                        owner.validateReservationRelationship(live, context)
+                        if (plan.fills.isEmpty()) settlementCalculator.validateReservation(context.market, live.reservation)
+                        check(
+                            live.reservation.remainingQuantity == order.quantity &&
+                                live.reservation.remainingAmount == live.reservation.reservedAmount,
+                        )
+                        participants.add(live.reservation)
+                        for (fill in plan.fills) {
+                            val maker = checkNotNull(owner.liveOrder(order.marketId, fill.orderId)) { "book maker has no live order" }
+                            check(maker.phase == LiveOrderPhase.RESTING) { "book maker has not completed first execution" }
+                            owner.validateReservationRelationship(maker, context)
+                            check(
+                                maker.order.userId == fill.userId && maker.order.side == fill.side && maker.order.price == fill.price &&
+                                    maker.order.quantity == fill.originalQuantity &&
+                                    maker.reservation.remainingQuantity == fill.remainingQuantity,
+                            )
+                            participants.add(maker.reservation)
+                        }
+                    }
+                    validateBoundedStage(
+                        TradingInvariantReason.PARTICIPANT_RELATION_INVALID,
+                        TradingExecutionPhase.SETTLEMENT_INPUT_VALIDATION,
+                    ) {
+                        if (plan.fills.isEmpty()) {
+                            owner.validateNoFillBalances(live, context)
+                            emptyList()
+                        } else {
+                            owner.participantBalances(participants, context.market)
+                        }
+                    }
+                }
+            lateinit var executions: List<SettlementExecution>
+            val settlement =
+                observedExecutionPhase(command.admissionSequence, TradingExecutionPhase.SETTLEMENT_CANDIDATE, observer) {
+                    executions = boundedSettlementExecutions(input.manifest, context, plan, at)
+                    validateBoundedStage(
+                        TradingInvariantReason.SETTLEMENT_CALCULATION_INVALID,
+                        TradingExecutionPhase.SETTLEMENT_CANDIDATE,
+                    ) {
+                        try {
+                            if (executions.isEmpty()) {
+                                settlementCalculator.calculateEmpty(order, context.market)
+                            } else {
+                                settlementCalculator.calculate(order, context.market, executions, participants, participantBalances)
+                            }
+                        } catch (_: InitialReservationValidationFailure) {
+                            throw TradingInvariantViolation(
+                                TradingInvariantReason.PARTICIPANT_RELATION_INVALID,
+                                TradingExecutionPhase.SETTLEMENT_INPUT_VALIDATION,
+                            )
+                        }
+                    }
+                }
+            val feeAsset = context.market.quoteAssetId
+            val nextFeeRevenue =
+                observedExecutionPhase(command.admissionSequence, TradingExecutionPhase.RESULT_VALIDATION, observer) {
+                    validateBoundedExecutionResult(owner, live, matchingCommand, plan, settlement, executions)
+                    owner.prepareFeeRevenue(settlement, feeAsset)
+                }
+            val receipt =
+                ExecutionReceipt(
+                    live.admissionSequence,
+                    live.marketAdmissionSequence,
+                    order.marketId,
+                    plan.lastEngineSequence,
+                    executions.size,
+                    !restingQuantity.isZero(),
+                )
+            applying = true
+            observedExecutionPhase(command.admissionSequence, TradingExecutionPhase.APPLY, observer) {
+                boundedMutation {
+                    engine.apply(plan)
+                    val terminal = owner.applyExecution(input, settlement, !restingQuantity.isZero(), nextFeeRevenue)
+                    for (finished in terminal) {
+                        engine.releaseTerminalOrderIdentity(finished.marketId, finished.orderId)
+                    }
+                }
+            }
+            return observedExecutionPhase(command.admissionSequence, TradingExecutionPhase.COMPLETION, observer) {
+                ExecutionReply.Applied(receipt)
+            }
+        } catch (failure: TradingInvariantViolation) {
+            // 쓰기 전에 명시적으로 분류한 검증 실패만 안전하게 격리 상태로 저장할 수 있다.
+            if (applying) {
+                isBlocked = true
+                owner.block()
+            }
+            throw failure
+        } catch (failure: Throwable) {
+            isBlocked = true
+            owner.block()
+            throw failure
+        }
+    }
+
+    private fun boundedSettlementExecutions(
+        manifest: TradingClusterManifest,
+        context: TradingMarketContext,
+        plan: SubmitOrderPlan,
+        at: Instant,
+    ): List<SettlementExecution> {
+        val executions = ArrayList<SettlementExecution>(plan.fills.size)
+        for (event in plan.events) {
+            if (event is TradeExecuted) {
+                executions.add(
+                    event.toSettlement(
+                        at,
+                        TradingIdentifiers.settlement(manifest.lineage, context.ordinal, event.engineSequence),
+                    ),
+                )
+            }
+        }
+        return executions
+    }
+
+    private fun validateBoundedExecutionResult(
+        owner: BoundedFundingState,
+        live: TradingLiveOrderSnapshot,
+        matchingCommand: SubmitOrderCommand,
+        plan: SubmitOrderPlan,
+        settlement: OrderSettlementCandidate,
+        executions: List<SettlementExecution>,
+    ) {
+        validateBoundedStage(TradingInvariantReason.RESULT_RELATION_INVALID, TradingExecutionPhase.RESULT_VALIDATION) {
+            validateBoundedJoint(live, plan, settlement, executions)
+            MatchingResultState.validateCompleteResult(
+                "EXECUTE:${live.marketAdmissionSequence}",
+                matchingCommand,
+                plan,
+            )
+            owner.validateSettlementCurrent(settlement)
+        }
+    }
+
+    private inline fun <T> validateBoundedStage(
+        reason: TradingInvariantReason,
+        stage: TradingExecutionPhase,
+        action: () -> T,
+    ): T =
+        try {
+            action()
+        } catch (failure: TradingInvariantViolation) {
+            throw failure
+        } catch (_: IllegalArgumentException) {
+            throw TradingInvariantViolation(reason, stage)
+        } catch (_: IllegalStateException) {
+            throw TradingInvariantViolation(reason, stage)
+        }
+
+    private fun validateBoundedJoint(
+        live: TradingLiveOrderSnapshot,
+        plan: SubmitOrderPlan,
+        settlement: OrderSettlementCandidate,
+        executions: List<SettlementExecution>,
+    ) {
+        check(settlement.order == live.order && settlement.settlements.size == executions.size)
+        for (index in executions.indices) check(settlement.settlements[index].execution == executions[index])
+        if (executions.isEmpty()) {
+            check(settlement.balanceChanges.isEmpty() && settlement.reservationChanges.isEmpty())
+            return
+        }
+        val next = settlement.reservationChanges.associate { it.next.orderId to it.next }
+        for (fill in plan.fills) {
+            check(next.getValue(fill.orderId).remainingQuantity.value == fill.remainingQuantity.value - fill.filledQuantity.value)
+        }
+        val restingQuantity = (plan.events.lastOrNull() as? OrderEnteredBook)?.remainingQuantity ?: com.exchange.core.common.Quantity.ZERO
+        check(next.getValue(live.order.orderId).remainingQuantity == restingQuantity)
+        for (fill in settlement.settlements) {
+            check(fill.transaction.transactionType == LedgerTransactionType.SETTLEMENT)
+            check(
+                fill.transaction.ledgerTransactionId == fill.execution.ledgerTransactionId &&
+                    fill.transaction.occurredAt == fill.execution.occurredAt,
+            )
+            check(fill.transaction.sourceEventId == "MATCHING:${fill.execution.marketId.value}:${fill.execution.engineSequence}")
+        }
+    }
+
+    fun quarantine(
+        position: Long,
+        reason: String,
+    ) = fundingCall { it.quarantine(position, reason) }
+
+    fun boundedRetention(): TradingBoundedRetention = fundingCall { it.boundedRetention() }
+
+    fun currentBalance(
+        userId: UserId,
+        assetId: AssetId,
+    ): Balance = fundingCall { it.currentBalance(userId, assetId) }
+
+    fun recoveryState(): TradingRecoveryState =
+        fundingCall { owner ->
+            val current = owner.recoveryState()
+            TradingRecoveryState(
+                current.manifest,
+                current.lifecycle,
+                current.balances,
+                current.feeRevenueByAsset,
+                current.usedBalances,
+                current.preparations,
+                current.accounts,
+                current.liveOrders,
+                current.markets,
+                engine.activeCheckpoint(),
+                current.inbox,
+                current.lastAdmissionSequence,
+                current.lastPreparationSequence,
+                current.preparationCanonicalBytes,
+                current.incident,
+            )
+        }
+
+    val isBounded: Boolean get() = boundedMode
+
+    fun progress(): BoundedTradingProgress = fundingCall { it.progress() }
+
+    /** 금융·엔진 후보와 관계를 모두 검사한 뒤 두 소유자를 함께 게시한다. */
+    fun restoreRecoveryState(saved: TradingRecoveryState) {
+        check(boundedMode && !isBlocked && funding?.lifecycle == TradingLifecycle.UNINITIALIZED) {
+            "bounded restore requires an empty owner"
+        }
+        try {
+            val candidate = BoundedFundingState(admissionCalculator)
+            candidate.restoreRecoveryState(
+                BoundedFundingRecoveryState(
+                    saved.manifest,
+                    saved.lifecycle,
+                    saved.balances,
+                    saved.feeRevenueByAsset,
+                    saved.usedBalances,
+                    saved.preparations,
+                    saved.accounts,
+                    saved.liveOrders,
+                    saved.markets,
+                    saved.inbox,
+                    saved.lastAdmissionSequence,
+                    saved.lastPreparationSequence,
+                    saved.preparationCanonicalBytes,
+                    saved.incident,
+                ),
+                settlementCalculator,
+            )
+            val restoredEngine = MatchingEngine().also { it.restoreActiveCheckpoint(saved.matching) }
+            validateRecoveryRelationship(candidate.recoveryState(), saved.matching)
+            isBlocked = true
+            engine = restoredEngine
+            funding = candidate
+            isBlocked = false
+        } catch (failure: Throwable) {
+            isBlocked = true
+            throw failure
+        }
+    }
+
+    private fun validateRecoveryRelationship(
+        financial: BoundedFundingRecoveryState,
+        matching: com.exchange.core.matching.MatchingCheckpoint,
+    ) {
+        val markets = financial.markets.associateBy { it.marketId }
+        val liveByOrder = financial.liveOrders.associateBy { it.order.marketId to it.order.orderId }
+        val restingSequences = hashSetOf<Long>()
+        for (market in matching.markets) {
+            val progress = requireNotNull(markets[market.marketId])
+            require(progress.executedThrough > 0 && market.lastEngineSequence >= progress.executedThrough)
+            val pricePriority = hashMapOf<Pair<Side, com.exchange.core.common.Price>, Long>()
+            for (bookOrder in market.orders) {
+                val order = requireNotNull(liveByOrder[market.marketId to bookOrder.orderId])
+                require(order.phase == LiveOrderPhase.RESTING && restingSequences.add(order.admissionSequence))
+                require(
+                    bookOrder.userId == order.order.userId && bookOrder.side == order.order.side &&
+                        bookOrder.price == order.order.price,
+                )
+                require(
+                    bookOrder.originalQuantity == order.order.quantity &&
+                        bookOrder.remainingQuantity == order.reservation.remainingQuantity,
+                )
+                val key = bookOrder.side to bookOrder.price
+                require(order.marketAdmissionSequence > (pricePriority[key] ?: 0L)) { "recovery maker FIFO differs" }
+                pricePriority[key] = order.marketAdmissionSequence
+            }
+        }
+        require(matching.markets.map { it.marketId }.toSet() == markets.filterValues { it.executedThrough > 0 }.keys)
+        require(
+            restingSequences ==
+                financial.liveOrders
+                    .filter { it.phase == LiveOrderPhase.RESTING }
+                    .map { it.admissionSequence }
+                    .toSet(),
+        )
+    }
+
+    private inline fun <T> fundingCall(action: (BoundedFundingState) -> T): T {
+        check(boundedMode && !isBlocked) { "bounded trading owner is not usable" }
+        val owner = checkNotNull(funding)
+        try {
+            return action(owner)
+        } finally {
+            if (owner.isBlocked) isBlocked = true
+        }
+    }
+
+    private inline fun <T> boundedMutation(action: () -> T): T {
+        check(!isBlocked)
+        isBlocked = true
+        val result = action()
+        isBlocked = false
+        return result
+    }
+
+    private inline fun <T> admissionCall(action: () -> T): T {
+        check(!boundedMode) { "legacy history API is unavailable in bounded mode" }
+        checkUsable()
+        try {
+            return action()
+        } finally {
+            if (admission.isBlocked) isBlocked = true
+        }
+    }
+
+    private fun checkUsable() {
+        check(!isBlocked) { "공통 거래 상태가 차단됐습니다" }
+        if (boundedMode) check(funding?.lifecycle == TradingLifecycle.RUNNING) { "bounded trading is not ready or quarantined" }
+    }
+
+    private fun <T> immutableList(values: Collection<T>): List<T> = Collections.unmodifiableList(values.toList())
+}
+
+/** 구분자나 로컬 시각에 기대지 않는 v1 체결 원장 ID. 기존 64자 한도 안의 ASCII 57자다. */
+internal fun settlementTransactionId(
+    marketId: MarketId,
+    engineSequence: Long,
+): String {
+    require(engineSequence > 0) { "체결 순번은 양수여야 합니다" }
+    val market = marketId.value.toByteArray(Charsets.UTF_8)
+    val bytes = ByteArray(4 + Int.SIZE_BYTES + market.size + Long.SIZE_BYTES)
+    writeTradingIdentifierInt(bytes, 0, 0x53544C31)
+    writeTradingIdentifierInt(bytes, 4, market.size)
+    market.copyInto(bytes, 4 + Int.SIZE_BYTES)
+    writeTradingIdentifierLong(bytes, 4 + Int.SIZE_BYTES + market.size, engineSequence)
+    val digest = tradingIdentifierSha256(bytes)
+    return "SETTLEMENT:v1:" + Base64.getUrlEncoder().withoutPadding().encodeToString(digest)
+}

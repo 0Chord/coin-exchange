@@ -1,0 +1,426 @@
+{
+  "issue": 22,
+  "state": "합의 단위1~3 및 사용자 확정 HTTP 대표1개 로컬 구현·검증 완료",
+  "baseline": "ea3a3f446a5809db80eae18467db337947678574",
+  "branch": "test/immutable-db-contracts/22",
+  "recordedAt": "2026-10-03T10:57:40.860627+09:00",
+  "jdk": "Corretto25.0.2",
+  "docker": "29.6.2",
+  "productSourceChanged": false,
+  "httpScope": "포함 확정·대표1개 구현. HTTP suite4개·app-api95개 실제 실행 성공",
+  "runs": [
+    {
+      "name": "순수 도메인",
+      "cwd": "/Users/0chord/.codex/worktrees/issue22-contract-spec/exchange-core",
+      "command": "./gradlew :domain-ledger:test :domain-order:test :domain-fee:test --no-daemon --rerun-tasks --console=plain",
+      "exitCode": 0,
+      "log": "/tmp/issue22-domain-tests.log",
+      "results": {
+        "domain-ledger": {
+          "totals": {
+            "tests": 21,
+            "failures": 0,
+            "errors": 0,
+            "skipped": 0
+          },
+          "suites": [
+            "com.exchange.core.ledger.BalanceTest",
+            "com.exchange.core.ledger.LedgerPostingTest",
+            "com.exchange.core.ledger.LedgerTransactionTest"
+          ]
+        },
+        "domain-order": {
+          "totals": {
+            "tests": 52,
+            "failures": 0,
+            "errors": 0,
+            "skipped": 0
+          },
+          "suites": [
+            "com.exchange.core.order.BuyOrderFundingQuoteCalculatorTest",
+            "com.exchange.core.order.MaximumBuyOrderFundingQuoteCalculatorTest",
+            "com.exchange.core.order.OrderFillSettlementCalculatorTest",
+            "com.exchange.core.order.OrderReservationCalculatorTest",
+            "com.exchange.core.order.OrderReservationTest",
+            "com.exchange.core.order.ReservationRequirementTest"
+          ]
+        },
+        "domain-fee": {
+          "totals": {
+            "tests": 37,
+            "failures": 0,
+            "errors": 0,
+            "skipped": 0
+          },
+          "suites": [
+            "com.exchange.core.fee.FeeRateTest",
+            "com.exchange.core.fee.FeeRemainderTest",
+            "com.exchange.core.fee.FeeTierResolverTest",
+            "com.exchange.core.fee.FeeTierThresholdsTest",
+            "com.exchange.core.fee.MakerTakerFeeRatesTest",
+            "com.exchange.core.fee.TradingFeeCalculatorTest",
+            "com.exchange.core.fee.TradingFeePolicySnapshotTest",
+            "com.exchange.core.fee.TradingFeeReserveCalculatorTest",
+            "com.exchange.core.fee.TradingFeeScheduleTest"
+          ]
+        }
+      }
+    },
+    {
+      "name": "실제 DB·서비스 선택 검증",
+      "cwd": "/Users/0chord/.codex/worktrees/issue22-contract-spec/exchange-core",
+      "command": "./gradlew :app-api:test --tests '*PostgresBalanceStoreTest' --tests '*PostgresOrderReservationStoreTest' --tests '*PostgresLedgerTransactionStoreTest' --tests '*OrderFundingServiceTest' --tests '*OrderReservationReleaseServiceTest' --tests '*TradeSettlementServiceTest' --no-daemon --rerun-tasks --console=plain",
+      "exitCode": 0,
+      "log": "/tmp/issue22-db-service-tests.log",
+      "results": {
+        "app-api": {
+          "totals": {
+            "tests": 53,
+            "failures": 0,
+            "errors": 0,
+            "skipped": 0
+          },
+          "suites": [
+            "com.exchange.core.api.ledger.infrastructure.persistence.PostgresBalanceStoreTest",
+            "com.exchange.core.api.ledger.infrastructure.persistence.PostgresLedgerTransactionStoreTest",
+            "com.exchange.core.api.order.application.OrderFundingServiceTest",
+            "com.exchange.core.api.order.application.OrderReservationReleaseServiceTest",
+            "com.exchange.core.api.order.application.TradeSettlementServiceTest",
+            "com.exchange.core.api.order.infrastructure.persistence.PostgresOrderReservationStoreTest"
+          ]
+        }
+      }
+    },
+    {
+      "name": "전체 빌드·필수 구조 검사 실행 확인",
+      "cwd": "/Users/0chord/.codex/worktrees/issue22-contract-spec/exchange-core",
+      "command": "./gradlew build :architecture-tests:verifyArchitectureReport --no-daemon --continue --rerun-tasks --console=plain",
+      "exitCode": 0,
+      "duration": "6m21s",
+      "log": "/tmp/issue22-full-build.log",
+      "results": {
+        "app-api": {
+          "totals": {
+            "tests": 94,
+            "failures": 0,
+            "errors": 0,
+            "skipped": 0
+          },
+          "noTestSource": false
+        },
+        "architecture-tests": {
+          "totals": {
+            "tests": 368,
+            "failures": 0,
+            "errors": 0,
+            "skipped": 0
+          },
+          "noTestSource": false
+        },
+        "domain-common": {
+          "totals": {
+            "tests": 0,
+            "failures": 0,
+            "errors": 0,
+            "skipped": 0
+          },
+          "noTestSource": true
+        },
+        "domain-ledger": {
+          "totals": {
+            "tests": 21,
+            "failures": 0,
+            "errors": 0,
+            "skipped": 0
+          },
+          "noTestSource": false
+        },
+        "domain-order": {
+          "totals": {
+            "tests": 52,
+            "failures": 0,
+            "errors": 0,
+            "skipped": 0
+          },
+          "noTestSource": false
+        },
+        "domain-fee": {
+          "totals": {
+            "tests": 37,
+            "failures": 0,
+            "errors": 0,
+            "skipped": 0
+          },
+          "noTestSource": false
+        },
+        "domain-matching": {
+          "totals": {
+            "tests": 74,
+            "failures": 0,
+            "errors": 0,
+            "skipped": 0
+          },
+          "noTestSource": false
+        },
+        "benchmark-jmh": {
+          "totals": {
+            "tests": 0,
+            "failures": 0,
+            "errors": 0,
+            "skipped": 0
+          },
+          "noTestSource": true
+        }
+      },
+      "totals": {
+        "tests": 646,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      "requiredOperatingChecks": "P01~P09 실행·성공 확인"
+    },
+    {
+      "name": "HTTP 대표1개 포함 전체 lifecycle suite",
+      "cwd": "/Users/0chord/.codex/worktrees/issue22-contract-spec/exchange-core",
+      "command": "JAVA_HOME=/Users/0chord/Library/Java/JavaVirtualMachines/corretto-25.0.2/Contents/Home ./gradlew :app-api:test --tests '*OrderLifecycleE2ETest' --no-daemon --rerun-tasks --console=plain",
+      "exitCode": 0,
+      "log": "/tmp/issue22-http-tests.log",
+      "results": {
+        "suite": "com.exchange.core.api.order.application.OrderLifecycleE2ETest",
+        "totals": {
+          "tests": 4,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0
+        }
+      }
+    },
+    {
+      "name": "HTTP추가 후 최종 build·필수 구조 검사 확인",
+      "cwd": "/Users/0chord/.codex/worktrees/issue22-contract-spec/exchange-core",
+      "command": "JAVA_HOME=/Users/0chord/Library/Java/JavaVirtualMachines/corretto-25.0.2/Contents/Home ./gradlew build :architecture-tests:verifyArchitectureReport --no-daemon --continue --console=plain",
+      "exitCode": 0,
+      "log": "/tmp/issue22-http-final-build.log",
+      "results": {
+        "app-api": {
+          "totals": {
+            "tests": 95,
+            "failures": 0,
+            "errors": 0,
+            "skipped": 0
+          },
+          "noTestSource": false,
+          "executionMode": "executed"
+        },
+        "architecture-tests": {
+          "totals": {
+            "tests": 368,
+            "failures": 0,
+            "errors": 0,
+            "skipped": 0
+          },
+          "noTestSource": false,
+          "executionMode": "executed"
+        },
+        "domain-common": {
+          "totals": {
+            "tests": 0,
+            "failures": 0,
+            "errors": 0,
+            "skipped": 0
+          },
+          "noTestSource": true,
+          "executionMode": "NO-SOURCE"
+        },
+        "domain-ledger": {
+          "totals": {
+            "tests": 21,
+            "failures": 0,
+            "errors": 0,
+            "skipped": 0
+          },
+          "noTestSource": false,
+          "executionMode": "UP-TO-DATE"
+        },
+        "domain-order": {
+          "totals": {
+            "tests": 52,
+            "failures": 0,
+            "errors": 0,
+            "skipped": 0
+          },
+          "noTestSource": false,
+          "executionMode": "UP-TO-DATE"
+        },
+        "domain-fee": {
+          "totals": {
+            "tests": 37,
+            "failures": 0,
+            "errors": 0,
+            "skipped": 0
+          },
+          "noTestSource": false,
+          "executionMode": "UP-TO-DATE"
+        },
+        "domain-matching": {
+          "totals": {
+            "tests": 74,
+            "failures": 0,
+            "errors": 0,
+            "skipped": 0
+          },
+          "noTestSource": false,
+          "executionMode": "UP-TO-DATE"
+        },
+        "benchmark-jmh": {
+          "totals": {
+            "tests": 0,
+            "failures": 0,
+            "errors": 0,
+            "skipped": 0
+          },
+          "noTestSource": true,
+          "executionMode": "NO-SOURCE"
+        }
+      },
+      "totals": {
+        "tests": 647,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      "requiredOperatingChecks": "P01~P09 실행·성공 확인",
+      "freshlyExecuted": "app-api95 + architecture-tests368 =463",
+      "reusedFromPreviousUnchangedSources": "domain-ledger21 + domain-order52 + domain-fee37 + domain-matching74 =184 (UP-TO-DATE)",
+      "elapsed": "6m21s"
+    }
+  ],
+  "sourceHashes": {
+    "app-api/src/main/kotlin/com/exchange/core/api/ledger/infrastructure/persistence/PostgresBalanceStore.kt": "0823bfb1ab244db24955abee4daf7f3536bb8a623910b5007fc54f9bcf15efd2",
+    "app-api/src/main/kotlin/com/exchange/core/api/order/application/OrderFundingService.kt": "cf66121d78ef07199e8c29fc6ccd9659dff69a982c4625c3ef0f83627b518c8f",
+    "app-api/src/main/kotlin/com/exchange/core/api/order/application/OrderReservationReleaseService.kt": "1e1e9e0ec53fd38be432ad0fdaf58df7bb18fdbec406fb1522b240786396b870",
+    "app-api/src/main/kotlin/com/exchange/core/api/order/application/TradeSettlementService.kt": "a398a860d3c038988a095bb2d4a642850670562ce4e23e62e23d8aac918a01bf",
+    "app-api/src/test/kotlin/com/exchange/core/api/ledger/infrastructure/persistence/PostgresBalanceStoreTest.kt": "a229377176d7d89bc9e7d5ff6b403376973cd9d29faacaed89f25d0e59fbafd7",
+    "app-api/src/test/kotlin/com/exchange/core/api/order/application/OrderFundingServiceTest.kt": "ea9dbc0be678578809143a41b0da4a99f1552f6fc069470bc7e36a94ad0359a6",
+    "app-api/src/test/kotlin/com/exchange/core/api/order/application/OrderReservationReleaseServiceTest.kt": "3625fc3334bd3d8981b06e9d2b41cc01e8f0590529557815b6e3d02a4fb8e5eb",
+    "app-api/src/test/kotlin/com/exchange/core/api/order/application/TradeSettlementServiceTest.kt": "17daf38ee9ae5af13e5c9c9b0354c1edb0357cfa92a02ce4264fcfd93722a37f",
+    "domain-ledger/src/main/kotlin/com/exchange/core/ledger/Balance.kt": "80fd4bdc2c6e08d0b98b8a3e424e16526ddfc8bc6801a2fcde9567ff3c84a8f5",
+    "domain-ledger/src/main/kotlin/com/exchange/core/ledger/LedgerTransaction.kt": "78775861af02314685b98e69bd9c22f5af14482158c8912b2d66cb24e0635242",
+    "domain-ledger/src/test/kotlin/com/exchange/core/ledger/BalanceTest.kt": "d8083bcba28c965e953f91817210296b87de124ecde4f89f071b9f7b3cc9d257",
+    "domain-ledger/src/test/kotlin/com/exchange/core/ledger/LedgerTransactionTest.kt": "eed9e08f85275171677caea77d01c209c67c8d85a5c187fe8a1696980e78e9e3",
+    "domain-order/src/main/kotlin/com/exchange/core/order/OrderFillSettlementCalculator.kt": "547f44a790f1ee4c4a7e5a1beae2eb69f66e35e4752c143c3f8d7e7c04a77a9e",
+    "domain-order/src/main/kotlin/com/exchange/core/order/OrderReservation.kt": "e69fc66d00d197a238556f42275ed4e4a68802366709f504ac36cfbb899af168",
+    "domain-order/src/test/kotlin/com/exchange/core/order/OrderFillSettlementCalculatorTest.kt": "aee7cd21699c5100148432bb3a31f02226c9d5b0bd42651ce400e3bb6ca84a54",
+    "domain-order/src/test/kotlin/com/exchange/core/order/OrderReservationTest.kt": "57780ddac48db00bad88676320e9338260e8b0e12cc6d2a67d8849d012b5fb3d",
+    "app-api/src/test/kotlin/com/exchange/core/api/order/application/OrderLifecycleE2ETest.kt": "cd81a9193d20e58164c6e9f3073fd230acd0a57fa0171f876231235a50e7bb2d",
+    "app-api/src/main/kotlin/com/exchange/core/api/order/application/SubmitOrderUseCase.kt": "526d93de46b236b8da9ebe440d5d573389afd825198f83e97fe364b721699dcf",
+    "app-api/src/main/kotlin/com/exchange/core/api/order/application/CancelOrderUseCase.kt": "87106535e04bc67a552d0aa1e095adce6eac5949e8e61b939794d26e34871f60",
+    "app-api/src/test/kotlin/com/exchange/core/support/ExchangeIntegrationTest.kt": "598162ec9ab41d27b755187bd95a4f311cae835d9222f907438929ae0deefbe2",
+    "app-api/src/test/kotlin/com/exchange/core/support/ExchangeIntegrationTestConfiguration.kt": "0a2a1b18f36bbe106515333aafcec17b841c82e86f3f5622eb8fc67d9635d500"
+  },
+  "newTests": [
+    {
+      "file": "app-api/src/test/kotlin/com/exchange/core/api/ledger/infrastructure/persistence/PostgresBalanceStoreTest.kt",
+      "test": "available 전액을 reserve하면 기존 hold에 더하고 available은 0이 된다",
+      "executedSuccessfully": true
+    },
+    {
+      "file": "app-api/src/test/kotlin/com/exchange/core/api/ledger/infrastructure/persistence/PostgresBalanceStoreTest.kt",
+      "test": "reserve로 hold가 bigint 범위를 넘으면 산술 오류 후 잔고를 유지한다",
+      "executedSuccessfully": true
+    },
+    {
+      "file": "app-api/src/test/kotlin/com/exchange/core/api/ledger/infrastructure/persistence/PostgresBalanceStoreTest.kt",
+      "test": "release로 available이 bigint 범위를 넘으면 산술 오류 후 잔고를 유지한다",
+      "executedSuccessfully": true
+    },
+    {
+      "file": "app-api/src/test/kotlin/com/exchange/core/api/order/application/OrderFundingServiceTest.kt",
+      "test": "사용 가능한 잔고 전액을 거래와 수수료 예약으로 이동할 수 있다",
+      "executedSuccessfully": true
+    },
+    {
+      "file": "app-api/src/test/kotlin/com/exchange/core/api/order/application/OrderFundingServiceTest.kt",
+      "test": "잔고 행이 없으면 먼저 저장한 주문 예약도 롤백한다",
+      "executedSuccessfully": true
+    },
+    {
+      "file": "app-api/src/test/kotlin/com/exchange/core/api/order/application/OrderFundingServiceTest.kt",
+      "test": "서로 다른 주문이 잔고를 경쟁하면 성공한 주문 예약만 남는다",
+      "executedSuccessfully": true
+    },
+    {
+      "file": "app-api/src/test/kotlin/com/exchange/core/api/order/application/OrderReservationReleaseServiceTest.kt",
+      "test": "서로 다른 예약의 합이 실제 hold보다 크면 해제 경쟁의 패자는 전체 예약을 유지한다",
+      "executedSuccessfully": true
+    },
+    {
+      "file": "app-api/src/test/kotlin/com/exchange/core/api/order/application/TradeSettlementServiceTest.kt",
+      "test": "taker BUY의 hold 소비가 부족하면 원장과 양쪽 예약 및 전체 잔고를 롤백한다",
+      "executedSuccessfully": true
+    },
+    {
+      "file": "app-api/src/test/kotlin/com/exchange/core/api/order/application/TradeSettlementServiceTest.kt",
+      "test": "성공한 부분 체결의 같은 이벤트를 다시 정산하면 첫 성공의 전체 DB 상태를 유지한다",
+      "executedSuccessfully": true
+    },
+    {
+      "file": "domain-ledger/src/test/kotlin/com/exchange/core/ledger/BalanceTest.kt",
+      "test": "available 전액을 reserve하면 available만 0이 된다",
+      "executedSuccessfully": true
+    },
+    {
+      "file": "domain-ledger/src/test/kotlin/com/exchange/core/ledger/BalanceTest.kt",
+      "test": "hold 전액을 release하면 hold만 0이 된다",
+      "executedSuccessfully": true
+    },
+    {
+      "file": "domain-ledger/src/test/kotlin/com/exchange/core/ledger/BalanceTest.kt",
+      "test": "hold 전액을 consumeHold하면 available은 유지하고 hold가 0이 된다",
+      "executedSuccessfully": true
+    },
+    {
+      "file": "domain-ledger/src/test/kotlin/com/exchange/core/ledger/BalanceTest.kt",
+      "test": "reserve의 hold 덧셈이 Long 범위를 초과하면 원본을 유지한다",
+      "executedSuccessfully": true
+    },
+    {
+      "file": "domain-ledger/src/test/kotlin/com/exchange/core/ledger/BalanceTest.kt",
+      "test": "release의 available 덧셈이 Long 범위를 초과하면 원본을 유지한다",
+      "executedSuccessfully": true
+    },
+    {
+      "file": "domain-order/src/test/kotlin/com/exchange/core/order/OrderReservationTest.kt",
+      "test": "수수료 예약액이 남아 있어도 거래 예약액보다 많이 차감할 수 없다",
+      "executedSuccessfully": true
+    },
+    {
+      "file": "domain-order/src/test/kotlin/com/exchange/core/order/OrderReservationTest.kt",
+      "test": "거래 예약액이 남아 있어도 수수료 예약액보다 많이 차감할 수 없다",
+      "executedSuccessfully": true
+    },
+    {
+      "file": "app-api/src/test/kotlin/com/exchange/core/api/order/application/OrderLifecycleE2ETest.kt",
+      "test": "BUY 3개 중 1개 체결 뒤 남은 2개를 취소하면 체결 결과는 유지하고 잔여 예약금만 반환한다",
+      "executedSuccessfully": true
+    }
+  ],
+  "testExpectationReview": {
+    "basis": "명세의 독립 금액·한도, 정확한 오류 원인과 금지할 변화",
+    "separateReadOnlyReview": "작성하지 않은 도메인·Service diff 검토에서 명세 범위의 결함/필수 빈틈 미발견. 실행 결과에는 의존하지 않음",
+    "redStatus": "새 사례는 기존 구현에서 처음부터 통과. 제품 결함 Red를 주장하지 않음",
+    "httpRepresentative": "별도 읽기 검토: 기존 고정 정책과 명세의 독립 상수에서 303000/202000/707100/909100 및1350 도출. 실제 신규 diff의4잔고/예약전체/원장스냅샷/응답/저장타입 어설션과 대조. 중요한 불일치 미발견. 검토자는 실행하지 않음"
+  },
+  "remainingLimits": [
+    "지정 경쟁 사례의 모든 스케줄이나 모든 실패 조합을 증명하지 않음",
+    "이 기록은 로컬 검증 근거이며, 원격 CI·사용자 검토·병합·이슈 완료 상태는 GitHub에서 별도로 확인한다",
+    "MockMvc의 Spring HTTP 처리와 실제 PostgreSQL을 검증하며 외부 TCP 연결·모든 HTTP 실패 조합은 포함하지 않음"
+  ],
+  "httpDecision": {
+    "date": "2026-10-03",
+    "decision": "BUY 부분 체결 후 취소 HTTP 대표1개 포함 확정",
+    "basis": "기존 MockMvc·실제 PostgreSQL을 재사용하여 서비스 검증과 HTTP 요청부터 저장까지의 연결을 함께 확인"
+  },
+  "recordFormat": "명령·모듈별 집계·신규 사례·소스 해시를 보존한 실행 요약. 생성된 전체 JUnit 보고서는 포함하지 않음"
+}

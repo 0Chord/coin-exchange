@@ -1,0 +1,80 @@
+{
+  "measurementStartUtc": "2026-11-23T07:36:14.864142919Z",
+  "durationSeconds": 300,
+  "artifactManifestSha256": "c40d3d4ea0cfec1f985d4ba5eb42930f063972fb7f780a007d079bcd28f50d9b",
+  "sourceReportSha256": {
+    "measurement": "167d5e94881458a2b4197968a3147d95df9599867ab1691a8eda91c1047e476b",
+    "runtimeAndArchiveReplay": "435f3ddf73e2168bc68f6930b6509f0f9db658a86e07eedfdbb3a78bfa04b80e",
+    "qualification": "95bda13ea42e3b07d5233662bb63f4058641ade8675849e2ef73cd00ccfbd831",
+    "preflight": "1f9b80df97b44fe252aaf588094ff3722d20eaddb1e0fd9c7922a7af136f50e6"
+  },
+  "environment": {
+    "fundsNodes": 3,
+    "matchingNodes": 3,
+    "archiveCatalogConsensusSyncOnEveryNode": [
+      2,
+      2,
+      2
+    ],
+    "dockerVmVcpus": 8,
+    "dockerVmMemoryMiB": 10240,
+    "virtioFs": true,
+    "jobGuestCpuSet": "0-6",
+    "postgresConnected": false,
+    "archiveQueryReaderEnabled": false
+  },
+  "measurement": {
+    "submissionAttempts": 18469058,
+    "retryableCapacityResponses": 3062671,
+    "acceptedInWindow": 15405907,
+    "settledObservedInWindow": 15404883,
+    "settlementsObservedAfterWindow": 1504,
+    "acceptedIncludingDrain": 15406387,
+    "settledIncludingDrain": 15406387,
+    "admissionResponsesPerSecond": 51353.02,
+    "observedSettlementsPerSecondLowerBound": 51349.61,
+    "admissionP95Ms": 11.3,
+    "admissionP99Ms": 16.5,
+    "settlementObservationP95MsUpperBound": 36.7,
+    "settlementObservationP99MsUpperBound": 51.3,
+    "pendingAdmissionRepliesAfterDrain": 0,
+    "settlementsObservedByMinute": [
+      2784587,
+      3184031,
+      3171192,
+      3221875,
+      3043198
+    ]
+  },
+  "fundsArchiveReplay": {
+    "matched": true,
+    "durationSeconds": 245.345,
+    "replicaAppliedPositions": [
+      1155890528,
+      1155890528,
+      1155890528
+    ],
+    "leaderReplayedPosition": 1155890528,
+    "progressPrefixesMatched": true,
+    "balancesMatched": true,
+    "assetSupplyMatched": true,
+    "feeRevenueQuoteUnits": 2837007720,
+    "ledgerReplay": {
+      "through": 31522326,
+      "logPosition": 1155890432,
+      "sha256": "c41e1b548222deb0bf3a2ec7a0d1cfe77e15a857d03989f6a557b947f50a2387",
+      "transactionCounts": {
+        "OPENING": 17,
+        "RESERVE": 15761155,
+        "RELEASE": 0,
+        "SETTLEMENT": 15761154,
+        "REVERSAL": 0
+      }
+    },
+    "snapshotRoundTrip": {
+      "logPosition": 1155890528,
+      "bytes": 2902678,
+      "sha256": "bf6d4d5930bc43bb71488052dcac74aa55e29b8ee9f5ad5706d8f4f5347cb387"
+    }
+  }
+}

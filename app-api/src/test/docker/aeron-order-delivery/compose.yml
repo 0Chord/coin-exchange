@@ -1,0 +1,133 @@
+x-node: &node
+  image: ${SPLIT_IMAGE:?SPLIT_IMAGE must identify the frozen verification image}
+  mem_limit: 768m
+  cpus: 1.0
+  shm_size: 256m
+  pids_limit: 128
+  stop_grace_period: 15s
+  logging:
+    driver: local
+    options:
+      max-size: "1m"
+      max-file: "2"
+  networks: [delivery]
+
+x-environment: &environment
+  JAVA_TOOL_OPTIONS: "-Xms64m -Xmx256m -XX:+UseG1GC"
+  SPLIT_MODE: ORDER_DELIVERY_DEV
+  SPLIT_MANIFEST: /control/manifest.bin
+  SPLIT_MATCHING_LINEAGE_HIGH: "168"
+  SPLIT_MATCHING_LINEAGE_LOW: "2"
+  SPLIT_OWNERSHIP_EPOCH: "1"
+  SPLIT_FUNDS_INGRESS: "0=funds0:19700,1=funds1:19700,2=funds2:19700"
+  SPLIT_MATCHING_INGRESS: "0=matching0:20700,1=matching1:20700,2=matching2:20700"
+  FUNDING_RUN_ID: ${SPLIT_RUN_ID:?SPLIT_RUN_ID must identify this verification}
+  FUNDING_RUN_ROOT: /records/${SPLIT_RUN_ID}
+  FUNDING_BIND_HOST: 0.0.0.0
+  FUNDING_DRIVER_ROOT: /dev/shm
+  FUNDING_RECOVER_EXISTING: ${SPLIT_RECOVER_EXISTING:-false}
+
+x-funds-environment: &funds-environment
+  <<: *environment
+  SPLIT_ROLE: FUNDS
+  FUNDING_BASE_PORT: "19700"
+  FUNDING_MEMBERS: "0,funds0:19700,funds0:19701,funds0:19702,funds0:19703,funds0:19704|1,funds1:19700,funds1:19701,funds1:19702,funds1:19703,funds1:19704|2,funds2:19700,funds2:19701,funds2:19702,funds2:19703,funds2:19704"
+
+x-matching-environment: &matching-environment
+  <<: *environment
+  SPLIT_ROLE: MATCHING
+  FUNDING_BASE_PORT: "20700"
+  FUNDING_MEMBERS: "0,matching0:20700,matching0:20701,matching0:20702,matching0:20703,matching0:20704|1,matching1:20700,matching1:20701,matching1:20702,matching1:20703,matching1:20704|2,matching2:20700,matching2:20701,matching2:20702,matching2:20703,matching2:20704"
+
+services:
+  funds0:
+    <<: *node
+    hostname: funds0
+    environment:
+      <<: *funds-environment
+      FUNDING_MEMBER_ID: "0"
+      FUNDING_HOST: funds0
+      FUNDING_RUN_ROOT: /records/${SPLIT_RUN_ID}-funds0
+    volumes:
+      - funds0-records:/records
+      - ${SPLIT_CONTROL_DIRECTORY:?SPLIT_CONTROL_DIRECTORY is required}:/control
+  funds1:
+    <<: *node
+    hostname: funds1
+    environment:
+      <<: *funds-environment
+      FUNDING_MEMBER_ID: "1"
+      FUNDING_HOST: funds1
+      FUNDING_RUN_ROOT: /records/${SPLIT_RUN_ID}-funds1
+    volumes:
+      - funds1-records:/records
+      - ${SPLIT_CONTROL_DIRECTORY:?SPLIT_CONTROL_DIRECTORY is required}:/control
+  funds2:
+    <<: *node
+    hostname: funds2
+    environment:
+      <<: *funds-environment
+      FUNDING_MEMBER_ID: "2"
+      FUNDING_HOST: funds2
+      FUNDING_RUN_ROOT: /records/${SPLIT_RUN_ID}-funds2
+    volumes:
+      - funds2-records:/records
+      - ${SPLIT_CONTROL_DIRECTORY:?SPLIT_CONTROL_DIRECTORY is required}:/control
+  matching0:
+    <<: *node
+    hostname: matching0
+    environment:
+      <<: *matching-environment
+      FUNDING_MEMBER_ID: "0"
+      FUNDING_HOST: matching0
+      FUNDING_RUN_ROOT: /records/${SPLIT_RUN_ID}-matching0
+    volumes:
+      - matching0-records:/records
+      - ${SPLIT_CONTROL_DIRECTORY:?SPLIT_CONTROL_DIRECTORY is required}:/control
+  matching1:
+    <<: *node
+    hostname: matching1
+    environment:
+      <<: *matching-environment
+      FUNDING_MEMBER_ID: "1"
+      FUNDING_HOST: matching1
+      FUNDING_RUN_ROOT: /records/${SPLIT_RUN_ID}-matching1
+    volumes:
+      - matching1-records:/records
+      - ${SPLIT_CONTROL_DIRECTORY:?SPLIT_CONTROL_DIRECTORY is required}:/control
+  matching2:
+    <<: *node
+    hostname: matching2
+    environment:
+      <<: *matching-environment
+      FUNDING_MEMBER_ID: "2"
+      FUNDING_HOST: matching2
+      FUNDING_RUN_ROOT: /records/${SPLIT_RUN_ID}-matching2
+    volumes:
+      - matching2-records:/records
+      - ${SPLIT_CONTROL_DIRECTORY:?SPLIT_CONTROL_DIRECTORY is required}:/control
+  client:
+    <<: *node
+    hostname: client
+    profiles: [client]
+    environment:
+      <<: *funds-environment
+      FUNDING_MEMBER_ID: "0"
+      FUNDING_HOST: client
+      FUNDING_BASE_PORT: "21700"
+      FUNDING_RUN_ROOT: /tmp/${SPLIT_RUN_ID}-client
+    volumes:
+      - ${SPLIT_CONTROL_DIRECTORY:?SPLIT_CONTROL_DIRECTORY is required}:/control
+
+networks:
+  delivery:
+    driver: bridge
+    internal: true
+
+volumes:
+  funds0-records:
+  funds1-records:
+  funds2-records:
+  matching0-records:
+  matching1-records:
+  matching2-records:

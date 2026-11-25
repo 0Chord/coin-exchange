@@ -1,0 +1,27 @@
+{
+  "transport": [
+    "com.exchange.core.api.trading.infrastructure.aeron.DockerFundingReplicationTest",
+    "com.exchange.core.api.trading.infrastructure.aeron.DockerOrderReplicationTest",
+    "com.exchange.core.api.trading.infrastructure.aeron.DockerHttpOrderAdmissionTest",
+    "com.exchange.core.api.trading.infrastructure.aeron.BoundedHttpTradingClusterTest",
+    "com.exchange.core.api.trading.infrastructure.aeron.DockerFundsOrderDeliveryTest"
+  ],
+  "settlement": [
+    "com.exchange.core.api.trading.infrastructure.aeron.DockerMatchingResultDeliveryTest",
+    "com.exchange.core.api.trading.infrastructure.aeron.DockerSplitCancellationTest",
+    "com.exchange.core.api.trading.infrastructure.aeron.DockerSplitRecoveryTest"
+  ],
+  "multi-market": [
+    "com.exchange.core.api.trading.infrastructure.aeron.DockerMultiMatchingReplicationTest"
+  ],
+  "failover": [
+    "com.exchange.core.api.trading.infrastructure.aeron.MultiMatchingLeaderFailoverTest",
+    "com.exchange.core.api.trading.infrastructure.aeron.FundsLeaderFailoverTest"
+  ],
+  "quorum-loss": [
+    "com.exchange.core.api.trading.infrastructure.aeron.DockerFundsQuorumLossTest"
+  ],
+  "quorum-partition": [
+    "com.exchange.core.api.trading.infrastructure.aeron.DockerFundsQuorumPartitionTest"
+  ]
+}

@@ -11,35 +11,29 @@ import com.exchange.core.order.Side
  *
  * SubmitOrderCommand는 외부에서 들어온 요청이고,
  * BookOrder는 체결되지 않고 book에 남아 있는 내부 상태다.
+ *
+ * [originalQuantity]는 주문 당시 값이라 바뀌지 않고, [remainingQuantity]만 체결 때마다
+ * 감소한다. 같은 가격에서는 이 객체가 [PriceLevel]에 들어간 순서가 체결 우선순위다.
+ *
+ * @property orderId 취소와 체결 event에서 주문을 추적하는 식별자
+ * @property userId 주문 소유자
+ * @property side BUY 또는 SELL 주문 방향
+ * @property price book에 들어간 뒤 바뀌지 않는 지정가
+ * @property originalQuantity 처음 제출한 전체 수량
+ * @property remainingQuantity 아직 체결되지 않은 수량
  */
-data class BookOrder(
-    /**
-     * 주문 식별자. 취소와 체결 event에서 이 값으로 주문을 추적한다.
-     */
+internal class BookOrder(
     val orderId: OrderId,
-    /**
-     * 주문을 낸 사용자.
-     */
     val userId: UserId,
-    /**
-     * 매수 또는 매도 방향.
-     */
     val side: Side,
-    /**
-     * 주문 가격. book에 들어간 뒤에는 바뀌지 않는다.
-     */
     val price: Price,
-    /**
-     * 처음 주문 수량.
-     */
     val originalQuantity: Quantity,
-    /**
-     * 아직 체결되지 않은 수량.
-     *
-     * 체결될 때마다 줄어들기 때문에 var로 둔다.
-     */
-    var remainingQuantity: Quantity,
+    remainingQuantity: Quantity,
 ) {
+    /** 잔량은 같은 내부 주문에서 유지하며, 검증된 [fill]만 값을 바꾼다. */
+    var remainingQuantity: Quantity = remainingQuantity
+        private set
+
     init {
         require(originalQuantity.value > 0) {
             "originalQuantity must be positive"
@@ -53,7 +47,11 @@ data class BookOrder(
     }
 
     /**
-     * 체결 수량만큼 잔량을 줄인다.
+     * 0보다 크고 현재 잔량 이하인 체결량만 같은 주문의 잔량에서 차감한다.
+     * 원수량은 유지한다. 원수량·잔량 10에서 4 체결 시 원수량은 10, 잔량은 6이다.
+     *
+     * @param quantity 이번 체결에서 이 maker 주문에 배정된 수량
+     * @throws IllegalArgumentException [quantity]가 0이거나 현재 잔량보다 큰 경우
      */
     fun fill(quantity: Quantity) {
         require(quantity.value > 0) {
@@ -68,6 +66,8 @@ data class BookOrder(
 
     /**
      * 잔량이 0인지 확인한다.
+     *
+     * @return 주문이 전량 체결되었으면 `true`
      */
     fun isFilled(): Boolean = remainingQuantity.isZero()
 }

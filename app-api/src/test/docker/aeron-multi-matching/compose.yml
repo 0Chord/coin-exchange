@@ -1,0 +1,259 @@
+# 세 클러스터는 같은 실행 설정을 읽고, 사본별 기록과 Driver는 따로 소유한다.
+x-node: &node
+  image: ${SPLIT_IMAGE:?SPLIT_IMAGE must identify the frozen verification image}
+  command: [com.exchange.core.api.trading.infrastructure.aeron.MultiMatchingVerificationToolKt, node]
+  mem_limit: 768m
+  cpus: 1.0
+  shm_size: 256m
+  pids_limit: 128
+  stop_grace_period: 15s
+  logging:
+    driver: local
+    options:
+      max-size: "1m"
+      max-file: "2"
+  labels:
+    com.exchange.multi.run: ${SPLIT_RUN_ID:?SPLIT_RUN_ID is required}
+  networks: [multi]
+
+x-environment: &environment
+  JAVA_TOOL_OPTIONS: "-Xms64m -Xmx256m -XX:+UseG1GC"
+  SPLIT_MODE: RESULT_SETTLEMENT_DEV
+  SPLIT_MANIFEST: /control/manifest.bin
+  SPLIT_INPUT_CONTRACT_VERSION: "2"
+  SPLIT_MAX_FUNDS_DISPATCH_BYTES: "1048576"
+  SPLIT_MAX_FUNDS_ACTIVE_BYTES: "1048576"
+  SPLIT_MATCHING_OWNER_COUNT: "2"
+  SPLIT_MATCHING_0_LINEAGE_HIGH: "135"
+  SPLIT_MATCHING_0_LINEAGE_LOW: "2"
+  SPLIT_MATCHING_0_OWNERSHIP_EPOCH: "1"
+  SPLIT_MATCHING_0_MARKETS: BTC-USDT
+  SPLIT_MATCHING_0_CLUSTER_ID: "199"
+  SPLIT_MATCHING_0_INGRESS: "0=${SPLIT_NETWORK_PREFIX}.20:20700,1=${SPLIT_NETWORK_PREFIX}.21:20700,2=${SPLIT_NETWORK_PREFIX}.22:20700"
+  SPLIT_MATCHING_1_LINEAGE_HIGH: "135"
+  SPLIT_MATCHING_1_LINEAGE_LOW: "3"
+  SPLIT_MATCHING_1_OWNERSHIP_EPOCH: "1"
+  SPLIT_MATCHING_1_MARKETS: SUI-USDT
+  SPLIT_MATCHING_1_CLUSTER_ID: "200"
+  SPLIT_MATCHING_1_INGRESS: "0=${SPLIT_NETWORK_PREFIX}.30:21700,1=${SPLIT_NETWORK_PREFIX}.31:21700,2=${SPLIT_NETWORK_PREFIX}.32:21700"
+  SPLIT_FUNDS_INGRESS: "0=${SPLIT_NETWORK_PREFIX}.10:19700,1=${SPLIT_NETWORK_PREFIX}.11:19700,2=${SPLIT_NETWORK_PREFIX}.12:19700"
+  SPLIT_MULTI_CASE: ${SPLIT_MULTI_CASE:?SPLIT_MULTI_CASE is required}
+  FUNDING_RUN_ID: ${SPLIT_RUN_ID:?SPLIT_RUN_ID is required}
+  FUNDING_BIND_HOST: 0.0.0.0
+  FUNDING_DRIVER_ROOT: /dev/shm
+  FUNDING_RECOVER_EXISTING: "false"
+
+x-funds-environment: &funds-environment
+  <<: *environment
+  SPLIT_ROLE: FUNDS
+  FUNDING_BASE_PORT: "19700"
+  FUNDING_MEMBERS: "0,${SPLIT_NETWORK_PREFIX}.10:19700,${SPLIT_NETWORK_PREFIX}.10:19701,${SPLIT_NETWORK_PREFIX}.10:19702,${SPLIT_NETWORK_PREFIX}.10:19703,${SPLIT_NETWORK_PREFIX}.10:19704|1,${SPLIT_NETWORK_PREFIX}.11:19700,${SPLIT_NETWORK_PREFIX}.11:19701,${SPLIT_NETWORK_PREFIX}.11:19702,${SPLIT_NETWORK_PREFIX}.11:19703,${SPLIT_NETWORK_PREFIX}.11:19704|2,${SPLIT_NETWORK_PREFIX}.12:19700,${SPLIT_NETWORK_PREFIX}.12:19701,${SPLIT_NETWORK_PREFIX}.12:19702,${SPLIT_NETWORK_PREFIX}.12:19703,${SPLIT_NETWORK_PREFIX}.12:19704"
+
+x-btc-environment: &btc-environment
+  <<: *environment
+  SPLIT_ROLE: MATCHING
+  FUNDING_BASE_PORT: "20700"
+  SPLIT_SELF_MATCHING_LINEAGE_HIGH: "135"
+  SPLIT_SELF_MATCHING_LINEAGE_LOW: "2"
+  FUNDING_MEMBERS: "0,${SPLIT_NETWORK_PREFIX}.20:20700,${SPLIT_NETWORK_PREFIX}.20:20701,${SPLIT_NETWORK_PREFIX}.20:20702,${SPLIT_NETWORK_PREFIX}.20:20703,${SPLIT_NETWORK_PREFIX}.20:20704|1,${SPLIT_NETWORK_PREFIX}.21:20700,${SPLIT_NETWORK_PREFIX}.21:20701,${SPLIT_NETWORK_PREFIX}.21:20702,${SPLIT_NETWORK_PREFIX}.21:20703,${SPLIT_NETWORK_PREFIX}.21:20704|2,${SPLIT_NETWORK_PREFIX}.22:20700,${SPLIT_NETWORK_PREFIX}.22:20701,${SPLIT_NETWORK_PREFIX}.22:20702,${SPLIT_NETWORK_PREFIX}.22:20703,${SPLIT_NETWORK_PREFIX}.22:20704"
+
+x-sui-environment: &sui-environment
+  <<: *environment
+  SPLIT_ROLE: MATCHING
+  FUNDING_BASE_PORT: "21700"
+  SPLIT_SELF_MATCHING_LINEAGE_HIGH: "135"
+  SPLIT_SELF_MATCHING_LINEAGE_LOW: "3"
+  FUNDING_MEMBERS: "0,${SPLIT_NETWORK_PREFIX}.30:21700,${SPLIT_NETWORK_PREFIX}.30:21701,${SPLIT_NETWORK_PREFIX}.30:21702,${SPLIT_NETWORK_PREFIX}.30:21703,${SPLIT_NETWORK_PREFIX}.30:21704|1,${SPLIT_NETWORK_PREFIX}.31:21700,${SPLIT_NETWORK_PREFIX}.31:21701,${SPLIT_NETWORK_PREFIX}.31:21702,${SPLIT_NETWORK_PREFIX}.31:21703,${SPLIT_NETWORK_PREFIX}.31:21704|2,${SPLIT_NETWORK_PREFIX}.32:21700,${SPLIT_NETWORK_PREFIX}.32:21701,${SPLIT_NETWORK_PREFIX}.32:21702,${SPLIT_NETWORK_PREFIX}.32:21703,${SPLIT_NETWORK_PREFIX}.32:21704"
+
+services:
+  funds0:
+    <<: *node
+    hostname: funds0
+    networks:
+      multi:
+        ipv4_address: ${SPLIT_NETWORK_PREFIX}.10
+    environment:
+      <<: *funds-environment
+      SPLIT_MULTI_SERVICE: funds0
+      FUNDING_MEMBER_ID: "0"
+      FUNDING_HOST: ${SPLIT_NETWORK_PREFIX}.10
+      FUNDING_RUN_ROOT: /records/${SPLIT_RUN_ID}-funds0
+    volumes:
+      - funds0-records:/records
+      - ${SPLIT_CONTROL_DIRECTORY:?SPLIT_CONTROL_DIRECTORY is required}:/control
+  funds1:
+    <<: *node
+    hostname: funds1
+    networks:
+      multi:
+        ipv4_address: ${SPLIT_NETWORK_PREFIX}.11
+    environment:
+      <<: *funds-environment
+      SPLIT_MULTI_SERVICE: funds1
+      FUNDING_MEMBER_ID: "1"
+      FUNDING_HOST: ${SPLIT_NETWORK_PREFIX}.11
+      FUNDING_RUN_ROOT: /records/${SPLIT_RUN_ID}-funds1
+    volumes:
+      - funds1-records:/records
+      - ${SPLIT_CONTROL_DIRECTORY:?SPLIT_CONTROL_DIRECTORY is required}:/control
+  funds2:
+    <<: *node
+    hostname: funds2
+    networks:
+      multi:
+        ipv4_address: ${SPLIT_NETWORK_PREFIX}.12
+    environment:
+      <<: *funds-environment
+      SPLIT_MULTI_SERVICE: funds2
+      FUNDING_MEMBER_ID: "2"
+      FUNDING_HOST: ${SPLIT_NETWORK_PREFIX}.12
+      FUNDING_RUN_ROOT: /records/${SPLIT_RUN_ID}-funds2
+    volumes:
+      - funds2-records:/records
+      - ${SPLIT_CONTROL_DIRECTORY:?SPLIT_CONTROL_DIRECTORY is required}:/control
+  btc0:
+    <<: *node
+    hostname: btc0
+    networks:
+      multi:
+        ipv4_address: ${SPLIT_NETWORK_PREFIX}.20
+    environment:
+      <<: *btc-environment
+      SPLIT_MULTI_SERVICE: btc0
+      FUNDING_MEMBER_ID: "0"
+      FUNDING_HOST: ${SPLIT_NETWORK_PREFIX}.20
+      FUNDING_RUN_ROOT: /records/${SPLIT_RUN_ID}-btc0
+    volumes:
+      - btc0-records:/records
+      - ${SPLIT_CONTROL_DIRECTORY:?SPLIT_CONTROL_DIRECTORY is required}:/control
+  btc1:
+    <<: *node
+    hostname: btc1
+    networks:
+      multi:
+        ipv4_address: ${SPLIT_NETWORK_PREFIX}.21
+    environment:
+      <<: *btc-environment
+      SPLIT_MULTI_SERVICE: btc1
+      FUNDING_MEMBER_ID: "1"
+      FUNDING_HOST: ${SPLIT_NETWORK_PREFIX}.21
+      FUNDING_RUN_ROOT: /records/${SPLIT_RUN_ID}-btc1
+    volumes:
+      - btc1-records:/records
+      - ${SPLIT_CONTROL_DIRECTORY:?SPLIT_CONTROL_DIRECTORY is required}:/control
+  btc2:
+    <<: *node
+    hostname: btc2
+    networks:
+      multi:
+        ipv4_address: ${SPLIT_NETWORK_PREFIX}.22
+    environment:
+      <<: *btc-environment
+      SPLIT_MULTI_SERVICE: btc2
+      FUNDING_MEMBER_ID: "2"
+      FUNDING_HOST: ${SPLIT_NETWORK_PREFIX}.22
+      FUNDING_RUN_ROOT: /records/${SPLIT_RUN_ID}-btc2
+    volumes:
+      - btc2-records:/records
+      - ${SPLIT_CONTROL_DIRECTORY:?SPLIT_CONTROL_DIRECTORY is required}:/control
+  sui0:
+    <<: *node
+    hostname: sui0
+    networks:
+      multi:
+        ipv4_address: ${SPLIT_NETWORK_PREFIX}.30
+    environment:
+      <<: *sui-environment
+      SPLIT_MULTI_SERVICE: sui0
+      FUNDING_MEMBER_ID: "0"
+      FUNDING_HOST: ${SPLIT_NETWORK_PREFIX}.30
+      FUNDING_RUN_ROOT: /records/${SPLIT_RUN_ID}-sui0
+    volumes:
+      - sui0-records:/records
+      - ${SPLIT_CONTROL_DIRECTORY:?SPLIT_CONTROL_DIRECTORY is required}:/control
+  sui1:
+    <<: *node
+    hostname: sui1
+    networks:
+      multi:
+        ipv4_address: ${SPLIT_NETWORK_PREFIX}.31
+    environment:
+      <<: *sui-environment
+      SPLIT_MULTI_SERVICE: sui1
+      FUNDING_MEMBER_ID: "1"
+      FUNDING_HOST: ${SPLIT_NETWORK_PREFIX}.31
+      FUNDING_RUN_ROOT: /records/${SPLIT_RUN_ID}-sui1
+    volumes:
+      - sui1-records:/records
+      - ${SPLIT_CONTROL_DIRECTORY:?SPLIT_CONTROL_DIRECTORY is required}:/control
+  sui2:
+    <<: *node
+    hostname: sui2
+    networks:
+      multi:
+        ipv4_address: ${SPLIT_NETWORK_PREFIX}.32
+    environment:
+      <<: *sui-environment
+      SPLIT_MULTI_SERVICE: sui2
+      FUNDING_MEMBER_ID: "2"
+      FUNDING_HOST: ${SPLIT_NETWORK_PREFIX}.32
+      FUNDING_RUN_ROOT: /records/${SPLIT_RUN_ID}-sui2
+    volumes:
+      - sui2-records:/records
+      - ${SPLIT_CONTROL_DIRECTORY:?SPLIT_CONTROL_DIRECTORY is required}:/control
+  client:
+    <<: *node
+    hostname: client
+    networks:
+      multi:
+        ipv4_address: ${SPLIT_NETWORK_PREFIX}.40
+    profiles: [client]
+    command: [com.exchange.core.api.trading.infrastructure.aeron.MultiMatchingVerificationToolKt, prepare]
+    tmpfs:
+      - /tmp:size=536870912,mode=1777
+    environment:
+      <<: *funds-environment
+      SPLIT_MULTI_SERVICE: client
+      FUNDING_MEMBER_ID: "0"
+      FUNDING_HOST: ${SPLIT_NETWORK_PREFIX}.40
+      FUNDING_BASE_PORT: "22700"
+      FUNDING_RUN_ROOT: /tmp/${SPLIT_RUN_ID}-client
+    volumes:
+      - ${SPLIT_CONTROL_DIRECTORY:?SPLIT_CONTROL_DIRECTORY is required}:/control
+
+networks:
+  multi:
+    driver: bridge
+    internal: true
+    ipam:
+      config:
+        - subnet: ${SPLIT_NETWORK_PREFIX}.0/24
+
+volumes:
+  funds0-records:
+    labels:
+      com.exchange.multi.run: ${SPLIT_RUN_ID:?SPLIT_RUN_ID is required}
+  funds1-records:
+    labels:
+      com.exchange.multi.run: ${SPLIT_RUN_ID:?SPLIT_RUN_ID is required}
+  funds2-records:
+    labels:
+      com.exchange.multi.run: ${SPLIT_RUN_ID:?SPLIT_RUN_ID is required}
+  btc0-records:
+    labels:
+      com.exchange.multi.run: ${SPLIT_RUN_ID:?SPLIT_RUN_ID is required}
+  btc1-records:
+    labels:
+      com.exchange.multi.run: ${SPLIT_RUN_ID:?SPLIT_RUN_ID is required}
+  btc2-records:
+    labels:
+      com.exchange.multi.run: ${SPLIT_RUN_ID:?SPLIT_RUN_ID is required}
+  sui0-records:
+    labels:
+      com.exchange.multi.run: ${SPLIT_RUN_ID:?SPLIT_RUN_ID is required}
+  sui1-records:
+    labels:
+      com.exchange.multi.run: ${SPLIT_RUN_ID:?SPLIT_RUN_ID is required}
+  sui2-records:
+    labels:
+      com.exchange.multi.run: ${SPLIT_RUN_ID:?SPLIT_RUN_ID is required}

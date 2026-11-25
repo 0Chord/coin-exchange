@@ -1,0 +1,127 @@
+package com.exchange.core.ledger
+
+import com.exchange.core.common.AssetId
+import java.math.BigInteger
+import java.time.Instant
+import java.util.Collections
+
+/**
+ * 하나의 회계 사건에 속한 원장 항목을 묶고 자산별 차변·대변 균형을 검증하는 거래.
+ *
+ * 항목은 하나 이상이어야 하며, 같은 자산의 차변 합계와 대변 합계가 같아야 한다.
+ * KRW의 차이를 BTC로 상쇄할 수는 없다. 자산별 차변·대변 차이는 Long으로 합산하되,
+ * 범위를 벗어나면 [BigInteger]로 전환해 여러 항목의 합계도 정확하게 비교한다.
+ *
+ * 생성 시 항목 목록을 복사하고 외부 수정을 막아 검증한 내용을 유지한다.
+ * 이 객체 자체는 DB 저장, 잔고 변경 또는 원본 이벤트의 중복 처리를 수행하지 않는다.
+ *
+ * @property ledgerTransactionId 이 원장 거래를 식별하는 값
+ * @property sourceEventId 이 거래를 발생시킨 주문 예약·체결 등 원본 이벤트의 식별자
+ * @property transactionType 예약, 해제, 정산 또는 역분개 등 회계 사건의 종류
+ * @property occurredAt 원본 회계 사건이 발생한 시각. DB에 저장한 시각과는 다르다
+ * @param postings 이 거래에 포함할 원장 항목 목록
+ * @throws IllegalArgumentException 항목이 비어 있거나 자산별 차변·대변 합계가 다른 경우
+ */
+class LedgerTransaction(
+    val ledgerTransactionId: String,
+    val sourceEventId: String,
+    val transactionType: LedgerTransactionType,
+    val occurredAt: Instant,
+    postings: List<LedgerPosting>,
+) {
+    /** 입력 목록과 분리하여 보관하는, 외부에서 수정할 수 없는 원장 항목 목록. */
+    val postings: List<LedgerPosting>
+
+    init {
+        // 방어적 복사와 모든 거래 검증을 마친 뒤에만 캐시를 조회한다.
+        val snapshot = Collections.unmodifiableList(postings.toList())
+        require(snapshot.isNotEmpty()) {
+            "ledger transaction postings must not be empty"
+        }
+        requireBalanced(snapshot)
+
+        // ID·이벤트·유형·시각은 각 거래에 따로 두고, 원장 항목 값의 저장 공간만 공유한다.
+        this.postings = postingLists.shareValidated(snapshot)
+    }
+
+    private fun requireBalanced(snapshot: List<LedgerPosting>) {
+        val firstAsset = snapshot[0].assetId
+        var secondAsset: AssetId? = null
+        var firstTotal = 0L
+        var secondTotal = 0L
+        for (index in snapshot.indices) {
+            val posting = snapshot[index]
+            val isFirstAsset = posting.assetId == firstAsset
+            if (!isFirstAsset) {
+                if (secondAsset == null) secondAsset = posting.assetId
+                if (posting.assetId != secondAsset) return requireBalancedExactly(snapshot)
+            }
+            val amount = posting.signedAmount()
+            val total = if (isFirstAsset) firstTotal else secondTotal
+            val next = total + amount
+            // 세 번째 자산이나 Long 합산 범위를 벗어나면 처음부터 정확한 합계를 구한다.
+            if (((total xor next) and (amount xor next)) < 0L) return requireBalancedExactly(snapshot)
+            if (isFirstAsset) firstTotal = next else secondTotal = next
+        }
+
+        require(firstTotal == 0L) { "ledger transaction must balance for asset ${firstAsset.value}" }
+        if (secondAsset != null) {
+            require(secondTotal == 0L) { "ledger transaction must balance for asset ${secondAsset.value}" }
+        }
+    }
+
+    private fun requireBalancedExactly(snapshot: List<LedgerPosting>) {
+        val balances = LinkedHashMap<AssetId, ExactAssetBalance>()
+        for (posting in snapshot) {
+            val balance = balances.getOrPut(posting.assetId) { ExactAssetBalance(posting.assetId) }
+            balance.add(posting.signedAmount())
+        }
+
+        // 처음 나타난 자산부터 균형을 검사한다.
+        for (balance in balances.values) {
+            balance.requireBalanced()
+        }
+    }
+
+    // LedgerPosting의 금액은 양수이므로 CREDIT의 부호를 바꿔도 넘치지 않는다.
+    private fun LedgerPosting.signedAmount(): Long =
+        when (side) {
+            LedgerPostingSide.DEBIT -> amount.value
+            LedgerPostingSide.CREDIT -> -amount.value
+        }
+
+    private class ExactAssetBalance(
+        val assetId: AssetId,
+    ) {
+        private var total = 0L
+        private var largeTotal: BigInteger? = null
+
+        fun add(signedAmount: Long) {
+            val large = largeTotal
+            if (large != null) {
+                largeTotal = large.add(BigInteger.valueOf(signedAmount))
+                return
+            }
+
+            val next = total + signedAmount
+            // 같은 부호의 두 값을 더한 결과가 반대 부호이면 양수·음수 어느 쪽이든 범위를 넘은 것이다.
+            if (((total xor next) and (signedAmount xor next)) < 0L) {
+                largeTotal = BigInteger.valueOf(total).add(BigInteger.valueOf(signedAmount))
+            } else {
+                total = next
+            }
+        }
+
+        fun requireBalanced() {
+            val large = largeTotal
+            require(if (large == null) total == 0L else large.signum() == 0) {
+                "ledger transaction must balance for asset ${assetId.value}"
+            }
+        }
+    }
+
+    private companion object {
+        // 클래스로더 단위로 한도를 두고 동기화한다. 계산기 자체는 상태를 갖지 않는다.
+        val postingLists = LedgerPostingListPool()
+    }
+}

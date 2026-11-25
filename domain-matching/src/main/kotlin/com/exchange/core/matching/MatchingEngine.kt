@@ -7,273 +7,351 @@ import com.exchange.core.common.Quantity
 import com.exchange.core.order.OrderType
 import com.exchange.core.order.Side
 import com.exchange.core.order.TimeInForce
+import java.util.Collections
 
 /**
- * 매칭 엔진의 public 진입점.
+ * LIMIT/GTC 매칭 상태의 소유자. 한 실행자가 같은 마켓의 명령을 순차 호출해야 한다.
  *
- * MatchingEngine은 command를 받아 OrderBook을 변경하고,
- * 그 결과를 MatchingEvent로 반환한다.
- *
- * Phase 1에서는 LIMIT + GTC + CANCEL만 처리한다.
+ * 새 주문은 [prepareSubmit]으로 읽기 전용 후보를 만들고 [apply]에서만 반영한다.
+ * 취소도 [prepareCancel]로 후보를 만든 뒤 [apply]에서만 주문장과 순번을 변경한다.
  */
 class MatchingEngine {
-    /**
-     * 마켓별 in-memory order book.
-     *
-     * 서로 다른 marketId의 주문이 같은 book에서 체결되면 안 되므로
-     * marketId마다 독립된 OrderBook을 둔다.
-     */
     private val orderBooks = HashMap<MarketId, OrderBook>()
-
-    /**
-     * market별 event sequence.
-     *
-     * engineSequence는 market 안에서 단조 증가해야 한다.
-     */
-    private val nextEngineSequences = HashMap<MarketId, Long>()
-
-    /**
-     * market별로 이미 처리한 submit orderId.
-     *
-     * 같은 orderId를 다시 받아 새 주문처럼 처리하면 retry나 중복 요청이
-     * 별도 주문으로 체결될 수 있으므로, 한 market 안에서는 submit orderId를 재사용하지 않는다.
-     */
+    private val lastEngineSequences = HashMap<MarketId, Long>()
     private val seenOrderIds = HashMap<MarketId, MutableSet<OrderId>>()
 
-    /**
-     * 매칭 엔진의 단일 진입점.
-     *
-     * command 종류에 따라 주문 등록 또는 주문 취소 처리를 위임한다.
-     */
+    // 로컬 계획의 발급자 확인에만 쓰며 거래 ID·복제 결과에는 넣지 않는다.
+    private var planToken = Any()
+    private var checkpointRestored = false
+
+    /** 영속 이력으로 중복을 정확히 검출하는 공통 소유자만 이 활성 상태를 복원할 수 있다. */
+    fun activeCheckpoint(): MatchingCheckpoint =
+        MatchingCheckpoint(
+            lastEngineSequences.keys.sortedBy { it.value }.map { marketId ->
+                MatchingCheckpoint.Market(
+                    marketId,
+                    lastEngineSequence(marketId),
+                    restingOrders(marketId).map {
+                        MatchingCheckpoint.Order(it.orderId, it.userId, it.side, it.price, it.originalQuantity, it.remainingQuantity)
+                    },
+                )
+            },
+        )
+
+    /** 주문 실행이나 매칭 이벤트 발행 없이 빈 엔진을 재구성한다. */
+    fun restoreActiveCheckpoint(checkpoint: MatchingCheckpoint) {
+        check(!checkpointRestored && orderBooks.isEmpty() && lastEngineSequences.isEmpty() && seenOrderIds.isEmpty()) {
+            "matching checkpoint requires an empty engine"
+        }
+        val restoredBooks = HashMap<MarketId, OrderBook>()
+        val restoredSequences = HashMap<MarketId, Long>()
+        val restoredIdentities = HashMap<MarketId, MutableSet<OrderId>>()
+        for (market in checkpoint.markets) {
+            require(market.lastEngineSequence > 0) { "checkpoint market sequence must be positive" }
+            require(restoredSequences.put(market.marketId, market.lastEngineSequence) == null) { "duplicate checkpoint market" }
+            val book = OrderBook()
+            val identities = hashSetOf<OrderId>()
+            var previous: MatchingCheckpoint.Order? = null
+            for (order in market.orders) {
+                require(identities.add(order.orderId)) { "duplicate checkpoint resting order" }
+                previous?.let {
+                    require(it.side != Side.SELL || order.side == Side.SELL) { "checkpoint bids must precede asks" }
+                    if (it.side == order.side) {
+                        require(if (order.side == Side.BUY) it.price >= order.price else it.price <= order.price) {
+                            "checkpoint price priority is invalid"
+                        }
+                    }
+                }
+                book.addRestingOrder(
+                    BookOrder(order.orderId, order.userId, order.side, order.price, order.originalQuantity, order.remainingQuantity),
+                )
+                previous = order
+            }
+            val bid = book.bestBid()
+            val ask = book.bestAsk()
+            require(bid == null || ask == null || bid < ask) { "checkpoint contains crossed books" }
+            restoredBooks[market.marketId] = book
+            if (identities.isNotEmpty()) restoredIdentities[market.marketId] = identities
+        }
+        orderBooks.putAll(restoredBooks)
+        lastEngineSequences.putAll(restoredSequences)
+        seenOrderIds.putAll(restoredIdentities)
+        // 빈 체크포인트여도 복원 이전에 준비한 후보는 무효화한다.
+        planToken = Any()
+        checkpointRestored = true
+    }
+
     fun process(command: MatchingCommand): List<MatchingEvent> =
         when (command) {
-            is SubmitOrderCommand -> processSubmit(command)
-            is CancelOrderCommand -> processCancel(command)
+            is SubmitOrderCommand -> apply(prepareSubmit(command))
+            is CancelOrderCommand -> apply(prepareCancel(command))
         }
 
+    /** 매수 가격 우선·매도 가격 우선, 같은 가격 FIFO 순서의 현재 주문 값 복사본. */
+    fun restingOrders(
+        marketId: MarketId,
+        offset: Int = 0,
+        limit: Int = Int.MAX_VALUE,
+    ): List<RestingOrderSnapshot> {
+        require(offset >= 0 && limit >= 0)
+        val book = orderBooks[marketId]
+        val orders =
+            if (book == null) {
+                emptyList()
+            } else {
+                (book.oppositeOrders(Side.SELL) + book.oppositeOrders(Side.BUY))
+                    .drop(offset)
+                    .take(limit)
+                    .map { order ->
+                        RestingOrderSnapshot(
+                            order.orderId,
+                            order.userId,
+                            order.side,
+                            order.price,
+                            order.originalQuantity,
+                            order.remainingQuantity,
+                        )
+                    }.toList()
+            }
+        return Collections.unmodifiableList(orders)
+    }
+
     /**
-     * 새 주문을 처리한다.
-     *
-     * 새로 들어온 주문은 taker가 되고, 기존 book에 있던 주문은 maker가 된다.
-     * 핵심 상태 변경 순서가 보이도록 체결/북 등록 흐름은 이 함수에 남긴다.
+     * 영속 이력에서 정확한 중복 검출을 유지하는 소유자에 한해서만 종료 식별자를 해제한다.
+     * 엔진을 독립적으로 호출하면 기존과 같이 엔진 수명 동안 식별자 중복을 막는다.
      */
-    private fun processSubmit(command: SubmitOrderCommand): List<MatchingEvent> {
+    fun releaseTerminalOrderIdentity(
+        marketId: MarketId,
+        orderId: OrderId,
+    ) {
+        check(orderBooks[marketId]?.find(orderId) == null) { "cannot release a resting order identity" }
+        seenOrderIds[marketId]?.let { seen ->
+            seen.remove(orderId)
+            if (seen.isEmpty()) seenOrderIds.remove(marketId)
+        }
+    }
+
+    /** 조회만으로 없는 마켓의 주문장이나 순번을 만들지 않는다. */
+    fun lastEngineSequence(marketId: MarketId): Long = lastSequence(marketId)
+
+    /** 완결 결과가 한도보다 크면 일부 후보도 발급하지 않는다. */
+    fun prepareSubmitBounded(
+        command: SubmitOrderCommand,
+        maxEvents: Int,
+    ): BoundedSubmitPreparation {
+        require(maxEvents > 0) { "maxEvents must be positive" }
+        return prepare(command, maxEvents)
+    }
+
+    /** 가격·FIFO 순으로 읽기만 한다. 후보를 버려도 별도 해제 작업이 필요 없다. */
+    fun prepareSubmit(command: SubmitOrderCommand): SubmitOrderPlan =
+        when (val prepared = prepare(command, Int.MAX_VALUE)) {
+            is BoundedSubmitPreparation.Prepared -> prepared.plan
+            BoundedSubmitPreparation.SequenceExhausted -> throw ArithmeticException("long overflow")
+            BoundedSubmitPreparation.TooLarge -> throw IllegalArgumentException("matching result exceeds maximum event count")
+        }
+
+    private fun prepare(
+        command: SubmitOrderCommand,
+        maxEvents: Int,
+    ): BoundedSubmitPreparation {
         validateSupportedSubmit(command)
         validateNewOrderId(command)
-        rememberOrderId(command)
-
+        val baseSequence = lastSequence(command.marketId)
+        if (baseSequence == Long.MAX_VALUE) return BoundedSubmitPreparation.SequenceExhausted
+        val fills = mutableListOf<MakerFill>()
         val events = mutableListOf<MatchingEvent>()
-        var takerRemaining = command.quantity
+        var remaining = command.quantity
 
-        while (!takerRemaining.isZero()) {
-            val maker = nextMatchableMaker(command) ?: break
-            val tradeQuantity = minOf(takerRemaining, maker.remainingQuantity)
-
-            maker.fill(tradeQuantity)
-            takerRemaining -= tradeQuantity
-
-            events += tradeExecutedEvent(
-                command = command,
-                maker = maker,
-                quantity = tradeQuantity,
-            )
-
-            if (maker.isFilled()) {
-                orderBook(command.marketId).removeFilledOrder(maker)
+        // 다음 사건의 값 객체를 만들기 전에 검사해 임시 목록도 고정 한도를 넘지 않는다.
+        fun cannotAppend(): BoundedSubmitPreparation? =
+            when {
+                baseSequence > Long.MAX_VALUE - (events.size.toLong() + 1) -> BoundedSubmitPreparation.SequenceExhausted
+                events.size == maxEvents -> BoundedSubmitPreparation.TooLarge
+                else -> null
             }
-        }
 
-        if (!takerRemaining.isZero()) {
-            val restingOrder = createRestingOrder(
-                command = command,
-                remainingQuantity = takerRemaining,
-            )
-
-            orderBook(command.marketId).addRestingOrder(restingOrder)
-
-            events += orderEnteredBookEvent(
-                order = restingOrder,
-                marketId = command.marketId,
-            )
-        }
-
-        return events
-    }
-
-    /**
-     * book에 남아 있는 주문을 취소한다.
-     */
-    private fun processCancel(command: CancelOrderCommand): List<MatchingEvent> {
-        val orderBook = orderBook(command.marketId)
-        val existingOrder = orderBook.find(command.orderId)
-
-        val event = when {
-            existingOrder == null -> OrderCancelRejected(
-                marketId = command.marketId,
-                engineSequence = nextSequence(command.marketId),
-                orderId = command.orderId,
-                userId = command.userId,
-                reason = "order not found",
-            )
-            existingOrder.userId != command.userId -> OrderCancelRejected(
-                marketId = command.marketId,
-                engineSequence = nextSequence(command.marketId),
-                orderId = command.orderId,
-                userId = command.userId,
-                reason = "order owner mismatch",
-            )
-            else -> {
-                val cancelledOrder = orderBook.cancel(command.orderId) ?: error("order disappeared while cancelling")
-
-                OrderCancelled(
-                    marketId = command.marketId,
-                    engineSequence = nextSequence(command.marketId),
-                    orderId = cancelledOrder.orderId,
-                    userId = cancelledOrder.userId,
-                    remainingQuantity = cancelledOrder.remainingQuantity,
+        // 없는 마켓을 읽을 때 getOrPut으로 빈 주문장을 만들지 않는다.
+        val makers = orderBooks[command.marketId]?.oppositeOrders(command.side) ?: emptySequence()
+        for (maker in makers) {
+            if (remaining.isZero() || !priceCrosses(command.side, command.price, maker.price)) break
+            cannotAppend()?.let { return it }
+            val quantity = minOf(remaining, maker.remainingQuantity)
+            fills +=
+                MakerFill(
+                    maker.orderId,
+                    maker.userId,
+                    maker.side,
+                    maker.price,
+                    maker.originalQuantity,
+                    maker.remainingQuantity,
+                    quantity,
                 )
+            events +=
+                TradeExecuted(
+                    command.marketId,
+                    sequenceAt(baseSequence, events.size),
+                    maker.orderId,
+                    command.orderId,
+                    maker.userId,
+                    command.userId,
+                    command.side,
+                    maker.price,
+                    quantity,
+                )
+            remaining -= quantity
+        }
+        if (!remaining.isZero()) {
+            cannotAppend()?.let { return it }
+            events +=
+                OrderEnteredBook(
+                    command.marketId,
+                    sequenceAt(baseSequence, events.size),
+                    command.orderId,
+                    command.userId,
+                    command.side,
+                    command.price,
+                    remaining,
+                )
+        }
+        return BoundedSubmitPreparation.Prepared(SubmitOrderPlan(planToken, baseSequence, command, fills, remaining, events))
+    }
+
+    /** 후보 생성이 아닌 같은 마켓의 실제 처리가 기준 상태를 전진시킨다. */
+    fun validate(plan: SubmitOrderPlan) {
+        require(plan.belongsTo(planToken)) { "matching plan belongs to another engine" }
+        val command = plan.command
+        check(lastSequence(command.marketId) == plan.baseSequence) { "matching plan is stale or already applied" }
+        validateSupportedSubmit(command)
+        validateNewOrderId(command)
+        check(plan.events.isNotEmpty()) { "matching plan must contain an event" }
+        check(plan.lastEngineSequence == Math.addExact(plan.baseSequence, plan.events.size.toLong())) { "invalid plan sequence range" }
+
+        val book = orderBooks[command.marketId]
+        val makerCursor = (book?.oppositeOrders(command.side) ?: emptySequence()).iterator()
+        var filled = 0L
+        val makers = if (plan.fills.size > 1) hashSetOf<OrderId>() else null
+        plan.fills.forEachIndexed { index, fill ->
+            check(makerCursor.hasNext()) { "matching plan maker is missing" }
+            val maker = makerCursor.next()
+            check(fill.matches(maker)) { "matching plan maker or price/FIFO position changed" }
+            check(book?.find(fill.orderId) === maker) { "matching plan maker index changed" }
+            check((makers == null || makers.add(fill.orderId)) && fill.orderId != command.orderId) { "invalid matching plan maker" }
+            check(
+                fill.side != command.side && priceCrosses(command.side, command.price, fill.price),
+            ) { "invalid matching plan price or side" }
+            check(fill.filledQuantity.value > 0 && fill.filledQuantity <= fill.remainingQuantity) { "invalid matching plan fill quantity" }
+            filled = Math.addExact(filled, fill.filledQuantity.value)
+            val event = plan.events[index]
+            check(
+                event is TradeExecuted && event.marketId == command.marketId &&
+                    event.engineSequence == sequenceAt(plan.baseSequence, index) &&
+                    event.makerOrderId == fill.orderId && event.takerOrderId == command.orderId &&
+                    event.makerUserId == fill.userId && event.takerUserId == command.userId &&
+                    event.side == command.side && event.price == fill.price && event.quantity == fill.filledQuantity,
+            ) { "matching plan event does not match maker change" }
+        }
+        check(Math.addExact(filled, plan.restingQuantity.value) == command.quantity.value) { "matching plan quantity is not conserved" }
+        val hasResting = !plan.restingQuantity.isZero()
+        check(plan.events.size == plan.fills.size + if (hasResting) 1 else 0) { "invalid matching plan event count" }
+        if (hasResting) {
+            if (makerCursor.hasNext()) {
+                check(!priceCrosses(command.side, command.price, makerCursor.next().price)) { "matching plan leaves a matchable maker" }
             }
+            val event = plan.events.last()
+            check(
+                event is OrderEnteredBook && event.marketId == command.marketId &&
+                    event.engineSequence == sequenceAt(plan.baseSequence, plan.fills.size) &&
+                    event.orderId == command.orderId && event.userId == command.userId &&
+                    event.side == command.side && event.price == command.price && event.remainingQuantity == plan.restingQuantity,
+            ) { "matching plan resting event does not match remaining quantity" }
         }
-
-        return listOf(event)
     }
 
-    /**
-     * Phase 1에서 지원하는 submit command인지 확인한다.
-     *
-     * 지금은 LIMIT + GTC만 처리한다.
-     */
+    /** 전체 검증 뒤에만 쓴다. 예상 밖 JVM 오류의 SQL식 원상복구를 제공하지 않는다. */
+    fun apply(plan: SubmitOrderPlan): List<MatchingEvent> {
+        validate(plan)
+        val command = plan.command
+        val restingOrder =
+            if (plan.restingQuantity.isZero()) {
+                null
+            } else {
+                BookOrder(command.orderId, command.userId, command.side, command.price, command.quantity, plan.restingQuantity)
+            }
+        val book = orderBook(command.marketId)
+        seenOrderIds.getOrPut(command.marketId) { HashSet() }.add(command.orderId)
+        for (fill in plan.fills) {
+            val maker = checkNotNull(book.find(fill.orderId))
+            maker.fill(fill.filledQuantity)
+            if (maker.isFilled()) book.removeFilledOrder(maker)
+        }
+        if (restingOrder != null) book.addRestingOrder(restingOrder)
+        lastEngineSequences[command.marketId] = plan.lastEngineSequence
+        return plan.events
+    }
+
+    fun prepareCancel(command: CancelOrderCommand): CancelOrderPlan {
+        // 순번이 부족하면 빈 book 생성이나 주문 삭제보다 먼저 실패한다.
+        val before = lastSequence(command.marketId)
+        val sequence = Math.addExact(before, 1L)
+        val existing = orderBooks[command.marketId]?.find(command.orderId)
+        val event =
+            when {
+                existing == null -> {
+                    OrderCancelRejected(command.marketId, sequence, command.orderId, command.userId, "order not found")
+                }
+
+                existing.userId != command.userId -> {
+                    OrderCancelRejected(command.marketId, sequence, command.orderId, command.userId, "order owner mismatch")
+                }
+
+                else -> {
+                    OrderCancelled(command.marketId, sequence, existing.orderId, existing.userId, existing.remainingQuantity)
+                }
+            }
+        return CancelOrderPlan(planToken, before, command, event)
+    }
+
+    /** 준비 뒤 같은 마켓이 전진했거나 다른 엔진에서 발급한 후보는 적용하지 않는다. */
+    fun validate(plan: CancelOrderPlan) {
+        require(plan.belongsTo(planToken)) { "matching plan belongs to another engine" }
+        check(lastSequence(plan.command.marketId) == plan.baseSequence) { "matching plan is stale or already applied" }
+    }
+
+    fun apply(plan: CancelOrderPlan): List<MatchingEvent> {
+        validate(plan)
+        if (plan.event is OrderCancelled) {
+            checkNotNull(orderBooks[plan.command.marketId]?.cancel(plan.command.orderId)) { "order disappeared while cancelling" }
+        }
+        lastEngineSequences[plan.command.marketId] = plan.lastEngineSequence
+        return plan.events
+    }
+
     private fun validateSupportedSubmit(command: SubmitOrderCommand) {
-        require(command.orderType == OrderType.LIMIT) {
-            "only LIMIT order is supported"
-        }
-
-        require(command.timeInForce == TimeInForce.GTC) {
-            "only GTC order is supported"
-        }
+        require(command.orderType == OrderType.LIMIT) { "only LIMIT order is supported" }
+        require(command.timeInForce == TimeInForce.GTC) { "only GTC order is supported" }
     }
 
-    /**
-     * 같은 마켓에서 이미 처리한 orderId는 다시 등록할 수 없다.
-     *
-     * 중복 orderId를 허용하면 retry나 중복 요청이 별도 주문처럼 체결될 수 있다.
-     */
     private fun validateNewOrderId(command: SubmitOrderCommand) {
-        require(command.orderId !in seenOrderIds.getOrDefault(command.marketId, emptySet())) {
-            "order already exists"
-        }
+        require(command.orderId !in seenOrderIds.getOrDefault(command.marketId, emptySet())) { "order already exists" }
     }
 
-    private fun rememberOrderId(command: SubmitOrderCommand) {
-        seenOrderIds.getOrPut(command.marketId) {
-            HashSet()
-        }.add(command.orderId)
-    }
-
-    /**
-     * 현재 taker 주문과 체결 가능한 다음 maker 주문을 찾는다.
-     *
-     * BUY taker는 가장 낮은 ask level에서,
-     * SELL taker는 가장 높은 bid level에서 maker를 찾는다.
-     *
-     * 반대편 book이 비었거나 가격이 crossing 되지 않으면 null을 반환한다.
-     */
-    private fun nextMatchableMaker(command: SubmitOrderCommand): BookOrder? {
-        val orderBook = orderBook(command.marketId)
-        val bestLevel = when (command.side) {
-            Side.BUY -> orderBook.bestAskLevel()
-            Side.SELL -> orderBook.bestBidLevel()
-        } ?: return null
-
-        val maker = bestLevel.firstOrder() ?: return null
-
-        return if (priceCrosses(command.side, command.price, maker.price)) {
-            maker
-        } else {
-            null
-        }
-    }
-
-    /**
-     * 체결 event를 만든다.
-     *
-     * 체결 가격은 항상 maker 가격이고,
-     * side는 새로 들어온 taker 주문 기준이다.
-     */
-    private fun tradeExecutedEvent(
-        command: SubmitOrderCommand,
-        maker: BookOrder,
-        quantity: Quantity,
-    ): TradeExecuted =
-        TradeExecuted(
-            marketId = command.marketId,
-            engineSequence = nextSequence(command.marketId),
-            makerOrderId = maker.orderId,
-            takerOrderId = command.orderId,
-            makerUserId = maker.userId,
-            takerUserId = command.userId,
-            side = command.side,
-            price = maker.price,
-            quantity = quantity,
-        )
-
-    /**
-     * book에 남길 내부 주문 상태를 만든다.
-     */
-    private fun createRestingOrder(
-        command: SubmitOrderCommand,
-        remainingQuantity: Quantity,
-    ): BookOrder =
-        BookOrder(
-            orderId = command.orderId,
-            userId = command.userId,
-            side = command.side,
-            price = command.price,
-            originalQuantity = command.quantity,
-            remainingQuantity = remainingQuantity,
-        )
-
-    /**
-     * 주문 잔량이 book에 들어갔다는 event를 만든다.
-     */
-    private fun orderEnteredBookEvent(
-        order: BookOrder,
-        marketId: MarketId,
-    ): OrderEnteredBook =
-        OrderEnteredBook(
-            marketId = marketId,
-            engineSequence = nextSequence(marketId),
-            orderId = order.orderId,
-            userId = order.userId,
-            side = order.side,
-            price = order.price,
-            remainingQuantity = order.remainingQuantity,
-        )
-
-    /**
-     * taker 주문 가격이 maker 주문 가격과 체결 가능한지 확인한다.
-     *
-     * BUY taker는 maker ask 가격이 자기 가격 이하이면 체결 가능하고,
-     * SELL taker는 maker bid 가격이 자기 가격 이상이면 체결 가능하다.
-     */
     private fun priceCrosses(
-        takerSide: Side,
-        takerPrice: Price,
-        makerPrice: Price,
+        side: Side,
+        limit: Price,
+        maker: Price,
     ): Boolean =
-        when (takerSide) {
-            Side.BUY -> makerPrice <= takerPrice
-            Side.SELL -> makerPrice >= takerPrice
+        when (side) {
+            Side.BUY -> maker <= limit
+            Side.SELL -> maker >= limit
         }
 
-    private fun orderBook(marketId: MarketId): OrderBook =
-        orderBooks.getOrPut(marketId) {
-            OrderBook()
-        }
+    private fun orderBook(marketId: MarketId): OrderBook = orderBooks.getOrPut(marketId) { OrderBook() }
 
-    private fun nextSequence(marketId: MarketId): Long {
-        val nextSequence = nextEngineSequences.getOrDefault(marketId, 1L)
-        nextEngineSequences[marketId] = nextSequence + 1
-        return nextSequence
-    }
+    private fun lastSequence(marketId: MarketId): Long = lastEngineSequences[marketId] ?: 0L
+
+    private fun sequenceAt(
+        last: Long,
+        eventIndex: Int,
+    ): Long = Math.addExact(last, eventIndex.toLong() + 1)
 }

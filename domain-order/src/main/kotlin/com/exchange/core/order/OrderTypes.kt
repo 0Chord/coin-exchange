@@ -7,7 +7,10 @@ package com.exchange.core.order
  * SELL은 ask book에 남거나 bid book과 체결된다.
  */
 enum class Side {
+    /** quote 자산을 지불하고 base 자산을 사는 주문. */
     BUY,
+
+    /** base 자산을 팔고 quote 자산을 받는 주문. */
     SELL,
 }
 
@@ -49,9 +52,18 @@ enum class TimeInForce {
  * 매칭 엔진 내부 결과와 나중에 붙을 API/저장소에서 같은 용어를 쓰기 위한 값이다.
  */
 enum class OrderStatus {
+    /** 주문이 유효성 검사를 통과해 접수된 상태. */
     ACCEPTED,
+
+    /** 주문 수량의 일부만 체결되고 미체결 수량이 남은 상태. */
     PARTIALLY_FILLED,
+
+    /** 주문 수량이 전부 체결된 상태. */
     FILLED,
+
+    /** 주문이 취소되어 더 이상 체결되지 않는 상태. */
     CANCELLED,
+
+    /** 주문이 유효성 검사나 처리 조건을 통과하지 못한 상태. */
     REJECTED,
 }

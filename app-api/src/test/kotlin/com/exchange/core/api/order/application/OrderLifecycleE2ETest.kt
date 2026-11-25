@@ -1,0 +1,858 @@
+package com.exchange.core.api.order.application
+
+import com.exchange.core.common.Amount
+import com.exchange.core.common.AssetId
+import com.exchange.core.common.OrderId
+import com.exchange.core.common.Quantity
+import com.exchange.core.common.UserId
+import com.exchange.core.order.MarketDefinition
+import com.exchange.core.order.OrderReservation
+import com.exchange.core.order.OrderReservationStatus
+import com.exchange.core.order.OrderReservationStore
+import com.exchange.core.order.Side
+import com.exchange.core.support.ExchangeIntegrationTest
+import jakarta.servlet.ServletException
+import org.junit.jupiter.api.BeforeEach
+import org.springframework.beans.factory.annotation.Autowired
+import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc
+import org.springframework.dao.DataIntegrityViolationException
+import org.springframework.http.MediaType
+import org.springframework.jdbc.core.JdbcTemplate
+import org.springframework.test.web.servlet.MockMvc
+import org.springframework.test.web.servlet.ResultActions
+import org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete
+import org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post
+import org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath
+import org.springframework.test.web.servlet.result.MockMvcResultMatchers.status
+import kotlin.test.Test
+import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
+import kotlin.test.assertTrue
+
+/**
+ * LIMIT/GTC 주문의 HTTP 접수부터 자금 예약, 매칭, 이벤트 저장, 정산과 수수료 원장까지 검증한다.
+ *
+ * 서비스 대역 없이 MockMvc와 실제 PostgreSQL을 사용한다. 전량 체결, 미체결 BUY·SELL 취소와
+ * BUY 부분 체결 후 취소를 검증하며, 장애 복구·재시도는 포함하지 않는다. 초기 잔고는 원장 없이 준비하므로
+ * 체결 원장의 차변·대변 균형 검증이 전체 잔고 대사를 의미하지는 않는다.
+ * [ExchangeIntegrationTest]가 각 테스트 뒤 DB와 메모리 주문장을 함께 초기화한다.
+ */
+@AutoConfigureMockMvc
+class OrderLifecycleE2ETest : ExchangeIntegrationTest() {
+    @Autowired
+    private lateinit var mockMvc: MockMvc
+
+    @Autowired
+    private lateinit var jdbcTemplate: JdbcTemplate
+
+    @Autowired
+    private lateinit var reservationStore: OrderReservationStore
+
+    @Autowired
+    private lateinit var market: MarketDefinition
+
+    private val btcAssetId: AssetId
+        get() = market.baseAssetId
+
+    private val krwAssetId: AssetId
+        get() = market.quoteAssetId
+
+    /**
+     * 공통 환경이 테스트마다 새로 만든 DB에 구매자 KRW 1,000,000원과 판매자 BTC 10개를 준비한다.
+     * 반대편 자산을 지급할 수 있도록 구매자 BTC와 판매자 KRW의 빈 잔고 행도 만든다.
+     */
+    @BeforeEach
+    fun setUp() {
+        insertBalance(
+            userId = BUYER_USER_ID,
+            assetId = krwAssetId,
+            available = 1_000_000,
+            hold = 0,
+        )
+
+        insertBalance(
+            userId = BUYER_USER_ID,
+            assetId = btcAssetId,
+            available = 0,
+            hold = 0,
+        )
+
+        insertBalance(
+            userId = SELLER_USER_ID,
+            assetId = btcAssetId,
+            available = 10,
+            hold = 0,
+        )
+
+        insertBalance(
+            userId = SELLER_USER_ID,
+            assetId = krwAssetId,
+            available = 0,
+            hold = 0,
+        )
+    }
+
+    /**
+     * 90,000원 SELL 수량 2개를 먼저 대기시킨 뒤 100,000원 BUY 수량 2개로 전량 체결한다.
+     * 체결 대금 180,000원, 구매자 수수료 1,800원, 판매자 수수료 900원을 반영하고
+     * 양쪽 예약 종료, 잔고 이동과 거래소 수수료 수익 2,700원을 확인한다.
+     */
+    @Test
+    fun `SELL 주문과 BUY 주문이 체결되면 양쪽 예약과 잔고가 정산된다`() {
+        submitOrder(
+            orderId = SELLER_ORDER_ID.value,
+            userId = SELLER_USER_ID,
+            side = Side.SELL,
+            price = 90_000,
+            quantity = 2,
+        ).andExpect(status().isOk)
+            .andExpect(
+                jsonPath("$.events[0].type")
+                    .value("ORDER_ENTERED_BOOK"),
+            ).andExpect(
+                jsonPath("$.events[0].orderId")
+                    .value(SELLER_ORDER_ID.value),
+            )
+
+        assertPersistedBalance(
+            userId = SELLER_USER_ID,
+            assetId = btcAssetId,
+            available = 8,
+            hold = 2,
+        )
+
+        val activeSellerReservation =
+            findReservation(SELLER_ORDER_ID)
+
+        assertEquals(
+            OrderReservationStatus.ACTIVE,
+            activeSellerReservation.status,
+        )
+        assertEquals(
+            Amount(2),
+            activeSellerReservation.remainingAmount,
+        )
+        assertEquals(
+            Amount.ZERO,
+            activeSellerReservation.remainingFeeReserveAmount,
+        )
+
+        submitOrder(
+            orderId = BUYER_ORDER_ID.value,
+            userId = BUYER_USER_ID,
+            side = Side.BUY,
+            price = 100_000,
+            quantity = 2,
+        ).andExpect(status().isOk)
+            .andExpect(
+                jsonPath("$.events[0].type")
+                    .value("TRADE_EXECUTED"),
+            ).andExpect(
+                jsonPath("$.events[0].makerOrderId")
+                    .value(SELLER_ORDER_ID.value),
+            ).andExpect(
+                jsonPath("$.events[0].takerOrderId")
+                    .value(BUYER_ORDER_ID.value),
+            ).andExpect(
+                jsonPath("$.events[0].price")
+                    .value(90_000),
+            ).andExpect(
+                jsonPath("$.events[0].quantity")
+                    .value(2),
+            )
+
+        val settledBuyerReservation =
+            findReservation(BUYER_ORDER_ID)
+
+        val settledSellerReservation =
+            findReservation(SELLER_ORDER_ID)
+
+        assertEquals(
+            OrderReservationStatus.SETTLED,
+            settledBuyerReservation.status,
+        )
+        assertEquals(
+            Amount.ZERO,
+            settledBuyerReservation.remainingAmount,
+        )
+        assertEquals(
+            Amount.ZERO,
+            settledBuyerReservation.remainingFeeReserveAmount,
+        )
+
+        assertEquals(
+            OrderReservationStatus.SETTLED,
+            settledSellerReservation.status,
+        )
+        assertEquals(
+            Amount.ZERO,
+            settledSellerReservation.remainingAmount,
+        )
+        assertEquals(
+            Amount.ZERO,
+            settledSellerReservation.remainingFeeReserveAmount,
+        )
+
+        assertPersistedBalance(
+            userId = BUYER_USER_ID,
+            assetId = krwAssetId,
+            available = 818_200,
+            hold = 0,
+        )
+
+        assertPersistedBalance(
+            userId = BUYER_USER_ID,
+            assetId = btcAssetId,
+            available = 2,
+            hold = 0,
+        )
+
+        assertPersistedBalance(
+            userId = SELLER_USER_ID,
+            assetId = btcAssetId,
+            available = 8,
+            hold = 0,
+        )
+
+        assertPersistedBalance(
+            userId = SELLER_USER_ID,
+            assetId = krwAssetId,
+            available = 179_100,
+            hold = 0,
+        )
+
+        val matchingEventCount =
+            requireNotNull(
+                jdbcTemplate.queryForObject(
+                    """
+                    select count(*)
+                    from matching_events
+                    where market_id = ?
+                    """.trimIndent(),
+                    Long::class.java,
+                    market.marketId.value,
+                ),
+            )
+
+        assertEquals(
+            2L,
+            matchingEventCount,
+        )
+
+        assertPersistedFeeRevenue(
+            expectedAmount = 2_700L,
+        )
+
+        assertLedgerTransactionsBalanced()
+        assertReservePostings(BUYER_USER_ID, krwAssetId, 202_000)
+        assertReservePostings(SELLER_USER_ID, btcAssetId, 2)
+    }
+
+    /**
+     * 지정가 100,000원 BUY 3개 중 90,000원에 1개 체결하고 남은 2개를 취소한다.
+     * 부분 체결에서 가격 개선분·미사용 수수료 10,100원을 이미 반환하므로,
+     * 취소로 반환할 금액은 남은 거래 200,000원과 수수료 2,000원뿐이다.
+     * 이미 체결한 BTC·판매자 정산·원장은 취소로 되돌리거나 다시 반영하지 않는다.
+     */
+    @Test
+    fun `BUY 3개 중 1개 체결 뒤 남은 2개를 취소하면 체결 결과는 유지하고 잔여 예약금만 반환한다`() {
+        submitOrder(
+            orderId = SELLER_ORDER_ID.value,
+            userId = SELLER_USER_ID,
+            side = Side.SELL,
+            price = 90_000,
+            quantity = 1,
+        ).andExpect(status().isOk)
+            .andExpect(jsonPath("$.events.length()").value(1))
+            .andExpect(jsonPath("$.events[0].type").value("ORDER_ENTERED_BOOK"))
+            .andExpect(jsonPath("$.events[0].orderId").value(SELLER_ORDER_ID.value))
+            .andExpect(jsonPath("$.events[0].remainingQuantity").value(1))
+
+        submitOrder(
+            orderId = BUYER_ORDER_ID.value,
+            userId = BUYER_USER_ID,
+            side = Side.BUY,
+            price = 100_000,
+            quantity = 3,
+        ).andExpect(status().isOk)
+            .andExpect(jsonPath("$.events.length()").value(2))
+            .andExpect(jsonPath("$.events[0].type").value("TRADE_EXECUTED"))
+            .andExpect(jsonPath("$.events[0].makerOrderId").value(SELLER_ORDER_ID.value))
+            .andExpect(jsonPath("$.events[0].takerOrderId").value(BUYER_ORDER_ID.value))
+            .andExpect(jsonPath("$.events[0].price").value(90_000))
+            .andExpect(jsonPath("$.events[0].quantity").value(1))
+            .andExpect(jsonPath("$.events[1].type").value("ORDER_ENTERED_BOOK"))
+            .andExpect(jsonPath("$.events[1].orderId").value(BUYER_ORDER_ID.value))
+            .andExpect(jsonPath("$.events[1].remainingQuantity").value(2))
+
+        val partialBuyerReservation = findReservation(BUYER_ORDER_ID)
+        assertEquals(OrderReservationStatus.ACTIVE, partialBuyerReservation.status)
+        assertEquals(Quantity(3), partialBuyerReservation.initialQuantity)
+        assertEquals(Quantity(2), partialBuyerReservation.remainingQuantity)
+        assertEquals(Amount(303_000), partialBuyerReservation.reservedAmount)
+        assertEquals(Amount(3_000), partialBuyerReservation.initialFeeReserveAmount)
+        assertEquals(Amount(202_000), partialBuyerReservation.remainingAmount)
+        assertEquals(Amount(2_000), partialBuyerReservation.remainingFeeReserveAmount)
+
+        val settledSellerReservation = findReservation(SELLER_ORDER_ID)
+        assertEquals(OrderReservationStatus.SETTLED, settledSellerReservation.status)
+        assertEquals(Quantity.ZERO, settledSellerReservation.remainingQuantity)
+        assertEquals(Amount.ZERO, settledSellerReservation.remainingAmount)
+        assertEquals(Amount.ZERO, settledSellerReservation.remainingFeeReserveAmount)
+
+        assertPersistedBalance(BUYER_USER_ID, krwAssetId, available = 707_100, hold = 202_000)
+        assertPersistedBalance(BUYER_USER_ID, btcAssetId, available = 1, hold = 0)
+        assertPersistedBalance(SELLER_USER_ID, btcAssetId, available = 9, hold = 0)
+        assertPersistedBalance(SELLER_USER_ID, krwAssetId, available = 89_550, hold = 0)
+        assertPersistedFeeRevenue(expectedAmount = 1_350L)
+        assertLedgerTransactionsBalanced()
+
+        val settledTransactions =
+            jdbcTemplate.queryForList(
+                "select * from ledger_transactions order by ledger_transaction_id",
+            )
+        val settledPostings =
+            jdbcTemplate.queryForList(
+                "select * from ledger_postings order by ledger_transaction_id, posting_sequence",
+            )
+        val settlementTransactions = settledTransactions.filter { it["transaction_type"] == "SETTLEMENT" }
+        assertEquals(1, settlementTransactions.size)
+        assertReservePostings(BUYER_USER_ID, krwAssetId, 303_000)
+        assertReservePostings(SELLER_USER_ID, btcAssetId, 1)
+
+        mockMvc
+            .perform(
+                delete(
+                    "/api/markets/{marketId}/orders/{orderId}",
+                    market.marketId.value,
+                    BUYER_ORDER_ID.value,
+                ).param("userId", BUYER_USER_ID.value),
+            ).andExpect(status().isOk)
+            .andExpect(jsonPath("$.events.length()").value(1))
+            .andExpect(jsonPath("$.events[0].type").value("ORDER_CANCELLED"))
+            .andExpect(jsonPath("$.events[0].orderId").value(BUYER_ORDER_ID.value))
+            .andExpect(jsonPath("$.events[0].remainingQuantity").value(2))
+
+        assertEquals(
+            partialBuyerReservation.copy(
+                remainingAmount = Amount.ZERO,
+                remainingFeeReserveAmount = Amount.ZERO,
+                status = OrderReservationStatus.RELEASED,
+                releasedAmount = Amount(202_000),
+            ),
+            findReservation(BUYER_ORDER_ID),
+        )
+        assertEquals(settledSellerReservation, findReservation(SELLER_ORDER_ID))
+        assertPersistedBalance(BUYER_USER_ID, krwAssetId, available = 909_100, hold = 0)
+        assertPersistedBalance(BUYER_USER_ID, btcAssetId, available = 1, hold = 0)
+        assertPersistedBalance(SELLER_USER_ID, btcAssetId, available = 9, hold = 0)
+        assertPersistedBalance(SELLER_USER_ID, krwAssetId, available = 89_550, hold = 0)
+        assertPersistedFeeRevenue(expectedAmount = 1_350L)
+
+        assertEquals(
+            settledTransactions,
+            jdbcTemplate.queryForList(
+                "select * from ledger_transactions where transaction_type <> 'RELEASE' order by ledger_transaction_id",
+            ),
+        )
+        assertReleasePostings(BUYER_USER_ID, krwAssetId, 202_000)
+        assertEquals(
+            settledPostings,
+            jdbcTemplate.queryForList(
+                """
+                select p.* from ledger_postings p
+                join ledger_transactions t on t.ledger_transaction_id = p.ledger_transaction_id
+                where t.transaction_type <> 'RELEASE'
+                order by p.ledger_transaction_id, p.posting_sequence
+                """.trimIndent(),
+            ),
+        )
+        assertEquals(
+            listOf("ORDER_ENTERED_BOOK", "TRADE_EXECUTED", "ORDER_ENTERED_BOOK", "ORDER_CANCELLED"),
+            jdbcTemplate.queryForList(
+                "select event_type from matching_events where market_id = ? order by engine_sequence",
+                String::class.java,
+                market.marketId.value,
+            ),
+        )
+    }
+
+    /**
+     * 100,000원 BUY 수량 2개에 예약한 거래 대금 200,000원과 수수료 2,000원을
+     * 취소 시 모두 반환한다. 체결되지 않았으므로 거래소 수수료 수익은 발생하지 않는다.
+     */
+    @Test
+    fun `미체결 BUY 주문을 취소하면 거래 대금과 수수료 예약금을 모두 반환한다`() {
+        val orderId = OrderId("e2e-cancel-buy-order")
+
+        submitOrder(
+            orderId = orderId.value,
+            userId = BUYER_USER_ID,
+            side = Side.BUY,
+            price = 100_000,
+            quantity = 2,
+        ).andExpect(status().isOk)
+            .andExpect(
+                jsonPath("$.events[0].type")
+                    .value("ORDER_ENTERED_BOOK"),
+            )
+
+        val activeReservation = findReservation(orderId)
+
+        assertEquals(
+            OrderReservationStatus.ACTIVE,
+            activeReservation.status,
+        )
+        assertEquals(
+            Amount(202_000),
+            activeReservation.remainingAmount,
+        )
+        assertEquals(
+            Amount(2_000),
+            activeReservation.remainingFeeReserveAmount,
+        )
+
+        assertPersistedBalance(
+            userId = BUYER_USER_ID,
+            assetId = krwAssetId,
+            available = 798_000,
+            hold = 202_000,
+        )
+
+        mockMvc
+            .perform(
+                delete(
+                    "/api/markets/{marketId}/orders/{orderId}",
+                    market.marketId.value,
+                    orderId.value,
+                ).param("userId", BUYER_USER_ID.value),
+            ).andExpect(status().isOk)
+            .andExpect(
+                jsonPath("$.events[0].type")
+                    .value("ORDER_CANCELLED"),
+            ).andExpect(
+                jsonPath("$.events[0].orderId")
+                    .value(orderId.value),
+            )
+
+        val releasedReservation = findReservation(orderId)
+        assertEquals(Amount(202_000), releasedReservation.releasedAmount)
+        assertEquals(activeReservation.feeRemainder, releasedReservation.feeRemainder)
+        assertReleasePostings(BUYER_USER_ID, krwAssetId, 202_000)
+
+        assertEquals(
+            OrderReservationStatus.RELEASED,
+            releasedReservation.status,
+        )
+        assertEquals(
+            Amount.ZERO,
+            releasedReservation.remainingAmount,
+        )
+        assertEquals(
+            Amount.ZERO,
+            releasedReservation.remainingFeeReserveAmount,
+        )
+
+        assertEquals(
+            Quantity(2),
+            releasedReservation.remainingQuantity,
+        )
+
+        assertPersistedBalance(
+            userId = BUYER_USER_ID,
+            assetId = krwAssetId,
+            available = 1_000_000,
+            hold = 0,
+        )
+
+        assertPersistedFeeRevenue(
+            expectedAmount = 0L,
+        )
+    }
+
+    /**
+     * 미체결 SELL 주문에 예약한 BTC를 모두 반환한다.
+     * 체결되지 않았으므로 KRW 지급이나 수수료 수익은 발생하지 않는다.
+     */
+    @Test
+    fun `미체결 SELL 주문을 취소하면 예약한 BTC를 모두 반환한다`() {
+        val orderId = OrderId("e2e-cancel-sell-order")
+
+        submitOrder(
+            orderId = orderId.value,
+            userId = SELLER_USER_ID,
+            side = Side.SELL,
+            price = 90_000,
+            quantity = 2,
+        ).andExpect(status().isOk)
+            .andExpect(
+                jsonPath("$.events[0].type")
+                    .value("ORDER_ENTERED_BOOK"),
+            )
+
+        val activeReservation = findReservation(orderId)
+
+        assertEquals(
+            OrderReservationStatus.ACTIVE,
+            activeReservation.status,
+        )
+        assertEquals(btcAssetId, activeReservation.assetId)
+        assertEquals(Amount(2), activeReservation.remainingAmount)
+        assertEquals(
+            Amount.ZERO,
+            activeReservation.remainingFeeReserveAmount,
+        )
+
+        assertPersistedBalance(
+            userId = SELLER_USER_ID,
+            assetId = btcAssetId,
+            available = 8,
+            hold = 2,
+        )
+
+        mockMvc
+            .perform(
+                delete(
+                    "/api/markets/{marketId}/orders/{orderId}",
+                    market.marketId.value,
+                    orderId.value,
+                ).param("userId", SELLER_USER_ID.value),
+            ).andExpect(status().isOk)
+            .andExpect(
+                jsonPath("$.events[0].type")
+                    .value("ORDER_CANCELLED"),
+            ).andExpect(
+                jsonPath("$.events[0].orderId")
+                    .value(orderId.value),
+            ).andExpect(
+                jsonPath("$.events[0].remainingQuantity")
+                    .value(2),
+            )
+
+        val releasedReservation = findReservation(orderId)
+        assertEquals(Amount(2), releasedReservation.releasedAmount)
+        assertReleasePostings(SELLER_USER_ID, btcAssetId, 2)
+
+        assertEquals(
+            OrderReservationStatus.RELEASED,
+            releasedReservation.status,
+        )
+        assertEquals(Amount.ZERO, releasedReservation.remainingAmount)
+        assertEquals(
+            Amount.ZERO,
+            releasedReservation.remainingFeeReserveAmount,
+        )
+        assertEquals(Quantity(2), releasedReservation.remainingQuantity)
+
+        assertPersistedBalance(
+            userId = SELLER_USER_ID,
+            assetId = btcAssetId,
+            available = 10,
+            hold = 0,
+        )
+        assertPersistedBalance(
+            userId = SELLER_USER_ID,
+            assetId = krwAssetId,
+            available = 0,
+            hold = 0,
+        )
+        assertPersistedFeeRevenue(expectedAmount = 0L)
+    }
+
+    @Test
+    fun `취소 이벤트 저장 뒤 반환 SQL 실패는 자금만 롤백하고 마켓 다음 명령을 차단한다`() {
+        val orderId = OrderId("cancel-write-failure")
+        submitOrder(orderId.value, BUYER_USER_ID, Side.BUY, 100_000, 2).andExpect(status().isOk)
+        val before = cancellationDatabaseState()
+        jdbcTemplate.execute(
+            "alter table ledger_transactions add constraint issue73_http_failure check (transaction_type <> 'RELEASE') not valid",
+        )
+        try {
+            val error =
+                assertFailsWith<ServletException> {
+                    mockMvc.perform(
+                        delete(
+                            "/api/markets/{marketId}/orders/{orderId}",
+                            market.marketId.value,
+                            orderId.value,
+                        ).param("userId", BUYER_USER_ID.value),
+                    )
+                }
+            assertTrue(generateSequence<Throwable>(error) { it.cause }.any { it is DataIntegrityViolationException })
+            assertEquals(before, cancellationDatabaseState())
+            assertEquals(
+                listOf("ORDER_ENTERED_BOOK", "ORDER_CANCELLED"),
+                jdbcTemplate.queryForList(
+                    "select event_type from matching_events order by engine_sequence",
+                    String::class.java,
+                ),
+            )
+            val events = jdbcTemplate.queryForList("select * from matching_events order by engine_sequence")
+            val subsequent =
+                assertFailsWith<ServletException> {
+                    submitOrder("after-cancel-failure", BUYER_USER_ID, Side.BUY, 100_000, 1)
+                }
+            assertTrue(generateSequence<Throwable>(subsequent) { it.cause }.any { it.message.orEmpty().contains("unavailable") })
+            assertEquals(events, jdbcTemplate.queryForList("select * from matching_events order by engine_sequence"))
+            assertEquals(before, cancellationDatabaseState())
+        } finally {
+            jdbcTemplate.execute("alter table ledger_transactions drop constraint issue73_http_failure")
+        }
+    }
+
+    @Test
+    fun `다른 사람과 없는 주문의 취소 거절은 반환 원장과 자금을 변경하지 않는다`() {
+        val orderId = OrderId("cancel-owner-boundary")
+        submitOrder(orderId.value, BUYER_USER_ID, Side.BUY, 100_000, 2).andExpect(status().isOk)
+        val before = cancellationDatabaseState()
+        for ((id, user) in listOf(orderId.value to SELLER_USER_ID, "missing-order" to BUYER_USER_ID)) {
+            mockMvc
+                .perform(delete("/api/markets/{marketId}/orders/{orderId}", market.marketId.value, id).param("userId", user.value))
+                .andExpect(status().isOk)
+                .andExpect(jsonPath("$.events[0].type").value("ORDER_CANCEL_REJECTED"))
+            assertEquals(before, cancellationDatabaseState())
+        }
+        assertEquals(
+            0L,
+            jdbcTemplate.queryForObject("select count(*) from ledger_transactions where transaction_type = 'RELEASE'", Long::class.java),
+        )
+    }
+
+    private fun cancellationDatabaseState(): List<List<Map<String, Any?>>> =
+        listOf(
+            jdbcTemplate.queryForList("select * from order_reservations order by market_id, order_id"),
+            jdbcTemplate.queryForList("select * from balance_projection order by user_id, asset_id"),
+            jdbcTemplate.queryForList("select * from ledger_transactions order by source_event_id"),
+            jdbcTemplate.queryForList("select * from ledger_postings order by posting_id"),
+        )
+
+    private fun assertReleasePostings(
+        userId: UserId,
+        assetId: AssetId,
+        amount: Long,
+    ) {
+        val rows =
+            jdbcTemplate.queryForList(
+                """
+                select p.account_id, p.asset_id, p.side, p.amount from ledger_postings p
+                join ledger_transactions t on t.ledger_transaction_id = p.ledger_transaction_id
+                where t.transaction_type = 'RELEASE' and p.account_id in (?, ?) order by p.posting_sequence
+                """.trimIndent(),
+                "USER:${userId.value}:${assetId.value}:HOLD",
+                "USER:${userId.value}:${assetId.value}:AVAILABLE",
+            )
+        assertEquals(
+            listOf(
+                mapOf(
+                    "account_id" to "USER:${userId.value}:${assetId.value}:HOLD",
+                    "asset_id" to assetId.value,
+                    "side" to "DEBIT",
+                    "amount" to amount,
+                ),
+                mapOf(
+                    "account_id" to "USER:${userId.value}:${assetId.value}:AVAILABLE",
+                    "asset_id" to assetId.value,
+                    "side" to "CREDIT",
+                    "amount" to amount,
+                ),
+            ),
+            rows,
+        )
+        assertLedgerTransactionsBalanced()
+    }
+
+    /** RESERVE를 SETTLEMENT와 분리해 계정·자산·방향·금액을 확인한다. */
+    private fun assertReservePostings(
+        userId: UserId,
+        assetId: AssetId,
+        amount: Long,
+    ) {
+        val postings =
+            jdbcTemplate.queryForList(
+                """
+                select p.account_id, p.asset_id, p.side, p.amount
+                from ledger_postings p
+                join ledger_transactions t on t.ledger_transaction_id = p.ledger_transaction_id
+                where t.transaction_type = 'RESERVE' and p.account_id in (?, ?)
+                order by p.posting_sequence
+                """.trimIndent(),
+                "USER:${userId.value}:${assetId.value}:AVAILABLE",
+                "USER:${userId.value}:${assetId.value}:HOLD",
+            )
+        assertEquals(2, postings.size)
+        assertEquals(listOf("DEBIT", "CREDIT"), postings.map { it["side"] })
+        assertEquals(listOf(assetId.value, assetId.value), postings.map { it["asset_id"] })
+        assertEquals(listOf(amount, amount), postings.map { (it["amount"] as Number).toLong() })
+        assertEquals(
+            listOf("USER:${userId.value}:${assetId.value}:AVAILABLE", "USER:${userId.value}:${assetId.value}:HOLD"),
+            postings.map { it["account_id"] },
+        )
+    }
+
+    /** KRW 수수료 수익 계정의 CREDIT 합계에서 DEBIT 합계를 뺀 실제 기록 금액을 확인한다. */
+    private fun assertPersistedFeeRevenue(expectedAmount: Long) {
+        val actualFeeRevenue =
+            requireNotNull(
+                jdbcTemplate.queryForObject(
+                    """
+                    select coalesce(
+                        sum(
+                            case
+                                when side = 'CREDIT' then amount
+                                when side = 'DEBIT' then -amount
+                                else 0
+                            end
+                        ),
+                        0
+                    )
+                    from ledger_postings
+                    where account_id = ?
+                      and asset_id = ?
+                    """.trimIndent(),
+                    Long::class.java,
+                    "SYSTEM:KRW:FEE_REVENUE",
+                    krwAssetId.value,
+                ),
+            )
+
+        assertEquals(
+            expectedAmount,
+            actualFeeRevenue,
+            "구매자와 판매자의 수수료가 거래소 수익 계정에 기록되어야 한다",
+        )
+    }
+
+    /** 각 원장 거래를 자산별로 묶었을 때 차변·대변 합계가 다른 그룹이 없어야 한다. */
+    private fun assertLedgerTransactionsBalanced() {
+        val unbalancedGroupCount =
+            requireNotNull(
+                jdbcTemplate.queryForObject(
+                    """
+                    select count(*)
+                    from (
+                        select ledger_transaction_id, asset_id
+                        from ledger_postings
+                        group by ledger_transaction_id, asset_id
+                        having
+                            sum(
+                                case when side = 'DEBIT' then amount else 0 end
+                            )
+                            <>
+                            sum(
+                                case when side = 'CREDIT' then amount else 0 end
+                            )
+                    ) as unbalanced_groups
+                    """.trimIndent(),
+                    Long::class.java,
+                ),
+            )
+
+        assertEquals(
+            0L,
+            unbalancedGroupCount,
+            "각 원장 거래에서 자산별 차변·대변 합계가 일치해야 한다",
+        )
+    }
+
+    /** LIMIT/GTC 주문을 HTTP 요청으로 전달하고 응답 검증을 이어갈 수 있는 결과를 반환한다. */
+    private fun submitOrder(
+        orderId: String,
+        userId: UserId,
+        side: Side,
+        price: Long,
+        quantity: Long,
+    ): ResultActions =
+        mockMvc.perform(
+            post(
+                "/api/markets/${market.marketId.value}/orders",
+            ).contentType(MediaType.APPLICATION_JSON)
+                .content(
+                    """
+                    {
+                      "orderId": "$orderId",
+                      "userId": "${userId.value}",
+                      "side": "${side.name}",
+                      "orderType": "LIMIT",
+                      "timeInForce": "GTC",
+                      "price": $price,
+                      "quantity": $quantity
+                    }
+                    """.trimIndent(),
+                ),
+        )
+
+    /** 테스트 마켓에서 해당 주문의 실제 예약을 조회하며, 없으면 테스트를 실패시킨다. */
+    private fun findReservation(orderId: OrderId): OrderReservation =
+        requireNotNull(
+            reservationStore.find(
+                marketId = market.marketId,
+                orderId = orderId,
+            ),
+        )
+
+    /** 최소 단위의 available과 hold를 사용하여 테스트 시작 잔고를 직접 저장한다. */
+    private fun insertBalance(
+        userId: UserId,
+        assetId: AssetId,
+        available: Long,
+        hold: Long,
+    ) {
+        jdbcTemplate.update(
+            """
+            insert into balance_projection (
+                user_id,
+                asset_id,
+                available,
+                hold
+            ) values (?, ?, ?, ?)
+            """.trimIndent(),
+            userId.value,
+            assetId.value,
+            available,
+            hold,
+        )
+    }
+
+    /** HTTP 주문 처리가 끝난 뒤 실제 DB의 available과 hold를 기대값과 비교한다. */
+    private fun assertPersistedBalance(
+        userId: UserId,
+        assetId: AssetId,
+        available: Long,
+        hold: Long,
+    ) {
+        val savedBalance =
+            jdbcTemplate.queryForMap(
+                """
+                select available, hold
+                from balance_projection
+                where user_id = ?
+                  and asset_id = ?
+                """.trimIndent(),
+                userId.value,
+                assetId.value,
+            )
+
+        assertEquals(
+            available,
+            (savedBalance["available"] as Number).toLong(),
+        )
+        assertEquals(
+            hold,
+            (savedBalance["hold"] as Number).toLong(),
+        )
+    }
+
+    companion object {
+        private val BUYER_ORDER_ID =
+            OrderId("e2e-buyer-order")
+
+        private val SELLER_ORDER_ID =
+            OrderId("e2e-seller-order")
+
+        private val BUYER_USER_ID =
+            UserId("e2e-buyer")
+
+        private val SELLER_USER_ID =
+            UserId("e2e-seller")
+    }
+}

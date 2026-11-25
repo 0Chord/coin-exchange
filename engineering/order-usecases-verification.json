@@ -1,0 +1,253 @@
+{
+  "issue": 20,
+  "createdAt": "2026-10-02T07:49:11.802255+00:00",
+  "workspace": "/Users/0chord/.codex/worktrees/issue19-module-deps/exchange-core",
+  "branch": "refactor/order-usecases/20",
+  "baseRevision": "2ccd4250268a0b084811014bff06d80523ccd3c5",
+  "state": "local implementation and verification complete; uncommitted; no new PR or remote CI",
+  "runSequence": [
+    {
+      "command": "cd /Users/0chord/.codex/worktrees/issue19-module-deps/exchange-core && ./gradlew build :architecture-tests:verifyArchitectureReport --no-daemon --continue --stacktrace --rerun-tasks --console=plain",
+      "log": "/tmp/issue20-full-verification.log",
+      "exitCode": 1,
+      "outcome": "product 243 passed; architecture 352 with one obsolete filename expectation failed; report verifier did not execute"
+    },
+    {
+      "change": "NamingPlacementGradleWiringTest expects SubmitOrderUseCase.kt; module, source-root and test-source exclusion assertions preserved"
+    },
+    {
+      "command": "cd /Users/0chord/.codex/worktrees/issue19-module-deps/exchange-core && ./gradlew :architecture-tests:verifyArchitectureReport --no-daemon --rerun-tasks --console=plain",
+      "log": "/tmp/issue20-structure-final.log",
+      "exitCode": 0,
+      "outcome": "architecture 352 rerun and passed; required P01 through P08 confirmed"
+    },
+    {
+      "command": "cd /Users/0chord/.codex/worktrees/issue19-module-deps/exchange-core && ./gradlew build :architecture-tests:verifyArchitectureReport --no-daemon --console=plain",
+      "log": "/tmp/issue20-build-final.log",
+      "exitCode": 0,
+      "outcome": "final build successful; 30 tasks reused UP-TO-DATE, report verifier rerun; not another fresh run of all 595 tests"
+    }
+  ],
+  "finalJUnitCounts": {
+    "architecture-tests": {
+      "suites": 33,
+      "tests": 352,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    "app-api": {
+      "suites": 14,
+      "tests": 75,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    "domain-common": {
+      "suites": 0,
+      "tests": 0,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    "domain-order": {
+      "suites": 6,
+      "tests": 50,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    "domain-fee": {
+      "suites": 9,
+      "tests": 37,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    "domain-ledger": {
+      "suites": 3,
+      "tests": 16,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    "domain-matching": {
+      "suites": 2,
+      "tests": 65,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    }
+  },
+  "finalTotal": {
+    "tests": 595,
+    "failures": 0,
+    "errors": 0,
+    "skipped": 0
+  },
+  "requiredProductionCases": [
+    "P04 전체 운영 코드와 Gradle 선언에 ARCH-08을 독립 적용한다()",
+    "P02 전체 운영 코드와 Gradle 직접 선언에 ARCH-02를 적용한다()",
+    "P05 실제 운영 코드의 업무 자동 등록 금지와 config Bean 선언을 검사한다()",
+    "P06 실제 전체 HTTP 진입점에 ARCH-03을 적용한다()",
+    "P08 주문 이름과 전체 main 원본의 실제 폴더에 ARCH-05를 적용한다()",
+    "P01 전체 운영 출력과 역할을 검증한 뒤 동일 ARCH-01 규칙을 적용한다()",
+    "P03 실제 저장 발행 포트의 공개 계약에 ARCH-06을 적용한다()",
+    "P07 실제 application 진입점과 협력자에 ARCH-04를 적용한다()"
+  ],
+  "productionEvaluation": {
+    "httpTypes": 7,
+    "httpDirectReferences": 473,
+    "applicationTypes": 6,
+    "configurationTypes": 5,
+    "applicationDirectReferences": 420,
+    "namingTypes": 17,
+    "selectedNamingRules": 9,
+    "mainSourceFiles": 64
+  },
+  "redEvidence": [
+    {
+      "scope": "first P07 coordinator existence expectation",
+      "failedTests": 1,
+      "cause": "expected renamed coordinator absent after successful compilation and import",
+      "report": "/tmp/issue20-evidence/coordinator-red.xml"
+    },
+    {
+      "scope": "first production role-input expectations",
+      "failedTests": 4,
+      "cause": "HTTP and application roles not connected to the existing rules",
+      "report": "/tmp/issue20-evidence/boundary-red.xml"
+    },
+    {
+      "scope": "new required production XML records",
+      "failedTests": 4,
+      "cause": "old verifier accepted missing or invalid new P06 through P08 records",
+      "report": "/tmp/issue20-evidence/verifier-red.xml"
+    }
+  ],
+  "expectationReview": "same implementation session; reviewed against agreed cases, counterexamples and failure causes; not independent PR review",
+  "bodyComparison": {
+    "files": 20,
+    "differencesAfterPermittedRenames": 0,
+    "normalization": "package/import/comments and agreed type/property/factory renames only",
+    "record": "/tmp/issue20-evidence/body-comparison.txt",
+    "limitation": "text comparison is not runtime verification"
+  },
+  "boundaries": [
+    "existing HTTP URL/status/JSON/amount expectations retained; no new UseCase interface wrappers",
+    "funding, event persistence, per-trade settlement and reservation release remain separate DB boundaries",
+    "event persistence failure can leave prior state; coordinator DB conflict tests omit funding and do not assert funds and engine state together",
+    "timeout does not cancel worker or prove rollback; no new timeout-state experiment",
+    "exact four migration folders remain until issue 21; storage naming and placement activation deferred",
+    "ARCH-07, compensation/recovery/concurrency guarantees, bulk comment cleanup remain follow-up scope",
+    "local successful tests are not remote CI success, independent PR review, human understanding or issue closure"
+  ],
+  "sourceHashes": {
+    "app-api/src/main/kotlin/com/exchange/core/api/config/LedgerPersistenceConfig.kt": "ec872d9505aaa852420907cdd2d2c7f8dd0e51855d0973f625856d17812ac1d4",
+    "app-api/src/main/kotlin/com/exchange/core/api/config/MatchingConfig.kt": "226ac766d6a13da6765b091f28c0bfae583b4078431481c45ef27b7af3d06bb5",
+    "app-api/src/main/kotlin/com/exchange/core/api/config/OrderApplicationConfig.kt": "b531bdf8049d0275ec5f2630299473fbad8f6d13ea7b085c2d20f828dd604b11",
+    "app-api/src/main/kotlin/com/exchange/core/api/matching/application/MatchingCoordinator.kt": "bd2a8ae25a69ea6ebbbd43f327b0bc98b32c0527241cdcddff05eeecf19ce24a",
+    "app-api/src/main/kotlin/com/exchange/core/api/order/api/MatchingDtos.kt": "f3ff8e42b4596497021edf07341d99dc6862e5c77ea2babbd169261ae0810042",
+    "app-api/src/main/kotlin/com/exchange/core/api/order/api/MatchingEventResponseMapper.kt": "1b50988624cfa026086e9c543ee21c9d515a1dbe06c8a2f882f1e50ce702e537",
+    "app-api/src/main/kotlin/com/exchange/core/api/order/api/OrderController.kt": "3218fc977a962d38541f559dedb32071e6a59ba56913ad51d796323966ed3123",
+    "app-api/src/main/kotlin/com/exchange/core/api/order/application/CancelOrderUseCase.kt": "87106535e04bc67a552d0aa1e095adce6eac5949e8e61b939794d26e34871f60",
+    "app-api/src/main/kotlin/com/exchange/core/api/order/application/OrderFundingService.kt": "cf66121d78ef07199e8c29fc6ccd9659dff69a982c4625c3ef0f83627b518c8f",
+    "app-api/src/main/kotlin/com/exchange/core/api/order/application/OrderReservationReleaseService.kt": "1e1e9e0ec53fd38be432ad0fdaf58df7bb18fdbec406fb1522b240786396b870",
+    "app-api/src/main/kotlin/com/exchange/core/api/order/application/SubmitOrderUseCase.kt": "526d93de46b236b8da9ebe440d5d573389afd825198f83e97fe364b721699dcf",
+    "app-api/src/main/kotlin/com/exchange/core/api/order/application/TradeSettlementService.kt": "a398a860d3c038988a095bb2d4a642850670562ce4e23e62e23d8aac918a01bf",
+    "app-api/src/test/kotlin/com/exchange/core/ExchangeCoreApplicationTests.kt": "5b66858ae168dac11f5add3fcdb085245be169c6cfc0ebc47c7aed74267d5429",
+    "app-api/src/test/kotlin/com/exchange/core/api/matching/application/MatchingCoordinatorPersistenceFailureTest.kt": "2c23cae5e13a4863c0b06094df4d0b605d9b6d170684f38d97040b83f52c35e0",
+    "app-api/src/test/kotlin/com/exchange/core/api/matching/persistence/MatchingPersistenceIntegrationTest.kt": "eea5fa89c7d9811c825c499ec8edfa041dff6d7aa5941f9b476c2882301bc3ab",
+    "app-api/src/test/kotlin/com/exchange/core/api/order/api/OrderControllerTest.kt": "3fd36ec5adf1e598d00244f22f1bbd8d1e57898331b387487e1894a4f616452c",
+    "app-api/src/test/kotlin/com/exchange/core/api/order/application/OrderFundingServiceTest.kt": "ac6ab12829567c5c5ae173e3822608c75e80dd8e751be7e08360c06aa467fac4",
+    "app-api/src/test/kotlin/com/exchange/core/api/order/application/OrderLifecycleE2ETest.kt": "e90d0b87162e83bb2dffec0c72be90e1ebcfd025991452f3c1663074423a82a6",
+    "app-api/src/test/kotlin/com/exchange/core/api/order/application/OrderReservationReleaseServiceTest.kt": "6563a6a1cfe606c70d9b71eb6c5171ba94d476b90130719de8e5bed93a00768f",
+    "app-api/src/test/kotlin/com/exchange/core/api/order/application/TradeSettlementServiceTest.kt": "af5483628ef6a06ec903eb5ed636b54672422aaf3435354b50d918f724446c1a",
+    "architecture-tests/build.gradle.kts": "14f2f89b9f401ca0b169a7824979f785cf40c567f0548bba1f7480219de0e38f",
+    "architecture-tests/src/test/kotlin/com/exchange/architecture/ArchitectureReportVerifierTest.kt": "013e6c08bf78bf0b3be0ea2309b5186a9f78d51e7b318c382ed1d01f04f1e9e8",
+    "architecture-tests/src/test/kotlin/com/exchange/architecture/NamingPlacementGradleWiringTest.kt": "5944d8001dff54adee76a4dd9c1acf53e8f366757f39341836ca37d8c76e063a",
+    "architecture-tests/src/test/kotlin/com/exchange/architecture/ProductionArchitectureTest.kt": "d2ec7eada319037a1f248f68c34a618e3c139e2929d83a4bb3dd1db54e7c0398",
+    "architecture-tests/src/test/kotlin/com/exchange/architecture/ProductionBoundaryInputsTest.kt": "b2e35dcbd76d6625378e66a762aa2903d8fb57340f3af48a85039e887405b914",
+    "architecture-tests/src/test/kotlin/com/exchange/architecture/policy/ProjectLayoutPolicy.kt": "64fcd12e8c0d802a75d762995c2e0032382366b2553761912683ee18e2964564",
+    "architecture-tests/src/test/kotlin/com/exchange/architecture/rules/NamingRules.kt": "3cc746ef132ed9b617b8e7f1bc56c3dc8b3d6063a9e15c08b82881d00c3d4656",
+    "architecture-tests/src/test/kotlin/com/exchange/architecture/support/ArchitectureReportVerifier.kt": "7afa6a8928161a7cce942031ff6fb52775552395dedeb6fa660ea4c4395b6559",
+    "architecture-tests/src/test/kotlin/com/exchange/architecture/support/ProductionBoundaryInputs.kt": "82f647fce80553fd89e0114468cf787d9f70ad6645d8ccb4d82622862c600dd6",
+    "domain-matching/src/main/kotlin/com/exchange/core/matching/MarketCommandProcessor.kt": "db4bb38700943f244660c8a809c289274c31c9663c90c52a072c92b11b210051"
+  },
+  "junitReportHashes": {
+    "architecture-tests/build/test-results/test/TEST-com.exchange.architecture.ApplicationBoundaryContractTest.xml": "87ee269ba9d6399d899f5ba33676fceb0210100eda8c314a8448cf56636815fa",
+    "architecture-tests/build/test-results/test/TEST-com.exchange.architecture.ApplicationBoundaryImportTest.xml": "4fa0f75b2299fec82631aa7fd6606bbfa95af0f5f9576b797c5111aefe353b44",
+    "architecture-tests/build/test-results/test/TEST-com.exchange.architecture.ApplicationBoundaryReferenceTest.xml": "b54bce9883f46665d457fd625740e44de0504b59ce743d9cefb221a441538e77",
+    "architecture-tests/build/test-results/test/TEST-com.exchange.architecture.ApplicationBoundaryScopeTest.xml": "d46584bd2ff0e84da5e6bf2b76255eb9b2c2270e73c281bbb63a0a58e3aff13f",
+    "architecture-tests/build/test-results/test/TEST-com.exchange.architecture.ArchitectureReportVerifierTest.xml": "7d6f1122a111c09dc999f1bfbf723acabbcf4feed371cfbde870dde8fe1c2c13",
+    "architecture-tests/build/test-results/test/TEST-com.exchange.architecture.ArchitectureRuleContractTest.xml": "bb50bfb9c146140231c98ba8eb0e3a2d8a0e69851858e7db5d02b4a7c9b96f77",
+    "architecture-tests/build/test-results/test/TEST-com.exchange.architecture.BeanAssemblyRuleTest.xml": "32b076cf82344b192a12282a4a52c2d060c23516d6d882f76d12aca64f28e1fc",
+    "architecture-tests/build/test-results/test/TEST-com.exchange.architecture.GradleDependencyWiringTest.xml": "c019fd32ec7a352ec3bc3aee3d59d1eb6d9682479bc70acab1fb65bc1bda8762",
+    "architecture-tests/build/test-results/test/TEST-com.exchange.architecture.HttpBoundaryImportTest.xml": "8f4b2c994d94900e1ac13f306333b8e8c8d7508e0d29bcfee67ff513568fd202",
+    "architecture-tests/build/test-results/test/TEST-com.exchange.architecture.HttpBoundaryScopeTest.xml": "15f3cf49e9b9201d75f01297ba9da3745f98087bbba30e79662dda8e844c693c",
+    "architecture-tests/build/test-results/test/TEST-com.exchange.architecture.HttpEntryBoundaryContractTest.xml": "4e37da3e982437afb9e7a08aef40315ca690a760013021234bc037c9fdb0ef8b",
+    "architecture-tests/build/test-results/test/TEST-com.exchange.architecture.ImportScopeContractTest.xml": "8d6e3a28818361c8fdd719a3e2295b99024e1096277a1dbb7442111b901aff60",
+    "architecture-tests/build/test-results/test/TEST-com.exchange.architecture.IsolationDependencyContractTest.xml": "d3bf29b8ac6dcd6aa727c411d54dca8944d6c22c49de6d77fc2c8fc49ba1b9de",
+    "architecture-tests/build/test-results/test/TEST-com.exchange.architecture.IsolationGradleWiringTest.xml": "0b0e2032ff05cae8b06e56da33c6bae3618cb8fc55a1f4cb0b6a809d7e3d8735",
+    "architecture-tests/build/test-results/test/TEST-com.exchange.architecture.ModuleDependencyContractTest.xml": "4309a12c30404a7b846883e9964ef279762860ca78dafa1a903d085d8b62d2cc",
+    "architecture-tests/build/test-results/test/TEST-com.exchange.architecture.ModuleRegistrationContractTest.xml": "1b5b9656eaca66450429508b6ae2da828c23ccc298a39b72b5f11f95fceb7e7f",
+    "architecture-tests/build/test-results/test/TEST-com.exchange.architecture.NamingPlacementContractTest.xml": "ac90c7e463db79a99bafc37c8cb44e2e0ca9b918d23d51f1f767c0ea4ed0db32",
+    "architecture-tests/build/test-results/test/TEST-com.exchange.architecture.NamingPlacementGradleAutomaticTest.xml": "88ea9aa2cdb64e6160da1174010b5e6864fd6d29960e36eb597b1dc352c4ac9b",
+    "architecture-tests/build/test-results/test/TEST-com.exchange.architecture.NamingPlacementGradleWiringTest.xml": "d301bf77074702e127b474511047707c4e0d6c403421a886f2687f636ece0c73",
+    "architecture-tests/build/test-results/test/TEST-com.exchange.architecture.NamingPlacementIntegrationTest.xml": "b2e999f1e6f9796e1cede4c03c3364c395b79ecd76047af7e1219c447f0b2f42",
+    "architecture-tests/build/test-results/test/TEST-com.exchange.architecture.NamingPlacementPortTest.xml": "20d4164c1a5bb33d3174620989ba985e18515ee2138308c0b6ec00285e55105f",
+    "architecture-tests/build/test-results/test/TEST-com.exchange.architecture.NamingPlacementRuleTest.xml": "f94aab2c067e3a58986393d013e02654857a5b476e58c85c2d02188b54a2abc8",
+    "architecture-tests/build/test-results/test/TEST-com.exchange.architecture.NamingPlacementScopeTest.xml": "a4904ee7637d84609482a0ea78676ee1af18ae4705bb41975f7684475e456ad4",
+    "architecture-tests/build/test-results/test/TEST-com.exchange.architecture.NamingPlacementSimplificationTest.xml": "ec379632fb51c4ae4954860b447c0220b7127072311b52db4bb6eb3161715490",
+    "architecture-tests/build/test-results/test/TEST-com.exchange.architecture.NonProductionTargetsTest.xml": "79f0389267c4776348191d841f6d30acbddf20c6b7ba5f5cddb68ed5be8e6614",
+    "architecture-tests/build/test-results/test/TEST-com.exchange.architecture.PortContractRuleTest.xml": "bff8fbcab8d800b363e3d232af9e11a6671aa4e448793f00fc7d5eb7a18fc3fc",
+    "architecture-tests/build/test-results/test/TEST-com.exchange.architecture.ProductionArchitectureTest.xml": "f917da3c00159115cbae9be179156bd757eea5d55b87eae38f732dd8ed8e0bac",
+    "architecture-tests/build/test-results/test/TEST-com.exchange.architecture.ProductionBoundaryInputsTest.xml": "cd9b5feed04dfe870df14a5fc51523c0192370b5671b818d3d3811e33e8a9408",
+    "architecture-tests/build/test-results/test/TEST-com.exchange.architecture.ProductionDependencyIsolationTest.xml": "6be42e32e66b9963e0171e7cd07e69f1c608a725a1117641868ea6be909796dd",
+    "architecture-tests/build/test-results/test/TEST-com.exchange.architecture.ProductionOutputWiringTest.xml": "8ac521ac892c08eeb84407831fa520067735f331573812ce792ed95da8bae583",
+    "architecture-tests/build/test-results/test/TEST-com.exchange.architecture.ProjectDependencyContractTest.xml": "9dfc11368c4302446d1b1f90dcc7d6535ce7d4dddb8c264816f1b7eea775baa0",
+    "architecture-tests/build/test-results/test/TEST-com.exchange.architecture.RoleClassificationContractTest.xml": "6bacf26e740c625e34002098c554842c4d447788151265d516d95ffab05b5edf",
+    "architecture-tests/build/test-results/test/TEST-com.exchange.architecture.SourcePlacementContractTest.xml": "a28707f04284a806666ccaa8aa18965d9f84a25052efda59aa4be48335b7f284",
+    "app-api/build/test-results/test/TEST-com.exchange.core.ExchangeCoreApplicationTests.xml": "a1e030ad0cb0373bc864d41a4b71beef5e4efbfb7eac9c0ac5d11c839fc9e38a",
+    "app-api/build/test-results/test/TEST-com.exchange.core.api.ledger.persistence.PostgresBalanceStoreTest.xml": "ff40e6dc3114b9d68899a71e0a076a18c4dcdf39e2d4718d3749c79598cb91f8",
+    "app-api/build/test-results/test/TEST-com.exchange.core.api.ledger.persistence.PostgresLedgerTransactionStoreTest.xml": "43ff291e36627ff8c288c76532637a1acf2a0c0b875c5a317c1a3af509bf8e0e",
+    "app-api/build/test-results/test/TEST-com.exchange.core.api.matching.application.MatchingCoordinatorPersistenceFailureTest.xml": "95ddaa05dafffa4585044fe45994db003296c33f87fc4335cec56bcc8f9ce21f",
+    "app-api/build/test-results/test/TEST-com.exchange.core.api.matching.persistence.JpaMatchingEventStoreTest.xml": "12444a3fc9034cd491e2c65695cf442b0686adb79c996d6eac409a5bcd84c6f5",
+    "app-api/build/test-results/test/TEST-com.exchange.core.api.matching.persistence.MatchingEventPayloadTest.xml": "12f361fd1498c334a55eb6ce6ba2b2e84df9a4e1677302fe2ccc5b413a057cc9",
+    "app-api/build/test-results/test/TEST-com.exchange.core.api.matching.persistence.MatchingPersistenceIntegrationTest.xml": "657057eacd01b51a38bf1c10ecfeeb67c9ed871244a9c9370917d6293f7e81c7",
+    "app-api/build/test-results/test/TEST-com.exchange.core.api.matching.persistence.PersistentMatchingEventPublisherTest.xml": "508dafd138f8def85452c0e40bb874cab1eca0f0fc3f16fadf723095b94935bb",
+    "app-api/build/test-results/test/TEST-com.exchange.core.api.order.api.OrderControllerTest.xml": "677314517a577ab85e34163293a71530a34730b34037b445d37e2a3d7b325695",
+    "app-api/build/test-results/test/TEST-com.exchange.core.api.order.application.OrderFundingServiceTest.xml": "687d6f9b985f2a152989fddfbbbd20002ba74856045882e2b37f2c65de667a5f",
+    "app-api/build/test-results/test/TEST-com.exchange.core.api.order.application.OrderLifecycleE2ETest.xml": "d527df91629134547d0c249c5fa4fa2a453e4e7ecc3e7eca51c1413229714644",
+    "app-api/build/test-results/test/TEST-com.exchange.core.api.order.application.OrderReservationReleaseServiceTest.xml": "26cca315864ddcf50f8ac0226db997878ad52035df0b11f517b99b945d8bc788",
+    "app-api/build/test-results/test/TEST-com.exchange.core.api.order.application.TradeSettlementServiceTest.xml": "0501e5e342c784e5eb85b84d1fdce75a9435979134e4cca01b2290e7a47410a0",
+    "app-api/build/test-results/test/TEST-com.exchange.core.api.order.persistence.PostgresOrderReservationStoreTest.xml": "482d538f5fa78f3bc4dafe8e280871a6357ab527619676a1d086e3fed8547704",
+    "domain-order/build/test-results/test/TEST-com.exchange.core.order.BuyOrderFundingQuoteCalculatorTest.xml": "c0d1c1de9db1419df9fb9c67f28657dda9280dcf94f451fdc7172b2d0170216d",
+    "domain-order/build/test-results/test/TEST-com.exchange.core.order.MaximumBuyOrderFundingQuoteCalculatorTest.xml": "b748731119e08af8f3eb8284a90403cc18352a7e151debd6e661c9368dacf85c",
+    "domain-order/build/test-results/test/TEST-com.exchange.core.order.OrderFillSettlementCalculatorTest.xml": "2a30f64d6e33fe58f46524238a9c5d8c50efa0aeafc162208ab0ea4134e7411d",
+    "domain-order/build/test-results/test/TEST-com.exchange.core.order.OrderReservationCalculatorTest.xml": "38b885282239063f6356f0623cf1da281f623a4632a3ce0ed2b16b0f17d1abca",
+    "domain-order/build/test-results/test/TEST-com.exchange.core.order.OrderReservationTest.xml": "d8448f2967a3fc83a07062d4b891b694ee26381cb381468ce171d26ea89a330e",
+    "domain-order/build/test-results/test/TEST-com.exchange.core.order.ReservationRequirementTest.xml": "ef18a5680ca0df1dcfb277bc31e6e39969c70d5f6eb24466e0f73fa98e9cdb76",
+    "domain-fee/build/test-results/test/TEST-com.exchange.core.fee.FeeRateTest.xml": "2b66d566a4e2b737704df5f7a06bab5fbab0faba2ea32c85bacddb318ee83919",
+    "domain-fee/build/test-results/test/TEST-com.exchange.core.fee.FeeRemainderTest.xml": "7ee10d949317dfae0bfad38e6b0b6d11efc1221ac92e16ae30c941c4ed82b372",
+    "domain-fee/build/test-results/test/TEST-com.exchange.core.fee.FeeTierResolverTest.xml": "c6e103713415ded8c4ef303af20306f3a6498f7aa00e0978f0a1530fee84d7cf",
+    "domain-fee/build/test-results/test/TEST-com.exchange.core.fee.FeeTierThresholdsTest.xml": "ef9b6062dc9653d049abc44254ceba62cee4729c9d91626dcb421fc633c34501",
+    "domain-fee/build/test-results/test/TEST-com.exchange.core.fee.MakerTakerFeeRatesTest.xml": "6ed1374b148d3f1e0ee66b7ff060892056edc7da5125d89d547149949dc7aded",
+    "domain-fee/build/test-results/test/TEST-com.exchange.core.fee.TradingFeeCalculatorTest.xml": "9f229379d903639e956165c708c906ac06f27c377421c17b6743a4eba7de6dbf",
+    "domain-fee/build/test-results/test/TEST-com.exchange.core.fee.TradingFeePolicySnapshotTest.xml": "f8ca43dce64af4a0a37e383e67405ef92daf97d15825a3051956cedb2c2e3d8c",
+    "domain-fee/build/test-results/test/TEST-com.exchange.core.fee.TradingFeeReserveCalculatorTest.xml": "f9d2f577a2926ef7492a4139c41a8a876a09ec8df3f62ee3371c6d21bf93dd70",
+    "domain-fee/build/test-results/test/TEST-com.exchange.core.fee.TradingFeeScheduleTest.xml": "4c3dee723bb019f4d992c3c05541911ed75333e9a5a792b82c0810695f56a05a",
+    "domain-ledger/build/test-results/test/TEST-com.exchange.core.ledger.BalanceTest.xml": "43de040d378241377e4a095188dd4972cc175ae844ff4c74bd962e29d111fc06",
+    "domain-ledger/build/test-results/test/TEST-com.exchange.core.ledger.LedgerPostingTest.xml": "0ec84112999f2782483b6ba781f20e1b1c93be2071b4dabf015be3d7585233ab",
+    "domain-ledger/build/test-results/test/TEST-com.exchange.core.ledger.LedgerTransactionTest.xml": "a1480493d946f96c59cc0c4a697f3a4a0f21f371cb350ec7b0fb10b141c117c4",
+    "domain-matching/build/test-results/test/TEST-com.exchange.core.matching.MarketCommandProcessorTest.xml": "28192e9dba30198c9220c60bf0f880f77b66107ccdd188b5782339a40d38fe6d",
+    "domain-matching/build/test-results/test/TEST-com.exchange.core.matching.MatchingEngineTest.xml": "ca5b8840e06fe7befd285633608749f4109b9fcf03c039954f568f03229f7f6e"
+  },
+  "logHashes": {
+    "/tmp/issue20-full-verification.log": "ddcc600d22143ed03e10002dc3d39c0f5840df5a0f677c9e5b8a3632953c2013",
+    "/tmp/issue20-structure-final.log": "0f586ac5e16eb36d6a9175e4296faf37f250d7f0747091184aa9a8886f6f1ffa",
+    "/tmp/issue20-build-final.log": "d80ed694e165901802b0e14791be5adcbfab055a0e4586ef2ff55c28e7358cbd"
+  },
+  "rawEvidenceDirectory": "/tmp/issue20-evidence",
+  "recordScope": "Local implementation verification snapshot recorded before PR publication; current PR, CI and merge states are separate."
+}

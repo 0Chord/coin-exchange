@@ -1,0 +1,131 @@
+package com.exchange.architecture.policy
+
+import com.exchange.architecture.support.AllowedFolder
+import com.exchange.architecture.support.AllowedSourceRoot
+import com.exchange.architecture.support.LayoutPolicy
+import com.exchange.architecture.support.ProductionScope
+import com.exchange.architecture.support.ScopeProblem
+import com.exchange.architecture.support.ScopeProblemCode
+
+/** 운영 코드에 적용하는 이름·배치 정책. 폴더는 명시한 정확한 경로만 허용한다. */
+object ProjectLayoutPolicy {
+    val target: LayoutPolicy by lazy {
+        val root = "src/main/kotlin"
+        val generatedRoot = "build/generated/sources/proto/main/java"
+        val base = "com/exchange/core"
+
+        fun app(
+            id: String,
+            path: String,
+            reason: String,
+        ) = AllowedFolder(id, "app-api", root, path, reason)
+        LayoutPolicy(
+            ProductionScope.requiredTypes.keys
+                .sorted()
+                .map { AllowedSourceRoot(it, root) } +
+                AllowedSourceRoot("app-api", generatedRoot, ":app-api:generateProto"),
+            listOf(
+                app("bootstrap", base, "앱 시작점"),
+                app("config", "$base/api/config", "명시한 Bean 조립"),
+                app("http-errors", "$base/api/common", "공통 HTTP 오류"),
+                app("order-http", "$base/api/order/api", "주문 HTTP 변환"),
+                app("order-application", "$base/api/order/application", "주문 실행과 내부 작업"),
+                app("order-persistence", "$base/api/order/infrastructure/persistence", "주문 예약 저장"),
+                app("market-http", "$base/api/market/api", "관리자 마켓 설정 HTTP 변환"),
+                app("market-application", "$base/api/market/application", "마켓 설정 등록·조회 실행"),
+                app("market-ports", "$base/api/market/application/port", "마켓 설정 저장·조회 계약"),
+                app("market-persistence", "$base/api/market/infrastructure/persistence", "불변 마켓 설정 버전 저장"),
+                app("ledger-application", "$base/api/ledger/application", "개발용 초기 자금의 명시적인 실행"),
+                app("ledger-persistence", "$base/api/ledger/infrastructure/persistence", "잔고·원장 저장"),
+                app("matching-application", "$base/api/matching/application", "매칭 전후 작업 연결"),
+                app("matching-ports", "$base/api/matching/application/port", "매칭 저장·발행 계약"),
+                app("matching-persistence", "$base/api/matching/infrastructure/persistence", "매칭 영속화"),
+                app("matching-publish", "$base/api/matching/infrastructure/publish", "명시한 미저장 발행 구현"),
+                app("trading-http", "$base/api/trading/api", "Aeron 주문 접수 HTTP·DTO 변환"),
+                app("trading-application", "$base/api/trading/application", "Aeron 주문 접수 진입점과 전송 결과 계약"),
+                app("trading-ports", "$base/api/trading/application/port", "주문 조회 저장 계약"),
+                app("trading-persistence", "$base/api/trading/infrastructure/persistence", "거래 주문 조회 기록과 반영 진행도 저장"),
+                app("admission-codec", "$base/api/trading/infrastructure/codec", "주문 접수 명령·응답 변환"),
+                app("trading-history", "$base/api/trading/infrastructure/history", "거래 이력의 로컬 영속 저장·정확한 재조회"),
+                app("trading-recovery", "$base/api/trading/infrastructure/recovery", "독립 복구 사본의 보관·검증·승계와 영속 접두부 확인"),
+                app("development-aeron", "$base/api/trading/infrastructure/aeron", "개발용 자금 준비의 실제 Aeron 실행"),
+                AllowedFolder(
+                    "admission-generated-codec",
+                    "app-api",
+                    generatedRoot,
+                    "$base/api/trading/infrastructure/codec/generated",
+                    "접수 Protobuf 스키마가 생성한 Java 변환 코드",
+                ),
+            ) +
+                listOf("common", "fee", "order", "ledger", "matching", "trading").map {
+                    AllowedFolder("domain-$it", "domain-$it", root, "$base/$it", "기술 독립 코어")
+                },
+            PortPlacementPolicy.common.copy(
+                storeTargets =
+                    mapOf(
+                        "domain-order" to "order-persistence",
+                        "domain-ledger" to "ledger-persistence",
+                        "domain-trading" to "trading-history",
+                        "matching-ports" to "matching-persistence",
+                        "market-ports" to "market-persistence",
+                        "trading-ports" to "trading-persistence",
+                    ),
+                publisherTargets = mapOf("Persistent" to "matching-persistence", "NoOp" to "matching-publish"),
+            ),
+        )
+    }
+}
+
+/** 경로 문자열을 관대하게 보정하면 정책의 오타가 새 허용 범위로 바뀔 수 있어 거절한다. */
+object LayoutPolicyValidation {
+    fun relativePath(value: String): Boolean =
+        value.isNotBlank() && !value.startsWith('/') &&
+            !value.contains('\\') && value.split('/').all { it.isNotBlank() && it != "." && it != ".." && '*' !in it }
+
+    fun inspect(
+        policy: LayoutPolicy,
+        modules: Set<String>,
+    ): List<ScopeProblem> {
+        val errors = mutableListOf<ScopeProblem>()
+
+        fun invalid(
+            subject: String,
+            detail: String,
+        ) {
+            errors += ScopeProblem(ScopeProblemCode.INVALID_TARGET_INPUT, subject, detail)
+        }
+        if (policy.roots.isEmpty() || policy.folders.isEmpty()) invalid("layout-policy", "허용 루트·폴더가 비어 있습니다")
+        policy.roots
+            .groupBy { it.module to it.path }
+            .filterValues { it.size != 1 }
+            .keys
+            .forEach { invalid(it.toString(), "루트 중복") }
+        policy.roots.forEach {
+            if (it.module !in modules || !relativePath(it.path) ||
+                it.producer?.isBlank() == true
+            ) {
+                invalid(it.toString(), "모듈·루트·생산 작업을 확인하세요")
+            }
+        }
+        policy.folders
+            .groupBy { it.id }
+            .filterValues { it.size != 1 }
+            .keys
+            .forEach { invalid(it, "위치 식별자 중복") }
+        policy.folders
+            .groupBy {
+                Triple(it.module, it.sourceRoot, it.folder)
+            }.filterValues { it.size != 1 }
+            .keys
+            .forEach { invalid(it.toString(), "폴더 중복") }
+        policy.folders.forEach {
+            if (it.id.isBlank() || it.module !in modules || !relativePath(it.sourceRoot) || !relativePath(it.folder) ||
+                it.reason.isBlank() ||
+                policy.roots.none { root -> root.module == it.module && root.path == it.sourceRoot }
+            ) {
+                invalid(it.id, "유효한 모듈·루트·폴더·이유가 필요합니다")
+            }
+        }
+        return errors
+    }
+}

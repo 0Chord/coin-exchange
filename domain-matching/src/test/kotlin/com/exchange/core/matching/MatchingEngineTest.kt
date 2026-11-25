@@ -17,9 +17,10 @@ class MatchingEngineTest {
 
     @Test
     fun `빈 book에 매수 지정가 주문을 넣으면 bid book에 남는다`() {
-        val events = MatchingEngine().process(
-            submit(orderId = "b1", side = Side.BUY, price = 100, quantity = 10),
-        )
+        val events =
+            MatchingEngine().process(
+                submit(orderId = "b1", side = Side.BUY, price = 100, quantity = 10),
+            )
 
         assertEquals(
             listOf(entered(seq = 1, orderId = "b1", side = Side.BUY, price = 100, quantity = 10)),
@@ -29,9 +30,10 @@ class MatchingEngineTest {
 
     @Test
     fun `빈 book에 매도 지정가 주문을 넣으면 ask book에 남는다`() {
-        val events = MatchingEngine().process(
-            submit(orderId = "s1", side = Side.SELL, price = 100, quantity = 10),
-        )
+        val events =
+            MatchingEngine().process(
+                submit(orderId = "s1", side = Side.SELL, price = 100, quantity = 10),
+            )
 
         assertEquals(
             listOf(entered(seq = 1, orderId = "s1", side = Side.SELL, price = 100, quantity = 10)),
@@ -416,9 +418,10 @@ class MatchingEngineTest {
 
         engine.process(submit(orderId = "b1", side = Side.BUY, price = 100, quantity = 5))
 
-        val exception = assertFailsWith<IllegalArgumentException> {
-            engine.process(submit(orderId = "b1", side = Side.BUY, price = 101, quantity = 3))
-        }
+        val exception =
+            assertFailsWith<IllegalArgumentException> {
+                engine.process(submit(orderId = "b1", side = Side.BUY, price = 101, quantity = 3))
+            }
 
         assertEquals("order already exists", exception.message)
         assertEquals(
@@ -433,9 +436,10 @@ class MatchingEngineTest {
 
         engine.process(submit(orderId = "a1", side = Side.SELL, price = 100, quantity = 5))
 
-        val exception = assertFailsWith<IllegalArgumentException> {
-            engine.process(submit(orderId = "a1", side = Side.SELL, price = 101, quantity = 3))
-        }
+        val exception =
+            assertFailsWith<IllegalArgumentException> {
+                engine.process(submit(orderId = "a1", side = Side.SELL, price = 101, quantity = 3))
+            }
 
         assertEquals("order already exists", exception.message)
         engine.process(cancel(orderId = "a1"))
@@ -452,9 +456,10 @@ class MatchingEngineTest {
         engine.process(submit(orderId = "a1", side = Side.SELL, price = 100, quantity = 1))
         engine.process(submit(orderId = "b1", side = Side.BUY, price = 100, quantity = 1))
 
-        val exception = assertFailsWith<IllegalArgumentException> {
-            engine.process(submit(orderId = "a1", side = Side.SELL, price = 101, quantity = 1))
-        }
+        val exception =
+            assertFailsWith<IllegalArgumentException> {
+                engine.process(submit(orderId = "a1", side = Side.SELL, price = 101, quantity = 1))
+            }
 
         assertEquals("order already exists", exception.message)
         assertEquals(
@@ -470,9 +475,10 @@ class MatchingEngineTest {
         engine.process(submit(orderId = "b1", side = Side.BUY, price = 100, quantity = 1))
         engine.process(cancel(orderId = "b1"))
 
-        val exception = assertFailsWith<IllegalArgumentException> {
-            engine.process(submit(orderId = "b1", side = Side.BUY, price = 101, quantity = 1))
-        }
+        val exception =
+            assertFailsWith<IllegalArgumentException> {
+                engine.process(submit(orderId = "b1", side = Side.BUY, price = 101, quantity = 1))
+            }
 
         assertEquals("order already exists", exception.message)
         assertEquals(
@@ -698,17 +704,18 @@ class MatchingEngineTest {
     fun `지원하지 않는 시장가 주문은 event 생성 전에 실패한다`() {
         val engine = MatchingEngine()
 
-        val exception = assertFailsWith<IllegalArgumentException> {
-            engine.process(
-                submit(
-                    orderId = "m1",
-                    side = Side.BUY,
-                    price = 100,
-                    quantity = 1,
-                    orderType = OrderType.MARKET,
-                ),
-            )
-        }
+        val exception =
+            assertFailsWith<IllegalArgumentException> {
+                engine.process(
+                    submit(
+                        orderId = "m1",
+                        side = Side.BUY,
+                        price = 100,
+                        quantity = 1,
+                        orderType = OrderType.MARKET,
+                    ),
+                )
+            }
 
         assertEquals("only LIMIT order is supported", exception.message)
         assertEquals(
@@ -721,17 +728,18 @@ class MatchingEngineTest {
     fun `지원하지 않는 IOC 주문은 event 생성 전에 실패한다`() {
         val engine = MatchingEngine()
 
-        val exception = assertFailsWith<IllegalArgumentException> {
-            engine.process(
-                submit(
-                    orderId = "ioc1",
-                    side = Side.BUY,
-                    price = 100,
-                    quantity = 1,
-                    timeInForce = TimeInForce.IOC,
-                ),
-            )
-        }
+        val exception =
+            assertFailsWith<IllegalArgumentException> {
+                engine.process(
+                    submit(
+                        orderId = "ioc1",
+                        side = Side.BUY,
+                        price = 100,
+                        quantity = 1,
+                        timeInForce = TimeInForce.IOC,
+                    ),
+                )
+            }
 
         assertEquals("only GTC order is supported", exception.message)
         assertEquals(
@@ -779,50 +787,55 @@ class MatchingEngineTest {
 
     @Test
     fun `수량이 0인 submit command는 생성 시점에 거절된다`() {
-        val exception = assertFailsWith<IllegalArgumentException> {
-            submit(orderId = "b1", side = Side.BUY, price = 100, quantity = 0)
-        }
+        val exception =
+            assertFailsWith<IllegalArgumentException> {
+                submit(orderId = "b1", side = Side.BUY, price = 100, quantity = 0)
+            }
 
         assertEquals("quantity must be positive", exception.message)
     }
 
     @Test
     fun `수량이 음수인 submit command는 생성 시점에 거절된다`() {
-        val exception = assertFailsWith<IllegalArgumentException> {
-            submit(orderId = "b1", side = Side.BUY, price = 100, quantity = -1)
-        }
+        val exception =
+            assertFailsWith<IllegalArgumentException> {
+                submit(orderId = "b1", side = Side.BUY, price = 100, quantity = -1)
+            }
 
         assertEquals("quantity must be positive", exception.message)
     }
 
     @Test
     fun `가격이 0인 submit command는 생성 시점에 거절된다`() {
-        val exception = assertFailsWith<IllegalArgumentException> {
-            submit(orderId = "b1", side = Side.BUY, price = 0, quantity = 1)
-        }
+        val exception =
+            assertFailsWith<IllegalArgumentException> {
+                submit(orderId = "b1", side = Side.BUY, price = 0, quantity = 1)
+            }
 
         assertEquals("price must be positive", exception.message)
     }
 
     @Test
     fun `가격이 음수인 submit command는 생성 시점에 거절된다`() {
-        val exception = assertFailsWith<IllegalArgumentException> {
-            submit(orderId = "b1", side = Side.BUY, price = -1, quantity = 1)
-        }
+        val exception =
+            assertFailsWith<IllegalArgumentException> {
+                submit(orderId = "b1", side = Side.BUY, price = -1, quantity = 1)
+            }
 
         assertEquals("price must be positive", exception.message)
     }
 
     @Test
     fun `같은 command stream은 같은 event stream을 만든다`() {
-        val commands = listOf(
-            submit(orderId = "a1", side = Side.SELL, price = 100, quantity = 2),
-            submit(orderId = "a2", side = Side.SELL, price = 101, quantity = 3),
-            submit(orderId = "b1", side = Side.BUY, price = 101, quantity = 4),
-            cancel(orderId = "a2"),
-            cancel(orderId = "missing"),
-            submit(orderId = "s1", side = Side.SELL, price = 99, quantity = 1),
-        )
+        val commands =
+            listOf(
+                submit(orderId = "a1", side = Side.SELL, price = 100, quantity = 2),
+                submit(orderId = "a2", side = Side.SELL, price = 101, quantity = 3),
+                submit(orderId = "b1", side = Side.BUY, price = 101, quantity = 4),
+                cancel(orderId = "a2"),
+                cancel(orderId = "missing"),
+                submit(orderId = "s1", side = Side.SELL, price = 99, quantity = 1),
+            )
 
         val events = runCommands(MatchingEngine(), commands)
         assertPerMarketSequencesAreContiguous(events)
@@ -834,18 +847,19 @@ class MatchingEngineTest {
 
     @Test
     fun `긴 command stream도 같은 event stream을 만든다`() {
-        val commands = buildList {
-            for (index in 1..50) {
-                add(submit(orderId = "ask-$index", side = Side.SELL, price = 100L + (index % 5), quantity = 2))
+        val commands =
+            buildList {
+                for (index in 1..50) {
+                    add(submit(orderId = "ask-$index", side = Side.SELL, price = 100L + (index % 5), quantity = 2))
+                }
+                for (index in 1..50) {
+                    add(submit(orderId = "bid-$index", side = Side.BUY, price = 102L + (index % 4), quantity = 3))
+                }
+                for (index in 1..20) {
+                    add(cancel(orderId = "ask-$index"))
+                    add(cancel(orderId = "bid-$index"))
+                }
             }
-            for (index in 1..50) {
-                add(submit(orderId = "bid-$index", side = Side.BUY, price = 102L + (index % 4), quantity = 3))
-            }
-            for (index in 1..20) {
-                add(cancel(orderId = "ask-$index"))
-                add(cancel(orderId = "bid-$index"))
-            }
-        }
 
         val firstRun = runCommands(MatchingEngine(), commands)
         val secondRun = runCommands(MatchingEngine(), commands)
@@ -857,45 +871,47 @@ class MatchingEngineTest {
 
     @Test
     fun `여러 마켓 command stream도 결정성과 마켓별 sequence를 유지한다`() {
-        val markets = listOf(
-            MarketId("BTC-KRW"),
-            MarketId("ETH-KRW"),
-            MarketId("SOL-KRW"),
-        )
-        val commands = buildList {
-            markets.forEach { market ->
-                for (index in 1..20) {
-                    add(
-                        submit(
-                            market = market,
-                            orderId = "${market.value}-ask-$index",
-                            side = Side.SELL,
-                            price = 100L + (index % 4),
-                            quantity = 2,
-                        ),
-                    )
+        val markets =
+            listOf(
+                MarketId("BTC-KRW"),
+                MarketId("ETH-KRW"),
+                MarketId("SOL-KRW"),
+            )
+        val commands =
+            buildList {
+                markets.forEach { market ->
+                    for (index in 1..20) {
+                        add(
+                            submit(
+                                market = market,
+                                orderId = "${market.value}-ask-$index",
+                                side = Side.SELL,
+                                price = 100L + (index % 4),
+                                quantity = 2,
+                            ),
+                        )
+                    }
+                }
+                markets.asReversed().forEach { market ->
+                    for (index in 1..20) {
+                        add(
+                            submit(
+                                market = market,
+                                orderId = "${market.value}-bid-$index",
+                                side = Side.BUY,
+                                price = 101L + (index % 5),
+                                quantity = 3,
+                            ),
+                        )
+                    }
+                }
+                markets.forEach { market ->
+                    for (index in 1..10) {
+                        add(cancel(market = market, orderId = "${market.value}-ask-$index"))
+                        add(cancel(market = market, orderId = "${market.value}-bid-$index"))
+                    }
                 }
             }
-            markets.asReversed().forEach { market ->
-                for (index in 1..20) {
-                    add(
-                        submit(
-                            market = market,
-                            orderId = "${market.value}-bid-$index",
-                            side = Side.BUY,
-                            price = 101L + (index % 5),
-                            quantity = 3,
-                        ),
-                    )
-                }
-            }
-            markets.forEach { market ->
-                for (index in 1..10) {
-                    add(cancel(market = market, orderId = "${market.value}-ask-$index"))
-                    add(cancel(market = market, orderId = "${market.value}-bid-$index"))
-                }
-            }
-        }
 
         val firstRun = runCommands(MatchingEngine(), commands)
         val secondRun = runCommands(MatchingEngine(), commands)
@@ -907,8 +923,7 @@ class MatchingEngineTest {
     private fun runCommands(
         engine: MatchingEngine,
         commands: List<MatchingCommand>,
-    ): List<MatchingEvent> =
-        commands.flatMap { engine.process(it) }
+    ): List<MatchingEvent> = commands.flatMap { engine.process(it) }
 
     private fun assertPerMarketSequencesAreContiguous(events: List<MatchingEvent>) {
         val sequencesByMarket = events.groupBy { it.marketId }

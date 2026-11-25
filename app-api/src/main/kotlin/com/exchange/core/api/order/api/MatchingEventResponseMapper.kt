@@ -1,0 +1,67 @@
+package com.exchange.core.api.order.api
+
+import com.exchange.core.matching.MatchingEvent
+import com.exchange.core.matching.OrderCancelRejected
+import com.exchange.core.matching.OrderCancelled
+import com.exchange.core.matching.OrderEnteredBook
+import com.exchange.core.matching.TradeExecuted
+
+/**
+ * domain event를 API response DTO로 변환한다.
+ *
+ * 각 subtype에 필요한 값만 채우고 의미가 없는 필드는 `null`로 유지한다. 도메인의 value
+ * class와 enum은 JSON에서 다루기 쉬운 String 또는 Long 원시값으로 풀어낸다.
+ *
+ * @receiver matching engine이 생성한 domain event
+ * @return event subtype에 맞는 [type]과 필드가 채워진 API DTO
+ */
+fun MatchingEvent.toResponse(): MatchingEventResponse =
+    when (this) {
+        is TradeExecuted -> {
+            MatchingEventResponse(
+                type = "TRADE_EXECUTED",
+                marketId = marketId.value,
+                engineSequence = engineSequence,
+                makerOrderId = makerOrderId.value,
+                takerOrderId = takerOrderId.value,
+                side = side.name,
+                price = price.value,
+                quantity = quantity.value,
+            )
+        }
+
+        is OrderEnteredBook -> {
+            MatchingEventResponse(
+                type = "ORDER_ENTERED_BOOK",
+                marketId = marketId.value,
+                engineSequence = engineSequence,
+                orderId = orderId.value,
+                userId = userId.value,
+                side = side.name,
+                price = price.value,
+                remainingQuantity = remainingQuantity.value,
+            )
+        }
+
+        is OrderCancelled -> {
+            MatchingEventResponse(
+                type = "ORDER_CANCELLED",
+                marketId = marketId.value,
+                engineSequence = engineSequence,
+                orderId = orderId.value,
+                userId = userId.value,
+                remainingQuantity = remainingQuantity.value,
+            )
+        }
+
+        is OrderCancelRejected -> {
+            MatchingEventResponse(
+                type = "ORDER_CANCEL_REJECTED",
+                marketId = marketId.value,
+                engineSequence = engineSequence,
+                orderId = orderId.value,
+                userId = userId.value,
+                reason = reason,
+            )
+        }
+    }
