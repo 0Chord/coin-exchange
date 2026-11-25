@@ -192,6 +192,156 @@ class SplitFundsTradingHttpTest {
         }
     }
 
+    @Test
+    fun `Archive 잔고는 부분 체결과 잔량 반환 뒤 재시작에도 유지된다`() {
+        withTradingNodes(archiveQuery = true) { harness ->
+            val ordersPath = "/markets/BTC-USDT/orders"
+            val jdbc = harness.database.jdbc()
+            val namespace = "${lineage.high}:${lineage.low}"
+
+            fun readLedgerRows() =
+                jdbc.queryForList(
+                    "select sequence, log_position, transactions::text from order_query.funds_ledger_batch " +
+                        "where namespace = ? order by sequence",
+                    namespace,
+                )
+
+            HttpClient.newHttpClient().use { http ->
+                val finalLedgerRows =
+                    archiveBalanceWas(harness, 0).use { was ->
+                        val url = wasUrl(was)
+                        awaitBalance(http, url, "USDT", sequence = 2, available = 1_000, reserved = 0, userId = "buyer")
+                        awaitBalance(http, url, "BTC", sequence = 2, available = 3, reserved = 0, userId = "seller")
+                        assertEquals(404, getBalance(http, url, "BTC", userId = "buyer").statusCode())
+                        assertEquals(404, getBalance(http, url, "USDT", userId = "seller").statusCode())
+
+                        for (userId in listOf("buyer", "seller")) {
+                            val epoch = post(http, url, "/channels/0/epoch", """{"userId":"$userId","expectedEpoch":0}""")
+                            assertEquals(200, epoch.statusCode(), epoch.body())
+                        }
+
+                        val buy = post(http, url, ordersPath, orderBody("buyer", "BUY", quantity = 3))
+                        assertEquals(202, buy.statusCode(), buy.body())
+                        val buyOrderId = json.readTree(buy.body()).path("orderId").asString()
+                        assertTrue(buyOrderId.isNotBlank(), buy.body())
+                        awaitQuery(harness, http, url, buyOrderId, "RESTING", filled = 0, remaining = 3, cancelled = 0)
+                        awaitBalance(http, url, "USDT", sequence = 3, available = 700, reserved = 300, userId = "buyer")
+                        awaitBalance(http, url, "BTC", sequence = 3, available = 0, reserved = 0, userId = "buyer")
+                        awaitBalance(http, url, "BTC", sequence = 3, available = 3, reserved = 0, userId = "seller")
+                        val sellerQuote = getBalance(http, url, "USDT", userId = "seller")
+                        assertEquals(404, sellerQuote.statusCode(), sellerQuote.body())
+                        assertEquals(3L, json.readTree(sellerQuote.body()).path("asOfLedgerSequence").longValue())
+
+                        harness.settlementGate.paused.set(true)
+                        val sellOrderId =
+                            try {
+                                val sell = post(http, url, ordersPath, orderBody("seller", "SELL", quantity = 1))
+                                assertEquals(202, sell.statusCode(), sell.body())
+                                val orderId = json.readTree(sell.body()).path("orderId").asString()
+                                assertTrue(orderId.isNotBlank(), sell.body())
+                                awaitQuery(harness, http, url, buyOrderId, "PARTIALLY_FILLED", 1, 2, 0, "PENDING", "SETTLEMENT")
+                                awaitQuery(harness, http, url, orderId, "FILLED", 1, 0, 0, "PENDING", "SETTLEMENT")
+                                awaitBalance(http, url, "USDT", sequence = 4, available = 700, reserved = 300, userId = "buyer")
+                                awaitBalance(http, url, "BTC", sequence = 4, available = 0, reserved = 0, userId = "buyer")
+                                awaitBalance(http, url, "BTC", sequence = 4, available = 2, reserved = 1, userId = "seller")
+                                awaitBalance(http, url, "USDT", sequence = 4, available = 0, reserved = 0, userId = "seller")
+                                orderId
+                            } finally {
+                                harness.settlementGate.paused.set(false)
+                            }
+                        awaitQuery(harness, http, url, buyOrderId, "PARTIALLY_FILLED", filled = 1, remaining = 2, cancelled = 0)
+                        awaitQuery(harness, http, url, sellOrderId, "FILLED", filled = 1, remaining = 0, cancelled = 0)
+                        assertTradedBalances(http, url, jdbc, sequence = 5, buyerAvailable = 700, buyerReserved = 200)
+
+                        val cancelPath = "$ordersPath/$buyOrderId/cancel"
+                        val cancelBody = """{"userId":"buyer","channel":0,"epoch":1,"sequence":2,"expectedConfigurationVersion":1}"""
+                        val firstCancel = post(http, url, cancelPath, cancelBody)
+                        assertEquals(202, firstCancel.statusCode(), firstCancel.body())
+                        val cancelReceipt = json.readTree(firstCancel.body())
+                        assertEquals("ACCEPTED", cancelReceipt.path("status").asString(), firstCancel.body())
+                        val cancelId = cancelReceipt.path("cancelId").asString()
+                        assertTrue(cancelId.isNotBlank(), firstCancel.body())
+                        awaitQuery(harness, http, url, buyOrderId, "CANCELLED", filled = 1, remaining = 0, cancelled = 2)
+                        assertTradedBalances(http, url, jdbc, sequence = 6, buyerAvailable = 900, buyerReserved = 0)
+
+                        val savedLedgerRows = readLedgerRows()
+                        assertEquals((1L..6L).toList(), savedLedgerRows.map { row -> row.getValue("sequence") })
+                        val transactions =
+                            savedLedgerRows.flatMap { row ->
+                                val payload = row.getValue("transactions") as String
+                                readRecoveryTransactions(payload)
+                            }
+                        assertRecoveryLedgerTransactions(transactions)
+
+                        val repeatedCancel = post(http, url, cancelPath, cancelBody)
+                        assertEquals(202, repeatedCancel.statusCode(), repeatedCancel.body())
+                        val repeatedReceipt = json.readTree(repeatedCancel.body())
+                        assertEquals("ACCEPTED", repeatedReceipt.path("status").asString(), repeatedCancel.body())
+                        assertEquals(cancelId, repeatedReceipt.path("cancelId").asString(), repeatedCancel.body())
+                        assertTradedBalances(http, url, jdbc, sequence = 6, buyerAvailable = 900, buyerReserved = 0)
+                        assertEquals(savedLedgerRows, readLedgerRows())
+                        savedLedgerRows
+                    }
+                archiveBalanceWas(harness, 1).use { restarted ->
+                    assertTradedBalances(http, wasUrl(restarted), jdbc, sequence = 6, buyerAvailable = 900, buyerReserved = 0)
+                    assertEquals(finalLedgerRows, readLedgerRows())
+                }
+            }
+        }
+    }
+
+    private fun assertTradedBalances(
+        http: HttpClient,
+        url: String,
+        jdbc: JdbcTemplate,
+        sequence: Long,
+        buyerAvailable: Long,
+        buyerReserved: Long,
+    ) {
+        val expected =
+            listOf(
+                Balance(UserId("buyer"), AssetId("BTC"), Amount(1), Amount(0)),
+                Balance(UserId("buyer"), AssetId("USDT"), Amount(buyerAvailable), Amount(buyerReserved)),
+                Balance(UserId("seller"), AssetId("BTC"), Amount(2), Amount(0)),
+                Balance(UserId("seller"), AssetId("USDT"), Amount(100), Amount(0)),
+            )
+        for (balance in expected) {
+            awaitBalance(
+                http,
+                url,
+                balance.assetId.value,
+                sequence = sequence,
+                available = balance.available.value,
+                reserved = balance.hold.value,
+                userId = balance.userId.value,
+            )
+        }
+
+        val namespace = "${lineage.high}:${lineage.low}"
+        val storedBalances =
+            jdbc.query(
+                "select user_id, asset_id, available, reserved from order_query.balance_projection " +
+                    "where namespace = ? order by user_id, asset_id",
+                { row, _ ->
+                    Balance(
+                        UserId(row.getString("user_id")),
+                        AssetId(row.getString("asset_id")),
+                        Amount(row.getLong("available")),
+                        Amount(row.getLong("reserved")),
+                    )
+                },
+                namespace,
+            )
+        assertEquals(expected, storedBalances)
+        val projectedThrough =
+            jdbc.queryForObject(
+                "select projected_through from order_query.balance_progress where namespace = ?",
+                Long::class.java,
+                namespace,
+            )
+        assertEquals(sequence, projectedThrough)
+    }
+
     private fun verifyBalanceRecoveryAndFailure(
         harness: TradingHarness,
         http: HttpClient,
@@ -373,14 +523,15 @@ class SplitFundsTradingHttpTest {
         sequence: Long,
         available: Long,
         reserved: Long,
+        userId: String = "buyer",
     ) {
         var last: HttpResponse<String>? = null
-        await("$asset 잔고 $available/$reserved, 원장 $sequence", { "마지막 응답 ${last?.statusCode()}: ${last?.body()}" }) {
-            val response = getBalance(http, url, asset)
+        await("$userId $asset 잔고 $available/$reserved, 원장 $sequence", { "마지막 응답 ${last?.statusCode()}: ${last?.body()}" }) {
+            val response = getBalance(http, url, asset, userId = userId)
             last = response
             val body = json.readTree(response.body())
             response.statusCode() == 200 && body.path("code").asString() == "BALANCE_FOUND" &&
-                body.path("userId").asString() == "buyer" && body.path("assetId").asString() == asset &&
+                body.path("userId").asString() == userId && body.path("assetId").asString() == asset &&
                 body.path("asOfLedgerSequence").longValue() == sequence &&
                 body.path("available").isIntegralNumber && body.path("available").longValue() == available &&
                 body.path("reserved").isIntegralNumber && body.path("reserved").longValue() == reserved
@@ -392,10 +543,11 @@ class SplitFundsTradingHttpTest {
         url: String,
         asset: String,
         timeout: Duration = Duration.ofSeconds(3),
+        userId: String = "buyer",
     ): HttpResponse<String> {
         val request =
             HttpRequest
-                .newBuilder(URI.create("$url/api/trading/v3/users/buyer/balances/$asset"))
+                .newBuilder(URI.create("$url/api/trading/v3/users/$userId/balances/$asset"))
                 .timeout(timeout)
                 .GET()
                 .build()
