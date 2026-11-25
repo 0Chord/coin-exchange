@@ -126,3 +126,60 @@ PR 최초 커밋 `49e03a0`의 운영 소스에 있는 UseCase 9개는 모두 구
 이번 변경은 #63의 Controller가 `BalanceQueryUseCase` 인터페이스에 의존하도록 조립하고, 잔고를 읽고 쓰는 Spring 빈의 메서드에 선언적 트랜잭션을 적용한다. 구조 검사는 같은 모듈·패키지에서 계약을 직접 구현하는 구체 `UseCaseImpl`이 있을 때 그 인터페이스를 진입점으로 인식한다.
 
 선언적 트랜잭션 전환 후 API 108건, 구조 검사 388건이 실패·건너뜀 없이 통과했다. CI 테스트 분류, 필수 P01~P09, ktlint 검사도 통과했다. PostgreSQL 시험에서는 바깥 읽기 트랜잭션이 이전 시점을 유지하는 동안 새 쓰기가 독립 커밋되고, 바깥 트랜잭션을 롤백한 뒤에도 확인 순번과 잔고가 유지됨을 대조했다. 별도 컨텍스트의 코드 리뷰에서 위반을 확인하지 못했다. [독립 커밋 PostgreSQL 시험](../app-api/src/test/kotlin/com/exchange/core/api/trading/infrastructure/persistence/PostgresOrderQueryFeedStoreTest.kt#L1116)
+
+## 후속 명세 · 부분 체결과 잔량 반환의 잔고 HTTP 검증
+
+매수자가 3개를 주문하고 1개를 체결한 뒤 나머지 2개를 취소한다. 매수자는 체결에 쓴 100 USDT를 제외한 200 USDT를 돌려받고, 매도자는 1 BTC를 넘기고 100 USDT를 받는다. 두 사용자가 조회한 잔고는 같은 PostgreSQL과 Archive를 연결한 새 WAS에서도 이어져야 한다.
+
+### 확인한 기준과 이번 범위
+
+- 기준은 2026-11-25의 `main` `c92c1f7`이다. GitHub 이슈와 보드는 Open·Todo이며, 잔고 API를 병합한 #206의 CI 10개가 통과했다. 기존 테스트에는 미체결 매수 예약과 전량 반환, 같은 취소 재전송, WAS 재시작, 반영 지연·DB 장애 응답이 있다. PostgreSQL 시험은 실제 정산 분개를 잔고에 적용하는 동작을 별도로 확인한다. [#63](https://github.com/0Chord/coin-exchange/issues/63) · [#206](https://github.com/0Chord/coin-exchange/pull/206) · [main의 남은 범위](https://github.com/0Chord/coin-exchange/blob/c92c1f77de55d931f62706ff7a4a8d32fe4fce48/README.md#남은-범위)
+- 남은 수용 조건은 실제 저장 경로에서 BUY의 부분 체결·잔량 반환과 SELL의 기초자산 예약·정산 확인을 연결하는 것이다. API와 저장 모델은 이미 있으므로 기존 HTTP 통합 테스트 클래스에 사례 한 건을 추가하는 범위로 잡는다. 이전 논의에서 결정한 PostgreSQL 잔고 조회 모델을 그대로 사용한다.
+- 재시작은 WAS를 닫고 같은 DB·Archive·조회 네임스페이스에 연결한 새 WAS를 여는 것으로 잡는다. 자금·매칭 각 1노드는 유지한다. 자금·매칭 노드 자체의 재시작은 #66, Archive 모드의 주문·취소 복구 게이트는 #59에서 다룬다. 인증, 장애 주입, 성능 측정은 이번 시험 범위 밖이다. [#66 전체 재시작](https://github.com/0Chord/coin-exchange/issues/66) · [#59 접수 재개](https://github.com/0Chord/coin-exchange/issues/59)
+
+### 사용자 흐름과 기대값
+
+`BTC-USDT`, LIMIT+GTC, 가격 100, 수수료 0으로 검증한다. 기존 시험 준비 과정이 매수자에게 1,000 USDT, 매도자에게 3 BTC를 한 번씩 지급한다. 표의 잔고는 **사용 가능/예약** 순서다. 금액과 수량은 기존 시험 마켓의 최소 단위다.
+
+| 시점 | 매수자 USDT | 매수자 BTC | 매도자 BTC | 매도자 USDT | 확인할 거래 상태 |
+| --- | ---: | ---: | ---: | ---: | --- |
+| 초기 지급 반영 | `1,000/0` | `404` | `3/0` | `404` | 지급 두 건 반영 |
+| 매수 3개가 주문장에 대기 | `700/300` | `0/0` | `3/0` | `404` | 매수 `RESTING`, 잔량 3 |
+| 매도 1개 매칭, 자금 정산 전달 대기 | `700/300` | `0/0` | `2/1` | `0/0` | 매수 1개 체결·잔량 2, 매도 1개 전량 체결, 정산 대기 |
+| 체결 1개 정산 반영 | `700/200` | `1/0` | `2/0` | `100/0` | 매수 `PARTIALLY_FILLED`, 매도 `FILLED`, 양쪽 `APPLIED` |
+| 매수 잔량 2개 취소·반환 반영 | `900/0` | `1/0` | `2/0` | `100/0` | 매수 `CANCELLED / APPLIED`, 체결 1·취소 2·잔량 0 |
+| 같은 취소 재전송, 새 WAS에서 조회 | `900/0` | `1/0` | `2/0` | `100/0` | 같은 취소 ID와 최종 원장 순번 유지 |
+
+1. WAS에 매수 주문을 제출한다. POST `202`는 접수 결과다. 주문 GET에서 대기 상태를 확인하고, 잔고 GET이 매수 예약 순번까지 따라온 뒤 `700/300`을 검사한다.
+2. 기존 시험의 정산 전달 보류를 켜고 매도 주문을 제출한다. 매칭은 1개를 확정하고 자금 엔진은 매도자의 1 BTC를 예약한 상태다. 양쪽 주문의 정산 대기와 매도자 `2/1`을 확인한 뒤 보류를 해제한다. 자금 엔진이 정산하고 WAS가 반영한 뒤 양쪽 잔고를 대조한다.
+3. 매수자가 남은 2개를 취소한다. 반환을 포함한 최종 원장 순번에서 `900/0`을 확인한다. 앞선 체결의 1 BTC와 매도자의 100 USDT는 그대로다. 접수한 취소 토큰과 내용으로 재전송하면 첫 `cancelId`가 반환되고 잔고·원장에 두 번째 효과가 생기지 않는다.
+4. 기존 WAS를 닫고 재접속한다. 새 WAS가 원본을 확인하고 조회 준비를 마친 뒤 네 잔고의 `200 BALANCE_FOUND`, 사용자·자산 ID, 금액, 최종 원장 순번을 다시 확인한다. 반복 GET 전후에 잔고 행과 원장 순번은 동일해야 한다.
+
+### 테스트에서 확인할 경계
+
+- `SplitFundsTradingHttpTest`의 `withTradingNodes(archiveQuery = true)`, `archiveBalanceWas`, `awaitQuery`, `settlementGate`를 재사용한다. 테스트 쪽 `awaitBalance`와 `getBalance`가 매수자로 고정되어 있으므로 사용자 인자만 전달할 수 있게 바꾼다. 정산 보류는 `finally`에서 해제하고 각 WAS는 기존 생명주기 도구로 닫는다. 수동 서버 기동이나 추가 시험 도구는 필요하지 않다. [기존 Archive 잔고 HTTP 사례](https://github.com/0Chord/coin-exchange/blob/c92c1f77de55d931f62706ff7a4a8d32fe4fce48/app-api/src/test/kotlin/com/exchange/core/api/trading/infrastructure/aeron/SplitFundsTradingHttpTest.kt#L134) · [기존 양쪽 주문의 정산 대기 사례](https://github.com/0Chord/coin-exchange/blob/c92c1f77de55d931f62706ff7a4a8d32fe4fce48/app-api/src/test/kotlin/com/exchange/core/api/trading/infrastructure/aeron/SplitFundsTradingHttpTest.kt#L950)
+- `GET /api/trading/v3/users/{userId}/balances/{assetId}`의 `asOfLedgerSequence`를 기준으로 대기한다. 이 시험의 예상 순번은 초기 지급 2 → 매수 예약 3 → 매도 예약 4 → 단일 체결 정산 5 → 잔량 반환 6이다. GET은 관측 전의 이전 유효 값을 반환하거나 반영 중 `202`를 반환할 수 있다. 거래 상태가 먼저 바뀌어도 잔고는 해당 원장 순번이 반영된 뒤 판정한다. 기존 오류 응답 회귀는 #206 테스트가 맡는다.
+- 반환 전후와 재시작 뒤 PostgreSQL의 `order_query.balance_projection` 네 행을 `namespace`·사용자·자산으로 읽고 표의 독립 기대값과 대조한다. 최종 `balance_progress.projected_through`와 네 GET 순번이 같아야 한다. 같은 `namespace`의 `funds_ledger_batch`는 지급 2건, 예약 2건, 정산 1건, 반환 1건에 해당하는 순번 1~6을 보존해야 한다. 반복 취소·조회·재시작 뒤에도 마지막 순번과 저장된 내용이 같아야 한다. [잔고 테이블](https://github.com/0Chord/coin-exchange/blob/c92c1f77de55d931f62706ff7a4a8d32fe4fce48/app-api/src/main/resources/db/migration/V17__create_order_query_balance_projection.sql) · [원장 테이블](https://github.com/0Chord/coin-exchange/blob/c92c1f77de55d931f62706ff7a4a8d32fe4fce48/app-api/src/main/resources/db/migration/V15__create_funds_recovery_ledger.sql)
+
+### 검증과 완료 기준
+
+이 변경이 있는 브랜치를 체크아웃한 폴더에서 실행한다. 새 메서드로 두 사용자와 두 자산의 각 시점 결과를 확인한 뒤 기존 HTTP·PostgreSQL 시험과 구조·CI 분류·스타일 검사를 돌린다.
+
+```sh
+cd "$(git rev-parse --show-toplevel)"
+./gradlew --no-daemon --max-workers=2 :app-api:test \
+  --tests '*SplitFundsTradingHttpTest.Archive 잔고는 부분 체결과 잔량 반환 뒤 재시작에도 유지된다' --console=plain
+./gradlew --no-daemon --max-workers=2 :app-api:test \
+  --tests '*SplitFundsTradingHttpTest' --tests '*PostgresOrderQueryFeedStoreTest' -PciTestGroup=general \
+  :app-api:verifyCiTestPartition :app-api:ktlintCheck :architecture-tests:verifyArchitectureReport --continue --console=plain
+```
+
+반영 대기가 제한 시간을 넘기거나 두 계정의 값·원장 순번·취소 ID·재시작 결과가 다르면 실패다. 이 사례와 기존 #206 수용 근거를 합쳐 #63 완료를 판단한다.
+
+### 실행 결과 · 2026-11-25
+
+- `main` `c92c1f7`에서 만든 `feature/phase-3/integration`을 기준으로 `test/balance-query-lifecycle/63`의 변경을 검증했다. [새 HTTP 시험](../app-api/src/test/kotlin/com/exchange/core/api/trading/infrastructure/aeron/SplitFundsTradingHttpTest.kt#L195)
+- 실제 WAS·Aeron·PostgreSQL로 새 시험 1건이 통과했다. 매수자 700/300 → 700/200 → 900/0, 매도자 BTC 2/1 → 2/0과 USDT 100/0을 확인했다. 같은 토큰으로 취소를 재전송하고 WAS를 재시작한 뒤에도 최종 잔고 네 행, 원장 6개 묶음, 잔고 반영 순번 6이 일치했다.
+- 회귀는 `SplitFundsTradingHttpTest` 31건, `PostgresOrderQueryFeedStoreTest` 34건, 아키텍처 388건이 실패·오류·건너뜀 없이 통과했다. 필수 운영 검사 P01~P09와 CI 테스트 분류도 통과했다. 새 사례가 포함된 클래스는 `general` 그룹이다.
+- 첫 스타일 검사에서 원장 JSON을 읽는 줄이 140자를 초과했다. JSON 값 조회와 변환을 두 줄로 분리했다. 수정 뒤 `-PciTestGroup=general`로 새 사례 1건과 `:app-api:verifyCiTestPartition`, `:app-api:ktlintCheck`를 다시 실행해 모두 통과했다.
+- 작성 대화를 상속하지 않은 검토에서 원장 순번 3·4의 잔고 검사 누락과 원장 조회의 네임스페이스 조건을 지적받았다. 세 잔고 검사를 보완하고 DB 조회를 해당 네임스페이스로 제한했다. 스타일 수정까지 반영한 테스트 변경본(패치 SHA-256 `d30a2dddf64c`)을 재검토했고 확인된 미해결 지적은 없다.
