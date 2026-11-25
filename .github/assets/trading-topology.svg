@@ -1,0 +1,119 @@
+<svg xmlns="http://www.w3.org/2000/svg" id="cluster-diagram-0" width="255" class="flowchart" viewBox="-7 -7 255 318" role="img" aria-roledescription="flowchart-v2" height="318" aria-label="자금·매칭 클러스터 배치">
+<rect x="-6.5" y="-6.5" width="254" height="317" rx="7" fill="#fff" stroke="#d8dee7"/>
+<style>#cluster-diagram-0{font-family:-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif;font-size:16px;fill:#202937;}@keyframes edge-animation-frame{from{stroke-dashoffset:0;}}@keyframes dash{to{stroke-dashoffset:0;}}#cluster-diagram-0 .edge-animation-slow{stroke-dasharray:9,5!important;stroke-dashoffset:900;animation:dash 50s linear infinite;stroke-linecap:round;}#cluster-diagram-0 .edge-animation-fast{stroke-dasharray:9,5!important;stroke-dashoffset:900;animation:dash 20s linear infinite;stroke-linecap:round;}#cluster-diagram-0 .error-icon{fill:hsl(30, 45.4545454545%, 100%);}#cluster-diagram-0 .error-text{fill:#000000;stroke:#000000;}#cluster-diagram-0 .edge-thickness-normal{stroke-width:1px;}#cluster-diagram-0 .edge-thickness-thick{stroke-width:3.5px;}#cluster-diagram-0 .edge-pattern-solid{stroke-dasharray:0;}#cluster-diagram-0 .edge-thickness-invisible{stroke-width:0;fill:none;}#cluster-diagram-0 .edge-pattern-dashed{stroke-dasharray:3;}#cluster-diagram-0 .edge-pattern-dotted{stroke-dasharray:2;}#cluster-diagram-0 .marker{fill:#54657d;stroke:#54657d;}#cluster-diagram-0 .marker.cross{stroke:#54657d;}#cluster-diagram-0 svg{font-family:-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif;font-size:16px;}#cluster-diagram-0 p{margin:0;}#cluster-diagram-0 .label{font-family:-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif;color:#202937;}#cluster-diagram-0 .cluster-label text{fill:#000000;}#cluster-diagram-0 .cluster-label span{color:#000000;}#cluster-diagram-0 .cluster-label span p{background-color:transparent;}#cluster-diagram-0 .label text,#cluster-diagram-0 span{fill:#202937;color:#202937;}#cluster-diagram-0 .node rect,#cluster-diagram-0 .node circle,#cluster-diagram-0 .node ellipse,#cluster-diagram-0 .node polygon,#cluster-diagram-0 .node path{fill:#eff4f9;stroke:#647791;stroke-width:1px;}#cluster-diagram-0 .rough-node .label text,#cluster-diagram-0 .node .label text,#cluster-diagram-0 .image-shape .label,#cluster-diagram-0 .icon-shape .label{text-anchor:middle;}#cluster-diagram-0 .node .katex path{fill:#000;stroke:#000;stroke-width:1px;}#cluster-diagram-0 .rough-node .label,#cluster-diagram-0 .node .label,#cluster-diagram-0 .image-shape .label,#cluster-diagram-0 .icon-shape .label{text-align:center;}#cluster-diagram-0 .node.clickable{cursor:pointer;}#cluster-diagram-0 .root .anchor path{fill:#54657d!important;stroke-width:0;stroke:#54657d;}#cluster-diagram-0 .arrowheadPath{fill:#0b0b0b;}#cluster-diagram-0 .edgePath .path{stroke:#54657d;stroke-width:2.0px;}#cluster-diagram-0 .flowchart-link{stroke:#54657d;fill:none;}#cluster-diagram-0 .edgeLabel{background-color:hsl(90, 45.4545454545%, 95.6862745098%);text-align:center;}#cluster-diagram-0 .edgeLabel p{background-color:hsl(90, 45.4545454545%, 95.6862745098%);}#cluster-diagram-0 .edgeLabel rect{opacity:0.5;background-color:hsl(90, 45.4545454545%, 95.6862745098%);fill:hsl(90, 45.4545454545%, 95.6862745098%);}#cluster-diagram-0 .labelBkg{background-color:rgba(244, 249, 239, 0.5);}#cluster-diagram-0 .cluster rect{fill:hsl(30, 45.4545454545%, 100%);stroke:hsl(30, 5.4545454545%, 90%);stroke-width:1px;}#cluster-diagram-0 .cluster text{fill:#000000;}#cluster-diagram-0 .cluster span{color:#000000;}#cluster-diagram-0 div.mermaidTooltip{position:absolute;text-align:center;max-width:200px;padding:2px;font-family:-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif;font-size:12px;background:hsl(30, 45.4545454545%, 100%);border:1px solid hsl(30, 5.4545454545%, 90%);border-radius:2px;pointer-events:none;z-index:100;}#cluster-diagram-0 .flowchartTitleText{text-anchor:middle;font-size:18px;fill:#202937;}#cluster-diagram-0 rect.text{fill:none;stroke-width:0;}#cluster-diagram-0 .icon-shape,#cluster-diagram-0 .image-shape{background-color:hsl(90, 45.4545454545%, 95.6862745098%);text-align:center;}#cluster-diagram-0 .icon-shape p,#cluster-diagram-0 .image-shape p{background-color:hsl(90, 45.4545454545%, 95.6862745098%);padding:2px;}#cluster-diagram-0 .icon-shape rect,#cluster-diagram-0 .image-shape rect{opacity:0.5;background-color:hsl(90, 45.4545454545%, 95.6862745098%);fill:hsl(90, 45.4545454545%, 95.6862745098%);}#cluster-diagram-0 .label-icon{display:inline-block;height:1em;overflow:visible;vertical-align:-0.125em;}#cluster-diagram-0 .node .label-icon path{fill:currentColor;stroke:revert;stroke-width:revert;}#cluster-diagram-0 :root{--mermaid-font-family:-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif;}</style>
+<g>
+<marker id="cluster-diagram-0_flowchart-v2-pointEnd" class="marker flowchart-v2" viewBox="0 0 10 10" refX="5" refY="5" markerUnits="userSpaceOnUse" markerWidth="8" markerHeight="8" orient="auto">
+<path d="M 0 0 L 10 5 L 0 10 z" class="arrowMarkerPath" style="stroke-width: 1; stroke-dasharray: 1, 0;"/>
+</marker>
+<marker id="cluster-diagram-0_flowchart-v2-pointStart" class="marker flowchart-v2" viewBox="0 0 10 10" refX="4.5" refY="5" markerUnits="userSpaceOnUse" markerWidth="8" markerHeight="8" orient="auto">
+<path d="M 0 5 L 10 10 L 10 0 z" class="arrowMarkerPath" style="stroke-width: 1; stroke-dasharray: 1, 0;"/>
+</marker>
+<marker id="cluster-diagram-0_flowchart-v2-circleEnd" class="marker flowchart-v2" viewBox="0 0 10 10" refX="11" refY="5" markerUnits="userSpaceOnUse" markerWidth="11" markerHeight="11" orient="auto">
+<circle cx="5" cy="5" r="5" class="arrowMarkerPath" style="stroke-width: 1; stroke-dasharray: 1, 0;"/>
+</marker>
+<marker id="cluster-diagram-0_flowchart-v2-circleStart" class="marker flowchart-v2" viewBox="0 0 10 10" refX="-1" refY="5" markerUnits="userSpaceOnUse" markerWidth="11" markerHeight="11" orient="auto">
+<circle cx="5" cy="5" r="5" class="arrowMarkerPath" style="stroke-width: 1; stroke-dasharray: 1, 0;"/>
+</marker>
+<marker id="cluster-diagram-0_flowchart-v2-crossEnd" class="marker cross flowchart-v2" viewBox="0 0 11 11" refX="12" refY="5.2" markerUnits="userSpaceOnUse" markerWidth="11" markerHeight="11" orient="auto">
+<path d="M 1,1 l 9,9 M 10,1 l -9,9" class="arrowMarkerPath" style="stroke-width: 2; stroke-dasharray: 1, 0;"/>
+</marker>
+<marker id="cluster-diagram-0_flowchart-v2-crossStart" class="marker cross flowchart-v2" viewBox="0 0 11 11" refX="-1" refY="5.2" markerUnits="userSpaceOnUse" markerWidth="11" markerHeight="11" orient="auto">
+<path d="M 1,1 l 9,9 M 10,1 l -9,9" class="arrowMarkerPath" style="stroke-width: 2; stroke-dasharray: 1, 0;"/>
+</marker>
+<g class="root">
+<g class="clusters"/>
+<g class="edgePaths">
+<path d="M120.277,56L120.277,58.667C120.277,61.333,120.277,66.667,120.277,71.333C120.277,76,120.277,80,120.277,82L120.277,84" id="L_client_was_0" class="edge-thickness-normal edge-pattern-solid edge-thickness-normal edge-pattern-solid flowchart-link" style=";" data-edge="true" data-et="edge" data-id="L_client_was_0" data-points="W3sieCI6MTIwLjI3NzM0Mzc1LCJ5Ijo1Nn0seyJ4IjoxMjAuMjc3MzQzNzUsInkiOjcyfSx7IngiOjEyMC4yNzczNDM3NSwieSI6ODh9XQ==" marker-end="url(#cluster-diagram-0_flowchart-v2-pointEnd)"/>
+<path d="M120.277,136L120.277,138.667C120.277,141.333,120.277,146.667,120.277,151.333C120.277,156,120.277,160,120.277,162L120.277,164" id="L_was_funds_0" class="edge-thickness-normal edge-pattern-solid edge-thickness-normal edge-pattern-solid flowchart-link" style=";" data-edge="true" data-et="edge" data-id="L_was_funds_0" data-points="W3sieCI6MTIwLjI3NzM0Mzc1LCJ5IjoxMzZ9LHsieCI6MTIwLjI3NzM0Mzc1LCJ5IjoxNTJ9LHsieCI6MTIwLjI3NzM0Mzc1LCJ5IjoxNjh9XQ==" marker-end="url(#cluster-diagram-0_flowchart-v2-pointEnd)"/>
+<path d="M80.267,218.191L76.751,220.492C73.236,222.794,66.204,227.397,62.688,231.698C59.172,236,59.172,240,59.172,242L59.172,244" id="L_funds_matchingA_0" class="edge-thickness-normal edge-pattern-solid edge-thickness-normal edge-pattern-solid flowchart-link" style=";" data-edge="true" data-et="edge" data-id="L_funds_matchingA_0" data-points="W3sieCI6ODMuNjE0MDYyNSwieSI6MjE2fSx7IngiOjU5LjE3MTg3NSwieSI6MjMyfSx7IngiOjU5LjE3MTg3NSwieSI6MjQ4fV0=" marker-start="url(#cluster-diagram-0_flowchart-v2-pointStart)" marker-end="url(#cluster-diagram-0_flowchart-v2-pointEnd)"/>
+<path d="M160.287,218.191L163.803,220.492C167.319,222.794,174.351,227.397,177.867,231.698C181.383,236,181.383,240,181.383,242L181.383,244" id="L_funds_matchingB_0" class="edge-thickness-normal edge-pattern-solid edge-thickness-normal edge-pattern-solid flowchart-link" style=";" data-edge="true" data-et="edge" data-id="L_funds_matchingB_0" data-points="W3sieCI6MTU2Ljk0MDYyNSwieSI6MjE2fSx7IngiOjE4MS4zODI4MTI1LCJ5IjoyMzJ9LHsieCI6MTgxLjM4MjgxMjUsInkiOjI0OH1d" marker-start="url(#cluster-diagram-0_flowchart-v2-pointStart)" marker-end="url(#cluster-diagram-0_flowchart-v2-pointEnd)"/>
+</g>
+<g class="edgeLabels">
+<g>
+<rect class="background" style="stroke: none"/>
+</g>
+<g>
+<rect class="background" style="stroke: none"/>
+</g>
+<g>
+<rect class="background" style="stroke: none"/>
+</g>
+<g>
+<rect class="background" style="stroke: none"/>
+</g>
+<g class="edgeLabel">
+<g class="label" data-id="L_client_was_0" transform="translate(0, 0)">
+<text y="-10.1"><tspan class="text-outer-tspan" x="0" y="-0.1em" dy="1.1em"/></text>
+</g>
+</g>
+<g class="edgeLabel">
+<g class="label" data-id="L_was_funds_0" transform="translate(0, 0)">
+<text y="-10.1"><tspan class="text-outer-tspan" x="0" y="-0.1em" dy="1.1em"/></text>
+</g>
+</g>
+<g class="edgeLabel">
+<g class="label" data-id="L_funds_matchingA_0" transform="translate(0, 0)">
+<text y="-10.1"><tspan class="text-outer-tspan" x="0" y="-0.1em" dy="1.1em"/></text>
+</g>
+</g>
+<g class="edgeLabel">
+<g class="label" data-id="L_funds_matchingB_0" transform="translate(0, 0)">
+<text y="-10.1"><tspan class="text-outer-tspan" x="0" y="-0.1em" dy="1.1em"/></text>
+</g>
+</g>
+</g>
+<g class="nodes">
+<g class="node default" id="flowchart-client-0" transform="translate(120.27734375, 32)">
+<rect class="basic label-container" style="" x="-64.6015625" y="-24" width="129.203125" height="48"/>
+<g class="label" style="" transform="translate(0, -9)">
+<rect/>
+<g>
+<rect class="background" style="stroke: none"/>
+<text y="-10.1" style=""><tspan class="text-outer-tspan" x="0" y="-0.1em" dy="1.1em"><tspan font-style="normal" class="text-inner-tspan" font-weight="normal">클라이언트</tspan></tspan></text>
+</g>
+</g>
+</g>
+<g class="node default" id="flowchart-was-1" transform="translate(120.27734375, 112)">
+<rect class="basic label-container" style="" x="-47.3359375" y="-24" width="94.671875" height="48"/>
+<g class="label" style="" transform="translate(0, -9)">
+<rect/>
+<g>
+<rect class="background" style="stroke: none"/>
+<text y="-10.1" style=""><tspan class="text-outer-tspan" x="0" y="-0.1em" dy="1.1em"><tspan font-style="normal" class="text-inner-tspan" font-weight="normal">WAS</tspan></tspan></text>
+</g>
+</g>
+</g>
+<g class="node default" id="flowchart-funds-3" transform="translate(120.27734375, 192)">
+<rect class="basic label-container" style="" x="-59.78125" y="-24" width="119.5625" height="48"/>
+<g class="label" style="" transform="translate(0, -9)">
+<rect/>
+<g>
+<rect class="background" style="stroke: none"/>
+<text y="-10.1" style=""><tspan class="text-outer-tspan" x="0" y="-0.1em" dy="1.1em"><tspan font-style="normal" class="text-inner-tspan" font-weight="normal">공통</tspan><tspan font-style="normal" class="text-inner-tspan" font-weight="normal"> 자금</tspan></tspan></text>
+</g>
+</g>
+</g>
+<g class="node default" id="flowchart-matchingA-5" transform="translate(59.171875, 272)">
+<rect class="basic label-container" style="" x="-51.171875" y="-24" width="102.34375" height="48"/>
+<g class="label" style="" transform="translate(0, -9)">
+<rect/>
+<g>
+<rect class="background" style="stroke: none"/>
+<text y="-10.1" style=""><tspan class="text-outer-tspan" x="0" y="-0.1em" dy="1.1em"><tspan font-style="normal" class="text-inner-tspan" font-weight="normal">매칭</tspan><tspan font-style="normal" class="text-inner-tspan" font-weight="normal"> A</tspan></tspan></text>
+</g>
+</g>
+</g>
+<g class="node default" id="flowchart-matchingB-7" transform="translate(181.3828125, 272)">
+<rect class="basic label-container" style="" x="-51.0390625" y="-24" width="102.078125" height="48"/>
+<g class="label" style="" transform="translate(0, -9)">
+<rect/>
+<g>
+<rect class="background" style="stroke: none"/>
+<text y="-10.1" style=""><tspan class="text-outer-tspan" x="0" y="-0.1em" dy="1.1em"><tspan font-style="normal" class="text-inner-tspan" font-weight="normal">매칭</tspan><tspan font-style="normal" class="text-inner-tspan" font-weight="normal"> B</tspan></tspan></text>
+</g>
+</g>
+</g>
+</g>
+</g>
+</g>
+</svg>

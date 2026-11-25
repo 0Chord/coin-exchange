@@ -30,13 +30,7 @@ Kotlin으로 구현한 가상자산 거래 백엔드입니다. 현재 현물 거
 
 한 개의 자금 클러스터가 여러 마켓의 가용 잔고·예약·정산을 관리합니다. 매칭 담당은 배치 설정으로 정하며, 한 담당이 여러 마켓의 주문장을 운영할 수 있습니다. 아래는 매칭 담당을 두 클러스터로 나눈 9노드 검증 구성입니다. [마켓 배치](https://github.com/0Chord/coin-exchange/pull/184) · [9노드 검증](https://github.com/0Chord/coin-exchange/pull/185)
 
-```mermaid
-flowchart TB
-    client["클라이언트"] --> was["WAS"]
-    was --> funds["공통 자금"]
-    funds <--> matchingA["매칭 A"]
-    funds <--> matchingB["매칭 B"]
-```
+[![클라이언트 → WAS → 공통 자금. 공통 자금과 매칭 A·B가 주문과 결과를 교환](.github/assets/trading-topology.svg)](.github/assets/trading-topology.svg)
 
 | 구성요소 | 소유하는 상태와 판단 |
 | --- | --- |
@@ -62,27 +56,7 @@ flowchart TB
 
 팔로워 2의 기록이 늦고, 리더와 팔로워 1의 Archive가 먼저 위치 `P`까지 기록한 예입니다.
 
-```mermaid
-sequenceDiagram
-    participant client as 요청 측
-    participant leader as 리더
-    participant followerA as 팔로워 1
-    participant followerB as 팔로워 2
-    client->>leader: 명령
-    leader->>leader: 로그 발행
-    leader->>followerA: 로그 복제
-    leader->>followerB: 같은 로그 복제
-    leader->>leader: Archive 기록 P
-    followerA->>followerA: Archive 기록 P
-    followerA-->>leader: 기록 위치 P
-    leader->>leader: 과반 확인, P까지 커밋
-    leader-->>followerA: 커밋 위치 P
-    leader-->>followerB: 커밋 위치 P
-    leader->>leader: 거래 상태에 명령 적용
-    leader-->>client: 적용 결과
-    followerA->>followerA: P까지 적용
-    followerB->>followerB: 로컬 기록이 따라오면 적용
-```
+[![리더와 팔로워 1이 위치 P까지 기록하면 P를 커밋한다. 팔로워 2는 자기 기록이 따라오면 적용한다](.github/assets/cluster-quorum.svg)](.github/assets/cluster-quorum.svg)
 
 - 팔로워는 자기 Archive에 기록한 위치를 `AppendPosition`으로 알립니다. 리더는 **자신을 포함한 과반이 기록한 위치**를 계산하고 `CommitPosition`을 보냅니다. 공통 자금이 과반을 잃으면 새 예약은 확정되지 않습니다. [Aeron 과반 커밋](https://github.com/aeron-io/aeron/blob/1.53.3/aeron-cluster/src/main/java/io/aeron/cluster/ConsensusModuleAgent.java#L2886-L2949) · [과반 상실 검증](engineering/funds-quorum-failure-verification.md)
 - 각 거래 서비스는 **자기 노드의 커밋 위치까지** 적용합니다. 늦은 팔로워는 알림을 받아도 자기 기록이 도달한 범위까지 진행합니다. 같은 위치까지 적용하면 같은 거래 상태에 도달합니다. [팔로워 커밋 처리](https://github.com/aeron-io/aeron/blob/1.53.3/aeron-cluster/src/main/java/io/aeron/cluster/ConsensusModuleAgent.java#L2518-L2528) · [서비스 적용](https://github.com/aeron-io/aeron/blob/1.53.3/aeron-cluster/src/main/java/io/aeron/cluster/service/ClusteredServiceAgent.java#L262-L265)
@@ -108,7 +82,52 @@ sequenceDiagram
 
 통합 시험은 리더에 `SNAPSHOT`을 명시적으로 요청합니다. 각 노드는 그 로그 위치에서 역할 상태를 Archive에 저장합니다. 자금 스냅샷에는 **잔고·예약·수수료·접수 결과와 전달 진행 상태**, 매칭 스냅샷에는 **주문장·잔량·결과 순번과 아직 정산 확인을 받지 않은 결과**가 들어갑니다. 기록이 완료되면 합의 모듈은 서비스와 합의 스냅샷의 ID 및 로그 위치를 `recording.log`에 등록합니다. [스냅샷 요청](app-api/src/main/kotlin/com/exchange/core/api/trading/infrastructure/aeron/DevelopmentSplitTradingNode.kt#L318) · [역할 상태 저장](app-api/src/main/kotlin/com/exchange/core/api/trading/infrastructure/aeron/SplitTradingClusterAdapter.kt#L1059) · [스냅샷 등록](https://github.com/aeron-io/aeron/blob/1.53.3/aeron-cluster/src/main/java/io/aeron/cluster/ConsensusModuleAgent.java#L3154-L3189)
 
-```mermaid
+[![재시작한 노드가 recording.log에서 기록 ID와 로그 위치 P를 읽고, Archive에서 스냅샷과 이후 로그를 복원한다](.github/assets/cluster-snapshot-recovery.svg)](.github/assets/cluster-snapshot-recovery.svg)
+
+유효한 스냅샷이 없고 처음부터의 로그가 남아 있으면 로그부터 재생합니다. 기존 통합 시험에서는 자금·매칭 양쪽에 스냅샷을 남기고 추가 명령을 처리한 뒤, 같은 기록으로 두 역할을 재시작해 상태와 처리 위치를 대조합니다. [Aeron 복구 계획](https://github.com/aeron-io/aeron/blob/1.53.3/aeron-cluster/src/main/java/io/aeron/cluster/RecordingLog.java#L1731-L1765) · [우리 복원 코드](app-api/src/main/kotlin/com/exchange/core/api/trading/infrastructure/aeron/SplitTradingClusterAdapter.kt#L141) · [양쪽 역할 복원 시험](app-api/src/test/kotlin/com/exchange/core/api/trading/infrastructure/aeron/SplitFundsTradingHttpTest.kt#L2095)
+
+</details>
+
+<details>
+<summary>거래 배치와 클러스터 내부 그림의 Mermaid 원본</summary>
+
+**거래 클러스터 배치**
+
+```text
+flowchart TB
+    client["클라이언트"] --> was["WAS"]
+    was --> funds["공통 자금"]
+    funds <--> matchingA["매칭 A"]
+    funds <--> matchingB["매칭 B"]
+```
+
+**명령 복제와 과반 커밋**
+
+```text
+sequenceDiagram
+    participant client as 요청 측
+    participant leader as 리더
+    participant followerA as 팔로워 1
+    participant followerB as 팔로워 2
+    client->>leader: 명령
+    leader->>leader: 로그 발행
+    leader->>followerA: 로그 복제
+    leader->>followerB: 같은 로그 복제
+    leader->>leader: Archive 기록 P
+    followerA->>followerA: Archive 기록 P
+    followerA-->>leader: 기록 위치 P
+    leader->>leader: 과반 확인, P까지 커밋
+    leader-->>followerA: 커밋 위치 P
+    leader-->>followerB: 커밋 위치 P
+    leader->>leader: 거래 상태에 명령 적용
+    leader-->>client: 적용 결과
+    followerA->>followerA: P까지 적용
+    followerB->>followerB: 로컬 기록이 따라오면 적용
+```
+
+**스냅샷과 이후 로그 복원**
+
+```text
 sequenceDiagram
     participant node as 재시작 노드
     participant metadata as recording.log
@@ -122,8 +141,6 @@ sequenceDiagram
     archive-->>node: 이어서 적용할 명령
     node->>node: 확정 로그를 순서대로 적용
 ```
-
-유효한 스냅샷이 없고 처음부터의 로그가 남아 있으면 로그부터 재생합니다. 기존 통합 시험에서는 자금·매칭 양쪽에 스냅샷을 남기고 추가 명령을 처리한 뒤, 같은 기록으로 두 역할을 재시작해 상태와 처리 위치를 대조합니다. [Aeron 복구 계획](https://github.com/aeron-io/aeron/blob/1.53.3/aeron-cluster/src/main/java/io/aeron/cluster/RecordingLog.java#L1731-L1765) · [우리 복원 코드](app-api/src/main/kotlin/com/exchange/core/api/trading/infrastructure/aeron/SplitTradingClusterAdapter.kt#L141) · [양쪽 역할 복원 시험](app-api/src/test/kotlin/com/exchange/core/api/trading/infrastructure/aeron/SplitFundsTradingHttpTest.kt#L2095)
 
 </details>
 
