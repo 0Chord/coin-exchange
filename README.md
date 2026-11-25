@@ -1,8 +1,6 @@
-![Exchange Core 가상자산 거래 백엔드](.github/assets/exchange-core-hero.svg)
+# Exchange Core
 
-# 가상자산 거래 백엔드
-
-**현재는 현물 거래를 지원합니다.** 한 사용자가 여러 마켓에 동시에 주문해도 공통 자금 클러스터가 초과 예약을 막습니다. 각 매칭 클러스터는 주문장의 체결 순서를 관리하고, WAS는 확정 로그를 재생해 조회 데이터를 갱신합니다.
+Kotlin으로 구현한 가상자산 거래 백엔드입니다. 현재 현물 거래를 지원합니다. 공통 자금 클러스터가 여러 마켓의 예약과 정산을 맡고, 매칭 클러스터는 마켓별 주문장의 체결 순서를 관리합니다.
 
 | 5분 평균 정산 | 정산 p99 관측 상한 | 최종 전량 정산 |
 | :---: | :---: | :---: |
@@ -44,13 +42,6 @@ flowchart TB
     MatchingArchive --> Depth
     Replay --> DB["PostgreSQL · 주문·체결·원장·잔고·차트"]
     Depth --> Memory["WAS 메모리 · 가격별 잔량"]
-
-    classDef trading fill:#24396b,stroke:#7797ff,stroke-width:1.5px,color:#f5f7ff
-    classDef archive fill:#243050,stroke:#a5b6df,color:#f5f7ff
-    classDef query fill:#12413d,stroke:#59e4cb,stroke-width:1.5px,color:#e8fff9
-    class Funds,Matching trading
-    class FundsArchive,MatchingArchive archive
-    class Replay,Depth,DB,Memory query
 ```
 
 | 설계 결정 | 이유와 영향 |
@@ -102,7 +93,7 @@ API 경로의 공통 접두사는 `/api/trading/v3`입니다.
 
 ![분별 정산 처리량. 1분 46,410, 2분 53,067, 3분 52,853, 4분 53,698, 5분 50,720건/s](.github/assets/settlement-throughput-5min.svg)
 
-15초 예열 뒤 300초 동안 **정산 15,404,883건**을 관측했습니다. 4분차의 **53,698건/s**는 1분 구간 평균입니다. 종료 후 대기분까지 정산해 최종 접수 건수와 일치했고, 자금 리더의 Archive를 재생해 잔고·원장·수수료·스냅샷과 자금 복제본 3개의 적용 위치를 대조했습니다. [검증 기록과 원본 지문](engineering/results/split-3x3-aeron-20261123/README.md)
+15초 예열 뒤 300초 동안 **정산 15,404,883건**을 관측했습니다. 종료 후 대기분까지 정산해 최종 접수 건수와 일치했습니다. 자금 리더의 Archive를 재생해 잔고·원장·수수료·스냅샷과 자금 복제본 3개의 적용 위치를 대조했습니다. [분별 집계와 Archive 검증 기록](engineering/results/split-3x3-aeron-20261123/README.md)
 
 | 측정 조건 | 관측 결과 |
 | --- | --- |
