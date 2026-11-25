@@ -1,12 +1,18 @@
 # Exchange Core
 
-[![Build and test](https://github.com/0Chord/coin-exchange/actions/workflows/build-and-test.yml/badge.svg?event=pull_request)](https://github.com/0Chord/coin-exchange/actions/workflows/build-and-test.yml?query=event%3Apull_request)
+**주문 접수부터 체결·정산·조회까지 구현한 현물 거래 백엔드**
 
-지정가 주문을 접수하고, 가격·시간 우선으로 체결한 뒤 잔고와 수수료를 정산하는 현물 거래 백엔드입니다. 여러 마켓이 같은 자금을 사용하므로 **자금 예약과 정산은 공통 자금 클러스터가**, **주문장과 체결은 마켓별 매칭 클러스터가** 맡습니다.
+여러 마켓에서 같은 사용자 잔고를 쓰는 동안 초과 예약을 막고, 한 마켓의 매칭 장애가 다른 마켓으로 번지는 범위를 줄이기 위해 **공통 자금과 마켓별 매칭을 분리**했습니다. 조회는 확정된 거래 로그를 따라 PostgreSQL과 WAS 메모리에 반영할 수 있습니다.
 
-**현재 단계** 지정가 GTC 주문의 부분 체결·후속 체결·잔량 취소와 주문·잔고·시장 조회 API를 통합했습니다. 차트, 공개 주문장, 사용자별 주문 목록까지 GET으로 조회할 수 있습니다.
+> **5분 평균 51,349.61 정산 TPS** · 자금 3노드 + 매칭 3노드 · `sync=2`
+>
+> 로컬 고정 빌드에서 단일 마켓에 Aeron으로 직접 입력한 결과입니다. 접수 15,406,387건은 종료 후 대기분까지 전량 정산했습니다. [측정 조건·분별 결과·Archive 대조](engineering/results/split-3x3-aeron-20261123/README.md)
+
+**현재 단계** 지정가 주문의 부분 체결·후속 체결·잔량 취소와 주문·잔고 조회를 HTTP로 확인할 수 있습니다. 시장 조회는 최근 정산 체결가, 8개 주기 차트, 공개 호가를 제공하며 사용자별 주문 목록도 조회할 수 있습니다.
 
 Kotlin · Java 25 · Spring Boot · Aeron Cluster · Protobuf · PostgreSQL · Flyway
+
+[아키텍처](#아키텍처) · [주문 한 건의 흐름](#주문-한-건의-흐름) · [공개 성능 기록](#공개-성능-기록) · [테스트 실행](#설정과-실행) · [CI 실행 기록](https://github.com/0Chord/coin-exchange/actions/workflows/build-and-test.yml?query=event%3Apull_request)
 
 ## 아키텍처
 
@@ -34,22 +40,42 @@ flowchart TB
     Depth --> Memory["WAS 메모리 · 가격별 잔량"]
 ```
 
-1. **접수** — 자금 엔진이 주문 금액을 예약합니다. HTTP `202`는 요청이 접수됐다는 뜻입니다. 응답을 잃으면 같은 토큰과 내용으로 재시도해 접수 결과를 확인합니다. [재시도 계약](engineering/order-timeout-recovery-spec.md)
-2. **체결·정산** — 매칭 엔진이 주문장에 체결이나 잔량 취소를 확정합니다. 자금 엔진은 확정된 체결을 정산하고 취소된 잔량의 예약만 반환합니다. 배치 전송을 켜면 처리한 연속 순번까지 확인하고 다음 순번부터 전달을 이어갑니다. [마켓 배치](https://github.com/0Chord/coin-exchange/pull/184) · [양방향 전송 배치](https://github.com/0Chord/coin-exchange/pull/204)
-3. **조회** — WAS가 각 Archive에서 과반 확정·서비스 적용·기록이 확인된 범위를 재생합니다. PostgreSQL에 조회 데이터와 반영 위치를 함께 커밋해 재시작 뒤 이어서 처리합니다. 공개 호가를 켜면 같은 WAS의 별도 작업이 매칭 로그를 재생해 메모리에서 갱신합니다. WAS는 GET 요청에 두 조회 저장소의 데이터를 반환합니다. [Archive 조회 반영](https://github.com/0Chord/coin-exchange/pull/205) · [호가 재생](engineering/public-order-book-archive-spec.md)
+| 설계 결정 | 이유와 영향 |
+| --- | --- |
+| **공통 자금이 예약과 정산을 소유** | 두 마켓의 주문이 같은 잔고를 동시에 써도 한 클러스터가 순서대로 예약을 판단합니다. 전체 거래가 공유하는 클러스터이므로 과반을 잃으면 새 예약은 확정되지 않습니다. [공유 자금 설계](engineering/multi-matching-shared-funds-spec.md) · [과반 상실 검증](engineering/funds-quorum-failure-verification.md) |
+| **매칭은 마켓별 주문장을 소유** | 각 마켓에서 가격·시간 우선으로 체결을 확정합니다. 한 담당이 여러 마켓을 맡을 수 있고, 필요에 따라 담당을 나눌 수 있습니다. 자금·매칭 사이에 비동기 전달이 생기므로 접수, 체결, 정산 완료를 구분합니다. 배치 전송을 켜면 연속해서 적용한 순번까지 확인하고 그 다음부터 이어 보냅니다. [마켓 배치](https://github.com/0Chord/coin-exchange/pull/184) · [양방향 전송 배치](https://github.com/0Chord/coin-exchange/pull/204) |
+| **WAS가 Archive를 재생해 조회를 반영** | 과반 확정·서비스 적용·기록이 모두 확인된 위치까지 읽습니다. 조회 데이터와 소비 위치를 PostgreSQL에 같은 트랜잭션으로 커밋해 중단 뒤 이어서 반영합니다. 공개 호가는 매칭 로그를 별도로 따라가며, 조회의 최신성은 각 작업의 반영 위치에 따라 달라집니다. [Archive 조회 반영](https://github.com/0Chord/coin-exchange/pull/205) · [호가 재생](engineering/public-order-book-archive-spec.md) |
 
-## 구현 범위
+## 주문 한 건의 흐름
+
+매도 3개를 접수하고, 1개가 체결된 뒤 남은 2개를 취소하는 실제 HTTP 시험입니다. 이 사례의 가격은 개당 100이고 수수료는 0입니다. [시험 코드](app-api/src/test/kotlin/com/exchange/core/api/trading/infrastructure/aeron/SplitFundsTradingHttpTest.kt#L951)
+
+| 시점 | 엔진이 한 일 | 조회 결과와 매도 자산의 사용 가능 / 예약 |
+| --- | --- | --- |
+| 매도 3개 접수 | 자금이 매도 자산 3개를 예약하고 매칭이 주문장에 올립니다. | `RESTING` · 잔량 3 · **0 / 3** |
+| 1개 체결·정산 | 매칭이 1개를 체결하고 자금이 대금 100을 반영합니다. | `PARTIALLY_FILLED` · 체결 1, 잔량 2 · **0 / 2** |
+| 잔량 2개 취소 확정 | 매칭이 주문장에서 잔량을 제거합니다. 자금 적용을 기다리는 동안 예약은 유지됩니다. | `CANCELLED / PENDING(RELEASE)` · 체결 1, 취소 2 · **0 / 2** |
+| 반환 완료 | 자금이 앞선 체결을 유지한 채 남은 예약 2개를 반환합니다. | `CANCELLED / APPLIED` · 취소 2 · **2 / 0** |
+
+시험에서는 같은 취소 요청을 다시 보내도 최초 취소 ID가 돌아오고, 자금 결과 순번은 반환 시 한 번만 전진했습니다. 같은 PostgreSQL을 사용해 WAS를 다시 시작한 뒤에도 최종 조회 결과가 일치했습니다. [취소·반환 검증 기록](engineering/split-cancel-http-spec.md)
+
+## API와 조회 기준
 
 API 경로의 공통 접두사는 `/api/trading/v3`입니다.
 
 | 기능 | API | 확인할 수 있는 동작 |
 | --- | --- | --- |
+| 요청 세대·응답 확인 | `POST /channels/{channel}/epoch`<br>`POST /channels/{channel}/ack` | 요청에 쓸 세대를 발급하고, 확인한 연속 요청 순번까지 접수 결과를 정리합니다. [요청 번호 계약](engineering/order-admission-protocol.md) |
 | 주문·잔량 취소 | `POST /markets/{marketId}/orders`<br>`POST /markets/{marketId}/orders/{orderId}/cancel` | 지정가 GTC 접수, 부분·후속 체결, 잔량 취소와 예약금 반환. [주문 시험](engineering/gtc-follow-up-fill-spec.md) · [취소 계약](engineering/split-cancel-http-spec.md) |
 | 주문·체결·수수료 | `GET /markets/{marketId}/orders/{orderId}`<br>`GET /markets/{marketId}/orders/{orderId}/fills` | 주문 상태, 체결별 ID, 정산 대기·완료, 실제 청구 수수료. [체결 조회](engineering/order-fill-query-spec-61.md) · [수수료](engineering/order-fill-fee-query-spec-62.md) |
 | 자산 잔고 | `GET /users/{userId}/balances/{assetId}` | Archive 조회 모드에서 PostgreSQL에 반영한 사용 가능액과 예약액. [잔고 조회](https://github.com/0Chord/coin-exchange/pull/206) |
 | 최근 체결가·차트 | `GET /markets/{marketId}/trades/latest`<br>`GET /markets/{marketId}/candles` | 최근 정산 체결가와 1분·5분·15분·1시간·일·주·월·연봉. 차트는 정산 적용 시각 기준입니다. [체결가](https://github.com/0Chord/coin-exchange/pull/208) · [차트](engineering/settled-candle-query-spec-209.md) |
 | 공개 주문장 | `GET /markets/{marketId}/order-book` | 매수·매도 상위 10호가와 가격별 미체결 잔량. [공개 주문장](engineering/public-order-book-archive-spec.md) |
 | 사용자 주문 목록 | `GET /orders` | 사용자별 최신순 조회, 접수 순번 커서 페이지네이션. [주문 목록](engineering/user-order-list-query-spec-213.md) |
+
+주문·취소 POST의 `202 ACCEPTED`는 자금 엔진의 접수 확인입니다. 응답이 끊기면 같은 요청 토큰과 내용으로 재시도합니다. 첫 요청이 이미 접수됐고 결과가 보관 중이면 기존 주문·취소 ID를 받습니다. 첫 요청이 도착하지 않았다면 재시도가 최초 접수가 될 수 있습니다. [응답 유실과 재시도](engineering/order-timeout-recovery-spec.md)
+
+주문 GET에 접수 응답의 `admissionSequence`를 `minAdmissionSequence`로 넘길 수 있습니다. 조회가 그 위치까지 반영 중이면 `202 QUERY_CATCHING_UP`, 확인한 원본 범위에서 주문이 없으면 `404 ORDER_NOT_FOUND_AS_OF`를 반환합니다. 조회 원본을 검증 중이거나 DB가 응답하지 않으면 `503`으로 알려줍니다. [조회 준비 상태](engineering/order-query-foundation-review.md)
 
 ## 정합성과 장애 검증
 
@@ -69,18 +95,23 @@ API 경로의 공통 접두사는 `/api/trading/v3`입니다.
 
 5분 결과는 접수·정산 배치 최적화를 포함한 당시 로컬 실행물에서 관측했습니다. 현재 기본 브랜치와 HTTP·PostgreSQL을 포함하는 경로의 처리량은 별도 측정 범위입니다.
 
-## 통합 테스트로 시작하기
+## 설정과 실행
 
-Java 25와 실행 중인 Docker가 필요합니다. 저장소를 복제한 뒤 아래 시험 한 건으로 **첫 1개 체결 → 남은 2개 체결 → 잔고·예약·수수료 확인**을 실행할 수 있습니다. 테스트가 실제 WAS, 자금·매칭 노드, Testcontainers PostgreSQL을 기동합니다. [시험 코드](app-api/src/test/kotlin/com/exchange/core/api/trading/infrastructure/aeron/SplitFundsTradingHttpTest.kt)
+Java 25와 실행 중인 Docker가 필요합니다. 아래 명령은 **첫 1개 체결 후 남은 2개 체결**과 **부분 체결 후 잔량 취소·반환**을 각각 재현합니다. 테스트가 실제 WAS, 자금·매칭 노드, Testcontainers PostgreSQL을 기동합니다. [후속 체결 검증](engineering/gtc-follow-up-fill-spec.md) · [잔량 취소 검증](engineering/split-cancel-http-spec.md)
 
 ```sh
 git clone https://github.com/0Chord/coin-exchange.git
 cd coin-exchange
 ./gradlew --no-daemon --max-workers=2 :app-api:test \
-  --tests '*SplitFundsTradingHttpTest.같은 지정가 매수 주문이 첫 체결 뒤 남은 수량까지 실제 HTTP로 체결된다'
+  --tests '*SplitFundsTradingHttpTest.같은 지정가 매수 주문이 첫 체결 뒤 남은 수량까지 실제 HTTP로 체결된다' \
+  --tests '*SplitFundsTradingHttpTest.실제 부분 체결과 잔량 취소를 같은 WAS에서 조회하고 DB 원본과 ACK 뒤 WAS 재시작에도 유지한다'
 ```
 
-구성은 [Spring WAS와 통합 시험](app-api), [자금·정산 상태](domain-trading), [주문장과 매칭](domain-matching), [복식 원장](domain-ledger)에서 읽을 수 있습니다. 설계와 실험은 [engineering](engineering)에 기록합니다.
+### 코드 읽는 순서
+
+1. [주문 HTTP Controller](app-api/src/main/kotlin/com/exchange/core/api/trading/api/BoundedTradingOrderController.kt)에서 접수·취소 요청이 들어오는 지점을 확인합니다.
+2. [자금 상태](domain-trading/src/main/kotlin/com/exchange/core/trading/BoundedFundingState.kt)와 [주문장](domain-matching/src/main/kotlin/com/exchange/core/matching/OrderBook.kt)에서 예약과 체결을 각각 따라갑니다.
+3. [조회 반영 작업](app-api/src/main/kotlin/com/exchange/core/api/trading/infrastructure/aeron/ArchiveOrderQueryFeedWorker.kt)에서 확정 로그가 PostgreSQL에 저장되는 위치를 확인합니다. [설계·시험 기록](engineering)
 
 ### CI 실패 이유와 보고서 읽기
 
