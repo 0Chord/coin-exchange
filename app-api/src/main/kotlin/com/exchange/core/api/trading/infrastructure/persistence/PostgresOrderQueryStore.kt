@@ -4,6 +4,7 @@ import com.exchange.core.api.trading.application.LatestSettledTrade
 import com.exchange.core.api.trading.application.LatestSettledTradeSnapshot
 import com.exchange.core.api.trading.application.OrderFillCursor
 import com.exchange.core.api.trading.application.OrderFillQuerySnapshot
+import com.exchange.core.api.trading.application.OrderListQuerySnapshot
 import com.exchange.core.api.trading.application.OrderQueryBatch
 import com.exchange.core.api.trading.application.OrderQueryLifecycle
 import com.exchange.core.api.trading.application.OrderQueryNamespace
@@ -236,6 +237,49 @@ class PostgresOrderQueryStore(
             throw OrderQueryUnavailableException("order query database read failed")
         } catch (_: Exception) {
             throw OrderQueryInconsistentException("stored order query state is inconsistent")
+        }
+
+    override fun readUserOrders(
+        userId: String,
+        maxAdmissionSequence: Long,
+        maxRows: Int,
+    ): OrderListQuerySnapshot =
+        try {
+            val parameters =
+                namespaceParameters +
+                    mapOf("userId" to userId, "maxAdmissionSequence" to maxAdmissionSequence, "maxRows" to maxRows)
+            checkNotNull(
+                jdbc.query<OrderListQuerySnapshot>(
+                    """
+                    select p.*, r.market_id, r.order_id, r.admission_sequence, r.market_admission_sequence, r.record_payload
+                    from order_query.query_progress p
+                    left join lateral (
+                        select market_id, order_id, admission_sequence, market_admission_sequence, record_payload
+                        from order_query.order_record
+                        where namespace = p.namespace and record_payload ->> 'userId' = :userId
+                            and admission_sequence <= :maxAdmissionSequence
+                        order by admission_sequence desc
+                        limit :maxRows
+                    ) r on true
+                    where p.namespace = :namespace
+                    order by r.admission_sequence desc
+                    """.trimIndent(),
+                    parameters,
+                ) { rows ->
+                    if (!rows.next()) return@query OrderListQuerySnapshot(progress = null, orders = emptyList())
+                    val progress = progress(rows)
+                    val orders = ArrayList<OrderQueryRecord>()
+                    do {
+                        if (rows.getString("order_id") == null) break
+                        val order = record(rows)
+                        if (order.admissionSequence > progress.coveredAdmissionSequence) inconsistent()
+                        orders.add(order)
+                    } while (rows.next())
+                    OrderListQuerySnapshot(progress.copy(lifecycle = sourceLifecycle(progress.lifecycle)), orders)
+                },
+            )
+        } catch (error: DataAccessException) {
+            throw OrderQueryUnavailableException("order list database read failed", error)
         }
 
     override fun readFills(

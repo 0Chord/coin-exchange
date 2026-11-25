@@ -44,9 +44,11 @@ import org.springframework.transaction.support.TransactionTemplate
 import tools.jackson.databind.JsonNode
 import tools.jackson.databind.json.JsonMapper
 import java.net.URI
+import java.net.URLEncoder
 import java.net.http.HttpClient
 import java.net.http.HttpRequest
 import java.net.http.HttpResponse
+import java.nio.charset.StandardCharsets.UTF_8
 import java.time.Duration
 import java.time.Instant
 import java.time.ZoneOffset
@@ -165,6 +167,150 @@ class OrderQueryHttpTest {
     }
 
     @Test
+    fun `사용자 주문 목록은 마켓을 가로질러 최신순이며 새 주문 뒤에도 커서를 이어간다`() {
+        val cancelled = record(13, OrderQueryOrderState.CANCELLED).copy(financialThrough = 1)
+        val soonPartiallyFilled = record(15, OrderQueryOrderState.RESTING)
+        val commaUser = record(16, OrderQueryOrderState.RESTING, userId = "team,alice")
+        val filled = record(17, OrderQueryOrderState.FILLED, marketId = "ETH-USDT")
+        val otherUser = record(18, OrderQueryOrderState.RESTING, userId = "team/alice")
+        val resting = record(19, OrderQueryOrderState.RESTING)
+        apply(listOf(cancelled, soonPartiallyFilled, commaUser, filled, otherUser, resting))
+        store.transitionLifecycle(OrderQueryLifecycle.READY)
+
+        val otherLineage = ClusterLineage(71, 72)
+        val otherStore =
+            PostgresOrderQueryStore(
+                OrderQueryNamespace(otherLineage, store.namespace.markets),
+                context.getBean(NamedParameterJdbcTemplate::class.java),
+                context.getBean(DataSourceTransactionManager::class.java),
+            )
+        otherStore.initialize()
+        otherStore.observe(1)
+        val otherLineageOrder = record(19, OrderQueryOrderState.MATCHING_PENDING, fundsLineage = otherLineage)
+        otherStore.apply(OrderQueryBatch("other-lineage", 0, 19, listOf(otherLineageOrder)))
+        otherStore.transitionLifecycle(OrderQueryLifecycle.READY)
+
+        val first = userOrders("U1", "&limit=2")
+        assertResponse(200, "ORDER_LIST_FOUND", first)
+        val firstPage = body(first)
+        val firstOrders = firstPage.path("orders").toList()
+        assertEquals(listOf(resting.orderId, filled.orderId), firstOrders.map { it.path("orderId").asString() })
+        val nextCursor = firstPage.path("nextBeforeAdmissionSequence").longValue()
+        assertEquals(17L, nextCursor)
+        assertEquals(19L, firstPage.path("coveredAdmissionSequence").longValue())
+        assertEquals("CAUGHT_UP", firstPage.path("freshness").asString())
+
+        val incoming = record(20, OrderQueryOrderState.MATCHING_PENDING)
+        val partiallyFilled =
+            soonPartiallyFilled.copy(
+                state = OrderQueryOrderState.PARTIALLY_FILLED,
+                filledQuantity = 1,
+                remainingQuantity = 2,
+                lastAffectedResultSequence = 2,
+            )
+        apply(listOf(incoming, partiallyFilled), expectedRevision = 1)
+        val beforeReads = databaseRows()
+
+        val second = userOrders("U1", "&limit=2&beforeAdmissionSequence=$nextCursor")
+        assertResponse(200, "ORDER_LIST_FOUND", second)
+        val secondPage = body(second)
+        val secondOrders = secondPage.path("orders").toList()
+        assertEquals(listOf(partiallyFilled.orderId, cancelled.orderId), secondOrders.map { it.path("orderId").asString() })
+        assertTrue(secondPage.path("nextBeforeAdmissionSequence").isNull)
+        assertEquals(20L, secondPage.path("coveredAdmissionSequence").longValue())
+        val pageOrders = firstOrders + secondOrders
+        assertEquals(listOf("RESTING", "FILLED", "PARTIALLY_FILLED", "CANCELLED"), pageOrders.map { it.path("state").asString() })
+        val summaryFields =
+            listOf(
+                "marketId",
+                "side",
+                "price",
+                "state",
+                "financialStatus",
+                "initialQuantity",
+                "filledQuantity",
+                "remainingQuantity",
+                "admissionSequence",
+            )
+        for (item in pageOrders) {
+            val detail = get(item.path("orderId").asString(), market = item.path("marketId").asString())
+            assertResponse(200, "ORDER_FOUND", detail)
+            val detailBody = body(detail)
+            for (field in summaryFields) {
+                assertEquals(detailBody.path(field), item.path(field), field)
+            }
+        }
+
+        val refreshed = userOrders("U1")
+        assertResponse(200, "ORDER_LIST_FOUND", refreshed)
+        val refreshedOrders = body(refreshed).path("orders").toList()
+        assertEquals(
+            listOf(incoming.orderId, resting.orderId, filled.orderId, partiallyFilled.orderId, cancelled.orderId),
+            refreshedOrders.map { it.path("orderId").asString() },
+        )
+        assertTrue(refreshedOrders.first().path("remainingQuantity").isNull)
+
+        val otherUserResponse = userOrders(otherUser.userId)
+        assertResponse(200, "ORDER_LIST_FOUND", otherUserResponse)
+        val otherUserOrder = body(otherUserResponse).path("orders").single()
+        assertEquals(otherUser.orderId, otherUserOrder.path("orderId").asString())
+
+        val commaUserResponse = userOrders(commaUser.userId)
+        assertResponse(200, "ORDER_LIST_FOUND", commaUserResponse)
+        val commaUserOrder = body(commaUserResponse).path("orders").single()
+        assertEquals(commaUser.orderId, commaUserOrder.path("orderId").asString())
+        assertEquals(400, getPath("/orders?userId=team&userId=alice").statusCode())
+        assertEquals(beforeReads, databaseRows())
+        verifyNoInteractions(context.getBean(BoundedTradingOrderGateway::class.java))
+    }
+
+    @Test
+    fun `사용자 주문 목록은 조회 지연과 확정된 빈 목록을 구분한다`() {
+        apply(listOf(record(1, OrderQueryOrderState.RESTING)))
+        val initializing = userOrders("U1")
+        assertResponse(503, "QUERY_NOT_READY", initializing)
+        assertTrue(body(initializing).path("orders").isNull)
+        store.transitionLifecycle(OrderQueryLifecycle.READY)
+
+        val empty = userOrders("U2")
+        assertResponse(200, "ORDER_LIST_FOUND", empty)
+        val emptyBody = body(empty)
+        assertEquals(json.readTree("[]"), emptyBody.path("orders"))
+        assertTrue(emptyBody.path("nextBeforeAdmissionSequence").isNull)
+        assertEquals("CAUGHT_UP", emptyBody.path("freshness").asString())
+        assertEquals(1L, emptyBody.path("coveredAdmissionSequence").longValue())
+
+        store.observe(2)
+        val lagging = userOrders("U1")
+        assertResponse(200, "ORDER_LIST_FOUND", lagging)
+        val laggingBody = body(lagging)
+        val laggingOrder = laggingBody.path("orders").single()
+        assertEquals("LAGGING", laggingBody.path("freshness").asString())
+        assertEquals(1L, laggingBody.path("coveredAdmissionSequence").longValue())
+        assertEquals(orderId(1), laggingOrder.path("orderId").asString())
+
+        val absentDuringLag = userOrders("U2")
+        assertResponse(202, "QUERY_CATCHING_UP", absentDuringLag)
+        val absentBody = body(absentDuringLag)
+        assertEquals(1L, absentBody.path("coveredAdmissionSequence").longValue())
+        assertTrue(absentBody.path("orders").isNull)
+        assertTrue(absentBody.path("nextBeforeAdmissionSequence").isNull)
+
+        val postgresStore = store as PostgresOrderQueryStore
+        postgresStore.suspendSourceReads()
+        val unverified = userOrders("U1")
+        assertResponse(503, "QUERY_NOT_READY", unverified)
+        assertTrue(body(unverified).path("orders").isNull)
+        postgresStore.verifySourceReads()
+
+        store.transitionLifecycle(OrderQueryLifecycle.BLOCKED)
+        val blocked = userOrders("U1")
+        assertResponse(503, "QUERY_NOT_READY", blocked)
+        assertTrue(body(blocked).path("orders").isNull)
+        assertTrue(body(blocked).path("nextBeforeAdmissionSequence").isNull)
+    }
+
+    @Test
     fun `confirmed cancellation and final non execution retain quantities when release becomes applied`() {
         val cancelled = record(1, OrderQueryOrderState.CANCELLED)
         val notExecuted = record(2, OrderQueryOrderState.NOT_EXECUTED)
@@ -279,14 +425,27 @@ class OrderQueryHttpTest {
         val record = record(1, OrderQueryOrderState.FILLED)
         apply(listOf(record))
         store.transitionLifecycle(OrderQueryLifecycle.READY)
+        val jdbc = database.jdbc()
+        jdbc.execute("update order_query.query_progress set covered_admission_sequence = 0")
+        val ahead = userOrders("U1")
+        assertResponse(503, "QUERY_INCONSISTENT", ahead)
+        assertTrue(body(ahead).path("orders").isNull)
+        jdbc.execute("update order_query.query_progress set covered_admission_sequence = 1")
         database.jdbc().execute(
             "update order_query.order_record set record_payload = jsonb_set(record_payload, '{filledQuantity}', '-1'::jsonb)",
         )
         assertResponse(503, "QUERY_INCONSISTENT", get(record.orderId), hideOrder = true)
+        val corrupt = userOrders("U1")
+        assertResponse(503, "QUERY_INCONSISTENT", corrupt)
+        assertTrue(body(corrupt).path("orders").isNull)
         assertEquals(400, get(record.orderId, market = "UNKNOWN").statusCode())
         database.jdbc().execute("alter table order_query.order_record rename to unavailable_order_record")
         try {
             assertResponse(503, "QUERY_UNAVAILABLE", get(record.orderId), hideOrder = true)
+            val unavailable = userOrders("U1")
+            assertResponse(503, "QUERY_UNAVAILABLE", unavailable)
+            assertTrue(body(unavailable).path("orders").isNull)
+            assertTrue(body(unavailable).path("nextBeforeAdmissionSequence").isNull)
             assertEquals(400, get(record.orderId, market = "UNKNOWN").statusCode())
         } finally {
             database.jdbc().execute("alter table order_query.unavailable_order_record rename to order_record")
@@ -399,6 +558,30 @@ class OrderQueryHttpTest {
                 assertEquals(400, get(order, "/fills?limit=101").statusCode())
                 assertEquals(400, latestTrade(market = "UNKNOWN").statusCode())
                 assertEquals(400, candles(market = "UNKNOWN").statusCode())
+                val invalidUser = userOrders(" ")
+                assertEquals(400, invalidUser.statusCode(), invalidUser.body())
+                assertEquals(400, userOrders("").statusCode())
+                assertEquals(400, getPath("/orders").statusCode())
+                assertEquals(400, getPath("/orders?userId=&userId=alice").statusCode())
+                assertEquals(400, getPath("/orders?userId%5B%5D=U1").statusCode())
+                val invalidPages =
+                    listOf(
+                        "&limit=",
+                        "&limit=0",
+                        "&limit=101",
+                        "&limit=bad",
+                        "&limit=1&limit=2",
+                        "&beforeAdmissionSequence=",
+                        "&beforeAdmissionSequence=0",
+                        "&beforeAdmissionSequence=-1",
+                        "&beforeAdmissionSequence=9223372036854775808",
+                        "&beforeAdmissionSequence=1&beforeAdmissionSequence=2",
+                    )
+                for (query in invalidPages) {
+                    val invalidPage = userOrders("U1", query)
+                    assertEquals(400, invalidPage.statusCode(), query)
+                    assertEquals("INVALID_INPUT", body(invalidPage).path("status").asString(), query)
+                }
             } finally {
                 heldConnections.forEach { it.close() }
             }
@@ -408,6 +591,7 @@ class OrderQueryHttpTest {
             assertResponse(503, "QUERY_UNAVAILABLE", get(order, "/fills"))
             assertResponse(503, "QUERY_UNAVAILABLE", latestTrade())
             assertResponse(503, "QUERY_UNAVAILABLE", candles())
+            assertResponse(503, "QUERY_UNAVAILABLE", userOrders("U1"))
         } finally {
             context.close()
             openContext()
@@ -749,12 +933,15 @@ class OrderQueryHttpTest {
     private fun record(
         sequence: Long,
         state: OrderQueryOrderState,
+        userId: String = "U1",
+        marketId: String = "BTC-USDT",
+        fundsLineage: ClusterLineage = lineage,
     ): OrderQueryRecord {
         val pending = state == OrderQueryOrderState.MATCHING_PENDING
         return OrderQueryRecord(
-            fundsLineage = lineage,
-            marketId = "BTC-USDT",
-            userId = "U1",
+            fundsLineage = fundsLineage,
+            marketId = marketId,
+            userId = userId,
             side = Side.BUY,
             orderType = OrderType.LIMIT,
             timeInForce = TimeInForce.GTC,
@@ -789,7 +976,7 @@ class OrderQueryHttpTest {
             cancelledQuantity = if (state == OrderQueryOrderState.CANCELLED) 2 else 0,
             notExecutedQuantity = if (state == OrderQueryOrderState.NOT_EXECUTED) 3 else 0,
             state = state,
-            resultStream = if (pending) null else MatchingResultStream(ClusterLineage(51, 52), lineage, MarketId("BTC-USDT"), 1, 1),
+            resultStream = if (pending) null else MatchingResultStream(ClusterLineage(51, 52), fundsLineage, MarketId(marketId), 1, 1),
             lastAffectedResultSequence = if (pending) null else 1,
             financialThrough = if (pending) null else 0,
         )
@@ -825,6 +1012,11 @@ class OrderQueryHttpTest {
     ): HttpResponse<String> = getPath("/markets/$market/orders/$orderId$suffix")
 
     private fun latestTrade(market: String = "BTC-USDT"): HttpResponse<String> = getPath("/markets/$market/trades/latest")
+
+    private fun userOrders(
+        userId: String,
+        query: String = "",
+    ): HttpResponse<String> = getPath("/orders?userId=${URLEncoder.encode(userId, UTF_8)}$query")
 
     private fun candles(
         query: String = "",
