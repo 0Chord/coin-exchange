@@ -20,39 +20,112 @@ Kotlin · Java 25 · Spring Boot · Aeron Cluster · Protobuf · PostgreSQL · F
 
 ## 아키텍처
 
-아래는 `exchange.order-query.source=archive`를 사용하는 **Archive 조회 모드** 구성입니다.
+### 거래 경로
+
+한 개의 자금 클러스터가 여러 마켓의 가용 잔고·예약·정산을 관리합니다. 매칭 담당은 배치 설정으로 정하며, 한 담당이 여러 마켓의 주문장을 운영할 수 있습니다. 아래는 매칭 담당을 두 클러스터로 나눈 9노드 검증 구성입니다. [마켓 배치](https://github.com/0Chord/coin-exchange/pull/184) · [9노드 검증](https://github.com/0Chord/coin-exchange/pull/185)
 
 ```mermaid
 flowchart TB
-    Client["클라이언트"] -->|"주문·취소·조회 HTTP"| WAS["Spring Boot WAS"]
-    WAS -->|"주문·취소 접수"| Funds["공통 자금 클러스터"]
-    Funds -->|"예약한 주문·취소 전달"| Matching["마켓별 매칭 클러스터"]
-    Matching -->|"확정한 체결·취소 결과"| Funds
-
-    Funds --> FundsArchive["자금 Archive"]
-    Matching --> MatchingArchive["매칭 Archive"]
-
-    subgraph Read["같은 WAS의 조회 작업"]
-        Replay["주문·원장 반영"]
-        Depth["공개 호가 갱신"]
-    end
-
-    FundsArchive --> Replay
-    MatchingArchive --> Replay
-    MatchingArchive --> Depth
-    Replay --> DB["PostgreSQL · 주문·체결·원장·잔고·차트"]
-    Depth --> Memory["WAS 메모리 · 가격별 잔량"]
+    client["클라이언트"] -->|"HTTP 주문·취소"| was["Spring Boot WAS"]
+    was -->|"Aeron 접수 요청"| funds["공통 자금 · 3노드"]
+    funds <-->|"주문·취소와 결과"| matchingA["마켓 A 매칭 · 3노드"]
+    funds <-->|"주문·취소와 결과"| matchingB["마켓 B 매칭 · 3노드"]
 ```
 
-| 설계 결정 | 이유와 영향 |
+| 구성요소 | 소유하는 상태와 판단 |
 | --- | --- |
-| **공통 자금이 예약과 정산을 소유** | 두 마켓의 주문이 같은 잔고를 동시에 써도 한 클러스터가 순서대로 예약을 판단합니다. 전체 거래가 공유하는 클러스터이므로 과반을 잃으면 새 예약은 확정되지 않습니다. [공유 자금 설계](engineering/multi-matching-shared-funds-spec.md) · [과반 상실 검증](engineering/funds-quorum-failure-verification.md) |
-| **매칭은 마켓별 주문장을 소유** | 각 마켓에서 가격·시간 우선으로 체결을 확정합니다. 한 담당이 여러 마켓을 맡을 수 있고, 필요에 따라 담당을 나눌 수 있습니다. 자금·매칭 사이에 비동기 전달이 생기므로 접수, 체결, 정산 완료를 구분합니다. 배치 전송을 켜면 연속해서 적용한 순번까지 확인하고 그 다음부터 이어 보냅니다. [마켓 배치](https://github.com/0Chord/coin-exchange/pull/184) · [양방향 전송 배치](https://github.com/0Chord/coin-exchange/pull/204) |
-| **WAS가 Archive를 재생해 조회를 반영** | 과반 확정·서비스 적용·기록이 모두 확인된 위치까지 읽습니다. 조회 데이터와 소비 위치를 PostgreSQL에 같은 트랜잭션으로 커밋해 중단 뒤 이어서 반영합니다. 공개 호가는 매칭 로그를 별도로 따라가며, 조회의 최신성은 각 작업의 반영 위치에 따라 달라집니다. [Archive 조회 반영](https://github.com/0Chord/coin-exchange/pull/205) · [호가 재생](engineering/public-order-book-archive-spec.md) |
+| **WAS** | HTTP 요청을 검증하고 자금 클러스터에 전달합니다. 주문·취소 응답은 자금의 접수 결과를 반환합니다. |
+| **공통 자금** | 가용·예약 잔고와 요청별 최초 접수 결과를 보존합니다. 공유 잔고에서 예약을 순서대로 판단하고 체결 대금·수수료를 정산하거나 취소 잔량의 예약을 반환합니다. [공유 자금 설계](engineering/multi-matching-shared-funds-spec.md) |
+| **마켓 담당 매칭** | 마켓별 주문장과 결과 순번을 보존합니다. 가격·시간 우선으로 체결을 확정하고, 취소 명령이 적용되면 그 시점의 잔량을 주문장에서 제거합니다. [매칭·정산 계약](engineering/funds-result-settlement-spec.md) |
+
+Aeron Cluster는 클러스터마다 별도의 명령 로그를 복제합니다. 3노드 구성은 정상 상태에서 리더 1대·팔로워 2대이며, 과반인 2대가 복제한 범위까지 로그를 확정합니다. 각 노드는 자체 서비스 상태와 기록 경로를 유지합니다. 재시작할 때 스냅샷이 있으면 먼저 복원한 뒤 이후 확정 로그를 적용합니다. 공통 자금이 과반을 잃으면 새 예약 확정이 멈춥니다. [스냅샷 복원](app-api/src/main/kotlin/com/exchange/core/api/trading/infrastructure/aeron/SplitTradingClusterAdapter.kt#L141) · [과반 상실 검증](engineering/funds-quorum-failure-verification.md)
+
+자금 리더 JVM의 전달 작업이 예약된 주문·취소를 담당 매칭으로 보냅니다. 매칭 리더 JVM의 별도 작업은 확정 결과를 자금으로 돌려보냅니다. 배치를 켜면 상대가 연속 적용한 순번까지 확인하고 남은 명령이나 결과를 이어 보냅니다. [주문 전달](engineering/funds-order-delivery-review.md) · [전송 배치](https://github.com/0Chord/coin-exchange/pull/204)
+
+### 조회 경로
+
+아래는 `exchange.order-query.source=archive`를 사용하는 **단일 마켓 Archive 조회 모드**입니다. WAS가 같은 호스트에서 자금·매칭 로그를 재생해 접수·체결·분개·정산 상태를 재구성합니다. [Archive 조회 반영](https://github.com/0Chord/coin-exchange/pull/205)
+
+```mermaid
+flowchart TB
+    fundsArchive["자금 Archive · 명령 로그"] --> projection["WAS 주문·원장 반영"]
+    matchingArchive["매칭 Archive · 명령 로그"] --> projection
+    matchingArchive --> bookWorker["WAS 공개 호가 작업"]
+    projection -->|"접수·체결·분개와 반영 순번"| db["PostgreSQL"]
+    bookWorker -->|"가격별 잔량 스냅샷"| memory["WAS 메모리"]
+    db -->|"주문·체결·잔고·차트"| query["WAS 조회 API"]
+    memory -->|"매수·매도 상위 10호가"| query
+```
+
+- **재생 범위**는 각 리더의 과반 확정 위치, 서비스 적용 위치, Archive 기록 위치가 모두 도달한 구간입니다. 리더가 바뀌면 새 리더의 로그가 기존 재생 구간과 이어지는지 확인합니다. [재생 위치 확인](app-api/src/main/kotlin/com/exchange/core/api/trading/infrastructure/aeron/SplitArchiveSource.kt#L160)
+- **DB 반영**은 접수·원장부터 저장합니다. 체결에 관련된 주문의 접수가 저장된 뒤 매칭을 반영하고, 정산 분개가 커밋된 뒤 자금 적용 완료를 표시합니다. 재생을 반복하면 PostgreSQL에 저장한 순번과 원문을 대조합니다. 차트는 커밋된 정산 기록을 별도 작업이 집계합니다. [조회 반영 순서](app-api/src/main/kotlin/com/exchange/core/api/trading/infrastructure/aeron/ArchiveOrderQueryFeedWorker.kt#L205) · [차트 집계](engineering/settled-candle-query-spec-209.md)
+- **공개 호가**는 매칭 Archive만 별도로 재생합니다. 매칭 결과에 따라 가격별 잔량을 갱신하고, WAS 메모리에서 상위 10호가를 GET으로 읽습니다. [호가 갱신](engineering/public-order-book-archive-spec.md)
 
 ## 주문 한 건의 흐름
 
+### 주문 접수부터 정산 조회까지
+
+바로 체결될 수 있는 지정가 주문 한 건의 예입니다. 접수 응답 전달과 내부 주문 전달은 각각 진행됩니다. 연결한 HTTP 시험은 기본 조회 수집 모드에서 정산 반영 뒤의 주문 상태를 확인합니다. [실제 HTTP 후속 체결 시험](app-api/src/test/kotlin/com/exchange/core/api/trading/infrastructure/aeron/SplitFundsTradingHttpTest.kt#L1204)
+
+```mermaid
+sequenceDiagram
+    actor client as 클라이언트
+    participant was as WAS
+    participant funds as 공통 자금
+    participant matching as 담당 매칭
+    participant db as PostgreSQL
+    client->>was: 주문 POST와 요청 토큰
+    was->>funds: 주문 접수 요청
+    funds->>funds: 확정 로그 적용, 예약과 접수 결과 기록
+    funds-->>was: 주문 ID와 접수 순번
+    was-->>client: 202 접수
+    funds->>matching: 예약된 주문 전송
+    matching->>matching: 주문장 변경과 체결 결과 확정
+    matching->>funds: 체결 결과와 마켓 결과 순번 전송
+    funds->>funds: 연속 순번 확인 후 잔고·수수료 정산
+    funds-->>matching: 자금에 적용한 결과 순번
+    matching->>matching: 정산 확인 기록과 보관 결과 정리
+    opt 조회는 준비됐고 접수 순번 반영을 기다리는 중
+        client->>was: 접수 순번을 포함한 주문 GET
+        was-->>client: 202 QUERY_CATCHING_UP
+    end
+    was->>db: 조회 작업에서 체결·정산 상태 반영
+    client->>was: 주문 GET
+    was->>db: 주문과 자금 반영 상태 조회
+    was-->>client: 200, 체결과 정산 완료
+```
+
+매칭의 **주문 적용 확인**은 자금이 보관한 발송용 주문을 정리하는 기준입니다. 자금의 **정산 적용 확인**은 매칭 로그에 기록된 뒤 매칭이 보관한 체결·취소 결과를 정리하는 기준입니다. 체결 결과가 주문 적용 확인보다 먼저 도착하면, 자금은 검증을 통과한 결과를 주문이 적용됐다는 증거로 함께 사용합니다. 조회 작업은 각 클러스터에 확정된 입력을 따라갑니다. [적용 확인과 정산 확인](engineering/funds-result-settlement-spec.md)
+
+### 부분 체결 후 잔량 취소
+
 매도 3개를 접수하고, 1개가 체결된 뒤 남은 2개를 취소하는 실제 HTTP 시험입니다. 이 사례의 가격은 개당 100이고 수수료는 0입니다. [시험 코드](app-api/src/test/kotlin/com/exchange/core/api/trading/infrastructure/aeron/SplitFundsTradingHttpTest.kt#L951)
+
+<details>
+<summary>잔량 취소와 같은 요청 재전송 시퀀스</summary>
+
+```mermaid
+sequenceDiagram
+    actor client as 클라이언트
+    participant was as WAS
+    participant funds as 공통 자금
+    participant matching as 담당 매칭
+    client->>was: 잔량 취소 POST
+    was->>funds: 주문 ID와 취소 요청 토큰
+    funds->>funds: 최초 취소 접수 기록
+    funds-->>was: 취소 ID
+    was-->>client: 202 접수
+    funds->>matching: 해당 마켓의 순서대로 취소 전달
+    matching->>matching: 남은 2개를 주문장에서 제거
+    matching->>funds: 확정 취소 결과
+    funds->>funds: 앞선 정산을 확인하고 남은 예약 2개 반환
+    client->>was: 같은 토큰과 내용으로 취소 재전송
+    was->>funds: 같은 취소 요청
+    funds-->>was: 보관된 최초 취소 ID
+    was-->>client: 202, 같은 취소 ID
+```
+
+</details>
 
 | 시점 | 엔진이 한 일 | 조회 결과와 매도 자산의 사용 가능 / 예약 |
 | --- | --- | --- |
@@ -87,7 +160,33 @@ API 경로의 공통 접두사는 `/api/trading/v3`입니다.
 | --- | --- |
 | 두 마켓에서 같은 잔고를 동시에 사용 | 가용액 1,000에 대해 600과 500을 동시에 예약 요청했을 때 한 건만 승인됐습니다. 자금 3노드와 매칭 클러스터 두 개를 각각 3노드로 구성했습니다. [공유 자금 검증](https://github.com/0Chord/coin-exchange/pull/185) |
 | 매칭·자금 리더 교체와 자금 과반 상실 | 한 매칭 리더가 중단돼도 공통 자금이 정상인 동안 다른 마켓은 거래를 이어갔습니다. 자금 리더 교체 후 같은 요청에 최초 접수 결과를 반환했고, 자금 과반을 잃은 구간에는 새 예약 확정이 차단됐습니다. [매칭 리더](https://github.com/0Chord/coin-exchange/pull/186) · [자금 리더](https://github.com/0Chord/coin-exchange/pull/187) · [과반 상실](https://github.com/0Chord/coin-exchange/pull/188) |
-| WAS 기동 후 PostgreSQL 중단 | 자금 3노드·매칭 3노드와 `sync=2`에서 DB가 멈춘 동안에도 거래를 처리하고 매칭 리더를 교체했습니다. DB 복구 후 Archive를 재생해 체결 8건과 원장 19묶음이 반영됐는지 대조했습니다. [복구 시험](https://github.com/0Chord/coin-exchange/pull/205) |
+| WAS 기동 후 PostgreSQL 중단 | 자금 3노드·매칭 3노드와 `sync=2`에서 DB가 멈춘 동안에도 HTTP 접수·정산과 공개 호가 갱신을 확인했습니다. 매칭 리더 교체와 DB 복구 뒤 고유 정산 ID 9개, 연속 원장 24묶음을 대조했고, 두 클러스터와 WAS를 재시작한 뒤에도 DB 반영 결과가 같았습니다. [복구 통합 시험](app-api/src/test/kotlin/com/exchange/core/api/trading/infrastructure/aeron/SplitFundsTradingHttpTest.kt#L583) |
+
+<details>
+<summary>PostgreSQL 중단과 매칭 리더 교체 후 조회 복구 시퀀스</summary>
+
+```mermaid
+sequenceDiagram
+    participant trading as 자금·매칭 클러스터
+    participant archive as 자금·매칭 Archive
+    participant worker as WAS 조회 작업
+    participant db as PostgreSQL
+    worker->>db: 정상 기동 후 주문 조회 데이터를 반영
+    db-->>worker: 커밋
+    Note over worker,db: 시험에서 PostgreSQL 중단
+    worker->>db: 조회 데이터 저장 시도
+    db--xworker: DB 연결 실패
+    trading->>trading: 신규 주문 접수와 정산, 매칭 리더 교체
+    trading->>archive: 각 역할의 명령 로그를 기록
+    Note over archive,worker: 별도 호가 작업은 매칭 로그로 메모리 호가를 계속 갱신
+    Note over worker,db: PostgreSQL 복구
+    worker->>archive: 확인된 범위까지 입력 로그 재생
+    archive-->>worker: 자금·매칭 명령 프레임
+    worker->>db: 기존 순번과 원문을 대조하고 남은 조회 데이터 커밋
+    db-->>worker: 체결·원장과 반영 순번 확인
+```
+
+</details>
 
 ## 공개 성능 기록
 
