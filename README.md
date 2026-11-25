@@ -8,15 +8,21 @@ Kotlin으로 구현한 가상자산 거래 백엔드입니다. 현재 현물 거
 
 자금 3노드 + 매칭 3노드 · `sync=2` · 현물 단일 마켓 Aeron 직접 입력 · 당시 로컬 고정 빌드. [측정 조건·분별 결과·Archive 대조](engineering/results/split-3x3-aeron-20261123/README.md)
 
-[**아키텍처**](#아키텍처) · [**주문 한 건의 흐름**](#주문-한-건의-흐름) · [**성능 기록**](#공개-성능-기록) · [**테스트 실행**](#설정과-실행) · [CI 실행 기록](https://github.com/0Chord/coin-exchange/actions/workflows/build-and-test.yml?query=event%3Apull_request)
+[**기술 스택**](#기술-스택) · [**아키텍처**](#아키텍처) · [**주문 한 건의 흐름**](#주문-한-건의-흐름) · [**성능 기록**](#공개-성능-기록) · [**테스트 실행**](#설정과-실행) · [CI 실행 기록](https://github.com/0Chord/coin-exchange/actions/workflows/build-and-test.yml?query=event%3Apull_request)
+
+## 기술 스택
+
+| 역할 | 기술 |
+| --- | --- |
+| 애플리케이션 | **Kotlin** · **Java 25** · **Spring Boot** |
+| 거래 클러스터·메시지 | **Aeron Cluster** · **Protobuf** |
+| 조회 저장소·스키마 관리 | **PostgreSQL** · **Flyway** |
 
 ## 구현 현황
 
 | 주문·거래 | 사용자 조회 | 공개 시장 조회 |
 | --- | --- | --- |
 | 지정가 GTC, 가격·시간 우선 매칭, 부분·후속 체결, 잔량 취소·반환 | 주문 상세·목록, 체결별 수수료, 사용 가능·예약 잔고 | 최근 정산 체결가, 8개 주기 차트, 매수·매도 상위 10호가 |
-
-Kotlin · Java 25 · Spring Boot · Aeron Cluster · Protobuf · PostgreSQL · Flyway
 
 ## 아키텍처
 
