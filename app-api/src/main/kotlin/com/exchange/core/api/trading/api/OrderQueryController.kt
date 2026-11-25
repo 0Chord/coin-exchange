@@ -6,10 +6,15 @@ import com.exchange.core.api.trading.application.CandleQueryUseCase
 import com.exchange.core.api.trading.application.LatestSettledTradeQueryResult
 import com.exchange.core.api.trading.application.OrderFillCursor
 import com.exchange.core.api.trading.application.OrderFillQueryResult
+import com.exchange.core.api.trading.application.OrderListQueryResult
 import com.exchange.core.api.trading.application.OrderQueryCode
+import com.exchange.core.api.trading.application.OrderQueryFinancialStatus
+import com.exchange.core.api.trading.application.OrderQueryFreshness
+import com.exchange.core.api.trading.application.OrderQueryOrderState
 import com.exchange.core.api.trading.application.OrderQueryResult
 import com.exchange.core.api.trading.application.OrderQueryUseCase
 import com.exchange.core.api.trading.application.PublicOrderBookQueryResult
+import com.exchange.core.order.Side
 import jakarta.validation.constraints.NotBlank
 import jakarta.validation.constraints.Pattern
 import jakarta.validation.constraints.PositiveOrZero
@@ -18,6 +23,7 @@ import org.springframework.dao.DataAccessException
 import org.springframework.http.MediaType
 import org.springframework.http.ResponseEntity
 import org.springframework.transaction.TransactionException
+import org.springframework.util.MultiValueMap
 import org.springframework.web.bind.annotation.GetMapping
 import org.springframework.web.bind.annotation.PathVariable
 import org.springframework.web.bind.annotation.RequestMapping
@@ -44,6 +50,50 @@ internal class OrderQueryController(
                 OrderQueryResult(queryFailure(error))
             }
         return ResponseEntity.status(status(result.code)).body(response(result))
+    }
+
+    @GetMapping("/orders", produces = [MediaType.APPLICATION_JSON_VALUE])
+    fun getUserOrders(
+        @RequestParam parameters: MultiValueMap<String, String>,
+    ): ResponseEntity<OrderListResponse> {
+        val requestedUserId = requireNotNull(parameters["userId"]?.singleOrNull()) { "exactly one user ID is required" }
+        val limit = parameters["limit"]
+        val pageSize = if (limit == null) 50 else requireNotNull(limit.singleOrNull()?.toIntOrNull()) { "invalid order page size" }
+        val before =
+            parameters["beforeAdmissionSequence"]?.let { cursor ->
+                requireNotNull(cursor.singleOrNull()?.toLongOrNull()) { "invalid order page cursor" }
+            }
+        useCase.validateUserOrderListInput(userId = requestedUserId, limit = pageSize, beforeAdmissionSequence = before)
+        val result =
+            try {
+                useCase.getUserOrders(userId = requestedUserId, limit = pageSize, beforeAdmissionSequence = before)
+            } catch (error: RuntimeException) {
+                OrderListQueryResult(queryFailure(error))
+            }
+        val orders =
+            result.orders?.map { order ->
+                OrderListItemResponse(
+                    orderId = order.orderId,
+                    marketId = order.marketId,
+                    side = order.side,
+                    price = order.price,
+                    state = order.state,
+                    financialStatus = order.financialStatus,
+                    initialQuantity = order.initialQuantity,
+                    filledQuantity = order.filledQuantity,
+                    remainingQuantity = order.remainingQuantity,
+                    admissionSequence = order.admissionSequence,
+                )
+            }
+        val response =
+            OrderListResponse(
+                code = result.code,
+                orders = orders,
+                nextBeforeAdmissionSequence = result.nextBeforeAdmissionSequence,
+                coveredAdmissionSequence = result.progress?.coveredAdmissionSequence,
+                freshness = result.progress?.freshness,
+            )
+        return ResponseEntity.status(status(result.code)).body(response)
     }
 
     @GetMapping("/markets/{marketId}/orders/{orderId}/fills", produces = [MediaType.APPLICATION_JSON_VALUE])
@@ -138,7 +188,7 @@ internal class OrderQueryController(
     private fun status(code: OrderQueryCode): Int =
         when (code) {
             OrderQueryCode.ORDER_FOUND, OrderQueryCode.LATEST_SETTLED_TRADE, OrderQueryCode.NO_SETTLED_TRADE_AS_OF -> 200
-            OrderQueryCode.CANDLES_FOUND, OrderQueryCode.ORDER_BOOK_FOUND -> 200
+            OrderQueryCode.ORDER_LIST_FOUND, OrderQueryCode.CANDLES_FOUND, OrderQueryCode.ORDER_BOOK_FOUND -> 200
             OrderQueryCode.QUERY_CATCHING_UP -> 202
             OrderQueryCode.ORDER_NOT_FOUND_AS_OF -> 404
             OrderQueryCode.QUERY_NOT_READY, OrderQueryCode.QUERY_UNAVAILABLE, OrderQueryCode.QUERY_INCONSISTENT -> 503
@@ -190,3 +240,24 @@ internal class OrderQueryController(
         )
     }
 }
+
+internal data class OrderListResponse(
+    val code: OrderQueryCode,
+    val orders: List<OrderListItemResponse>?,
+    val nextBeforeAdmissionSequence: Long?,
+    val coveredAdmissionSequence: Long?,
+    val freshness: OrderQueryFreshness?,
+)
+
+internal data class OrderListItemResponse(
+    val orderId: String,
+    val marketId: String,
+    val side: Side,
+    val price: Long,
+    val state: OrderQueryOrderState,
+    val financialStatus: OrderQueryFinancialStatus,
+    val initialQuantity: Long,
+    val filledQuantity: Long,
+    val remainingQuantity: Long?,
+    val admissionSequence: Long,
+)

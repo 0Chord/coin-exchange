@@ -9,6 +9,7 @@ import org.springframework.transaction.annotation.Transactional
 
 enum class OrderQueryCode {
     ORDER_FOUND,
+    ORDER_LIST_FOUND,
     LATEST_SETTLED_TRADE,
     NO_SETTLED_TRADE_AS_OF,
     CANDLES_FOUND,
@@ -27,6 +28,13 @@ data class OrderQueryResult(
 ) {
     val freshness: OrderQueryFreshness? get() = progress?.freshness
 }
+
+data class OrderListQueryResult(
+    val code: OrderQueryCode,
+    val progress: OrderQueryProgress? = null,
+    val orders: List<OrderQueryRecord>? = null,
+    val nextBeforeAdmissionSequence: Long? = null,
+)
 
 /** 부재 확정보다 읽기 오류, 준비 상태, 최소 접수 prefix 검사를 먼저 한다. */
 open class OrderQueryUseCase(
@@ -52,6 +60,34 @@ open class OrderQueryUseCase(
                 return OrderQueryResult(OrderQueryCode.QUERY_INCONSISTENT)
             }
         return resolveOrder(snapshot, minAdmissionSequence)
+    }
+
+    @Transactional(readOnly = true)
+    open fun getUserOrders(
+        userId: String,
+        limit: Int,
+        beforeAdmissionSequence: Long?,
+    ): OrderListQueryResult {
+        // 시작 페이지에도 같은 인덱스 범위 조건을 쓰고, 이어 읽을 때는 커서의 주문을 제외한다.
+        val maxAdmissionSequence = if (beforeAdmissionSequence == null) Long.MAX_VALUE else beforeAdmissionSequence - 1
+        val snapshot =
+            try {
+                store.readUserOrders(userId = userId, maxAdmissionSequence = maxAdmissionSequence, maxRows = limit + 1)
+            } catch (_: OrderQueryUnavailableException) {
+                return OrderListQueryResult(OrderQueryCode.QUERY_UNAVAILABLE)
+            } catch (_: OrderQueryInconsistentException) {
+                return OrderListQueryResult(OrderQueryCode.QUERY_INCONSISTENT)
+            }
+        val progress = snapshot.progress
+        if (progress?.lifecycle != OrderQueryLifecycle.READY) {
+            return OrderListQueryResult(OrderQueryCode.QUERY_NOT_READY, progress)
+        }
+        if (snapshot.orders.isEmpty() && progress.freshness == OrderQueryFreshness.LAGGING) {
+            return OrderListQueryResult(OrderQueryCode.QUERY_CATCHING_UP, progress)
+        }
+        val orders = snapshot.orders.take(limit)
+        val nextBeforeAdmissionSequence = if (snapshot.orders.size > limit) orders.last().admissionSequence else null
+        return OrderListQueryResult(OrderQueryCode.ORDER_LIST_FOUND, progress, orders, nextBeforeAdmissionSequence)
     }
 
     @Transactional(readOnly = true, isolation = Isolation.REPEATABLE_READ, propagation = Propagation.REQUIRES_NEW)
@@ -128,6 +164,16 @@ open class OrderQueryUseCase(
         validateMarket(marketId)
         require(ORDER_ID.matches(orderId)) { "invalid order ID" }
         require(minAdmissionSequence >= 0) { "invalid minimum admission sequence" }
+    }
+
+    internal open fun validateUserOrderListInput(
+        userId: String,
+        limit: Int,
+        beforeAdmissionSequence: Long?,
+    ) {
+        requireOrderQueryText(userId)
+        require(limit in 1..100) { "invalid order page size" }
+        require(beforeAdmissionSequence == null || beforeAdmissionSequence > 0) { "invalid order page cursor" }
     }
 
     internal open fun validateMarket(marketId: String) {

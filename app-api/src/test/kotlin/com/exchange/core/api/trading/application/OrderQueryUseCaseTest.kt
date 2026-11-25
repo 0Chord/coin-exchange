@@ -140,6 +140,12 @@ class OrderQueryUseCaseTest {
             return snapshot
         }
 
+        override fun readUserOrders(
+            userId: String,
+            maxAdmissionSequence: Long,
+            maxRows: Int,
+        ): OrderListQuerySnapshot = error("unexpected order list read")
+
         override fun readFills(
             marketId: String,
             orderId: String,

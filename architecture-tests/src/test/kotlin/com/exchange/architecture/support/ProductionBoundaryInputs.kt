@@ -42,6 +42,7 @@ object ProductionBoundaryInputs {
                 "$TRADING_APPLICATION.BoundedTradingCancellation",
                 "$TRADING_APPLICATION.OrderQueryCode",
                 "$TRADING_APPLICATION.OrderQueryResult",
+                "$TRADING_APPLICATION.OrderListQueryResult",
                 "$TRADING_APPLICATION.BalanceQueryCode",
                 "$TRADING_APPLICATION.BalanceQueryResult",
                 "$TRADING_APPLICATION.OrderQueryRecord",

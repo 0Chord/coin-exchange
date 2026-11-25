@@ -231,6 +231,11 @@ data class OrderQuerySnapshot(
     val record: OrderQueryRecord?,
 )
 
+data class OrderListQuerySnapshot(
+    val progress: OrderQueryProgress?,
+    val orders: List<OrderQueryRecord>,
+)
+
 internal fun requireOrderQueryText(value: String) {
     require(value.isNotBlank() && value.length <= 256 && value.none { Character.isISOControl(it) }) { "invalid query text" }
 }
