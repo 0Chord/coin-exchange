@@ -140,9 +140,22 @@ class CancellationCoreFlowTest {
         assertEquals(FundsDispatchAckStatus.ACKNOWLEDGED, f.funds.acknowledgeMatchingApplied(applied.ack!!).status)
         assertEquals(0, f.saved().dispatch.dispatchEntries)
         assertEquals(1, f.saved().cancellations.size)
+        val beforeReturn =
+            f.funds
+                .progress()
+                .markets
+                .single { it.marketId == input.stream.marketId }
+        assertEquals(2L, beforeReturn.dispatchIssued)
+        assertEquals(1L, beforeReturn.settledResultThrough)
         f.assertBalance(f.buyer, f.quote, 700, 300)
         assertEquals(MatchingIntakeStatus.DUPLICATE, f.matching.apply(input).status)
         f.settle(result)
+        val afterReturn =
+            f.funds
+                .progress()
+                .markets
+                .single { it.marketId == input.stream.marketId }
+        assertEquals(beforeReturn.copy(settledResultThrough = 2L), afterReturn)
         f.assertBalance(f.buyer, f.quote, 1_000)
         assertTrue(f.saved().cancellations.isEmpty())
         assertEquals(FundsResultStatus.DUPLICATE, f.apply(result).status)

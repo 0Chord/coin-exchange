@@ -37,6 +37,13 @@ message SplitDeliveryReply {
   optional exchange.admission.BoundedTradingReply control = 9;
   optional string lifecycle = 10;
   optional SplitCancelReceipt cancellation = 11;
+  repeated SplitMarketSettlementProgress settlement_progress = 12;
+}
+
+message SplitMarketSettlementProgress {
+  optional string market_id = 1;
+  optional int64 dispatch_issued = 2;
+  optional int64 settled_result_through = 3;
 }
 
 enum SplitRole {

@@ -19,6 +19,7 @@ import com.exchange.core.trading.CancelIntent
 import com.exchange.core.trading.ClusterLineage
 import com.exchange.core.trading.OrderIntent
 import com.exchange.core.trading.RequestToken
+import com.exchange.core.trading.TradingLifecycle
 import io.aeron.Publication
 import org.agrona.concurrent.UnsafeBuffer
 import org.slf4j.LoggerFactory
@@ -32,6 +33,7 @@ import java.util.concurrent.Executors
 import java.util.concurrent.RejectedExecutionException
 import java.util.concurrent.Semaphore
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.TimeoutException
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicReference
 
@@ -39,6 +41,12 @@ internal class BoundedGatewayException(
     val code: String,
     val possiblySubmitted: Boolean,
 ) : IllegalStateException(code)
+
+internal enum class TradingDrainOutcome {
+    COMPLETED,
+    TIMED_OUT,
+    UNCONFIRMED,
+}
 
 /** HTTP 경계의 송수신은 선택한 wire와 무관하게 연결 소유 스레드 하나가 담당한다. */
 internal interface BoundedGatewayTransport : AutoCloseable {
@@ -85,7 +93,7 @@ internal class BoundedAeronGateway(
         var recoveryApproval: HttpOrderRecoveryGate.State? = null
         val terminal = AtomicBoolean()
 
-        val requiresRecoveryApproval: Boolean
+        val isOrderOrCancellation: Boolean
             get() = this is Cancellation || (this is Control && command is BoundedTradingCommand.Admit)
 
         fun isExpired(): Boolean = System.nanoTime() - deadline >= 0
@@ -99,6 +107,22 @@ internal class BoundedAeronGateway(
             val command: SplitOrderDeliveryCommand.Cancel,
             deadline: Long,
         ) : Pending<SplitOrderDeliveryReply>(deadline)
+    }
+
+    private class Shutdown(
+        val deadline: Long,
+        val term: Long?,
+    ) {
+        val result = CompletableFuture<TradingDrainOutcome>()
+        val finished = AtomicBoolean()
+        var progress: Pending.Control? = null
+        var nextPollAt: Long? = null
+
+        @Volatile var target: Map<String, Long>? = null
+
+        @Volatile var settled: Map<String, Long> = emptyMap()
+
+        fun hasEnded(): Boolean = finished.get() || System.nanoTime() - deadline >= 0
     }
 
     private val queue = ArrayBlockingQueue<Pending<*>>(settings.queueCapacity)
@@ -115,10 +139,14 @@ internal class BoundedAeronGateway(
 
     @Volatile private var closing = false
 
+    @Volatile private var shutdown: Shutdown? = null
+
     @Volatile private var available = false
 
     @Volatile private var observedFundsTerm: Long? = null
 
+    private var unconfirmedSend = false
+    private var unconfirmedPriorTerm = false
     private var nextCorrelation = 1L
     private val worker: Thread
     val protectionProfile: String get() = if (durabilityGate == null) "LOCAL_QUORUM" else "REMOTE_RECOVERY"
@@ -250,8 +278,8 @@ internal class BoundedAeronGateway(
 
     private fun <T> enqueue(pending: Pending<T>): CompletableFuture<T> {
         synchronized(admissionLock) {
-            val recovery = if (recoveryGate != null && pending.requiresRecoveryApproval) recoveryGate.current else null
-            if (closing || !available) {
+            val recovery = if (recoveryGate != null && pending.isOrderOrCancellation) recoveryGate.current else null
+            if (closing || shutdown != null || !available) {
                 pending.result.completeExceptionally(BoundedGatewayException("GATEWAY_UNAVAILABLE", false))
             } else if (recovery != null && !recovery.isReadyFor(observedFundsTerm)) {
                 pending.result.completeExceptionally(BoundedGatewayException(recovery.refusalReason, false))
@@ -288,7 +316,7 @@ internal class BoundedAeronGateway(
     ) {
         val correlation = pending.correlation
         inFlight.remove(correlation)
-        if (pending.isExpired()) {
+        if (pending.isExpired() || shutdown?.hasEnded() == true) {
             complete(pending, null, BoundedGatewayException("RESULT_UNCONFIRMED", true))
             return
         }
@@ -300,6 +328,11 @@ internal class BoundedAeronGateway(
             complete(pending, null, BoundedGatewayException("PROTECTION_LINEAGE_MISMATCH", true))
             return
         }
+        if (pending is Pending.Control && pending.command == BoundedTradingCommand.Progress) {
+            // 내부 조회를 새 사용자 응답처럼 원격 보관할 이유는 없다.
+            complete(pending, response, null)
+            return
+        }
         protectionWaiting[correlation] = pending
         try {
             durabilityGate
@@ -309,7 +342,7 @@ internal class BoundedAeronGateway(
                 .orTimeout(maxOf(0L, pending.deadline - System.nanoTime()), TimeUnit.NANOSECONDS)
                 .whenComplete { _, failure ->
                     protectionWaiting.remove(correlation, pending)
-                    if (failure == null && !pending.isExpired()) {
+                    if (failure == null && !pending.isExpired() && shutdown?.hasEnded() != true) {
                         complete(pending, response, null)
                     } else {
                         complete(pending, null, BoundedGatewayException("REMOTE_PROTECTION_UNCONFIRMED", true))
@@ -333,16 +366,19 @@ internal class BoundedAeronGateway(
                 var work = client.poll()
                 observeFundsTerm(client)
                 val now = System.nanoTime()
+                val stopping = shutdown
+                if (stopping != null && !checkShutdownConnection(stopping, client, now)) break
                 val iterator = inFlight.values.iterator()
                 while (iterator.hasNext()) {
                     val pending = iterator.next()
                     if (now - pending.deadline >= 0) {
                         iterator.remove()
+                        if (pending.isOrderOrCancellation) unconfirmedSend = true
                         complete(pending, null, BoundedGatewayException("RESULT_UNCONFIRMED", true))
                         work++
                     }
                 }
-                while (inFlight.size < settings.maxInFlight) {
+                while (!closing && inFlight.size < settings.maxInFlight) {
                     val pending = queue.peek() ?: break
                     if (pending.bytes == null && !pending.isExpired()) {
                         pending.correlation = nextCorrelation.also { nextCorrelation = Math.addExact(it, 1) }
@@ -368,18 +404,27 @@ internal class BoundedAeronGateway(
                         continue
                     }
                     val bytes = checkNotNull(pending.bytes)
+                    if (closing || shutdown?.hasEnded() == true) break
                     val approval = pending.recoveryApproval
                     val offered =
                         if (approval == null) {
                             client.offer(bytes)
                         } else {
-                            checkNotNull(recoveryGate).tryOffer(approval, client, bytes)
+                            checkNotNull(recoveryGate).tryOffer(approval, client) {
+                                // 복구 판정 잠금을 기다리는 사이에도 제출 기한은 흐른다.
+                                if (closing || shutdown?.hasEnded() == true || pending.isExpired()) null else client.offer(bytes)
+                            }
                         }
                     // NOT_CONNECTED는 다음 poll을 기다리기 전에 Aeron 송신 경로를 닫을 수 있다.
                     if (offered == null || offered < 0) observeFundsTerm(client)
+                    if (offered == Publication.NOT_CONNECTED && stopping != null) {
+                        finishShutdown(stopping, TradingDrainOutcome.UNCONFIRMED)
+                        break
+                    }
                     if (offered == null) {
+                        if (closing || shutdown?.hasEnded() == true) break
                         queue.poll()
-                        val refusalReason = checkNotNull(recoveryGate).current.refusalReason
+                        val refusalReason = if (pending.isExpired()) "QUEUE_TIMEOUT" else checkNotNull(recoveryGate).current.refusalReason
                         complete(pending, null, BoundedGatewayException(refusalReason, false))
                         work++
                         continue
@@ -396,6 +441,7 @@ internal class BoundedAeronGateway(
                         break
                     }
                 }
+                if (!closing && stopping != null) work += advanceShutdown(stopping, client)
                 idle.idle(work)
             }
         } catch (error: Throwable) {
@@ -403,6 +449,7 @@ internal class BoundedAeronGateway(
         } finally {
             try {
                 synchronized(admissionLock) { available = false }
+                shutdown?.let { finishShutdown(it, TradingDrainOutcome.UNCONFIRMED) }
                 startup.countDown()
                 inFlight.values.forEach { complete(it, null, BoundedGatewayException("RESULT_UNCONFIRMED", true)) }
                 inFlight.clear()
@@ -423,10 +470,153 @@ internal class BoundedAeronGateway(
         }
     }
 
+    private fun checkShutdownConnection(
+        stopping: Shutdown,
+        client: BoundedGatewayTransport,
+        now: Long,
+    ): Boolean {
+        if (now - stopping.deadline >= 0) {
+            finishShutdown(stopping, TradingDrainOutcome.TIMED_OUT)
+            return false
+        }
+        val term = client.leadershipTermId
+        if (term == null || stopping.term != term || unconfirmedPriorTerm) {
+            finishShutdown(stopping, TradingDrainOutcome.UNCONFIRMED)
+            return false
+        }
+        return true
+    }
+
+    private fun advanceShutdown(
+        stopping: Shutdown,
+        client: BoundedGatewayTransport,
+    ): Int {
+        val now = System.nanoTime()
+        if (!checkShutdownConnection(stopping, client, now) || queue.isNotEmpty()) return 0
+        if (completionPermits.availablePermits() != settings.queueCapacity + settings.maxInFlight) return 0
+
+        val pending = stopping.progress
+        if (pending != null) {
+            stopping.progress = null
+            stopping.nextPollAt = now + TimeUnit.MILLISECONDS.toNanos(20)
+            val reply =
+                try {
+                    pending.result.getNow(null)
+                } catch (_: CompletionException) {
+                    // 같은 세션에서만 이미 만료된 진행 조회를 다시 보낼 수 있다.
+                    return 1
+                }
+            assessShutdownProgress(stopping, checkNotNull(reply))
+            return 1
+        }
+        if (stopping.nextPollAt?.let { now - it < 0 } == true) return 0
+
+        // 같은 세션에서 기존 제출 뒤에 읽은 첫 응답이 마켓별 종료 목표가 된다.
+        val remainingNs = stopping.deadline - now
+        val readTimeoutNs = minOf(remainingNs, TimeUnit.MILLISECONDS.toNanos(settings.resultTimeoutMs))
+        val progress = Pending.Control(BoundedTradingCommand.Progress, now + readTimeoutNs)
+        progress.correlation = nextCorrelation.also { nextCorrelation = Math.addExact(it, 1) }
+        val bytes = commandEncoder(progress.correlation, progress.command)
+        if (stopping.hasEnded()) return 0
+        val offered = client.offer(bytes)
+        when {
+            offered > 0 -> {
+                check(completionPermits.tryAcquire())
+                inFlight[progress.correlation] = progress
+                stopping.progress = progress
+                return 1
+            }
+
+            offered == Publication.BACK_PRESSURED || offered == Publication.ADMIN_ACTION -> {
+                stopping.nextPollAt = now + TimeUnit.MILLISECONDS.toNanos(20)
+            }
+
+            else -> {
+                finishShutdown(stopping, TradingDrainOutcome.UNCONFIRMED)
+            }
+        }
+        return 0
+    }
+
+    private fun assessShutdownProgress(
+        stopping: Shutdown,
+        reply: BoundedTradingReply,
+    ) {
+        if (reply.code != "PROGRESS" || reply.lifecycle != TradingLifecycle.RUNNING.name || reply.markets.isEmpty()) {
+            finishShutdown(stopping, TradingDrainOutcome.UNCONFIRMED)
+            return
+        }
+        val issued = mutableMapOf<String, Long>()
+        val settled = mutableMapOf<String, Long>()
+        for (market in reply.markets) {
+            val marketIssued = market.dispatchIssued
+            val marketSettled = market.settledResultThrough
+            if (marketIssued == null || marketSettled == null || marketSettled !in 0..marketIssued || market.marketId in issued) {
+                finishShutdown(stopping, TradingDrainOutcome.UNCONFIRMED)
+                return
+            }
+            issued[market.marketId] = marketIssued
+            settled[market.marketId] = marketSettled
+        }
+        val target = stopping.target ?: issued
+        if (target.keys != issued.keys || target.any { (market, through) -> issued.getValue(market) < through }) {
+            finishShutdown(stopping, TradingDrainOutcome.UNCONFIRMED)
+            return
+        }
+        stopping.target = target
+        stopping.settled = settled
+        if (target.all { (market, through) -> settled.getValue(market) >= through }) {
+            finishShutdown(stopping, TradingDrainOutcome.COMPLETED)
+        }
+    }
+
+    private fun finishShutdown(
+        stopping: Shutdown,
+        outcome: TradingDrainOutcome,
+    ) {
+        if (!stopping.finished.compareAndSet(false, true)) return
+        closing = true
+        val result =
+            if (System.nanoTime() - stopping.deadline >= 0) {
+                TradingDrainOutcome.TIMED_OUT
+            } else {
+                outcome
+            }
+        logger.info("거래 종료 결과={} 대상 순번={} 정산 순번={}", result, stopping.target, stopping.settled)
+        stopping.result.complete(result)
+    }
+
+    internal fun beginShutdown(): CompletableFuture<TradingDrainOutcome> =
+        synchronized(admissionLock) {
+            shutdown?.let { return it.result }
+            val deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(settings.drainTimeoutMs)
+            val stopping = Shutdown(deadline, observedFundsTerm)
+            shutdown = stopping
+            if (closing || !available) finishShutdown(stopping, TradingDrainOutcome.UNCONFIRMED)
+            stopping.result
+        }
+
+    internal fun awaitShutdown() {
+        val result = beginShutdown()
+        if (Thread.currentThread() === worker || completionContext.get() == true) return
+        val stopping = checkNotNull(shutdown)
+        try {
+            result.get(maxOf(0L, stopping.deadline - System.nanoTime()), TimeUnit.NANOSECONDS)
+        } catch (_: TimeoutException) {
+            finishShutdown(stopping, TradingDrainOutcome.TIMED_OUT)
+        } catch (_: InterruptedException) {
+            finishShutdown(stopping, TradingDrainOutcome.UNCONFIRMED)
+            Thread.currentThread().interrupt()
+        }
+    }
+
     private fun observeFundsTerm(client: BoundedGatewayTransport) {
-        if (recoveryGate == null) return
         val leadershipTerm = client.leadershipTermId
-        if (observedFundsTerm != leadershipTerm) observedFundsTerm = leadershipTerm
+        if (observedFundsTerm == leadershipTerm) return
+        // 이전 임기의 결과 미확인 송신은 새 임기의 조회로 종료 순서를 증명할 수 없다.
+        if (unconfirmedSend || inFlight.values.any { it.isOrderOrCancellation }) unconfirmedPriorTerm = true
+        unconfirmedSend = false
+        observedFundsTerm = leadershipTerm
     }
 
     private fun <T> complete(
@@ -480,11 +670,14 @@ internal class BoundedAeronGateway(
 
     override fun close() {
         synchronized(admissionLock) {
-            closing = true
-            available = false
+            if (shutdown == null) {
+                closing = true
+                available = false
+            }
         }
         // 동기 완료 콜백은 자기 실행기의 종료나 그것을 기다리는 소유 스레드와 서로 기다리지 않는다.
         if (Thread.currentThread() !== worker && completionContext.get() != true) {
+            if (shutdown != null) awaitShutdown()
             worker.join(settings.startupTimeoutMs + settings.resultTimeoutMs + 2_000)
             check(!worker.isAlive) { "bounded gateway did not stop" }
             shutdownFailure.get()?.let { throw IllegalStateException("Bounded Aeron 완료 처리를 종료하지 못했습니다", it) }

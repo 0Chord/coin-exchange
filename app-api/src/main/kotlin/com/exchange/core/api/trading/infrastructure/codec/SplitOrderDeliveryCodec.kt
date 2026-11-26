@@ -16,6 +16,7 @@ import com.exchange.core.api.trading.infrastructure.codec.generated.SplitFeePoli
 import com.exchange.core.api.trading.infrastructure.codec.generated.SplitInputKind
 import com.exchange.core.api.trading.infrastructure.codec.generated.SplitLineage
 import com.exchange.core.api.trading.infrastructure.codec.generated.SplitMarketContext
+import com.exchange.core.api.trading.infrastructure.codec.generated.SplitMarketSettlementProgress
 import com.exchange.core.api.trading.infrastructure.codec.generated.SplitOrderInput
 import com.exchange.core.api.trading.infrastructure.codec.generated.SplitRequestToken
 import com.exchange.core.api.trading.infrastructure.codec.generated.SplitReservation
@@ -264,12 +265,27 @@ internal class SplitOrderDeliveryCodec(
             require(it > 0)
             builder.expectedSequence = it
         }
-        reply.control?.let {
-            require(it.correlationId == reply.correlationId) { "nested control correlation differs" }
-            require(it.markets.size <= MAX_MARKETS)
-            val bytes = bounded.encode(it)
+        val control = reply.control
+        if (control != null) {
+            require(control.correlationId == reply.correlationId) { "nested control correlation differs" }
+            require(control.markets.size <= MAX_MARKETS)
+            val bytes = bounded.encode(control)
             bounded.decodeResponse(bytes)
             builder.control = WireControlReply.parser().parseFrom(bytes, HEADER_BYTES, bytes.size - HEADER_BYTES).also(::known)
+            // 정산 순번은 분리 실행의 응답에만 실어 기존 통합 제어 스키마를 유지한다.
+            if (control.markets.any { it.dispatchIssued != null }) {
+                require(inputContractVersion == 2)
+                require(reply.role == TradingServiceRole.FUNDS && reply.code == "PROGRESS" && control.code == "PROGRESS")
+                for (market in control.markets) {
+                    builder.addSettlementProgress(
+                        SplitMarketSettlementProgress
+                            .newBuilder()
+                            .setMarketId(text(market.marketId))
+                            .setDispatchIssued(requireNotNull(market.dispatchIssued))
+                            .setSettledResultThrough(requireNotNull(market.settledResultThrough)),
+                    )
+                }
+            }
         }
         reply.lifecycle?.let { builder.lifecycle = TradingLifecycle.valueOf(it).name }
         reply.cancellation?.let {
@@ -289,31 +305,46 @@ internal class SplitOrderDeliveryCodec(
             scanContractFields(bytes, offset + HEADER_BYTES, length - HEADER_BYTES, SplitDeliveryReply.getDescriptor())
             val wire = SplitDeliveryReply.parser().parseFrom(bytes, offset + HEADER_BYTES, length - HEADER_BYTES)
             known(wire)
-            complete(wire, setOf("ack", "expected_sequence", "control", "lifecycle", "cancellation"))
+            complete(wire, setOf("ack", "expected_sequence", "control", "lifecycle", "cancellation", "settlement_progress"))
             require(wire.correlationId >= 0 && wire.appliedLogPosition >= 0)
-            val control =
-                if (wire.hasControl()) {
-                    require(wire.control.marketsCount <= MAX_MARKETS)
-                    bounded.decodeResponse(controlFrame(21, wire.control)).also {
-                        require(it.correlationId == wire.correlationId) { "nested control correlation differs" }
-                    }
-                } else {
-                    null
-                }
+            val replyRole = role(wire.role)
             SplitOrderDeliveryReply(
                 wire.correlationId,
                 text(wire.code),
-                role(wire.role),
+                replyRole,
                 lineage(wire.lineage),
                 fingerprint(wire.topologySha256),
                 wire.appliedLogPosition,
                 if (wire.hasAck()) ack(wire.ack) else null,
                 if (wire.hasExpectedSequence()) wire.expectedSequence.also { require(it > 0) } else null,
-                control,
+                decodeControlReply(wire, replyRole),
                 if (wire.hasLifecycle()) TradingLifecycle.valueOf(wire.lifecycle).name else null,
                 if (wire.hasCancellation()) receipt(wire.cancellation) else null,
             )
         }
+
+    private fun decodeControlReply(
+        wire: SplitDeliveryReply,
+        replyRole: TradingServiceRole,
+    ): BoundedTradingReply? {
+        if (!wire.hasControl()) {
+            require(wire.settlementProgressCount == 0)
+            return null
+        }
+        require(wire.control.marketsCount <= MAX_MARKETS)
+        val control = bounded.decodeResponse(controlFrame(21, wire.control))
+        require(control.correlationId == wire.correlationId) { "nested control correlation differs" }
+        if (wire.settlementProgressCount == 0) return control
+        require(replyRole == TradingServiceRole.FUNDS && wire.code == "PROGRESS" && control.code == "PROGRESS")
+        require(wire.settlementProgressCount == control.markets.size)
+        val markets =
+            control.markets.zip(wire.settlementProgressList) { market, settled ->
+                complete(settled)
+                require(market.marketId == settled.marketId)
+                market.copy(dispatchIssued = settled.dispatchIssued, settledResultThrough = settled.settledResultThrough)
+            }
+        return control.copy(markets = markets)
+    }
 
     /** 조회한 연속 주문 중 실제 프레임 예산에 들어가는 앞부분을 고른다. */
     internal fun encodeApplyPrefix(
@@ -814,7 +845,7 @@ internal class SplitOrderDeliveryCodec(
                 val newer =
                     when (type.name) {
                         "SplitDeliveryCommand" -> field.name == "cancel" || field.name == "apply_batch"
-                        "SplitDeliveryReply" -> field.name == "cancellation"
+                        "SplitDeliveryReply" -> field.name == "cancellation" || field.name == "settlement_progress"
                         "SplitDispatch" -> field.number >= 9
                         else -> false
                     }

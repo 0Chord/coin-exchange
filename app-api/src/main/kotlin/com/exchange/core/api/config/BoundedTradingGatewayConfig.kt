@@ -12,8 +12,14 @@ import com.exchange.core.api.trading.infrastructure.history.BoundedTradingStateC
 import com.exchange.core.api.trading.infrastructure.recovery.RecoveryDurabilityGate
 import com.exchange.core.trading.ClusterLineage
 import org.springframework.beans.factory.ObjectProvider
+import org.springframework.boot.web.server.context.WebServerApplicationContext
+import org.springframework.context.ApplicationContext
+import org.springframework.context.ApplicationListener
+import org.springframework.context.SmartLifecycle
 import org.springframework.context.annotation.Bean
 import org.springframework.context.annotation.Configuration
+import org.springframework.context.event.ContextClosedEvent
+import org.springframework.core.Ordered
 import org.springframework.core.env.Environment
 import java.nio.file.Files
 import java.nio.file.Path
@@ -23,6 +29,12 @@ import java.nio.file.Path
 class BoundedTradingGatewayConfig {
     @Bean
     fun boundedTradingOrderUseCase(gateway: BoundedTradingOrderGateway): BoundedTradingOrderUseCase = BoundedTradingOrderUseCase(gateway)
+
+    @Bean
+    internal fun tradingGatewayShutdown(
+        gateway: BoundedAeronGateway,
+        context: ApplicationContext,
+    ): TradingGatewayShutdown = TradingGatewayShutdown(gateway, context)
 
     @Bean(name = ["boundedAeronGateway"], destroyMethod = "close")
     internal fun boundedAeronGateway(
@@ -79,5 +91,52 @@ class BoundedTradingGatewayConfig {
                 "remote protection requires a configured recovery durability gate"
             },
         )
+    }
+}
+
+internal class TradingGatewayShutdown(
+    private val gateway: BoundedAeronGateway,
+    private val context: ApplicationContext,
+) : ApplicationListener<ContextClosedEvent>,
+    SmartLifecycle,
+    Ordered {
+    @Volatile private var running = false
+
+    @Volatile private var contextClosing = false
+
+    override fun supportsAsyncExecution(): Boolean = false
+
+    override fun getOrder(): Int = Ordered.HIGHEST_PRECEDENCE
+
+    override fun onApplicationEvent(event: ContextClosedEvent) {
+        if (event.applicationContext !== context) return
+        contextClosing = true
+        gateway.beginShutdown()
+    }
+
+    override fun getPhase(): Int = WebServerApplicationContext.GRACEFUL_SHUTDOWN_PHASE - 1
+
+    override fun isRunning(): Boolean = running
+
+    override fun start() {
+        running = true
+    }
+
+    override fun stop(callback: Runnable) {
+        Thread.startVirtualThread {
+            try {
+                stop()
+            } finally {
+                callback.run()
+            }
+        }
+    }
+
+    override fun stop() {
+        try {
+            if (contextClosing) gateway.awaitShutdown()
+        } finally {
+            running = false
+        }
     }
 }

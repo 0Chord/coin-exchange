@@ -468,7 +468,9 @@ internal class FundsDispatchData(
         activeOrders = Math.addExact(activeOrders, 1)
     }
 
-    fun nextSequence(market: MarketId): Long = Math.addExact(markets.getValue(market).issued, 1L)
+    fun issued(market: MarketId): Long = markets.getValue(market).issued
+
+    fun nextSequence(market: MarketId): Long = Math.addExact(issued(market), 1L)
 
     fun canCancel(input: FundsOrderDispatch): Boolean {
         require(configuration.inputContractVersion == 2 && input.isCancellation && input.formatVersion == 2)

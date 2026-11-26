@@ -1,11 +1,17 @@
 package com.exchange.core.api.trading.infrastructure.aeron
 
+import com.exchange.core.api.trading.application.BoundedTradingCancellation
 import com.exchange.core.api.trading.application.OrderQueryRecoveryStatus
 import com.exchange.core.api.trading.application.OrderQueryRecoveryVerdict
 import com.exchange.core.api.trading.infrastructure.codec.BoundedCommandEnvelope
+import com.exchange.core.api.trading.infrastructure.codec.BoundedMarketProgress
 import com.exchange.core.api.trading.infrastructure.codec.BoundedTradingCodec
 import com.exchange.core.api.trading.infrastructure.codec.BoundedTradingCommand
 import com.exchange.core.api.trading.infrastructure.codec.BoundedTradingReply
+import com.exchange.core.api.trading.infrastructure.codec.SplitOrderDeliveryCodec
+import com.exchange.core.api.trading.infrastructure.codec.SplitOrderDeliveryCommand
+import com.exchange.core.api.trading.infrastructure.codec.SplitOrderDeliveryEnvelope
+import com.exchange.core.api.trading.infrastructure.codec.SplitOrderDeliveryReply
 import com.exchange.core.api.trading.infrastructure.recovery.RecoveryDurabilityGate
 import com.exchange.core.common.MarketId
 import com.exchange.core.common.OrderId
@@ -17,9 +23,14 @@ import com.exchange.core.order.Side
 import com.exchange.core.order.TimeInForce
 import com.exchange.core.trading.AdmissionCode
 import com.exchange.core.trading.AdmissionReceipt
+import com.exchange.core.trading.CancelCode
+import com.exchange.core.trading.CancelReceipt
 import com.exchange.core.trading.ClusterLineage
 import com.exchange.core.trading.OrderIntent
 import com.exchange.core.trading.RequestToken
+import com.exchange.core.trading.TradingIdentifiers
+import com.exchange.core.trading.TradingLifecycle
+import com.exchange.core.trading.TradingServiceRole
 import io.aeron.Publication
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.io.TempDir
@@ -29,19 +40,259 @@ import java.util.concurrent.ConcurrentLinkedQueue
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.ExecutionException
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.TimeoutException
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicReference
+import java.util.concurrent.locks.LockSupport
 import kotlin.test.assertEquals
 import kotlin.test.assertFails
 import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertIs
+import kotlin.test.assertSame
 import kotlin.test.assertTrue
 
 class BoundedAeronGatewayTest {
     @TempDir lateinit var directory: Path
     private val token = RequestToken(UserId("U1"), 0, 1, 1)
     private val intent = OrderIntent(MarketId("BTC-USDT"), 1, Side.BUY, OrderType.LIMIT, TimeInForce.GTC, Price(100), Quantity(100_000_000))
+
+    @Test
+    fun `정상 종료는 먼저 받은 요청을 순서대로 처리하고 확정한 대상까지만 기다린다`() {
+        lateinit var transport: ShutdownTransport
+        BoundedAeronGateway(
+            shutdownSettings(),
+            commandEncoder = SplitFundsGatewayTransport.Companion::encodeCommand,
+            cancelEncoder = SplitFundsGatewayTransport.Companion::encodeCancellation,
+        ) { receive -> ShutdownTransport(receive, splitWire = true).also { transport = it } }.use { gateway ->
+            val first = BoundedTradingCommand.Admit(token, intent)
+            val cancellation =
+                BoundedTradingCancellation(
+                    userId = token.userId.value,
+                    channel = token.channel,
+                    epoch = token.epoch,
+                    sequence = 2,
+                    expectedConfigurationVersion = 1,
+                    marketId = intent.marketId.value,
+                    orderId = "O2example",
+                )
+            val firstResult = gateway.submit(first)
+            assertTrue(transport.firstOffer.await(3, TimeUnit.SECONDS))
+            val cancellationResult = gateway.cancel(cancellation)
+            val callback = cancellationResult.thenRun { gateway.close() }
+
+            val stopped = gateway.beginShutdown()
+            assertSame(stopped, gateway.beginShutdown())
+            assertUnsent(gateway.submit(first.copy(token = token.copy(sequence = 3))))
+            assertFalse(cancellationResult.isDone)
+            transport.progress.set(drainProgress(issued = 2, settled = 1))
+            transport.allowOrders.countDown()
+            assertEquals("ACCEPTED", firstResult.get(3, TimeUnit.SECONDS).code)
+            assertEquals("ACCEPTED", cancellationResult.get(3, TimeUnit.SECONDS).cancellationCode)
+            callback.get(3, TimeUnit.SECONDS)
+            assertTrue(transport.firstProgress.await(3, TimeUnit.SECONDS))
+            // 첫 조회가 2를 종료 목표로 삼은 뒤, 후속 진척에 다른 요청이 추가돼도 기다리지 않는다.
+            assertTrue(transport.secondProgress.await(3, TimeUnit.SECONDS))
+            assertFalse(stopped.isDone)
+            assertEquals(SplitOrderDeliveryCommand.Control(first), transport.offered.first())
+            val queuedCancel = assertIs<SplitOrderDeliveryCommand.Cancel>(transport.offered.elementAt(1))
+            assertEquals(cancellation.sequence, queuedCancel.token.sequence)
+            assertEquals(cancellation.orderId, queuedCancel.intent.targetOrderId.value)
+            transport.progress.set(drainProgress(issued = 3, settled = 2))
+            assertEquals(TradingDrainOutcome.COMPLETED, stopped.get(3, TimeUnit.SECONDS))
+            assertEquals(1, transport.offered.count { it is SplitOrderDeliveryCommand.Cancel })
+        }
+    }
+
+    @Test
+    fun `종료 시간 초과는 큐의 미전송과 전송 뒤 결과 미확인을 구분한다`() {
+        lateinit var transport: ShutdownTransport
+        BoundedAeronGateway(shutdownSettings(drainTimeoutMs = 100)) { receive ->
+            ShutdownTransport(receive).also { transport = it }
+        }.use { gateway ->
+            val first = BoundedTradingCommand.Admit(token, intent)
+            val sent = gateway.submit(first)
+            assertTrue(transport.firstOffer.await(3, TimeUnit.SECONDS))
+            val unsent = gateway.submit(first.copy(token = token.copy(sequence = 2)))
+
+            assertEquals(TradingDrainOutcome.TIMED_OUT, gateway.beginShutdown().get(3, TimeUnit.SECONDS))
+            val failure = assertFailsWith<ExecutionException> { sent.get(3, TimeUnit.SECONDS) }
+            val gatewayError = assertIs<BoundedGatewayException>(failure.cause)
+            assertEquals("RESULT_UNCONFIRMED", gatewayError.code)
+            assertTrue(gatewayError.possiblySubmitted)
+            assertUnsent(unsent)
+            assertEquals(listOf(SplitOrderDeliveryCommand.Control(first)), transport.offered.toList())
+        }
+    }
+
+    @Test
+    fun `종료 도중 진행 중인 poll에서 리더를 바꿔도 새 임기로 완료를 판정하지 않는다`() {
+        lateinit var transport: ShutdownTransport
+        BoundedAeronGateway(shutdownSettings()) { receive -> ShutdownTransport(receive).also { transport = it } }.use { gateway ->
+            val pollEntered = CountDownLatch(1)
+            val changeLeader = CountDownLatch(1)
+            transport.progress.set(drainProgress(issued = 0, settled = 0))
+            transport.beforePoll.set {
+                pollEntered.countDown()
+                check(changeLeader.await(3, TimeUnit.SECONDS))
+                transport.leadershipTermId = 2
+            }
+            try {
+                assertTrue(pollEntered.await(3, TimeUnit.SECONDS))
+                val stopped = gateway.beginShutdown()
+                changeLeader.countDown()
+                assertEquals(TradingDrainOutcome.UNCONFIRMED, stopped.get(3, TimeUnit.SECONDS))
+            } finally {
+                changeLeader.countDown()
+            }
+        }
+    }
+
+    @Test
+    fun `정상 응답이라도 종료 기한을 넘겨 처음 확인되면 결과 미확인으로 끝난다`() {
+        lateinit var transport: ShutdownTransport
+        BoundedAeronGateway(shutdownSettings(drainTimeoutMs = 100)) { receive ->
+            ShutdownTransport(receive).also { transport = it }
+        }.use { gateway ->
+            val result = gateway.submit(BoundedTradingCommand.Admit(token, intent))
+            assertTrue(transport.firstOffer.await(3, TimeUnit.SECONDS))
+            val pollEntered = CountDownLatch(1)
+            val allowPoll = CountDownLatch(1)
+            transport.beforePoll.set {
+                pollEntered.countDown()
+                check(allowPoll.await(3, TimeUnit.SECONDS))
+            }
+            try {
+                assertTrue(pollEntered.await(3, TimeUnit.SECONDS))
+                val stopped = gateway.beginShutdown()
+                gateway.awaitShutdown()
+                assertEquals(TradingDrainOutcome.TIMED_OUT, stopped.get(3, TimeUnit.SECONDS))
+                transport.allowOrders.countDown()
+                allowPoll.countDown()
+                val failure = assertFailsWith<ExecutionException> { result.get(3, TimeUnit.SECONDS) }
+                val error = assertIs<BoundedGatewayException>(failure.cause)
+                assertEquals("RESULT_UNCONFIRMED", error.code)
+                assertTrue(error.possiblySubmitted)
+            } finally {
+                allowPoll.countDown()
+            }
+        }
+    }
+
+    @Test
+    fun `종료 기한을 넘긴 인코딩 작업은 주문을 전송하지 않는다`() {
+        lateinit var transport: ShutdownTransport
+        val encoding = CountDownLatch(1)
+        val allowEncoding = CountDownLatch(1)
+        val codec = BoundedTradingCodec()
+        val settings = shutdownSettings(drainTimeoutMs = 100)
+        BoundedAeronGateway(settings, commandEncoder = { correlation, command ->
+            encoding.countDown()
+            check(allowEncoding.await(3, TimeUnit.SECONDS))
+            codec.encode(correlation, command)
+        }) { receive -> ShutdownTransport(receive).also { transport = it } }.use { gateway ->
+            try {
+                val order = gateway.submit(BoundedTradingCommand.Admit(token, intent))
+                assertTrue(encoding.await(3, TimeUnit.SECONDS))
+                val stopped = gateway.beginShutdown()
+                assertFailsWith<TimeoutException> { stopped.get(200, TimeUnit.MILLISECONDS) }
+                allowEncoding.countDown()
+                assertEquals(TradingDrainOutcome.TIMED_OUT, stopped.get(3, TimeUnit.SECONDS))
+                assertUnsent(order)
+                assertTrue(transport.offered.isEmpty())
+            } finally {
+                allowEncoding.countDown()
+            }
+        }
+    }
+
+    @Test
+    fun `복구 보호의 잠금 대기 중 종료 기한이 지나도 주문을 전송하지 않는다`() {
+        val gate = HttpOrderRecoveryGate()
+        gate.publish(OrderQueryRecoveryVerdict(OrderQueryRecoveryStatus.READY), fundsLeadershipTermId = 1)
+        val encoderThread = CompletableFuture<Thread>()
+        val codec = BoundedTradingCodec()
+        val settings = shutdownSettings(drainTimeoutMs = 100)
+        lateinit var transport: ShutdownTransport
+        BoundedAeronGateway(
+            settings,
+            recoveryGate = gate,
+            commandEncoder = { correlation, command ->
+                encoderThread.complete(Thread.currentThread())
+                codec.encode(correlation, command)
+            },
+        ) { receive -> ShutdownTransport(receive).also { transport = it } }.use { gateway ->
+            val order =
+                synchronized(gate) {
+                    val queued = gateway.submit(BoundedTradingCommand.Admit(token, intent))
+                    val worker = encoderThread.get(3, TimeUnit.SECONDS)
+                    val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(3)
+                    while (worker.state != Thread.State.BLOCKED && System.nanoTime() - deadline < 0) {
+                        LockSupport.parkNanos(100_000)
+                    }
+                    assertEquals(Thread.State.BLOCKED, worker.state)
+                    val stopped = gateway.beginShutdown()
+                    gateway.awaitShutdown()
+                    assertEquals(TradingDrainOutcome.TIMED_OUT, stopped.get(3, TimeUnit.SECONDS))
+                    queued
+                }
+            assertUnsent(order)
+            assertTrue(transport.offered.isEmpty())
+        }
+    }
+
+    @Test
+    fun `원격 보호는 사용자 접수 응답에 적용하고 내부 종료 조회는 기다리게 하지 않는다`() {
+        val fundsLineage = ClusterLineage(1, 2)
+        val protectedPositions = ConcurrentLinkedQueue<Long>()
+        val gate =
+            object : RecoveryDurabilityGate {
+                override fun awaitProtected(
+                    lineage: ClusterLineage,
+                    position: Long,
+                ): CompletableFuture<Unit> {
+                    assertEquals(fundsLineage, lineage)
+                    protectedPositions.add(position)
+                    return if (position == 640L) CompletableFuture.completedFuture(Unit) else CompletableFuture()
+                }
+            }
+        BoundedAeronGateway(shutdownSettings(), fundsLineage, gate) { receive ->
+            ShutdownTransport(receive, fundsLineage).apply {
+                allowOrders.countDown()
+                progress.set(drainProgress(issued = 1, settled = 1))
+            }
+        }.use { gateway ->
+            val order = gateway.submit(BoundedTradingCommand.Admit(token, intent))
+            assertEquals("ACCEPTED", order.get(3, TimeUnit.SECONDS).code)
+            assertEquals(TradingDrainOutcome.COMPLETED, gateway.beginShutdown().get(3, TimeUnit.SECONDS))
+            assertEquals(listOf(640L), protectedPositions.toList())
+        }
+    }
+
+    @Test
+    fun `취소를 포함한 순번이 없는 진행 응답은 종료 완료의 증거가 아니다`() {
+        BoundedAeronGateway(shutdownSettings()) { receive ->
+            ShutdownTransport(receive).apply { progress.set(BoundedMarketProgress("BTC-USDT", 1, 1)) }
+        }.use { gateway ->
+            assertEquals(TradingDrainOutcome.UNCONFIRMED, gateway.beginShutdown().get(3, TimeUnit.SECONDS))
+        }
+    }
+
+    private fun shutdownSettings(drainTimeoutMs: Long = 5_000): AeronGatewaySettings =
+        AeronGatewaySettings(
+            directory.resolve("gateway"),
+            "0=127.0.0.1:19700",
+            "127.0.0.1:19707",
+            maxInFlight = 1,
+            drainTimeoutMs = drainTimeoutMs,
+        )
+
+    private fun assertUnsent(result: CompletableFuture<BoundedTradingReply>) {
+        val failure = assertFailsWith<ExecutionException> { result.get(3, TimeUnit.SECONDS) }
+        val gatewayError = assertIs<BoundedGatewayException>(failure.cause)
+        assertEquals("GATEWAY_UNAVAILABLE", gatewayError.code)
+        assertFalse(gatewayError.possiblySubmitted)
+    }
 
     @Test
     fun `HTTP edge preserves caller token and correlates responses without creating new tokens`() {
@@ -609,4 +860,105 @@ class BoundedAeronGatewayTest {
             closed.countDown()
         }
     }
+
+    private class ShutdownTransport(
+        private val receive: BoundedGatewayReplies,
+        private val lineage: ClusterLineage? = null,
+        private val splitWire: Boolean = false,
+    ) : BoundedGatewayTransport {
+        @Volatile override var leadershipTermId: Long? = 1
+
+        val offered = ConcurrentLinkedQueue<SplitOrderDeliveryCommand>()
+        val firstOffer = CountDownLatch(1)
+        val allowOrders = CountDownLatch(1)
+        val firstProgress = CountDownLatch(1)
+        val secondProgress = CountDownLatch(2)
+        val progress = AtomicReference<BoundedMarketProgress>()
+        val beforePoll = AtomicReference<(() -> Unit)?>(null)
+        private val codec = BoundedTradingCodec()
+        private val splitCodec = SplitOrderDeliveryCodec(2)
+        private val progressCommand = SplitOrderDeliveryCommand.Control(BoundedTradingCommand.Progress)
+        private var waiting: SplitOrderDeliveryEnvelope? = null
+
+        override fun offer(bytes: ByteArray): Long {
+            check(waiting == null)
+            val request =
+                if (splitWire) {
+                    splitCodec.decode(bytes)
+                } else {
+                    val command = codec.decode(bytes)
+                    SplitOrderDeliveryEnvelope(command.correlationId, SplitOrderDeliveryCommand.Control(command.command))
+                }
+            waiting = request
+            offered.add(request.command)
+            if (request.command == progressCommand) {
+                firstProgress.countDown()
+                secondProgress.countDown()
+            } else {
+                firstOffer.countDown()
+            }
+            return 1L
+        }
+
+        override fun poll(): Int {
+            beforePoll.getAndSet(null)?.invoke()
+            val request = waiting ?: return 0
+            val cancellation = request.command as? SplitOrderDeliveryCommand.Cancel
+            if (cancellation != null) {
+                if (allowOrders.count != 0L) return 0
+                val fundsLineage = lineage ?: ClusterLineage(1, 2)
+                val receipt =
+                    CancelReceipt(
+                        code = CancelCode.ACCEPTED,
+                        cancelId = TradingIdentifiers.cancel(fundsLineage, 1),
+                        targetOrderId = cancellation.intent.targetOrderId,
+                        inputSequence = 2,
+                    )
+                waiting = null
+                receive.cancellation(
+                    SplitOrderDeliveryReply(
+                        request.correlationId,
+                        "ACCEPTED",
+                        TradingServiceRole.FUNDS,
+                        fundsLineage,
+                        "a".repeat(64),
+                        640,
+                        cancellation = receipt,
+                    ),
+                )
+                return 1
+            }
+            val reply =
+                if (request.command == progressCommand) {
+                    val currentProgress = progress.get() ?: return 0
+                    BoundedTradingReply(
+                        request.correlationId,
+                        "PROGRESS",
+                        641,
+                        lifecycle = TradingLifecycle.RUNNING.name,
+                        markets = listOf(currentProgress),
+                        lineage = lineage,
+                    )
+                } else {
+                    if (allowOrders.count != 0L) return 0
+                    BoundedTradingReply(
+                        request.correlationId,
+                        "ACCEPTED",
+                        640,
+                        AdmissionReceipt(AdmissionCode.ACCEPTED, OrderId("O2example"), 4, 2),
+                        lineage = lineage,
+                    )
+                }
+            waiting = null
+            receive(reply)
+            return 1
+        }
+
+        override fun close() = Unit
+    }
+
+    private fun drainProgress(
+        issued: Long,
+        settled: Long,
+    ): BoundedMarketProgress = BoundedMarketProgress("BTC-USDT", 0, 0, dispatchIssued = issued, settledResultThrough = settled)
 }
