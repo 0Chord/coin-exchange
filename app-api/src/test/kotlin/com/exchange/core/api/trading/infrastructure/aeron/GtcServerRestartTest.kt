@@ -21,6 +21,93 @@ class GtcServerRestartTest {
     lateinit var directory: Path
 
     @Test
+    fun `매칭 로그 확정 직후 강제 종료해도 원래 주문을 복원하고 재전송은 중복 정산하지 않는다`() {
+        verifyGtcRestart(directory, matchingCrashDispatch = 2) { database, cluster, client ->
+            val jdbc = database.jdbc()
+            val http = TradingHttp(client, cluster.start(), cluster::recordHttp)
+            for (user in listOf("buyer", "seller", "later-buyer")) http.openChannel(user)
+            val sell = http.submit(order("seller", "SELL", quantity = 1, sequence = 1))
+            http.awaitOrder(sell, "RESTING", filled = 0, remaining = 1, resultSequence = 1)
+            http.awaitBook(resultSequence = 1, bids = 0, asks = 1)
+            assertEquals(1L, readProgress(cluster).market.settledResultThrough)
+            cluster.snapshot()
+
+            val buy = http.submit(order("buyer", "BUY", quantity = 1, sequence = 1))
+            http.awaitBalance("buyer", "USDT", 5, available = 898, reserved = 102)
+            http.awaitBalance("seller", "BTC", 5, available = 2, reserved = 1)
+            val beforeCrash = readDatabase(jdbc)
+            assertLedger(beforeCrash, ledgerThrough = 5, reserveCount = 2, settlementCount = 0, releaseCount = 0, buyReserve = 102)
+            assertTrue(beforeCrash.postings.isEmpty())
+            val pending = readProgress(cluster)
+            assertEquals(2L, pending.admissionSequence)
+            assertEquals(2L, pending.market.dispatchIssued)
+            assertEquals(1L, pending.market.settledResultThrough)
+
+            cluster.crashAndRecoverMatching(buy.id)
+
+            // 원래 명령으로 정산까지 끝나야 사용자 토큰을 다시 보낸다.
+            http.awaitOrder(buy, "FILLED", filled = 1, remaining = 0, resultSequence = 2)
+            http.awaitOrder(sell, "FILLED", filled = 1, remaining = 0, resultSequence = 2)
+            http.awaitBook(resultSequence = 2, bids = 0)
+            http.awaitBalance("buyer", "USDT", 6, available = 898, reserved = 0)
+            http.awaitBalance("buyer", "BTC", 6, available = 1, reserved = 0)
+            http.awaitBalance("seller", "USDT", 6, available = 99, reserved = 0)
+            http.awaitBalance("seller", "BTC", 6, available = 2, reserved = 0)
+            val buyFill = http.awaitFills(buy, 1, feeTotal = 2).single()
+            val sellFill = http.awaitFills(sell, 1, feeTotal = 1).single()
+            val trade = assertFill(buyFill, quantity = 1, role = "TAKER", fee = 2)
+            assertEquals(trade, assertFill(sellFill, quantity = 1, role = "MAKER", fee = 1))
+            val completed = readDatabase(jdbc)
+            assertEquals(beforeCrash.ledger, completed.ledger.dropLast(1))
+            assertEquals(listOf(sell.id, buy.id), completed.orders.map { it["order_id"] })
+            assertLedger(completed, ledgerThrough = 6, reserveCount = 2, settlementCount = 1, releaseCount = 0, buyReserve = 102)
+            assertSettlement(
+                completed,
+                trade,
+                sell,
+                buy,
+                resultSequence = 2,
+                quantity = 1,
+                makerFee = 1,
+                takerFee = 2,
+                expectedPostings = firstFillPostings,
+            )
+            val settled = readProgress(cluster)
+            assertEquals(pending.admissionSequence, settled.admissionSequence)
+            assertEquals(pending.market.dispatchIssued, settled.market.dispatchIssued)
+            assertEquals(2L, settled.market.settledResultThrough)
+
+            val replay = http.submit(buy.body)
+            assertEquals(buy, replay)
+            assertEquals(settled, readProgress(cluster), "같은 토큰은 새 업무 순번을 만들지 않는다")
+
+            // 재전송 뒤 별도 예약까지 반영해 오래된 조회가 중복 효과를 가리지 못하게 한다.
+            val laterBid = http.submit(order("later-buyer", "BUY", quantity = 1, sequence = 1))
+            assertEquals(buy.admissionSequence + 1, laterBid.admissionSequence)
+            assertEquals(buy.marketAdmissionSequence + 1, laterBid.marketAdmissionSequence)
+            http.awaitOrder(laterBid, "RESTING", filled = 0, remaining = 1, resultSequence = 3)
+            http.awaitBook(resultSequence = 3, bids = 1)
+            http.awaitBalance("later-buyer", "USDT", 7, available = 198, reserved = 102)
+            http.awaitBalance("buyer", "USDT", 7, available = 898, reserved = 0)
+            http.awaitOrder(buy, "FILLED", filled = 1, remaining = 0, resultSequence = 2)
+            assertEquals(buyFill, http.awaitFills(buy, 1, feeTotal = 2).single())
+            assertEquals(sellFill, http.awaitFills(sell, 1, feeTotal = 1).single())
+            val afterReplay = readDatabase(jdbc)
+            assertEquals(completed.ledger, afterReplay.ledger.dropLast(1))
+            assertTransfer(afterReplay.entry(7), "RESERVE", "later-buyer", "USDT", 102)
+            assertEquals(completed.orders, afterReplay.orders.filter { it["order_id"] != laterBid.id })
+            assertEquals(completed.settlements, afterReplay.settlements)
+            assertEquals(completed.postings, afterReplay.postings)
+            println(
+                "HTTP 202 동일 토큰 재전송 ${replay.body}\n" +
+                    "주문 ${replay.id}, 접수 ${replay.admissionSequence}, 마켓 접수 ${replay.marketAdmissionSequence}, " +
+                    "체결 $trade 1건, 예약 102 → 0 USDT, 원장 정산 ${completed.ledger.last().sequence}, " +
+                    "재전송 이후 새 예약만 반영한 원장 ${afterReplay.ledger.last().sequence}",
+            )
+        }
+    }
+
+    @Test
     fun `정상 재기동 뒤 원래 주문이 먼저 체결되고 종료된 주문의 재전송은 중복 반영되지 않는다`() {
         verifyGtcRestart(directory) { database, cluster, client ->
             val jdbc = database.jdbc()
@@ -234,12 +321,14 @@ class GtcServerRestartTest {
         reserveCount: Int,
         settlementCount: Int,
         releaseCount: Int,
+        buyReserve: Long = 306,
     ) {
         assertEquals((1..ledgerThrough).toList(), database.ledger.map { it.sequence })
         assertTrue(database.ledger.zipWithNext().all { (first, second) -> first.position <= second.position })
         val entries = database.ledger.flatMap { it.entries }
         assertEquals(
-            mapOf("OPENING" to 3, "RESERVE" to reserveCount, "SETTLEMENT" to settlementCount, "RELEASE" to releaseCount),
+            mapOf("OPENING" to 3, "RESERVE" to reserveCount, "SETTLEMENT" to settlementCount, "RELEASE" to releaseCount)
+                .filterValues { it > 0 },
             entries.groupingBy { it.path("type").asString() }.eachCount(),
         )
         assertEquals(entries.size, entries.map { it.path("id").asString() }.toSet().size)
@@ -252,7 +341,7 @@ class GtcServerRestartTest {
             assertEquals(listOf(Posting("SYSTEM:$asset:DEVELOPMENT_FUNDING", asset, "DEBIT", amount), credit), postings(opening))
         }
         assertTransfer(database.entry(4), "RESERVE", "seller", "BTC", 1)
-        assertTransfer(database.entry(5), "RESERVE", "buyer", "USDT", 306)
+        assertTransfer(database.entry(5), "RESERVE", "buyer", "USDT", buyReserve)
     }
 
     private fun assertTransfer(

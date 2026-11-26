@@ -16,11 +16,15 @@ import com.exchange.core.trading.ClusterLineage
 import com.exchange.core.trading.TradingServiceRole
 import io.aeron.Aeron
 import io.aeron.AeronCounters
+import io.aeron.CommonContext
 import io.aeron.archive.ArchiveMarkFile
+import io.aeron.archive.client.AeronArchive
+import io.aeron.archive.status.RecordingPos
 import io.aeron.cluster.ClusterTool
 import io.aeron.cluster.RecordingLog
 import io.aeron.cluster.service.ClusterCounters
 import io.aeron.cluster.service.ClusterMarkFile
+import io.aeron.cluster.service.ClusteredServiceContainer
 import io.aeron.driver.MediaDriver
 import io.aeron.driver.ThreadingMode
 import org.agrona.concurrent.status.CountersReader
@@ -40,6 +44,7 @@ import java.util.concurrent.TimeUnit
 internal class GtcRestartCluster(
     private val directory: Path,
     private val database: OrderQueryTestDatabase,
+    private val matchingCrashDispatch: Long?,
 ) : AutoCloseable {
     private val lineage = ClusterLineage(41, 42)
     private val testSettings = SplitTradingHttpTestSettings(directory, lineage)
@@ -142,6 +147,43 @@ internal class GtcRestartCluster(
         return url
     }
 
+    fun crashAndRecoverMatching(orderId: String) {
+        val snapshot = snapshots.getValue(TradingServiceRole.MATCHING)
+        val originalPid = matching.pid
+        val fundsPid = funds.pid
+        val wasPid = checkNotNull(was).pid
+        val paused = matching.awaitCrashMarker(recover = false, orderId = orderId)
+        val position = paused.path("position").longValue()
+        val boundary = matching.matchingLogBoundary()
+        recoveryEvidence.add("매칭 적용 직전 $paused, 스냅샷 $snapshot, 로그 $boundary")
+        check(snapshot.position < position && boundary.applied < position) { "대상 주문은 스냅샷 뒤 미적용 상태여야 합니다" }
+        check(boundary.committed >= position && boundary.recorded >= position) { "대상 주문이 매칭 로그에 확정·기록되지 않았습니다" }
+
+        val exitCode = matching.kill()
+        recoveryEvidence.add("매칭 PID $originalPid 강제 종료, 종료 코드 $exitCode")
+        check(exitCode == 137) { "매칭 JVM이 SIGKILL로 종료되지 않았습니다" }
+        matching.awaitInactiveRuntime()
+        matching.start(recover = true)
+
+        val replayed = matching.awaitCrashMarker(recover = true, orderId = orderId)
+        val restored = matching.matchingLogBoundary()
+        recoveryEvidence.add("매칭 복원 $replayed, 로그 $restored, 유지된 자금 PID $fundsPid·WAS PID $wasPid")
+        check(matching.pid != originalPid)
+        check(listOf(fundsPid, wasPid).all { ProcessHandle.of(it).map(ProcessHandle::isAlive).orElse(false) }) {
+            "매칭 복구 동안 자금과 WAS가 유지되지 않았습니다"
+        }
+        check(matching.latestSnapshot() == snapshot && restored.recordingId == boundary.recordingId) {
+            "매칭 스냅샷이나 로그 원본이 바뀌었습니다"
+        }
+        check(replayed.path("position").longValue() == position && restored.applied >= position) {
+            "대상 주문의 원래 로그 위치($position)에서 복원을 확인하지 못했습니다"
+        }
+        check(replayed.path("resultSequence").longValue() == matchingCrashDispatch) {
+            "복원된 체결 결과의 순번이 다릅니다: $replayed"
+        }
+        println(recoveryEvidence.joinToString("\n"))
+    }
+
     private fun startWas(generation: Int): String {
         val settingsFiles =
             nodes.map { node ->
@@ -217,6 +259,18 @@ internal class GtcRestartCluster(
         val position: Long,
     )
 
+    private data class LogPositions(
+        val committed: Long,
+        val applied: Long,
+    )
+
+    private data class MatchingLogBoundary(
+        val committed: Long,
+        val applied: Long,
+        val recordingId: Long,
+        val recorded: Long,
+    )
+
     private inner class Node(
         val role: TradingServiceRole,
     ) {
@@ -224,11 +278,20 @@ internal class GtcRestartCluster(
         val settings by lazy { splitTradingSettings(environment) }
         private var process: Process? = null
         private lateinit var log: Path
+        private var crashArmed = false
         val pid: Long get() = checkNotNull(process).pid()
 
         fun start(recover: Boolean) {
             log = directory.resolve("${role.name.lowercase()}-recover-$recover.log")
-            val command = tradingProcessCommand("com.exchange.core.api.trading.infrastructure.aeron.DevelopmentSplitTradingMainKt")
+            val command =
+                if (role == TradingServiceRole.MATCHING && matchingCrashDispatch != null) {
+                    tradingProcessCommand(
+                        "com.exchange.core.api.trading.infrastructure.aeron.MatchingCommitCrashNodeKt",
+                        classpathProperty = "fundingVerificationRuntimeClasspath",
+                    ) + listOf(crashMarker(recover).toString(), matchingCrashDispatch.toString())
+                } else {
+                    tradingProcessCommand("com.exchange.core.api.trading.infrastructure.aeron.DevelopmentSplitTradingMainKt")
+                }
             val builder = ProcessBuilder(command).redirectErrorStream(true).redirectOutput(log.toFile())
             val childEnvironment = builder.environment()
             childEnvironment.keys.removeIf {
@@ -240,6 +303,7 @@ internal class GtcRestartCluster(
             childEnvironment["FUNDING_RECOVER_EXISTING"] = recover.toString()
             val started = builder.start()
             process = started
+            crashArmed = role == TradingServiceRole.MATCHING && matchingCrashDispatch != null && !recover
             val event = awaitStart(started)
             check(event.path("pid").longValue() == started.pid())
             check(event.path("role").asString() == role.name)
@@ -291,7 +355,83 @@ internal class GtcRestartCluster(
             recoveryEvidence.add("$role PID $stoppedPid 종료 기록 $markName")
         }
 
-        fun cleanup() = process?.cleanupTradingProcess()
+        fun cleanup() {
+            val running = process ?: return
+            if (running.isAlive && crashArmed) {
+                kill()
+            } else {
+                running.cleanupTradingProcess()
+            }
+        }
+
+        private fun crashMarker(recover: Boolean): Path = directory.resolve("matching-commit-recover-$recover.json")
+
+        fun awaitCrashMarker(
+            recover: Boolean,
+            orderId: String,
+        ): JsonNode {
+            val markerPath = crashMarker(recover)
+            val running = checkNotNull(process)
+            val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(15)
+            while (running.isAlive && System.nanoTime() < deadline) {
+                if (Files.isRegularFile(markerPath)) {
+                    val marker = json.readTree(Files.readString(markerPath))
+                    val stage = if (recover) "APPLIED" else "BEFORE_APPLY"
+                    val clusterRole = if (recover) "FOLLOWER" else "LEADER"
+                    check(
+                        marker.path("pid").longValue() == running.pid() && marker.path("stage").asString() == stage &&
+                            marker.path("clusterRole").asString() == clusterRole &&
+                            marker.path("marketId").asString() == "BTC-USDT" && marker.path("orderId").asString() == orderId &&
+                            marker.path("dispatchSequence").longValue() == matchingCrashDispatch &&
+                            marker.path("position").longValue() > 0L,
+                    ) { "대상 주문의 매칭 위치 표식이 다릅니다: $marker" }
+                    return marker
+                }
+                Thread.sleep(25)
+            }
+            error("매칭 PID ${running.pid()}의 표식을 관찰하지 못했습니다: $markerPath")
+        }
+
+        fun kill(): Int {
+            val running = checkNotNull(process)
+            check(running.isAlive) { "강제 종료 요청 전에 매칭 JVM이 종료됐습니다" }
+            running.destroyForcibly()
+            check(running.waitFor(5, TimeUnit.SECONDS)) { "강제 종료한 매칭 JVM을 회수하지 못했습니다" }
+            return running.exitValue()
+        }
+
+        fun awaitInactiveRuntime() {
+            val transport = settings.transport
+            val driver = Path.of(transport.driverDirectory).toFile()
+            val driverTimeoutMs = MediaDriver.Context().driverTimeoutMs()
+            // 각 구성요소가 별도로 heartbeat를 쓰므로 Driver 만료만으로 재기동하면 경합이 생긴다.
+            val clusterTimeoutMs = ClusteredServiceContainer.Configuration.LIVENESS_TIMEOUT_MS
+            val clusterFiles = listOf(ClusterMarkFile.FILENAME, ClusterMarkFile.markFilenameForService(transport.serviceId))
+            val clusterActivity =
+                clusterFiles.maxOf { markName ->
+                    ClusterMarkFile(transport.clusterDirectory.toFile(), markName, System::currentTimeMillis, 0, null).use { mark ->
+                        mark.activityTimestampVolatile()
+                    }
+                }
+            val archiveActivity =
+                ArchiveMarkFile(
+                    transport.archiveDirectory.toFile(),
+                    ArchiveMarkFile.FILENAME,
+                    System::currentTimeMillis,
+                    0,
+                    null,
+                ).use { mark ->
+                    mark.activityTimestampVolatile()
+                }
+            val archiveTimeoutMs = TimeUnit.SECONDS.toMillis(10) // Aeron 1.53.3 Archive liveness timeout
+            val marksExpireAt = maxOf(clusterActivity + clusterTimeoutMs, archiveActivity + archiveTimeoutMs)
+            val timeoutMs = maxOf(driverTimeoutMs, clusterTimeoutMs, archiveTimeoutMs)
+            val deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(timeoutMs * 2)
+            while (System.currentTimeMillis() <= marksExpireAt || CommonContext.isDriverActive(driver, driverTimeoutMs) {}) {
+                check(System.nanoTime() < deadline) { "강제 종료한 매칭 노드의 heartbeat가 만료되지 않았습니다" }
+                Thread.sleep(50)
+            }
+        }
 
         fun connect(): SplitOrderDeliveryClient {
             val ingress = if (role == TradingServiceRole.FUNDS) settings.fundsIngressEndpoints else settings.matchingIngressEndpoints
@@ -318,29 +458,57 @@ internal class GtcRestartCluster(
         fun confirmedPosition(): Long {
             val context = Aeron.Context().aeronDirectoryName(settings.transport.driverDirectory)
             return Aeron.connect(context).use { aeron ->
-                val counters = aeron.countersReader()
-                val committedId = ClusterCounters.find(counters, AeronCounters.CLUSTER_COMMIT_POSITION_TYPE_ID, settings.clusterId)
-                val label =
-                    splitArchiveAppliedLabel(settings.clusterId, settings.transport.memberId, settings.configuration.resultTopologySha256)
-                var appliedId = CountersReader.NULL_COUNTER_ID
-                counters.forEach { id, type, _, name ->
-                    if (type == SPLIT_ARCHIVE_APPLIED_TYPE_ID && name == label) appliedId = id
-                }
-                check(committedId != CountersReader.NULL_COUNTER_ID && appliedId != CountersReader.NULL_COUNTER_ID) {
-                    "$role 확정·적용 위치를 읽을 수 없습니다"
-                }
-                minOf(counters.getCounterValue(committedId), counters.getCounterValue(appliedId))
+                val positions = logPositions(aeron.countersReader())
+                minOf(positions.committed, positions.applied)
             }
+        }
+
+        fun matchingLogBoundary(): MatchingLogBoundary {
+            val transport = settings.transport
+            val context = transport.archiveClient().messageTimeoutNs(TimeUnit.SECONDS.toNanos(3))
+            return AeronArchive.connect(context).use { archive ->
+                val reader = archive.context().aeron().countersReader()
+                val termId = ClusterCounters.find(reader, AeronCounters.CLUSTER_LEADERSHIP_TERM_ID_TYPE_ID, settings.clusterId)
+                check(termId != CountersReader.NULL_COUNTER_ID) { "매칭 임기를 읽을 수 없습니다" }
+                val term = reader.getCounterValue(termId)
+                val recordingId =
+                    RecordingLog(transport.clusterDirectory.toFile(), false).use { log ->
+                        log.getTermEntry(term).recordingId
+                    }
+                val recordingCounter = RecordingPos.findCounterIdByRecording(reader, recordingId, settings.clusterId.toLong())
+                check(RecordingPos.isActive(reader, recordingCounter, recordingId)) { "매칭 임기의 Archive 기록이 활성 상태가 아닙니다" }
+                val recorded = minOf(reader.getCounterValue(recordingCounter), archive.getMaxRecordedPosition(recordingId))
+                val positions = logPositions(reader)
+                check(reader.getCounterValue(termId) == term) { "매칭 로그 위치를 읽는 동안 임기가 바뀌었습니다" }
+                MatchingLogBoundary(positions.committed, positions.applied, recordingId, recorded)
+            }
+        }
+
+        private fun logPositions(counters: CountersReader): LogPositions {
+            val committedId = ClusterCounters.find(counters, AeronCounters.CLUSTER_COMMIT_POSITION_TYPE_ID, settings.clusterId)
+            val label =
+                splitArchiveAppliedLabel(settings.clusterId, settings.transport.memberId, settings.configuration.resultTopologySha256)
+            var appliedId = CountersReader.NULL_COUNTER_ID
+            counters.forEach { id, type, _, name ->
+                if (type == SPLIT_ARCHIVE_APPLIED_TYPE_ID && name == label) {
+                    appliedId = id
+                }
+            }
+            check(committedId != CountersReader.NULL_COUNTER_ID && appliedId != CountersReader.NULL_COUNTER_ID) {
+                "$role 확정·적용 위치를 읽을 수 없습니다"
+            }
+            return LogPositions(counters.getCounterValue(committedId), counters.getCounterValue(appliedId))
         }
     }
 }
 
 internal fun verifyGtcRestart(
     directory: Path,
+    matchingCrashDispatch: Long? = null,
     verify: (OrderQueryTestDatabase, GtcRestartCluster, HttpClient) -> Unit,
 ) {
     OrderQueryTestDatabase(socketTimeoutSeconds = 2).use { database ->
-        GtcRestartCluster(directory, database).use { cluster ->
+        GtcRestartCluster(directory, database, matchingCrashDispatch).use { cluster ->
             HttpClient.newHttpClient().use { client ->
                 try {
                     verify(database, cluster, client)
