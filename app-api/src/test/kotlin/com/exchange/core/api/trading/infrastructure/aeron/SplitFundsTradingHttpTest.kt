@@ -30,11 +30,8 @@ import com.exchange.core.common.OrderId
 import com.exchange.core.common.Price
 import com.exchange.core.common.Quantity
 import com.exchange.core.common.UserId
-import com.exchange.core.fee.FeeProductType
 import com.exchange.core.fee.FeeRate
-import com.exchange.core.fee.FeeTier
 import com.exchange.core.fee.MakerTakerFeeRates
-import com.exchange.core.fee.TradingFeePolicySnapshot
 import com.exchange.core.ledger.Balance
 import com.exchange.core.ledger.LedgerPosting
 import com.exchange.core.ledger.LedgerPostingSide
@@ -48,7 +45,6 @@ import com.exchange.core.ledger.ReconciliationItem
 import com.exchange.core.ledger.ReconciliationStatus
 import com.exchange.core.ledger.ReservationHold
 import com.exchange.core.matching.TradeExecuted
-import com.exchange.core.order.MarketDefinition
 import com.exchange.core.order.OrderType
 import com.exchange.core.order.Side
 import com.exchange.core.order.TimeInForce
@@ -67,8 +63,6 @@ import com.exchange.core.trading.SettlementFact
 import com.exchange.core.trading.TradingClusterManifest
 import com.exchange.core.trading.TradingIdentifiers
 import com.exchange.core.trading.TradingLifecycle
-import com.exchange.core.trading.TradingMarketContext
-import com.exchange.core.trading.TradingResourceLimits
 import com.exchange.core.trading.TradingServiceRole
 import io.aeron.ChannelUri
 import io.aeron.Image
@@ -99,7 +93,6 @@ import tools.jackson.databind.JsonNode
 import tools.jackson.databind.json.JsonMapper
 import java.io.IOException
 import java.math.BigInteger
-import java.net.DatagramSocket
 import java.net.URI
 import java.net.http.HttpClient
 import java.net.http.HttpRequest
@@ -113,7 +106,6 @@ import java.time.Instant
 import java.util.Properties
 import java.util.concurrent.CompletableFuture
 import java.util.concurrent.CountDownLatch
-import java.util.concurrent.ThreadLocalRandom
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
@@ -133,6 +125,7 @@ class SplitFundsTradingHttpTest {
     @TempDir lateinit var directory: Path
     private val json = JsonMapper.builder().build()
     private val lineage = ClusterLineage(41, 42)
+    private val testSettings: SplitTradingHttpTestSettings get() = SplitTradingHttpTestSettings(directory, lineage)
 
     @Test
     fun `실제 HTTP 주문 거절은 자금과 주문장을 바꾸지 않고 다음 정상 주문을 받는다`() {
@@ -598,7 +591,7 @@ class SplitFundsTradingHttpTest {
         val manifest = directory.resolve("manifest.bin")
         val settingsFiles =
             listOf(TradingServiceRole.FUNDS, TradingServiceRole.MATCHING).map { role ->
-                val values = settingsEnvironment(manifest, role, harness.basePort, archiveQuery = true)
+                val values = testSettings.settingsEnvironment(manifest, role, harness.basePort, archiveQuery = true)
                 val file = directory.resolve("balance-${role.name.lowercase()}.properties")
                 val properties = Properties()
                 properties.putAll(values)
@@ -738,14 +731,15 @@ class SplitFundsTradingHttpTest {
     @Test
     fun `PostgreSQL이 멈춘 동안 실제 삼대삼 거래와 리더 교체를 이어가고 Archive에서 복구한다`(reporter: TestReporter) {
         val tradeCount = 8L
-        val basePort = availablePorts(ArchiveReplayCluster.additionalPortOffsets)
+        val basePort = testSettings.availablePorts(ArchiveReplayCluster.additionalPortOffsets)
         val fees = MakerTakerFeeRates(makerFeeRate = FeeRate.ZERO, takerFeeRate = FeeRate.ZERO)
         val manifestFile = directory.resolve("archive-manifest.bin")
-        Files.write(manifestFile, BoundedTradingStateCodec().encodeManifest(manifest(fees, 8)))
+        Files.write(manifestFile, BoundedTradingStateCodec().encodeManifest(testSettings.manifest(fees, 8)))
         val batchEnabled = "SPLIT_TRANSFER_BATCH_ENABLED" to "true"
-        val fundsEnvironment = settingsEnvironment(manifestFile, TradingServiceRole.FUNDS, basePort, archiveQuery = true) + batchEnabled
+        val fundsEnvironment =
+            testSettings.settingsEnvironment(manifestFile, TradingServiceRole.FUNDS, basePort, archiveQuery = true) + batchEnabled
         val matchingEnvironment =
-            settingsEnvironment(manifestFile, TradingServiceRole.MATCHING, basePort, archiveQuery = true) + batchEnabled
+            testSettings.settingsEnvironment(manifestFile, TradingServiceRole.MATCHING, basePort, archiveQuery = true) + batchEnabled
         val deliveryGate = ArchiveOrderDeliveryGate()
         val (funds, matching) =
             ArchiveReplayCluster.startBoth(
@@ -4371,9 +4365,9 @@ class SplitFundsTradingHttpTest {
         decorateFunds: (ClusteredService) -> ClusteredService = { it },
         verify: (TradingHarness) -> Unit,
     ) {
-        val basePort = availablePorts()
+        val basePort = testSettings.availablePorts()
         val feeRates = MakerTakerFeeRates(makerFeeRate = feeRate, takerFeeRate = takerFeeRate)
-        val manifest = manifest(feeRates, maxFundingAccounts)
+        val manifest = testSettings.manifest(feeRates, maxFundingAccounts)
         val manifestFile = directory.resolve("manifest.bin").also { Files.write(it, BoundedTradingStateCodec().encodeManifest(manifest)) }
         val fundsSettings = settings(manifestFile, TradingServiceRole.FUNDS, basePort, consumerId, persistSettlements, archiveQuery)
         val matchingSettings = settings(manifestFile, TradingServiceRole.MATCHING, basePort, consumerId, persistSettlements, archiveQuery)
@@ -4888,91 +4882,5 @@ class SplitFundsTradingHttpTest {
         persistSettlements: Boolean = false,
         archiveQuery: Boolean = false,
     ): SplitTradingNodeSettings =
-        splitTradingSettings(settingsEnvironment(manifest, role, base, consumerId, persistSettlements, archiveQuery))
-
-    private fun settingsEnvironment(
-        manifest: Path,
-        role: TradingServiceRole,
-        base: Int,
-        consumerId: String? = null,
-        persistSettlements: Boolean = false,
-        archiveQuery: Boolean = false,
-    ): Map<String, String> {
-        val port = if (role == TradingServiceRole.FUNDS) base else base + 16
-        val querySettings =
-            buildMap {
-                if (consumerId != null) put("EXCHANGE_ORDER_QUERY_CONSUMER_ID", consumerId)
-                if (persistSettlements) put("EXCHANGE_ORDER_QUERY_PERSIST_SETTLEMENTS", "true")
-                if (archiveQuery) put("EXCHANGE_ORDER_QUERY_SOURCE", "archive")
-            }
-        return mapOf(
-            "SPLIT_MODE" to "RESULT_SETTLEMENT_DEV",
-            "SPLIT_ROLE" to role.name,
-            "SPLIT_MANIFEST" to manifest.toString(),
-            "SPLIT_INPUT_CONTRACT_VERSION" to "2",
-            "SPLIT_MAX_FUNDS_DISPATCH_BYTES" to "65536",
-            "SPLIT_MAX_FUNDS_ACTIVE_BYTES" to "65536",
-            "SPLIT_MATCHING_LINEAGE_HIGH" to "51",
-            "SPLIT_MATCHING_LINEAGE_LOW" to "52",
-            "SPLIT_OWNERSHIP_EPOCH" to "1",
-            "SPLIT_FUNDS_INGRESS" to "0=127.0.0.1:$base",
-            "SPLIT_MATCHING_INGRESS" to "0=127.0.0.1:${base + 16}",
-            "FUNDING_RUN_ROOT" to directory.resolve(role.name.lowercase()).toString(),
-            "FUNDING_BASE_PORT" to port.toString(),
-            "FUNDING_MEMBER_ID" to "0",
-            "FUNDING_HOST" to "127.0.0.1",
-            "FUNDING_MEMBERS" to "0,${(0..4).joinToString(",") { "127.0.0.1:${port + it}" }}",
-            "FUNDING_RUN_ID" to "split-http",
-        ) + querySettings
-    }
-
-    private fun manifest(
-        feeRates: MakerTakerFeeRates,
-        maxFundingAccounts: Int,
-    ): TradingClusterManifest =
-        TradingClusterManifest(
-            lineage,
-            "split-http",
-            BoundedExecutionIdentity.artifactSha256,
-            BoundedExecutionIdentity.schemaSha256,
-            1,
-            listOf(
-                TradingMarketContext(
-                    MarketDefinition(MarketId("BTC-USDT"), AssetId("BTC"), AssetId("USDT"), 0),
-                    TradingFeePolicySnapshot(FeeProductType.SPOT, FeeTier.NORMAL, 1, feeRates),
-                    0,
-                ),
-            ),
-            TradingResourceLimits(
-                maxAccounts = maxFundingAccounts,
-                channelsPerAccount = 1,
-                maxChannels = 8,
-                requestWindow = 16,
-                maxInboxEntries = 128,
-                maxActiveOrders = 32,
-                maxPendingOrders = 32,
-                maxMarketActiveOrders = 32,
-                maxMarketPendingOrders = 32,
-                maxBalanceKeys = maxOf(32, maxFundingAccounts),
-                maxPreparations = maxOf(16, maxFundingAccounts),
-                maxMarkets = 1,
-                maxAssets = 2,
-            ),
-        )
-
-    private fun availablePorts(extraOffsets: List<Int> = emptyList()): Int {
-        repeat(100) {
-            // 노드 기동 뒤에 바인딩하는 WAS의 고정 포트를 OS 임시 UDP 응답 포트와 분리한다.
-            val base = ThreadLocalRandom.current().nextInt(16_000, 30_000)
-            val sockets = mutableListOf<DatagramSocket>()
-            try {
-                for (offset in (0..8) + (16..24) + (32..33) + extraOffsets) sockets.add(DatagramSocket(base + offset))
-                return base
-            } catch (_: java.net.BindException) {
-            } finally {
-                sockets.forEach { it.close() }
-            }
-        }
-        error("자금·매칭 노드와 WAS 응답에 필요한 포트를 확보하지 못했습니다")
-    }
+        splitTradingSettings(testSettings.settingsEnvironment(manifest, role, base, consumerId, persistSettlements, archiveQuery))
 }
