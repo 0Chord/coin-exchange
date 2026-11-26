@@ -58,6 +58,7 @@ internal fun boundedGatewayEnvironment(environment: Environment): Map<String, St
             "TRADING_GATEWAY_QUEUE_CAPACITY",
             "TRADING_GATEWAY_MAX_IN_FLIGHT",
             "TRADING_GATEWAY_RESULT_TIMEOUT_MS",
+            "TRADING_GATEWAY_DRAIN_TIMEOUT_MS",
             "TRADING_GATEWAY_STARTUP_TIMEOUT_MS",
             "TRADING_GATEWAY_BOUNDED_MANIFEST",
             "TRADING_GATEWAY_RECOVERY_ROOT",

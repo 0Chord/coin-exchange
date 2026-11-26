@@ -40,14 +40,14 @@ internal class HttpOrderRecoveryGate {
     fun tryOffer(
         approved: State,
         transport: BoundedGatewayTransport,
-        bytes: ByteArray,
+        offer: () -> Long?,
     ): Long? =
         synchronized(this) {
             // 같은 임기에서 다시 대사했어도 이전 허용 구간에 쌓인 요청은 돌려보낸다.
             if (current !== approved || !approved.isReadyFor(transport.leadershipTermId)) {
                 return@synchronized null
             }
-            transport.offer(bytes)
+            offer()
         }
 
     fun close() {

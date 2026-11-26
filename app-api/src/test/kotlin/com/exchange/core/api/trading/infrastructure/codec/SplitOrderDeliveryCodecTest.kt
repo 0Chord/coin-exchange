@@ -390,6 +390,25 @@ class SplitOrderDeliveryCodecTest {
     }
 
     @Test
+    fun `진척 응답은 정산 정보가 없는 시장과 순번이 영인 시장을 구분한다`() {
+        val splitCodec = SplitOrderDeliveryCodec(inputContractVersion = 2)
+        val sui = BoundedMarketProgress("SUI-USDT", lastAssigned = 0, executedThrough = 0)
+        val eth = BoundedMarketProgress("ETH-USDT", lastAssigned = 1, executedThrough = 1)
+        val control = BoundedTradingReply(91, "PROGRESS", 8192, markets = listOf(sui, eth))
+        val legacy = reply("PROGRESS").copy(role = TradingServiceRole.FUNDS, lineage = source, control = control)
+        val markets =
+            listOf(
+                sui.copy(dispatchIssued = 0, settledResultThrough = 0),
+                eth.copy(dispatchIssued = 2, settledResultThrough = 1),
+            )
+        val response = legacy.copy(control = control.copy(markets = markets))
+
+        assertEquals(legacy, splitCodec.decodeReply(splitCodec.encodeReply(legacy)))
+        assertEquals(response, splitCodec.decodeReply(splitCodec.encodeReply(response)))
+        assertFailsWith<IllegalArgumentException> { codec.encodeReply(response) }
+    }
+
+    @Test
     fun `frame has separate little endian schema and accepts only the explicit offset slice`() {
         val bytes = codec.encode(91, SplitOrderDeliveryCommand.Apply(dispatch()))
         val header = ByteBuffer.wrap(bytes).order(ByteOrder.LITTLE_ENDIAN)

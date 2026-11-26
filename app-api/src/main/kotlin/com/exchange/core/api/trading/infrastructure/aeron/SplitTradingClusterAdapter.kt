@@ -895,16 +895,23 @@ internal class SplitTradingClusterAdapter(
             }
 
             BoundedTradingCommand.Progress -> {
-                owner.progress().let {
-                    reply("PROGRESS").copy(
-                        lifecycle = it.lifecycle.name,
-                        lastAdmissionSequence = it.lastAdmissionSequence,
-                        markets =
-                            it.markets.map { market ->
-                                BoundedMarketProgress(market.marketId.value, market.lastAssigned, market.executedThrough)
-                            },
-                    )
-                }
+                val progress = owner.progress()
+                val hasSettlementProgress = tradingReady && resultDeliveryEnabled && configuration.inputContractVersion == 2
+                val markets =
+                    progress.markets.map { market ->
+                        BoundedMarketProgress(
+                            marketId = market.marketId.value,
+                            lastAssigned = market.lastAssigned,
+                            executedThrough = market.executedThrough,
+                            dispatchIssued = if (hasSettlementProgress) market.dispatchIssued else null,
+                            settledResultThrough = if (hasSettlementProgress) market.settledResultThrough else null,
+                        )
+                    }
+                reply("PROGRESS").copy(
+                    lifecycle = progress.lifecycle.name,
+                    lastAdmissionSequence = progress.lastAdmissionSequence,
+                    markets = markets,
+                )
             }
 
             else -> {

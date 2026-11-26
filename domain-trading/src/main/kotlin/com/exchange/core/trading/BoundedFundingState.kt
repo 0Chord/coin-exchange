@@ -1792,7 +1792,13 @@ class BoundedFundingState(
             current.lifecycle,
             current.lastAdmissionSequence,
             current.markets.entries.map { (market, state) ->
-                BoundedMarketExecutionProgress(market, state.lastAssigned, state.executedThrough)
+                BoundedMarketExecutionProgress(
+                    marketId = market,
+                    lastAssigned = state.lastAssigned,
+                    executedThrough = state.executedThrough,
+                    dispatchIssued = dispatch?.issued(market),
+                    settledResultThrough = results?.through(market),
+                )
             },
         )
     }

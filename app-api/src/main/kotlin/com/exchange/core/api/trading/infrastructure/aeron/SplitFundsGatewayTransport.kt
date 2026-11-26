@@ -213,8 +213,8 @@ internal class SplitFundsGatewayTransport(
         ): ByteArray {
             require(
                 command is BoundedTradingCommand.Admit || command is BoundedTradingCommand.Acknowledge ||
-                    command is BoundedTradingCommand.Rotate,
-            ) { "HTTP gateway only submits orders and receipt controls" }
+                    command is BoundedTradingCommand.Rotate || command == BoundedTradingCommand.Progress,
+            ) { "gateway only permits order, receipt and shutdown progress commands" }
             return codec.encode(correlationId, SplitOrderDeliveryCommand.Control(command))
         }
     }

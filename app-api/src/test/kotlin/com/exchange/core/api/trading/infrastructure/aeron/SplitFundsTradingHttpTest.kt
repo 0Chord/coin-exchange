@@ -97,6 +97,7 @@ import org.springframework.dao.DataAccessException
 import org.springframework.jdbc.core.JdbcTemplate
 import tools.jackson.databind.JsonNode
 import tools.jackson.databind.json.JsonMapper
+import java.io.IOException
 import java.math.BigInteger
 import java.net.DatagramSocket
 import java.net.URI
@@ -110,6 +111,7 @@ import java.sql.Timestamp
 import java.time.Duration
 import java.time.Instant
 import java.util.Properties
+import java.util.concurrent.CompletableFuture
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.ThreadLocalRandom
 import java.util.concurrent.TimeUnit
@@ -123,6 +125,7 @@ import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertIs
 import kotlin.test.assertNull
+import kotlin.test.assertSame
 import kotlin.test.assertTrue
 
 /** 제품 WAS·PostgreSQL과 실제 자금·매칭 노드를 연결한다. Archive 장애 사례는 역할별 세 멤버로 검증한다. */
@@ -1895,6 +1898,188 @@ class SplitFundsTradingHttpTest {
         val wrongOwner = cancel("buyer", sellerOrderId, 2)
         assertEquals(422, wrongOwner.statusCode(), wrongOwner.body())
         assertEquals("NOT_ACTIVE", json.readTree(wrongOwner.body()).path("reason").asString())
+    }
+
+    @Test
+    fun `WAS 정상 종료는 접수한 체결 정산과 취소 반환을 기다린다`() {
+        verifyTradingDrain(TradingDrainOutcome.COMPLETED)
+    }
+
+    @Test
+    fun `WAS 종료 대기가 만료돼도 미정산 체결과 취소는 엔진이 이어서 처리한다`() {
+        verifyTradingDrain(TradingDrainOutcome.TIMED_OUT)
+    }
+
+    private fun verifyTradingDrain(expected: TradingDrainOutcome) {
+        val shutdownProgress = CountDownLatch(1)
+        withTradingNodes(
+            consumerId = "query-test",
+            persistSettlements = true,
+            decorateFunds = { actual -> observeShutdownProgress(actual, shutdownProgress) },
+        ) { harness ->
+            val drainTimeoutMs = if (expected == TradingDrainOutcome.TIMED_OUT) 2_000 else 10_000
+            val arguments = wasArguments(harness) + "--TRADING_GATEWAY_DRAIN_TIMEOUT_MS=$drainTimeoutMs"
+            SpringApplicationBuilder(ExchangeCoreApplication::class.java).run(*arguments).use { was ->
+                HttpClient.newHttpClient().use { http ->
+                    val url = wasUrl(was)
+                    val ordersPath = "/markets/BTC-USDT/orders"
+                    for (user in listOf("buyer", "seller")) {
+                        val epoch = post(http, url, "/channels/0/epoch", """{"userId":"$user","expectedEpoch":0}""")
+                        assertEquals(200, epoch.statusCode(), epoch.body())
+                    }
+                    val buy = post(http, url, ordersPath, orderBody("buyer", "BUY", 3))
+                    assertEquals(202, buy.statusCode(), buy.body())
+                    val buyId = OrderId(json.readTree(buy.body()).path("orderId").asString())
+                    val restingSell = post(http, url, ordersPath, orderBody("seller", "SELL", 1, price = 101))
+                    assertEquals(202, restingSell.statusCode(), restingSell.body())
+                    val restingSellId = OrderId(json.readTree(restingSell.body()).path("orderId").asString())
+                    await("미체결 주문 두 건이 자금에 반영됨") {
+                        harness.fundsSnapshot
+                            .get()
+                            ?.results
+                            ?.streams
+                            ?.single()
+                            ?.resultThrough == 2L
+                    }
+
+                    harness.settlementGate.paused.set(true)
+                    try {
+                        val crossingSell = post(http, url, ordersPath, orderBody("seller", "SELL", 1, sequence = 2))
+                        assertEquals(202, crossingSell.statusCode(), crossingSell.body())
+                        val cancel = postRecoveryCancel(http, url, buyId)
+                        assertEquals(202, cancel.statusCode(), cancel.body())
+                        assertEquals(TradingIdentifiers.cancel(lineage, 1), json.readTree(cancel.body()).path("cancelId").asString())
+                        OrderQuerySourceClient(harness.matchingEndpoint, 10_000).use { matching ->
+                            await("매칭이 체결과 취소를 모두 확정함") {
+                                matching.request(OrderQuerySourceCommand.DescribeRecovery("query-test")).recovery?.resultThrough == 4L
+                            }
+                            val liveOrders = matching.request(OrderQuerySourceCommand.DescribeRecovery("query-test")).recovery?.orders
+                            assertEquals(listOf(OrderQueryRecoveryOrder(restingSellId, UserId("seller"), Quantity(1))), liveOrders)
+                        }
+                        assertPendingTradingDrain(harness)
+
+                        val gateway = was.getBean(BoundedAeronGateway::class.java)
+                        val contextClosed =
+                            CompletableFuture.supplyAsync {
+                                was.close()
+                                checkNotNull(harness.fundsSnapshot.get())
+                            }
+                        assertTrue(shutdownProgress.await(10, TimeUnit.SECONDS), "Spring 종료가 자금에 진행 조회를 보내야 한다")
+                        val outcome = gateway.beginShutdown()
+                        assertSame(outcome, gateway.beginShutdown())
+                        if (expected == TradingDrainOutcome.COMPLETED) {
+                            assertFalse(outcome.isDone, "정산과 반환 전에는 완료로 판단할 수 없다")
+                            assertFalse(contextClosed.isDone, "정산과 반환이 끝나기 전 WAS가 닫힐 수 없다")
+                            assertShutdownRejected {
+                                post(http, url, ordersPath, orderBody("buyer", "BUY", 1, sequence = 3))
+                            }
+                            assertShutdownRejected {
+                                post(
+                                    http,
+                                    url,
+                                    "$ordersPath/${restingSellId.value}/cancel",
+                                    """{"userId":"seller","channel":0,"epoch":1,"sequence":3,"expectedConfigurationVersion":1}""",
+                                )
+                            }
+                            assertPendingTradingDrain(harness)
+                            harness.settlementGate.pauseCancellations.set(true)
+                            harness.settlementGate.paused.set(false)
+                            await("체결 정산 뒤 취소 반환 대기") {
+                                harness.fundsSnapshot
+                                    .get()
+                                    ?.results
+                                    ?.streams
+                                    ?.single()
+                                    ?.resultThrough == 3L
+                            }
+                            assertFalse(outcome.isDone, "체결을 정산해도 취소 반환이 남아 있다")
+                            assertFalse(contextClosed.isDone, "취소 반환이 끝나기 전 WAS가 닫힐 수 없다")
+                            harness.settlementGate.pauseCancellations.set(false)
+                        }
+                        assertEquals(expected, outcome.get(10, TimeUnit.SECONDS))
+                        val stateAtClose = contextClosed.get(10, TimeUnit.SECONDS)
+                        assertFalse(was.isActive)
+                        if (expected == TradingDrainOutcome.COMPLETED) {
+                            assertEquals(4L, checkNotNull(stateAtClose.results).streams.single().resultThrough)
+                        } else {
+                            assertPendingTradingDrain(harness)
+                        }
+                    } finally {
+                        harness.settlementGate.paused.set(false)
+                        harness.settlementGate.pauseCancellations.set(false)
+                    }
+                    await("체결 순번 3과 취소 순번 4가 자금에 반영됨") {
+                        harness.fundsSnapshot
+                            .get()
+                            ?.results
+                            ?.streams
+                            ?.single()
+                            ?.resultThrough == 4L
+                    }
+                    assertFinishedTradingDrain(checkNotNull(harness.fundsSnapshot.get()), restingSellId)
+                }
+            }
+        }
+    }
+
+    private fun assertShutdownRejected(send: () -> HttpResponse<String>) {
+        val response =
+            try {
+                send()
+            } catch (_: IOException) {
+                // Spring이 먼저 접수 소켓을 닫으면 새 HTTP 요청은 애플리케이션까지 오지 않는다.
+                return
+            }
+        assertEquals(503, response.statusCode(), response.body())
+        assertEquals("NOT_SUBMITTED", json.readTree(response.body()).path("status").asString())
+    }
+
+    private fun assertPendingTradingDrain(harness: TradingHarness) {
+        val snapshot = checkNotNull(harness.fundsSnapshot.get())
+        val buyer = UserId("buyer")
+        val quote = AssetId("USDT")
+        val balance = snapshot.financial.balances.single { it.userId == buyer && it.assetId == quote }
+        assertEquals(Balance(buyer, quote, Amount(700), Amount(300)), balance)
+        assertEquals(
+            4L,
+            snapshot.dispatch.streams
+                .single()
+                .issued,
+        )
+        assertEquals(2L, checkNotNull(snapshot.results).streams.single().resultThrough)
+    }
+
+    private fun assertFinishedTradingDrain(
+        snapshot: FundsRoleRecoveryState,
+        restingSellId: OrderId,
+    ) {
+        val buyer = UserId("buyer")
+        val seller = UserId("seller")
+        val quote = AssetId("USDT")
+        val base = AssetId("BTC")
+        assertEquals(
+            setOf(
+                Balance(buyer, quote, Amount(900), Amount.ZERO),
+                Balance(buyer, base, Amount(1), Amount.ZERO),
+                Balance(seller, quote, Amount(100), Amount.ZERO),
+                Balance(seller, base, Amount(1), Amount(1)),
+            ),
+            snapshot.financial.balances.toSet(),
+        )
+        val reservation =
+            snapshot.financial.liveOrders
+                .single()
+                .reservation
+        assertEquals(restingSellId, reservation.orderId)
+        assertEquals(Price(101), reservation.limitPrice)
+        assertEquals(Quantity(1), reservation.remainingQuantity)
+        assertEquals(Amount(1), reservation.remainingAmount)
+        assertTrue(snapshot.cancellations.isEmpty())
+        val transactions = checkNotNull(snapshot.ledger).batches.flatMap { batch -> batch.transactions }
+        val settlement = transactions.single { it.transactionType == LedgerTransactionType.SETTLEMENT }
+        val release = transactions.single { it.transactionType == LedgerTransactionType.RELEASE }
+        assertEquals(Amount(100), settlement.postings.single { it.accountId == "USER:buyer:USDT:HOLD" }.amount)
+        assertEquals(Amount(200), release.postings.single { it.accountId == "USER:buyer:USDT:AVAILABLE" }.amount)
     }
 
     @Test
@@ -3677,6 +3862,36 @@ class SplitFundsTradingHttpTest {
         }
     }
 
+    private fun observeShutdownProgress(
+        service: ClusteredService,
+        observed: CountDownLatch,
+    ): ClusteredService {
+        val codec = SplitOrderDeliveryCodec(2)
+        return object : ClusteredService by service {
+            override fun onSessionMessage(
+                session: ClientSession?,
+                timestamp: Long,
+                buffer: DirectBuffer,
+                offset: Int,
+                length: Int,
+                header: Header,
+            ) {
+                service.onSessionMessage(session, timestamp, buffer, offset, length, header)
+                if (observed.count == 0L || length <= SplitOrderDeliveryCodec.HEADER_BYTES ||
+                    buffer.getShort(offset + 4, ByteOrder.LITTLE_ENDIAN).toInt() != 88
+                ) {
+                    return
+                }
+                val request = ByteArray(length)
+                buffer.getBytes(offset, request)
+                val control = codec.decode(request).command as? SplitOrderDeliveryCommand.Control
+                if (control?.command == BoundedTradingCommand.Progress) observed.countDown()
+            }
+
+            override fun doBackgroundWork(nowNs: Long): Int = service.doBackgroundWork(nowNs)
+        }
+    }
+
     /** 접수는 실제 callback으로 처리하고, 지정한 요청의 첫 승인 응답만 버린다. */
     private fun dropFirstAdmissionReply(
         service: ClusteredService,
@@ -3848,6 +4063,7 @@ class SplitFundsTradingHttpTest {
     /** 실제 결과 송신만 잠시 막아 매칭 사실과 자금 확정 사이의 관찰 구간을 만든다. */
     private class SettlementGate : SplitResultDeliveryConnectionFactory {
         val paused = AtomicBoolean()
+        val pauseCancellations = AtomicBoolean()
         private val codec = SplitResultDeliveryCodec(2)
 
         override fun begin(
@@ -3860,12 +4076,26 @@ class SplitFundsTradingHttpTest {
                 override fun poll(): SplitResultDeliveryConnection? =
                     actual.poll()?.let { connection ->
                         object : SplitResultDeliveryConnection by connection {
-                            override fun offer(bytes: ByteArray): Long =
-                                if (paused.get() && codec.decode(bytes).command is SplitResultDeliveryCommand.Apply) {
-                                    Publication.BACK_PRESSURED
-                                } else {
-                                    connection.offer(bytes)
-                                }
+                            override fun offer(bytes: ByteArray): Long {
+                                val pauseAll = paused.get()
+                                if (!pauseAll && !pauseCancellations.get()) return connection.offer(bytes)
+                                val pause =
+                                    when (val command = codec.decode(bytes).command) {
+                                        is SplitResultDeliveryCommand.Apply -> {
+                                            pauseAll || command.result.input.isCancellation
+                                        }
+
+                                        is SplitResultDeliveryCommand.ApplyBatch -> {
+                                            pauseAll ||
+                                                command.results.any { it.input.isCancellation }
+                                        }
+
+                                        else -> {
+                                            false
+                                        }
+                                    }
+                                return if (pause) Publication.BACK_PRESSURED else connection.offer(bytes)
+                            }
                         }
                     }
 

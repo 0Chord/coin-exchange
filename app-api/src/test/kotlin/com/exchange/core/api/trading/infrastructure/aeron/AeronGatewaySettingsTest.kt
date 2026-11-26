@@ -17,6 +17,7 @@ class AeronGatewaySettingsTest {
         assertEquals(256, settings.maxInFlight)
         assertEquals(5_000L, settings.resultTimeoutMs)
         assertEquals(10_000L, settings.startupTimeoutMs)
+        assertEquals(10_000L, settings.drainTimeoutMs)
     }
 
     @Test
@@ -61,6 +62,7 @@ class AeronGatewaySettingsTest {
             "TRADING_GATEWAY_MAX_IN_FLIGHT" to listOf("0", "4097", "9223372036854775807"),
             "TRADING_GATEWAY_RESULT_TIMEOUT_MS" to listOf("0", "60001", "-1", "9223372036854775808"),
             "TRADING_GATEWAY_STARTUP_TIMEOUT_MS" to listOf("0", "60001", "-1", "1.5"),
+            "TRADING_GATEWAY_DRAIN_TIMEOUT_MS" to listOf("0", "60001", "-1", "1.5"),
         ).forEach { (name, invalidValues) ->
             invalidValues.forEach { value ->
                 assertFailsWith<IllegalArgumentException>("$name=$value") {
@@ -80,12 +82,14 @@ class AeronGatewaySettingsTest {
                         "TRADING_GATEWAY_MAX_IN_FLIGHT" to "4096",
                         "TRADING_GATEWAY_RESULT_TIMEOUT_MS" to "60000",
                         "TRADING_GATEWAY_STARTUP_TIMEOUT_MS" to "60000",
+                        "TRADING_GATEWAY_DRAIN_TIMEOUT_MS" to "3000",
                     ),
             )
         assertEquals(65_536, settings.queueCapacity)
         assertEquals(4096, settings.maxInFlight)
         assertEquals(60_000L, settings.resultTimeoutMs)
         assertEquals(60_000L, settings.startupTimeoutMs)
+        assertEquals(3_000L, settings.drainTimeoutMs)
     }
 
     private fun environment(): Map<String, String> =

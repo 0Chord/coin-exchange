@@ -207,6 +207,8 @@ data class BoundedMarketExecutionProgress(
     val marketId: MarketId,
     val lastAssigned: Long,
     val executedThrough: Long,
+    val dispatchIssued: Long? = null,
+    val settledResultThrough: Long? = null,
 )
 
 data class BoundedTradingProgress(

@@ -86,7 +86,16 @@ data class BoundedMarketProgress(
     val marketId: String,
     val lastAssigned: Long,
     val executedThrough: Long,
-)
+    val dispatchIssued: Long? = null,
+    val settledResultThrough: Long? = null,
+) {
+    init {
+        require((dispatchIssued == null) == (settledResultThrough == null)) { "분리 정산 진척의 순번 두 개가 함께 필요합니다" }
+        if (dispatchIssued != null && settledResultThrough != null) {
+            require(settledResultThrough in 0..dispatchIssued) { "정산 순번이 주문·취소 전달 순번의 범위를 벗어났습니다" }
+        }
+    }
+}
 
 data class BoundedTradingReply(
     val correlationId: Long,

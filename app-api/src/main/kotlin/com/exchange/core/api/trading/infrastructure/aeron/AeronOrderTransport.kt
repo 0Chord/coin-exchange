@@ -21,11 +21,13 @@ internal data class AeronGatewaySettings(
     val maxInFlight: Int = 256,
     val resultTimeoutMs: Long = 5_000,
     val startupTimeoutMs: Long = 10_000,
+    val drainTimeoutMs: Long = 10_000,
 ) {
     init {
         require(runRoot.isAbsolute) { "gateway 실행 루트는 절대 경로여야 합니다" }
         require(queueCapacity in 1..65_536 && maxInFlight in 1..4096)
         require(resultTimeoutMs in 1..60_000 && startupTimeoutMs in 1..60_000)
+        require(drainTimeoutMs in 1..60_000) { "거래 종료 대기 시간은 1~60000ms여야 합니다" }
         val endpoint = Regex("[A-Za-z0-9_.-]+:[0-9]{1,5}")
 
         fun validAddress(value: String): Boolean = endpoint.matches(value) && value.substringAfterLast(':').toInt() in 1..65_535
@@ -66,6 +68,7 @@ internal data class AeronGatewaySettings(
                 boundedInt("TRADING_GATEWAY_MAX_IN_FLIGHT", 256),
                 number("TRADING_GATEWAY_RESULT_TIMEOUT_MS", 5_000),
                 number("TRADING_GATEWAY_STARTUP_TIMEOUT_MS", 10_000),
+                number("TRADING_GATEWAY_DRAIN_TIMEOUT_MS", 10_000),
             )
         }
     }
