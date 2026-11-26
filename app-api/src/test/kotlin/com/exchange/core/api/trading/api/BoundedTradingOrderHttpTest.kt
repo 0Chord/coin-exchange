@@ -75,7 +75,16 @@ class BoundedTradingOrderHttpTest {
     }
 
     @Test fun `invalid DTO is rejected before transmission and internal controls have no HTTP endpoint`() {
-        assertEquals(400, post("/api/trading/v3/markets/BTC-USDT/orders", order().replace("\"price\":100", "\"price\":0")).statusCode())
+        val probe = context.getBean(BoundedHttpProbe::class.java)
+        val initialOffers = probe.requests.size
+        val invalidPrice = order().replace("\"price\":100", "\"price\":0")
+
+        val response = post("/api/trading/v3/markets/BTC-USDT/orders", invalidPrice)
+        assertEquals(400, response.statusCode(), response.body())
+        val refusal = json.readTree(response.body())
+        assertEquals("INVALID_INPUT", refusal.path("status").asString())
+        assertEquals("INVALID_REQUEST", refusal.path("reason").asString())
+        assertEquals(initialOffers, probe.requests.size)
         assertEquals(404, post("/api/trading/v3/initialize", "{}").statusCode())
     }
 

@@ -132,6 +132,182 @@ class SplitFundsTradingHttpTest {
     private val lineage = ClusterLineage(41, 42)
 
     @Test
+    fun `실제 HTTP 주문 거절은 자금과 주문장을 바꾸지 않고 다음 정상 주문을 받는다`() {
+        withTradingNodes(archiveQuery = true) { harness ->
+            HttpClient.newHttpClient().use { http ->
+                archiveBalanceWas(harness, run = 0, orderBookEnabled = true).use { was ->
+                    val url = wasUrl(was)
+                    val orderPath = "/markets/BTC-USDT/orders"
+                    val jdbc = harness.database.jdbc()
+
+                    fun assertRefused(
+                        body: String,
+                        httpStatus: Int,
+                        status: String,
+                        reason: String,
+                        path: String = orderPath,
+                    ) {
+                        val response = post(http, url, path, body)
+                        assertEquals(httpStatus, response.statusCode(), response.body())
+                        val refusal = json.readTree(response.body())
+                        assertEquals(status, refusal.path("status").asString())
+                        assertEquals(reason, refusal.path("reason").asString())
+                        assertFalse(refusal.hasNonNull("orderId"))
+                        assertFalse(refusal.hasNonNull("admissionSequence"))
+                        assertFalse(refusal.hasNonNull("marketAdmissionSequence"))
+                    }
+
+                    awaitBalance(http, url, "USDT", sequence = 2, available = 1_000, reserved = 0)
+                    awaitOrderBook(http, url, through = 0)
+                    val openingLedger = storedLedgerRows(jdbc)
+                    assertEquals(listOf(1L, 2L), openingLedger.map { it.getValue("sequence") })
+                    val openingBalances = checkNotNull(harness.fundsSnapshot.get()).financial.balances
+                    for (userId in listOf("buyer", "seller")) {
+                        val epoch = post(http, url, "/channels/0/epoch", """{"userId":"$userId","expectedEpoch":0}""")
+                        assertEquals(200, epoch.statusCode(), epoch.body())
+                    }
+
+                    val validBuy = orderBody("buyer", "BUY", quantity = 3)
+                    val invalidInputs =
+                        listOf(
+                            validBuy.dropLast(1),
+                            validBuy.replace("\"BUY\"", "\"UNKNOWN_SIDE\""),
+                            validBuy.replace("\"buyer\"", "\"\""),
+                            validBuy.replace("\"price\":100", "\"price\":0"),
+                            orderBody("buyer", "BUY", quantity = 0),
+                        )
+                    for (request in invalidInputs) {
+                        assertRefused(request, 400, "INVALID_INPUT", "INVALID_REQUEST")
+                    }
+                    assertRefused(
+                        validBuy,
+                        409,
+                        "EXECUTION_CONTEXT_MISMATCH",
+                        "EXECUTION_CONTEXT_MISMATCH",
+                        path = "/markets/ETH-USDT/orders",
+                    )
+
+                    val unaffordableBuy = orderBody("buyer", "BUY", quantity = 11)
+                    assertRefused(unaffordableBuy, 422, "REJECTED", "INSUFFICIENT_BALANCE")
+                    assertRefused(unaffordableBuy, 422, "REJECTED", "INSUFFICIENT_BALANCE")
+                    assertRefused(validBuy, 409, "REQUEST_CONTENT_CONFLICT", "REQUEST_CONTENT_CONFLICT")
+                    assertRefused(orderBody("buyer", "SELL", 1, sequence = 2), 422, "REJECTED", "INSUFFICIENT_BALANCE")
+                    assertRefused(orderBody("seller", "SELL", 4), 422, "REJECTED", "INSUFFICIENT_BALANCE")
+                    val iocSell = orderBody("seller", "SELL", 1, sequence = 2).replace("\"GTC\"", "\"IOC\"")
+                    val marketSell = orderBody("seller", "SELL", 1, sequence = 3).replace("\"LIMIT\"", "\"MARKET\"")
+                    assertRefused(iocSell, 422, "REJECTED", "UNSUPPORTED_ORDER_CONDITION")
+                    assertRefused(marketSell, 422, "REJECTED", "UNSUPPORTED_ORDER_CONDITION")
+
+                    await("구매자와 판매자의 최초 거절이 자금 엔진에 기록됨") {
+                        val state = harness.fundsSnapshot.get()?.financial
+                        val channels = state?.inbox?.channels.orEmpty()
+                        channels.any { it.userId.value == "buyer" && it.processedThrough == 2L } &&
+                            channels.any { it.userId.value == "seller" && it.processedThrough == 3L }
+                    }
+                    val afterRejections = checkNotNull(harness.fundsSnapshot.get())
+                    val financial = afterRejections.financial
+                    val dispatch = afterRejections.dispatch.streams.single()
+                    assertEquals(0L, financial.lastAdmissionSequence)
+                    assertEquals(0L, dispatch.issued)
+                    assertEquals(openingBalances, financial.balances)
+                    assertTrue(financial.liveOrders.isEmpty())
+                    assertTrue(financial.feeRevenueByAsset.isEmpty())
+                    val rejectionReceipts = financial.inbox.channels.flatMap { channel -> channel.entries }
+                    assertEquals(5, rejectionReceipts.size)
+                    assertTrue(rejectionReceipts.all { it.receipt.code == AdmissionCode.REJECTED })
+                    awaitBalance(http, url, "USDT", sequence = 2, available = 1_000, reserved = 0)
+                    awaitBalance(http, url, "BTC", sequence = 2, available = 3, reserved = 0, userId = "seller")
+                    val missingBitcoin = getBalance(http, url, "BTC")
+                    assertEquals(404, missingBitcoin.statusCode(), missingBitcoin.body())
+                    assertEquals(2L, json.readTree(missingBitcoin.body()).path("asOfLedgerSequence").longValue())
+                    awaitOrderBook(http, url, through = 0)
+                    assertEquals(openingLedger, storedLedgerRows(jdbc))
+
+                    val first = post(http, url, orderPath, orderBody("buyer", "BUY", 3, sequence = 3))
+                    assertEquals(202, first.statusCode(), first.body())
+                    val firstReceipt = json.readTree(first.body())
+                    assertEquals("ACCEPTED", firstReceipt.path("status").asString())
+                    val firstOrderId = firstReceipt.path("orderId").asString()
+                    assertTrue(firstOrderId.isNotBlank(), first.body())
+                    assertEquals(1L, firstReceipt.path("admissionSequence").longValue())
+                    assertEquals(1L, firstReceipt.path("marketAdmissionSequence").longValue())
+                    awaitQuery(harness, http, url, firstOrderId, "RESTING", filled = 0, remaining = 3, cancelled = 0)
+                    awaitOrderBook(http, url, through = 1, bidQuantity = 3)
+                    awaitBalance(http, url, "USDT", sequence = 3, available = 700, reserved = 300)
+                    awaitBalance(http, url, "BTC", sequence = 3, available = 0, reserved = 0)
+                    val firstReserveLedger = storedLedgerRows(jdbc)
+                    val firstReserveState = checkNotNull(harness.fundsSnapshot.get()).financial
+                    val firstReservation = firstReserveState.liveOrders.single().reservation
+                    assertEquals(Amount(300), firstReservation.remainingAmount)
+                    assertEquals(Quantity(3), firstReservation.remainingQuantity)
+
+                    assertRefused(orderBody("buyer", "SELL", 1, sequence = 4), 422, "REJECTED", "INSUFFICIENT_BALANCE")
+                    await("0원 잔고의 거절이 자금 엔진에 기록됨") {
+                        val state = harness.fundsSnapshot.get()?.financial
+                        val channels = state?.inbox?.channels.orEmpty()
+                        val channel = channels.find { it.userId.value == "buyer" }
+                        val receipt = channel?.entries?.find { it.sequence == 4L }?.receipt
+                        receipt?.code == AdmissionCode.REJECTED
+                    }
+                    val afterZeroBalanceRejection = checkNotNull(harness.fundsSnapshot.get())
+                    val afterZeroBalance = afterZeroBalanceRejection.financial
+                    val dispatchAfterZeroBalance = afterZeroBalanceRejection.dispatch.streams.single()
+                    assertEquals(1L, afterZeroBalance.lastAdmissionSequence)
+                    assertEquals(1L, dispatchAfterZeroBalance.issued)
+                    assertEquals(firstReserveState.balances, afterZeroBalance.balances)
+                    assertEquals(firstReservation, afterZeroBalance.liveOrders.single().reservation)
+                    awaitQuery(harness, http, url, firstOrderId, "RESTING", filled = 0, remaining = 3, cancelled = 0)
+                    awaitBalance(http, url, "USDT", sequence = 3, available = 700, reserved = 300)
+                    awaitBalance(http, url, "BTC", sequence = 3, available = 0, reserved = 0)
+                    awaitOrderBook(http, url, through = 1, bidQuantity = 3)
+                    assertEquals(firstReserveLedger, storedLedgerRows(jdbc))
+
+                    val second = post(http, url, orderPath, orderBody("buyer", "BUY", 1, sequence = 5))
+                    assertEquals(202, second.statusCode(), second.body())
+                    val secondReceipt = json.readTree(second.body())
+                    assertEquals("ACCEPTED", secondReceipt.path("status").asString())
+                    val secondOrderId = secondReceipt.path("orderId").asString()
+                    assertTrue(secondOrderId.isNotBlank() && secondOrderId != firstOrderId, second.body())
+                    assertEquals(2L, secondReceipt.path("admissionSequence").longValue())
+                    assertEquals(2L, secondReceipt.path("marketAdmissionSequence").longValue())
+                    awaitQuery(harness, http, url, secondOrderId, "RESTING", filled = 0, remaining = 1, cancelled = 0)
+                    awaitOrderBook(http, url, through = 2, bidQuantity = 4)
+                    awaitBalance(http, url, "USDT", sequence = 4, available = 600, reserved = 400)
+                    await("자금 엔진이 두 미체결 주문의 매칭 결과를 모두 반영함") {
+                        val results = harness.fundsSnapshot.get()?.results
+                        val stream = results?.streams?.single()
+                        stream?.resultThrough == 2L
+                    }
+                    val finalFunds = checkNotNull(harness.fundsSnapshot.get()).financial
+                    val remainingByOrder =
+                        finalFunds.liveOrders.associate { live ->
+                            val reservation = live.reservation
+                            reservation.orderId.value to reservation.remainingAmount
+                        }
+                    assertEquals(mapOf(firstOrderId to Amount(300), secondOrderId to Amount(100)), remainingByOrder)
+                    assertTrue(finalFunds.feeRevenueByAsset.isEmpty())
+
+                    val rows = archiveProjectionRows(jdbc)
+                    assertEquals(listOf(1L, 2L), rows.admissions)
+                    assertEquals(listOf(1L, 2L), rows.matches)
+                    assertTrue(rows.settlements.isEmpty())
+                    assertEquals(listOf(1L, 2L, 3L, 4L), rows.ledger.map { it.getValue("sequence") })
+                    val transactions = rows.ledger.flatMap { readRecoveryTransactions(it.getValue("transactions") as String) }
+                    assertEquals(
+                        listOf(
+                            LedgerTransactionType.OPENING,
+                            LedgerTransactionType.OPENING,
+                            LedgerTransactionType.RESERVE,
+                            LedgerTransactionType.RESERVE,
+                        ),
+                        transactions.map { it.transactionType },
+                    )
+                }
+            }
+        }
+    }
+
+    @Test
     fun `Archive 잔고는 미체결 매수 예약과 잔량 반환을 실제 HTTP로 확인한다`() {
         withTradingNodes(archiveQuery = true) { harness ->
             val pauseBalanceProjection = AtomicBoolean()
@@ -414,6 +590,7 @@ class SplitFundsTradingHttpTest {
         harness: TradingHarness,
         run: Int,
         pauseBalanceProjection: AtomicBoolean? = null,
+        orderBookEnabled: Boolean = false,
     ): ConfigurableApplicationContext {
         val manifest = directory.resolve("manifest.bin")
         val settingsFiles =
@@ -431,6 +608,7 @@ class SplitFundsTradingHttpTest {
                     "--exchange.order-query.source=archive",
                     "--exchange.order-query.consumer-id=balance-test",
                     "--exchange.order-query.archive-node-configs=${settingsFiles.joinToString(",")}",
+                    "--exchange.order-query.order-book-enabled=$orderBookEnabled",
                     "--spring.datasource.hikari.connection-timeout=1500",
                     "--spring.datasource.hikari.validation-timeout=1000",
                 )
