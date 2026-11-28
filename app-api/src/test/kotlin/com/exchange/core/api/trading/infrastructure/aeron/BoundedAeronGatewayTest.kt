@@ -32,6 +32,10 @@ import com.exchange.core.trading.TradingIdentifiers
 import com.exchange.core.trading.TradingLifecycle
 import com.exchange.core.trading.TradingServiceRole
 import io.aeron.Publication
+import io.aeron.cluster.ConsensusModule.Configuration.SESSION_INVALID_VERSION_MSG
+import io.aeron.cluster.ConsensusModule.Configuration.SESSION_LIMIT_MSG
+import io.aeron.cluster.client.ClusterException
+import io.aeron.exceptions.ClientTimeoutException
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.io.TempDir
 import java.nio.file.Path
@@ -356,6 +360,204 @@ class BoundedAeronGatewayTest {
             assertTrue(assertIs<BoundedGatewayException>(cause).possiblySubmitted)
             assertEquals(1, seen.get())
         }
+    }
+
+    @Test
+    fun `자동 재연결은 전송 상태를 구분하고 같은 토큰의 클라이언트 재시도만 새 연결로 보낸다`() {
+        val disconnect = CountDownLatch(1)
+        val reconnectStarted = CountDownLatch(1)
+        val allowReconnect = CountDownLatch(1)
+        val reconnected = CountDownLatch(1)
+        val opens = AtomicInteger()
+        lateinit var original: ControlledOrderTransport
+        lateinit var replacement: ControlledOrderTransport
+        val command = BoundedTradingCommand.Admit(token, intent)
+        val settings = shutdownSettings()
+
+        BoundedAeronGateway(settings) { receive ->
+            val attemptNumber = opens.incrementAndGet()
+            when (attemptNumber) {
+                1 -> {
+                    original =
+                        ControlledOrderTransport(receive, leadershipTermId = 1) {
+                            if (disconnect.count == 0L) throw BoundedGatewayConnectionLost("기존 자금 연결 종료")
+                        }
+                    original
+                }
+
+                2, 3 -> {
+                    val reason = if (attemptNumber == 2) "unexpected loss of connection to cluster" else SESSION_LIMIT_MSG
+                    connectToRejectingFunds(settings, ClusterException(reason), receive)
+                }
+
+                4 -> {
+                    reconnectStarted.countDown()
+                    check(allowReconnect.await(3, TimeUnit.SECONDS))
+                    replacement = ControlledOrderTransport(receive, leadershipTermId = 2) { reconnected.countDown() }
+                    replacement.allowReply.countDown()
+                    replacement
+                }
+
+                else -> {
+                    error("예상하지 못한 추가 연결")
+                }
+            }
+        }.use { gateway ->
+            try {
+                val sent = gateway.submit(command)
+                assertTrue(original.firstOffer.await(3, TimeUnit.SECONDS))
+                val queued = gateway.submit(command.copy(token = token.copy(sequence = 2)))
+                disconnect.countDown()
+                assertTrue(reconnectStarted.await(3, TimeUnit.SECONDS))
+
+                val failure = assertFailsWith<ExecutionException> { sent.get(3, TimeUnit.SECONDS) }
+                val gatewayError = assertIs<BoundedGatewayException>(failure.cause)
+                assertEquals("RESULT_UNCONFIRMED", gatewayError.code)
+                assertTrue(gatewayError.possiblySubmitted)
+                assertUnsent(queued)
+                assertUnsent(gateway.submit(command.copy(token = token.copy(sequence = 3))))
+                assertEquals(listOf(command), original.offered.toList())
+                assertEquals(0L, original.closed.count)
+
+                allowReconnect.countDown()
+                assertTrue(reconnected.await(3, TimeUnit.SECONDS))
+                assertTrue(replacement.offered.isEmpty())
+                val retried = gateway.submit(command).get(3, TimeUnit.SECONDS)
+                assertEquals("ACCEPTED", retried.code)
+                assertEquals(listOf(command), replacement.offered.toList())
+                assertEquals(4, opens.get())
+            } finally {
+                allowReconnect.countDown()
+            }
+        }
+        assertEquals(0L, replacement.closed.count)
+    }
+
+    @Test
+    fun `자동 재연결은 클러스터 프로토콜 불일치를 연결 유실로 처리하지 않는다`() {
+        val rejected = ClusterException("$SESSION_INVALID_VERSION_MSG 1.0.0, cluster is 2.0.0")
+        val settings = shutdownSettings().copy(runRoot = directory)
+        val failure = assertFailsWith<ClusterException> { connectToRejectingFunds(settings, rejected) {} }
+        assertSame(rejected, failure)
+    }
+
+    @Test
+    fun `자동 재연결은 자금 세션의 클라이언트 시간 초과를 처리한다`() {
+        val lineage = ClusterLineage(1, 2)
+        val timeout = IllegalStateException("split transport failed", ClientTimeoutException("client heartbeat expired"))
+        val connectionFactory =
+            SplitOrderDeliveryConnectionFactory { _, _, receive ->
+                val connection =
+                    object : SplitOrderDeliveryConnection {
+                        private var described = false
+                        override val isClosed = false
+
+                        override fun offer(bytes: ByteArray): Long = 1
+
+                        override fun poll(): Int {
+                            if (described) throw timeout
+                            receive(SplitOrderDeliveryReply(0, "DESCRIBED", TradingServiceRole.FUNDS, lineage, "", 0))
+                            described = true
+                            return 1
+                        }
+
+                        override fun keepAlive() = true
+
+                        override fun close() = Unit
+                    }
+                object : SplitOrderDeliveryConnectAttempt {
+                    override fun poll(): SplitOrderDeliveryConnection = connection
+
+                    override fun close() = Unit
+                }
+            }
+        val settings = shutdownSettings().copy(runRoot = directory)
+        SplitFundsGatewayTransport(settings, lineage, onReply = {}, connectionFactory = connectionFactory).use { transport ->
+            val failure = assertFailsWith<BoundedGatewayConnectionLost> { transport.poll() }
+            assertSame(timeout, failure.cause)
+        }
+    }
+
+    private fun connectToRejectingFunds(
+        settings: AeronGatewaySettings,
+        rejection: ClusterException,
+        receive: (BoundedTradingReply) -> Unit,
+    ): SplitFundsGatewayTransport =
+        SplitFundsGatewayTransport(
+            settings,
+            expectedFundsLineage = ClusterLineage(1, 2),
+            onReply = receive,
+            connectionFactory = { _, _, _ ->
+                object : SplitOrderDeliveryConnectAttempt {
+                    override fun poll(): SplitOrderDeliveryConnection? = throw rejection
+
+                    override fun close() = Unit
+                }
+            },
+        )
+
+    @Test
+    fun `자동 재연결 도중 종료하면 뒤늦게 열린 연결도 닫고 요청을 막는다`() {
+        val disconnect = CountDownLatch(1)
+        val reconnectStarted = CountDownLatch(1)
+        val allowReconnect = CountDownLatch(1)
+        val opens = AtomicInteger()
+        lateinit var replacement: ControlledOrderTransport
+        val command = BoundedTradingCommand.Admit(token, intent)
+
+        BoundedAeronGateway(shutdownSettings()) { receive ->
+            when (opens.incrementAndGet()) {
+                1 -> {
+                    ControlledOrderTransport(receive, leadershipTermId = 1) {
+                        if (disconnect.count == 0L) throw BoundedGatewayConnectionLost("기존 자금 연결 종료")
+                    }
+                }
+
+                2 -> {
+                    replacement = ControlledOrderTransport(receive, leadershipTermId = 2)
+                    reconnectStarted.countDown()
+                    check(allowReconnect.await(3, TimeUnit.SECONDS))
+                    replacement
+                }
+
+                else -> {
+                    error("종료 도중 추가 연결을 시도하면 안 된다")
+                }
+            }
+        }.use { gateway ->
+            try {
+                disconnect.countDown()
+                assertTrue(reconnectStarted.await(3, TimeUnit.SECONDS))
+                assertEquals(TradingDrainOutcome.UNCONFIRMED, gateway.beginShutdown().get(3, TimeUnit.SECONDS))
+                assertUnsent(gateway.submit(command))
+            } finally {
+                allowReconnect.countDown()
+            }
+        }
+        assertEquals(0L, replacement.closed.count)
+        assertTrue(replacement.offered.isEmpty())
+        assertEquals(2, opens.get())
+    }
+
+    @Test
+    fun `자동 재연결은 시작한 정상 종료 중 연결이 끊기면 새 세션을 열지 않는다`() {
+        val opens = AtomicInteger()
+        lateinit var transport: ShutdownTransport
+        BoundedAeronGateway(shutdownSettings()) { receive ->
+            check(opens.incrementAndGet() == 1) { "정상 종료 도중 새 세션을 열면 안 된다" }
+            ShutdownTransport(receive).also { transport = it }
+        }.use { gateway ->
+            val stopped = gateway.beginShutdown()
+            assertTrue(transport.firstProgress.await(3, TimeUnit.SECONDS))
+            assertFalse(stopped.isDone)
+
+            transport.beforePoll.set { throw BoundedGatewayConnectionLost("종료 진행 응답 전에 자금 연결 종료") }
+
+            assertEquals(TradingDrainOutcome.UNCONFIRMED, stopped.get(3, TimeUnit.SECONDS))
+            assertUnsent(gateway.submit(BoundedTradingCommand.Admit(token, intent)))
+            assertEquals(listOf(SplitOrderDeliveryCommand.Control(BoundedTradingCommand.Progress)), transport.offered.toList())
+        }
+        assertEquals(1, opens.get())
     }
 
     @Test
@@ -791,6 +993,7 @@ class BoundedAeronGatewayTest {
         val firstOffer = CountDownLatch(1)
         val firstBackPressure = CountDownLatch(1)
         val allowReply = CountDownLatch(1)
+        val closed = CountDownLatch(1)
         private val codec = BoundedTradingCodec()
         private val replies = ArrayDeque<BoundedTradingReply>()
 
@@ -825,7 +1028,7 @@ class BoundedAeronGatewayTest {
             return 1
         }
 
-        override fun close() = Unit
+        override fun close() = closed.countDown()
     }
 
     private class ControlledAcknowledgementTransport(

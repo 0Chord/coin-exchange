@@ -9,8 +9,11 @@ import com.exchange.core.trading.ClusterLineage
 import com.exchange.core.trading.InboxRejection
 import com.exchange.core.trading.TradingServiceRole
 import io.aeron.Publication
+import io.aeron.cluster.ConsensusModule.Configuration.SESSION_LIMIT_MSG
+import io.aeron.cluster.client.ClusterException
 import io.aeron.driver.MediaDriver
 import io.aeron.driver.ThreadingMode
+import io.aeron.exceptions.TimeoutException
 import java.nio.file.Files
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicReference
@@ -68,9 +71,14 @@ internal class SplitFundsGatewayTransport(
                     if (openedConnection != null) break
                     idle.idle()
                 }
-                checkNotNull(openedConnection) { "split funds gateway connection timed out" }
+                if (openedConnection == null) throw BoundedGatewayConnectionLost("split funds gateway connection timed out")
             } catch (error: Throwable) {
                 attemptFailure = error
+                // Aeron 1.53.3의 접속 단절, 세션 만원과 버전 오류는 같은 예외 타입을 사용한다.
+                val reason = (error as? ClusterException)?.message?.removePrefix("ERROR - ")
+                if (reason == "unexpected loss of connection to cluster" || reason == SESSION_LIMIT_MSG) {
+                    throw BoundedGatewayConnectionLost("split funds gateway could not open a session", error)
+                }
                 throw error
             } finally {
                 try {
@@ -98,11 +106,14 @@ internal class SplitFundsGatewayTransport(
                 }
                 idle.idle(poll())
             }
-            check(described) { "split funds gateway description timed out" }
+            if (!described) throw BoundedGatewayConnectionLost("split funds gateway description timed out")
         } catch (error: Throwable) {
             closeAfterFailure(error) { openedConnection?.close() }
             closeAfterFailure(error) { openedDriver?.close() }
             closeAfterFailure(error, ::deleteDirectory)
+            if (error !is BoundedGatewayConnectionLost && error.isAeronTimeout()) {
+                throw BoundedGatewayConnectionLost("split funds gateway connection timed out", error)
+            }
             throw error
         }
     }
@@ -115,17 +126,42 @@ internal class SplitFundsGatewayTransport(
 
     override fun offer(bytes: ByteArray): Long {
         checkDriver()
-        check(!connection.isClosed) { "split funds gateway connection is closed" }
-        return connection.offer(bytes)
+        checkSession()
+        return when (val result = connection.offer(bytes)) {
+            Publication.CLOSED -> {
+                // 리더 변경 중 기존 publication만 닫힐 수 있다. 세션이 열려 있으면 새 리더 응답을 계속 읽는다.
+                checkSession()
+                Publication.NOT_CONNECTED
+            }
+
+            Publication.MAX_POSITION_EXCEEDED -> {
+                throw BoundedGatewayConnectionLost("split funds gateway publication position exhausted")
+            }
+
+            else -> {
+                result
+            }
+        }
     }
 
     override fun poll(): Int {
         checkDriver()
-        check(!connection.isClosed) { "split funds gateway connection is closed" }
-        val work = connection.poll()
+        checkSession()
+        val work =
+            try {
+                connection.poll()
+            } catch (error: RuntimeException) {
+                if (error.isAeronTimeout()) throw BoundedGatewayConnectionLost("split funds gateway session timed out", error)
+                throw error
+            }
+        checkSession()
         val now = System.nanoTime()
         if (now - lastKeepAlive >= TimeUnit.MILLISECONDS.toNanos(500)) {
-            connection.keepAlive()
+            try {
+                connection.keepAlive()
+            } catch (error: ClusterException) {
+                throw BoundedGatewayConnectionLost("split funds gateway could not keep the session alive", error)
+            }
             lastKeepAlive = now
         }
         return work
@@ -165,8 +201,16 @@ internal class SplitFundsGatewayTransport(
     }
 
     private fun checkDriver() {
-        failure.get()?.let { throw IllegalStateException("split funds gateway driver failed", it) }
+        failure.get()?.let { throw BoundedGatewayConnectionLost("split funds gateway driver failed", it) }
     }
+
+    private fun checkSession() {
+        if (connection.isClosed) throw BoundedGatewayConnectionLost("split funds gateway connection is closed")
+    }
+
+    // 클라이언트 오류 처리기가 받은 Aeron 시간 초과는 연결 구현에서 한 번 감싸서 전파한다.
+    private fun Throwable.isAeronTimeout(): Boolean =
+        this is TimeoutException || (this is IllegalStateException && cause is TimeoutException)
 
     override fun close() {
         try {
