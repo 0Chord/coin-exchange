@@ -1,8 +1,11 @@
 package com.exchange.core.api.trading.infrastructure.aeron
 
 import com.exchange.core.api.trading.infrastructure.codec.BoundedMarketProgress
+import com.exchange.core.order.Side
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.io.TempDir
+import org.junit.jupiter.params.ParameterizedTest
+import org.junit.jupiter.params.provider.EnumSource
 import org.springframework.jdbc.core.JdbcTemplate
 import tools.jackson.databind.JsonNode
 import tools.jackson.databind.json.JsonMapper
@@ -10,6 +13,7 @@ import java.net.URI
 import java.net.http.HttpClient
 import java.net.http.HttpRequest
 import java.net.http.HttpResponse
+import java.nio.file.Files
 import java.nio.file.Path
 import java.time.Duration
 import kotlin.test.assertEquals
@@ -267,6 +271,359 @@ class GtcServerRestartTest {
         }
     }
 
+    @Test
+    fun `자금 강제 종료를 반복해도 남은 세 체결만 순서대로 정산하고 신규 주문을 받는다`() {
+        val uninterrupted = settleThreeTrades(Files.createDirectory(directory.resolve("uninterrupted")), crash = false)
+        val recovered = settleThreeTrades(Files.createDirectory(directory.resolve("recovered")), crash = true)
+        assertEquals(uninterrupted, recovered, "중단 없는 실행과 복구 실행의 원장 거래 유형·분개")
+    }
+
+    private fun settleThreeTrades(
+        runDirectory: Path,
+        crash: Boolean,
+    ): List<Pair<String, List<Posting>>> =
+        verifyGtcRestart(runDirectory, controlFundsResults = true) { database, cluster, client ->
+            val http = TradingHttp(client, cluster.start(), cluster::recordHttp)
+            val originalWasPid = cluster.wasPid
+            val jdbc = database.jdbc()
+            for (user in listOf("buyer", "seller", "later-buyer")) http.openChannel(user)
+            val sell = http.submit(order("seller", "SELL", quantity = 3, sequence = 1))
+            http.awaitOrder(sell, "RESTING", filled = 0, remaining = 3, resultSequence = 1)
+
+            cluster.awaitMatchingResultState(issued = 1, fundsSettledThrough = 1)
+            if (crash) cluster.snapshot()
+            cluster.allowFundsResultsThrough(1)
+            val buys = (1..3).map { sequence -> http.submit(order("buyer", "BUY", quantity = 1, sequence = sequence)) }
+            http.awaitBook(resultSequence = 4, bids = 0)
+
+            val beforeC =
+                if (crash) {
+                    cluster.awaitMatchingResultState(issued = 4, fundsSettledThrough = 1)
+                    for ((index, buy) in buys.withIndex()) {
+                        http.awaitOrder(buy, "FILLED", filled = 1, remaining = 0, resultSequence = index + 2L, financial = "PENDING")
+                    }
+                    val beforeSettlement = assertThreeTradeProgress(http, jdbc, cluster, sell, buys, completed = 0)
+                    assertEquals(1L, readProgress(cluster).market.settledResultThrough)
+                    cluster.crashAndRecoverFunds()
+                    assertEquals(1L, readProgress(cluster).market.settledResultThrough)
+
+                    cluster.allowFundsResultsThrough(2)
+                    cluster.awaitMatchingResultState(issued = 4, fundsSettledThrough = 2)
+                    val fillA = http.awaitFills(buys[0], count = 1, feeTotal = 2).single()
+                    val afterA = assertThreeTradeProgress(http, jdbc, cluster, sell, buys, completed = 1)
+                    val tradeA = assertFill(fillA, quantity = 1, role = "TAKER", fee = 2)
+                    assertSettlement(
+                        afterA,
+                        tradeA,
+                        sell,
+                        buys[0],
+                        resultSequence = 2,
+                        quantity = 1,
+                        makerFee = 1,
+                        takerFee = 2,
+                        firstFillPostings,
+                    )
+                    assertOnlyNextSettlement(beforeSettlement, afterA, tradeA)
+                    cluster.crashAndRecoverFunds()
+                    assertEquals(2L, readProgress(cluster).market.settledResultThrough)
+
+                    cluster.allowFundsResultsThrough(3, withholdAcknowledgementsFrom = 3)
+                    val withheldB = cluster.awaitWithheldFundsAcknowledgement(through = 3)
+                    assertEquals(3L, readProgress(cluster).market.settledResultThrough)
+                    cluster.awaitMatchingResultState(issued = 4, fundsSettledThrough = 2)
+                    val fillB = http.awaitFills(buys[1], count = 1, feeTotal = 2).single()
+                    val afterB = assertThreeTradeProgress(http, jdbc, cluster, sell, buys, completed = 2)
+                    val tradeB = assertFill(fillB, quantity = 1, role = "TAKER", fee = 2)
+                    assertSettlement(
+                        afterB,
+                        tradeB,
+                        sell,
+                        buys[1],
+                        resultSequence = 3,
+                        quantity = 1,
+                        makerFee = 1,
+                        takerFee = 2,
+                        firstFillPostings,
+                    )
+                    assertOnlyNextSettlement(afterA, afterB, tradeB)
+                    assertEquals(withheldB, afterB.ledger.last().position)
+                    assertTrue(withheldB > afterA.ledger.last().position)
+                    // 재전송을 막은 상태에서 B가 자금 원래 로그로 복원됐는지 확인한다.
+                    cluster.allowFundsResultsThrough(2, withholdAcknowledgementsFrom = 3)
+                    cluster.crashAndRecoverFunds()
+                    assertEquals(3L, readProgress(cluster).market.settledResultThrough)
+
+                    afterB
+                } else {
+                    null
+                }
+
+            cluster.allowFundsResultsThrough(Long.MAX_VALUE)
+            cluster.awaitMatchingResultState(issued = 4, fundsSettledThrough = 4)
+            http.awaitOrder(sell, "FILLED", filled = 3, remaining = 0, resultSequence = 4)
+            val sellFills = http.awaitFills(sell, count = 3, feeTotal = 3)
+            val completed = assertThreeTradeProgress(http, jdbc, cluster, sell, buys, completed = 3)
+            if (beforeC != null) {
+                val tradeC =
+                    http
+                        .awaitFills(buys[2], count = 1, feeTotal = 2)
+                        .single()
+                        .path("tradeId")
+                        .asString()
+                assertOnlyNextSettlement(beforeC, completed, tradeC)
+                assertTrue(completed.ledger.last().position > beforeC.ledger.last().position)
+            }
+            for ((index, buy) in buys.withIndex()) {
+                val resultSequence = index + 2L
+                http.awaitOrder(buy, "FILLED", filled = 1, remaining = 0, resultSequence = resultSequence)
+                val trade = assertFill(http.awaitFills(buy, count = 1, feeTotal = 2).single(), quantity = 1, role = "TAKER", fee = 2)
+                val sellFill = sellFills.single { it.path("tradeId").asString() == trade }
+                assertFill(sellFill, quantity = 1, role = "MAKER", fee = 1)
+                assertSettlement(completed, trade, sell, buy, resultSequence, quantity = 1, makerFee = 1, takerFee = 2, firstFillPostings)
+            }
+            assertEquals(listOf(sell.id) + buys.map { it.id }, completed.orders.map { it["order_id"] })
+            assertEquals(
+                3,
+                completed.ledger
+                    .takeLast(3)
+                    .map { it.position }
+                    .distinct()
+                    .size,
+            )
+            assertTransfer(completed.entry(4), "RESERVE", "seller", "BTC", 3)
+            for (sequence in 5L..7L) assertTransfer(completed.entry(sequence), "RESERVE", "buyer", "USDT", 102)
+            if (crash) {
+                assertPostRecoveryOrder(http, jdbc, completed, resultSequence = 5)
+                cluster.assertWasRemainedRunning(originalWasPid)
+            }
+
+            completed.ledger.flatMap { batch -> batch.entries.map { it.path("type").asString() to postings(it) } }
+        }
+
+    private fun assertThreeTradeProgress(
+        http: TradingHttp,
+        jdbc: JdbcTemplate,
+        cluster: GtcRestartCluster,
+        sell: AcceptedOrder,
+        buys: List<AcceptedOrder>,
+        completed: Int,
+    ): DatabaseRows {
+        val ledgerThrough = 7L + completed
+        val remainingQuantity = 3L - completed
+        val buyerHold = 102L * remainingQuantity
+        val sellerProceeds = 99L * completed
+        http.awaitBalance("buyer", "USDT", ledgerThrough, available = 694, reserved = buyerHold)
+        http.awaitBalance("seller", "BTC", ledgerThrough, available = 0, reserved = remainingQuantity)
+        http.awaitBalance("buyer", "BTC", ledgerThrough, available = completed.toLong(), reserved = 0)
+        http.awaitBalance("seller", "USDT", ledgerThrough, available = sellerProceeds, reserved = 0)
+
+        val funds = cluster.fundsState()
+        assertFundsBalance(funds, "buyer", "USDT", available = 694, held = buyerHold)
+        assertFundsBalance(funds, "seller", "BTC", available = 0, held = remainingQuantity)
+        assertFundsBalance(funds, "buyer", "BTC", available = completed.toLong(), held = 0)
+        assertFundsBalance(funds, "seller", "USDT", available = sellerProceeds, held = 0)
+        val pendingBuys = buys.drop(completed)
+        val activeOrders = funds.path("reservations").values()
+        val expectedIds = if (pendingBuys.isEmpty()) emptySet() else (pendingBuys.map { it.id } + sell.id).toSet()
+        assertEquals(expectedIds, activeOrders.map { it.path("orderId").asString() }.toSet())
+        if (pendingBuys.isNotEmpty()) assertActiveReservation(funds, sell.id, remainingQuantity, held = remainingQuantity)
+        for (buy in pendingBuys) assertActiveReservation(funds, buy.id, quantity = 1, held = 102)
+
+        val rows = readDatabase(jdbc)
+        assertEquals((1..ledgerThrough).toList(), rows.ledger.map { it.sequence })
+        assertEquals(List(3) { "OPENING" } + List(4) { "RESERVE" } + List(completed) { "SETTLEMENT" }, ledgerTypes(rows))
+        assertEquals((2L until (2L + completed)).toList(), rows.settlements.map { it["result_sequence"] })
+        val feeCredits =
+            rows.ledger
+                .flatMap { batch -> batch.entries.flatMap(::postings) }
+                .filter { it.account == "SYSTEM:USDT:FEE_REVENUE" && it.side == "CREDIT" }
+        assertEquals(3L * completed, feeCredits.sumOf { it.amount })
+        val tradeIds = rows.settlements.map { it["settlement_id"] }
+        val positions = rows.ledger.drop(7).map { it.position }
+        println("정산 ${tradeIds.size}건 $tradeIds, 정산 로그 $positions, 원장 $ledgerThrough, 매수 예약 $buyerHold USDT")
+        return rows
+    }
+
+    private fun assertOnlyNextSettlement(
+        before: DatabaseRows,
+        after: DatabaseRows,
+        tradeId: String,
+    ) {
+        assertEquals(before.ledger, after.ledger.dropLast(1))
+        assertEquals(before.settlements, after.settlements.filter { it["settlement_id"] != tradeId })
+        assertEquals(before.postings, after.postings.filter { it["settlement_id"] != tradeId })
+    }
+
+    @ParameterizedTest
+    @EnumSource(Side::class)
+    fun `자금 강제 종료 전후에 같은 잔량 취소를 한 번만 반환한다`(side: Side) {
+        verifyGtcRestart(directory, controlFundsResults = true) { database, cluster, client ->
+            val http = TradingHttp(client, cluster.start(), cluster::recordHttp)
+            val originalWasPid = cluster.wasPid
+            val jdbc = database.jdbc()
+            for (user in listOf("buyer", "seller", "later-buyer")) http.openChannel(user)
+            val cancelBuy = side == Side.BUY
+            val user = if (cancelBuy) "buyer" else "seller"
+            val asset = if (cancelBuy) "USDT" else "BTC"
+            val held = if (cancelBuy) 204L else 2L
+            val available = if (cancelBuy) 694L else 0L
+            val sellerProceeds = if (cancelBuy) 99L else 98L
+            val makerBody =
+                if (cancelBuy) {
+                    order("seller", "SELL", quantity = 1, sequence = 1)
+                } else {
+                    order("buyer", "BUY", quantity = 1, sequence = 1)
+                }
+            val maker = http.submit(makerBody)
+            http.awaitOrder(maker, "RESTING", filled = 0, remaining = 1, resultSequence = 1)
+            cluster.snapshot()
+
+            val target = http.submit(order(user, side.name, quantity = 3, sequence = 1))
+            http.awaitOrder(target, "PARTIALLY_FILLED", filled = 1, remaining = 2, resultSequence = 2)
+            val targetFill = http.awaitFills(target, count = 1, feeTotal = 2).single()
+            val makerFill = http.awaitFills(maker, count = 1, feeTotal = 1).single()
+            val trade = assertFill(targetFill, quantity = 1, role = "TAKER", fee = 2)
+            assertEquals(trade, assertFill(makerFill, quantity = 1, role = "MAKER", fee = 1))
+            http.awaitBook(resultSequence = 2, bids = if (cancelBuy) 2 else 0, asks = if (cancelBuy) 0 else 2)
+            http.awaitBalance(user, asset, 6, available, held)
+            cluster.awaitMatchingResultState(issued = 2, fundsSettledThrough = 2)
+            val afterTrade = readDatabase(jdbc)
+            assertEquals(listOf("OPENING", "OPENING", "OPENING", "RESERVE", "RESERVE", "SETTLEMENT"), ledgerTypes(afterTrade))
+            val expectedPostings = if (cancelBuy) firstFillPostings else sellTakerPostings
+            assertSettlement(
+                afterTrade,
+                trade,
+                maker,
+                target,
+                resultSequence = 2,
+                quantity = 1,
+                makerFee = 1,
+                takerFee = 2,
+                expectedPostings,
+            )
+
+            fun assertSettledBalances(
+                readFrom: TradingHttp,
+                ledgerSequence: Long,
+                funds: JsonNode,
+            ) {
+                readFrom.awaitBalance("buyer", "BTC", ledgerSequence, available = 1, reserved = 0)
+                readFrom.awaitBalance("seller", "USDT", ledgerSequence, available = sellerProceeds, reserved = 0)
+                assertFundsBalance(funds, "buyer", "BTC", available = 1, held = 0)
+                assertFundsBalance(funds, "seller", "USDT", available = sellerProceeds, held = 0)
+                if (!cancelBuy) {
+                    readFrom.awaitBalance("buyer", "USDT", ledgerSequence, available = 899, reserved = 0)
+                    assertFundsBalance(funds, "buyer", "USDT", available = 899, held = 0)
+                }
+            }
+
+            cluster.allowFundsResultsThrough(2)
+            val cancelId = http.cancel(target.id, user, sequence = 2)
+            http.awaitOrder(target, "CANCELLED", filled = 1, remaining = 0, cancelled = 2, resultSequence = 3, financial = "PENDING")
+            http.awaitBook(resultSequence = 3, bids = 0)
+            cluster.awaitMatchingResultState(issued = 3, fundsSettledThrough = 2)
+            assertEquals(2L, readProgress(cluster).market.settledResultThrough)
+            http.awaitBalance(user, asset, 6, available, held)
+            val beforeReturn = cluster.fundsState()
+            assertSettledBalances(http, 6, beforeReturn)
+            assertFundsBalance(beforeReturn, user, asset, available, held)
+            assertActiveReservation(beforeReturn, target.id, quantity = 2, held = held)
+            assertEquals(afterTrade.ledger, readDatabase(jdbc).ledger)
+            cluster.crashAndRecoverFunds()
+            assertEquals(2L, readProgress(cluster).market.settledResultThrough)
+
+            cluster.allowFundsResultsThrough(3, withholdAcknowledgementsFrom = 3)
+            val withheldReturn = cluster.awaitWithheldFundsAcknowledgement(through = 3)
+            assertEquals(3L, readProgress(cluster).market.settledResultThrough)
+            cluster.awaitMatchingResultState(issued = 3, fundsSettledThrough = 2)
+            http.awaitOrder(target, "CANCELLED", filled = 1, remaining = 0, cancelled = 2, resultSequence = 3)
+            http.awaitBalance(user, asset, 7, available = available + held, reserved = 0)
+            val returnedFunds = cluster.fundsState()
+            assertSettledBalances(http, 7, returnedFunds)
+            assertFundsBalance(returnedFunds, user, asset, available = available + held, held = 0)
+            assertTrue(returnedFunds.path("reservations").values().none { it.path("orderId").asString() == target.id })
+            val afterReturn = readDatabase(jdbc)
+            assertEquals(afterTrade.ledger, afterReturn.ledger.dropLast(1))
+            val release = afterReturn.entry(7)
+            assertTransfer(release, "RELEASE", user, asset, held)
+            val releaseId = "F4" + cancelId.substring(2)
+            assertEquals(releaseId, release.path("id").asString())
+            assertEquals("ORDER_CANCELLED:$releaseId", release.path("sourceEventId").asString())
+            assertEquals(withheldReturn, afterReturn.ledger.last().position)
+            assertTrue(withheldReturn > afterTrade.ledger.last().position)
+            assertEquals(afterTrade.settlements, afterReturn.settlements)
+            assertEquals(afterTrade.postings, afterReturn.postings)
+            println("$side 취소 $cancelId, 체결 $trade, 반환 분개 $releaseId, 자금 로그 $withheldReturn, 반환 $held $asset")
+            cluster.allowFundsResultsThrough(2, withholdAcknowledgementsFrom = 3)
+            cluster.crashAndRecoverFunds()
+            assertEquals(3L, readProgress(cluster).market.settledResultThrough)
+
+            cluster.allowFundsResultsThrough(Long.MAX_VALUE)
+            cluster.awaitMatchingResultState(issued = 3, fundsSettledThrough = 3)
+            assertEquals(cancelId, http.cancel(target.id, user, sequence = 2, awaitReconnect = true))
+            assertPostRecoveryOrder(http, jdbc, afterReturn, resultSequence = 4)
+            http.awaitOrder(target, "CANCELLED", filled = 1, remaining = 0, cancelled = 2, resultSequence = 3)
+            http.awaitBalance(user, asset, 8, available = available + held, reserved = 0)
+            val recoveredFunds = cluster.fundsState()
+            assertSettledBalances(http, 8, recoveredFunds)
+            assertFundsBalance(recoveredFunds, user, asset, available = available + held, held = 0)
+            assertTrue(recoveredFunds.path("reservations").values().none { it.path("orderId").asString() == target.id })
+            assertEquals(targetFill, http.awaitFills(target, count = 1, feeTotal = 2).single())
+            assertEquals(makerFill, http.awaitFills(maker, count = 1, feeTotal = 1).single())
+            cluster.assertWasRemainedRunning(originalWasPid)
+        }
+    }
+
+    private fun assertPostRecoveryOrder(
+        http: TradingHttp,
+        jdbc: JdbcTemplate,
+        before: DatabaseRows,
+        resultSequence: Long,
+    ) {
+        val laterBid = http.submit(order("later-buyer", "BUY", quantity = 1, sequence = 1), awaitReconnect = true)
+        val nextLedger = before.ledger.last().sequence + 1
+        http.awaitOrder(laterBid, "RESTING", filled = 0, remaining = 1, resultSequence = resultSequence)
+        http.awaitBook(resultSequence, bids = 1)
+        http.awaitBalance("later-buyer", "USDT", nextLedger, available = 198, reserved = 102)
+        val after = readDatabase(jdbc)
+        assertEquals(before.ledger, after.ledger.dropLast(1))
+        assertTransfer(after.entry(nextLedger), "RESERVE", "later-buyer", "USDT", 102)
+        assertEquals(before.settlements, after.settlements)
+        assertEquals(before.postings, after.postings)
+        assertTrue(after.orders.any { it["order_id"] == laterBid.id })
+        assertEquals(before.orders, after.orders.filter { it["order_id"] != laterBid.id })
+    }
+
+    private fun ledgerTypes(rows: DatabaseRows): List<String> =
+        rows.ledger.flatMap { batch -> batch.entries.map { it.path("type").asString() } }
+
+    private fun assertFundsBalance(
+        state: JsonNode,
+        user: String,
+        asset: String,
+        available: Long,
+        held: Long,
+    ) {
+        val balance =
+            state.path("balances").values().singleOrNull {
+                it.path("userId").asString() == user &&
+                    it.path("assetId").asString() == asset
+            }
+        assertEquals(available, balance?.path("available")?.longValue(-1) ?: 0L, "$user $asset 자금 가용")
+        assertEquals(held, balance?.path("hold")?.longValue(-1) ?: 0L, "$user $asset 자금 예약")
+    }
+
+    private fun assertActiveReservation(
+        funds: JsonNode,
+        orderId: String,
+        quantity: Long,
+        held: Long,
+    ) {
+        val reservation = funds.path("reservations").values().single { it.path("orderId").asString() == orderId }
+        assertEquals(quantity, reservation.path("remainingQuantity").longValue(-1), "$orderId 잔량")
+        assertEquals(held, reservation.path("remainingAmount").longValue(-1), "$orderId 예약")
+    }
+
     private fun partiallyFill(
         http: TradingHttp,
         cluster: GtcRestartCluster,
@@ -453,8 +810,11 @@ class GtcServerRestartTest {
             assertEquals(1L, receipt.path("epoch").longValue())
         }
 
-        fun submit(body: String): AcceptedOrder {
-            val receipt = post(ORDERS, body, expectedStatus = 202)
+        fun submit(
+            body: String,
+            awaitReconnect: Boolean = false,
+        ): AcceptedOrder {
+            val receipt = post(ORDERS, body, expectedStatus = 202, awaitReconnect = awaitReconnect)
             assertEquals("ACCEPTED", receipt.path("status").asString())
             val id = receipt.path("orderId").asString()
             assertTrue(id.isNotBlank(), receipt.toString())
@@ -468,9 +828,10 @@ class GtcServerRestartTest {
             id: String,
             user: String,
             sequence: Int,
+            awaitReconnect: Boolean = false,
         ): String {
             val body = """{"userId":"$user","channel":0,"epoch":1,"sequence":$sequence,"expectedConfigurationVersion":1}"""
-            val receipt = post("$ORDERS/$id/cancel", body, expectedStatus = 202)
+            val receipt = post("$ORDERS/$id/cancel", body, expectedStatus = 202, awaitReconnect = awaitReconnect)
             assertEquals("ACCEPTED", receipt.path("status").asString())
             assertEquals(id, receipt.path("orderId").asString())
             return receipt.path("cancelId").asString().also { assertTrue(it.isNotBlank(), receipt.toString()) }
@@ -483,10 +844,11 @@ class GtcServerRestartTest {
             remaining: Long,
             resultSequence: Long,
             cancelled: Long = 0,
+            financial: String = "APPLIED",
         ) {
-            awaitGet("$ORDERS/${order.id}", "$state, 체결 $filled, 잔량 $remaining, 취소 $cancelled, 결과 $resultSequence") { body ->
+            awaitGet("$ORDERS/${order.id}", "$state / $financial, 체결 $filled, 잔량 $remaining, 취소 $cancelled, 결과 $resultSequence") { body ->
                 body.path("code").asString() == "ORDER_FOUND" && body.path("orderId").asString() == order.id &&
-                    body.path("state").asString() == state && body.path("financialStatus").asString() == "APPLIED" &&
+                    body.path("state").asString() == state && body.path("financialStatus").asString() == financial &&
                     body.path("admissionSequence").longValue() == order.admissionSequence &&
                     body.path("marketAdmissionSequence").longValue() == order.marketAdmissionSequence &&
                     body.path("filledQuantity").longValue(-1) == filled &&
@@ -544,16 +906,31 @@ class GtcServerRestartTest {
             path: String,
             body: String,
             expectedStatus: Int,
+            awaitReconnect: Boolean = false,
         ): JsonNode {
             val request =
                 request(path)
                     .header("Content-Type", "application/json")
                     .POST(HttpRequest.BodyPublishers.ofString(body))
                     .build()
-            val response = client.send(request, HttpResponse.BodyHandlers.ofString())
-            recordResponse(response)
-            assertEquals(expectedStatus, response.statusCode(), "POST $path: ${response.body()}")
-            return json.readTree(response.body())
+            val deadline = System.nanoTime() + Duration.ofSeconds(20).toNanos()
+            while (true) {
+                val response = client.send(request, HttpResponse.BodyHandlers.ofString())
+                recordResponse(response)
+                if (response.statusCode() == expectedStatus) return json.readTree(response.body())
+
+                // 원본 자금 명령이 제출되지 않았다고 확정된 요청만 동일 본문으로 다시 보낸다.
+                if (awaitReconnect && response.statusCode() == 503 && System.nanoTime() < deadline) {
+                    val rejection = json.readTree(response.body())
+                    if (rejection.path("status").asString() == "NOT_SUBMITTED" &&
+                        rejection.path("reason").asString() == "GATEWAY_UNAVAILABLE"
+                    ) {
+                        Thread.sleep(100)
+                        continue
+                    }
+                }
+                fail("POST $path 기대 상태 $expectedStatus. 마지막 응답 ${response.statusCode()}: ${response.body()}")
+            }
         }
 
         private fun awaitGet(
@@ -590,6 +967,17 @@ class GtcServerRestartTest {
                 Posting("SYSTEM:USDT:FEE_REVENUE", "USDT", "CREDIT", 1),
                 Posting("USER:buyer:USDT:HOLD", "USDT", "DEBIT", 102),
                 Posting("USER:buyer:BTC:AVAILABLE", "BTC", "CREDIT", 1),
+                Posting("SYSTEM:USDT:FEE_REVENUE", "USDT", "CREDIT", 2),
+            )
+        private val sellTakerPostings =
+            listOf(
+                Posting("USER:buyer:USDT:HOLD", "USDT", "DEBIT", 101),
+                Posting("USER:buyer:USDT:HOLD", "USDT", "DEBIT", 1),
+                Posting("USER:buyer:USDT:AVAILABLE", "USDT", "CREDIT", 1),
+                Posting("USER:buyer:BTC:AVAILABLE", "BTC", "CREDIT", 1),
+                Posting("SYSTEM:USDT:FEE_REVENUE", "USDT", "CREDIT", 1),
+                Posting("USER:seller:BTC:HOLD", "BTC", "DEBIT", 1),
+                Posting("USER:seller:USDT:AVAILABLE", "USDT", "CREDIT", 98),
                 Posting("SYSTEM:USDT:FEE_REVENUE", "USDT", "CREDIT", 2),
             )
         private val remainingFillPostings =
