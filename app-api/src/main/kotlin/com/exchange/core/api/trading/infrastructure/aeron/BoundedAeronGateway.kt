@@ -21,6 +21,7 @@ import com.exchange.core.trading.OrderIntent
 import com.exchange.core.trading.RequestToken
 import com.exchange.core.trading.TradingLifecycle
 import io.aeron.Publication
+import org.agrona.concurrent.SleepingMillisIdleStrategy
 import org.agrona.concurrent.UnsafeBuffer
 import org.slf4j.LoggerFactory
 import java.nio.file.Files
@@ -41,6 +42,11 @@ internal class BoundedGatewayException(
     val code: String,
     val possiblySubmitted: Boolean,
 ) : IllegalStateException(code)
+
+internal class BoundedGatewayConnectionLost(
+    message: String,
+    cause: Throwable? = null,
+) : IllegalStateException(message, cause)
 
 internal enum class TradingDrainOutcome {
     COMPLETED,
@@ -356,110 +362,49 @@ internal class BoundedAeronGateway(
 
     private fun run() {
         var client: BoundedGatewayTransport? = null
-        val idle = TradingAeronRuntime.idleStrategy()
+        val replies = BoundedGatewayReplies(::receiveControl, ::receiveCancellation)
         try {
-            client = openTransport(BoundedGatewayReplies(::receiveControl, ::receiveCancellation))
-            observeFundsTerm(client)
-            available = true
+            client = openTransport(replies)
+            acceptRequests(client)
             startup.countDown()
             while (!closing) {
-                var work = client.poll()
-                observeFundsTerm(client)
-                val now = System.nanoTime()
-                val stopping = shutdown
-                if (stopping != null && !checkShutdownConnection(stopping, client, now)) break
-                val iterator = inFlight.values.iterator()
-                while (iterator.hasNext()) {
-                    val pending = iterator.next()
-                    if (now - pending.deadline >= 0) {
-                        iterator.remove()
-                        if (pending.isOrderOrCancellation) unconfirmedSend = true
-                        complete(pending, null, BoundedGatewayException("RESULT_UNCONFIRMED", true))
-                        work++
+                val connected = checkNotNull(client)
+                try {
+                    runConnected(connected)
+                    break
+                } catch (error: BoundedGatewayConnectionLost) {
+                    synchronized(admissionLock) {
+                        available = false
+                        observedFundsTerm = null
                     }
+                    shutdown?.let { finishShutdown(it, TradingDrainOutcome.UNCONFIRMED) }
+                    // 새 세션의 진행 조회로 이전 세션의 미확인 금융 요청을 확정할 수 없다.
+                    if (unconfirmedSend || inFlight.values.any { it.isOrderOrCancellation }) unconfirmedPriorTerm = true
+                    unconfirmedSend = false
+                    failTransportRequests()
+                    client = null
+                    connected.close()
+                    if (closing) break
+                    logger.warn("Aeron 자금 연결이 끊어져 새 세션을 엽니다", error)
+                    client = reconnect(replies) ?: break
+                    acceptRequests(client)
+                    if (!closing) logger.info("Aeron 자금 세션을 다시 연결했습니다")
                 }
-                while (!closing && inFlight.size < settings.maxInFlight) {
-                    val pending = queue.peek() ?: break
-                    if (pending.bytes == null && !pending.isExpired()) {
-                        pending.correlation = nextCorrelation.also { nextCorrelation = Math.addExact(it, 1) }
-                        // 외부 입력의 인코딩 실패만 이 요청의 실패로 처리한다. 카운터·전송·내부 오류는
-                        // 계속 바깥으로 전파해 소유자를 중단시킨다.
-                        try {
-                            pending.bytes =
-                                when (pending) {
-                                    is Pending.Control -> commandEncoder(pending.correlation, pending.command)
-                                    is Pending.Cancellation -> checkNotNull(cancelEncoder)(pending.correlation, pending.command)
-                                }
-                        } catch (_: IllegalArgumentException) {
-                            check(queue.poll() === pending) { "gateway queue owner changed" }
-                            complete(pending, null, BoundedGatewayException("INVALID_REQUEST", false))
-                            work++
-                            continue
-                        }
-                    }
-                    if (pending.isExpired()) {
-                        queue.poll()
-                        complete(pending, null, BoundedGatewayException("QUEUE_TIMEOUT", false))
-                        work++
-                        continue
-                    }
-                    val bytes = checkNotNull(pending.bytes)
-                    if (closing || shutdown?.hasEnded() == true) break
-                    val approval = pending.recoveryApproval
-                    val offered =
-                        if (approval == null) {
-                            client.offer(bytes)
-                        } else {
-                            checkNotNull(recoveryGate).tryOffer(approval, client) {
-                                // 복구 판정 잠금을 기다리는 사이에도 제출 기한은 흐른다.
-                                if (closing || shutdown?.hasEnded() == true || pending.isExpired()) null else client.offer(bytes)
-                            }
-                        }
-                    // NOT_CONNECTED는 다음 poll을 기다리기 전에 Aeron 송신 경로를 닫을 수 있다.
-                    if (offered == null || offered < 0) observeFundsTerm(client)
-                    if (offered == Publication.NOT_CONNECTED && stopping != null) {
-                        finishShutdown(stopping, TradingDrainOutcome.UNCONFIRMED)
-                        break
-                    }
-                    if (offered == null) {
-                        if (closing || shutdown?.hasEnded() == true) break
-                        queue.poll()
-                        val refusalReason = if (pending.isExpired()) "QUEUE_TIMEOUT" else checkNotNull(recoveryGate).current.refusalReason
-                        complete(pending, null, BoundedGatewayException(refusalReason, false))
-                        work++
-                        continue
-                    }
-                    if (offered > 0) {
-                        queue.poll()
-                        inFlight[pending.correlation] = pending
-                        work++
-                    } else {
-                        check(
-                            offered == Publication.BACK_PRESSURED || offered == Publication.ADMIN_ACTION ||
-                                offered == Publication.NOT_CONNECTED,
-                        ) { "bounded transport closed: $offered" }
-                        break
-                    }
-                }
-                if (!closing && stopping != null) work += advanceShutdown(stopping, client)
-                idle.idle(work)
             }
         } catch (error: Throwable) {
-            startupFailure.compareAndSet(null, error)
+            if (startup.count > 0) {
+                startupFailure.compareAndSet(null, error)
+            } else {
+                logger.error("Aeron 자금 연결 작업이 중단됐습니다", error)
+            }
         } finally {
             try {
                 synchronized(admissionLock) { available = false }
                 shutdown?.let { finishShutdown(it, TradingDrainOutcome.UNCONFIRMED) }
                 startup.countDown()
-                inFlight.values.forEach { complete(it, null, BoundedGatewayException("RESULT_UNCONFIRMED", true)) }
-                inFlight.clear()
+                failTransportRequests()
                 protectionWaiting.values.forEach { complete(it, null, BoundedGatewayException("REMOTE_PROTECTION_UNCONFIRMED", true)) }
                 protectionWaiting.clear()
-                while (true) {
-                    val pending =
-                        queue.poll() ?: break
-                    complete(pending, null, BoundedGatewayException("GATEWAY_UNAVAILABLE", false))
-                }
             } finally {
                 try {
                     client?.close()
@@ -467,6 +412,121 @@ internal class BoundedAeronGateway(
                     stopCompletions()
                 }
             }
+        }
+    }
+
+    private fun acceptRequests(client: BoundedGatewayTransport) {
+        synchronized(admissionLock) {
+            observeFundsTerm(client)
+            available = !closing && shutdown == null
+        }
+    }
+
+    private fun reconnect(replies: BoundedGatewayReplies): BoundedGatewayTransport? {
+        val wait = SleepingMillisIdleStrategy(100)
+        while (!closing) {
+            try {
+                return openTransport(replies)
+            } catch (error: BoundedGatewayConnectionLost) {
+                logger.debug("Aeron 자금 연결을 열 수 없어 접수를 차단한 채 재시도합니다", error)
+                wait.idle()
+            }
+        }
+        return null
+    }
+
+    private fun failTransportRequests() {
+        inFlight.values.forEach { complete(it, null, BoundedGatewayException("RESULT_UNCONFIRMED", true)) }
+        inFlight.clear()
+        while (true) {
+            val pending = queue.poll() ?: break
+            complete(pending, null, BoundedGatewayException("GATEWAY_UNAVAILABLE", false))
+        }
+    }
+
+    private fun runConnected(client: BoundedGatewayTransport) {
+        val idle = TradingAeronRuntime.idleStrategy()
+        while (!closing) {
+            var work = client.poll()
+            observeFundsTerm(client)
+            val now = System.nanoTime()
+            val stopping = shutdown
+            if (stopping != null && !checkShutdownConnection(stopping, client, now)) break
+            val iterator = inFlight.values.iterator()
+            while (iterator.hasNext()) {
+                val pending = iterator.next()
+                if (now - pending.deadline >= 0) {
+                    iterator.remove()
+                    if (pending.isOrderOrCancellation) unconfirmedSend = true
+                    complete(pending, null, BoundedGatewayException("RESULT_UNCONFIRMED", true))
+                    work++
+                }
+            }
+            while (!closing && inFlight.size < settings.maxInFlight) {
+                val pending = queue.peek() ?: break
+                if (pending.bytes == null && !pending.isExpired()) {
+                    pending.correlation = nextCorrelation.also { nextCorrelation = Math.addExact(it, 1) }
+                    // 외부 입력의 인코딩 실패만 이 요청의 실패로 처리한다. 카운터·전송·내부 오류는
+                    // 계속 바깥으로 전파해 소유자를 중단시킨다.
+                    try {
+                        pending.bytes =
+                            when (pending) {
+                                is Pending.Control -> commandEncoder(pending.correlation, pending.command)
+                                is Pending.Cancellation -> checkNotNull(cancelEncoder)(pending.correlation, pending.command)
+                            }
+                    } catch (_: IllegalArgumentException) {
+                        check(queue.poll() === pending) { "gateway queue owner changed" }
+                        complete(pending, null, BoundedGatewayException("INVALID_REQUEST", false))
+                        work++
+                        continue
+                    }
+                }
+                if (pending.isExpired()) {
+                    queue.poll()
+                    complete(pending, null, BoundedGatewayException("QUEUE_TIMEOUT", false))
+                    work++
+                    continue
+                }
+                val bytes = checkNotNull(pending.bytes)
+                if (closing || shutdown?.hasEnded() == true) break
+                val approval = pending.recoveryApproval
+                val offered =
+                    if (approval == null) {
+                        client.offer(bytes)
+                    } else {
+                        checkNotNull(recoveryGate).tryOffer(approval, client) {
+                            // 복구 판정 잠금을 기다리는 사이에도 제출 기한은 흐른다.
+                            if (closing || shutdown?.hasEnded() == true || pending.isExpired()) null else client.offer(bytes)
+                        }
+                    }
+                // NOT_CONNECTED는 다음 poll을 기다리기 전에 Aeron 송신 경로를 닫을 수 있다.
+                if (offered == null || offered < 0) observeFundsTerm(client)
+                if (offered == Publication.NOT_CONNECTED && stopping != null) {
+                    finishShutdown(stopping, TradingDrainOutcome.UNCONFIRMED)
+                    break
+                }
+                if (offered == null) {
+                    if (closing || shutdown?.hasEnded() == true) break
+                    queue.poll()
+                    val refusalReason = if (pending.isExpired()) "QUEUE_TIMEOUT" else checkNotNull(recoveryGate).current.refusalReason
+                    complete(pending, null, BoundedGatewayException(refusalReason, false))
+                    work++
+                    continue
+                }
+                if (offered > 0) {
+                    queue.poll()
+                    inFlight[pending.correlation] = pending
+                    work++
+                } else {
+                    check(
+                        offered == Publication.BACK_PRESSURED || offered == Publication.ADMIN_ACTION ||
+                            offered == Publication.NOT_CONNECTED,
+                    ) { "bounded transport closed: $offered" }
+                    break
+                }
+            }
+            if (!closing && stopping != null) work += advanceShutdown(stopping, client)
+            idle.idle(work)
         }
     }
 

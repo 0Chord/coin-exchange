@@ -45,12 +45,14 @@ internal class GtcRestartCluster(
     private val directory: Path,
     private val database: OrderQueryTestDatabase,
     private val matchingCrashDispatch: Long?,
+    controlFundsResults: Boolean,
 ) : AutoCloseable {
     private val lineage = ClusterLineage(41, 42)
     private val testSettings = SplitTradingHttpTestSettings(directory, lineage)
     private val basePort = testSettings.availablePorts()
     private val json = JsonMapper.builder().build()
     private val manifest = directory.resolve("manifest.bin")
+    private val fundsResultControl = if (controlFundsResults) GtcFundsResultControl(directory) else null
     private val funds = Node(TradingServiceRole.FUNDS)
     private val matching = Node(TradingServiceRole.MATCHING)
     private val nodes = listOf(funds, matching)
@@ -59,6 +61,7 @@ internal class GtcRestartCluster(
     private var lastHttpResponse = "HTTP 응답을 받기 전입니다"
     private var controlDriver: MediaDriver? = null
     private var was: OrderRecoveryWas? = null
+    val wasPid: Long get() = checkNotNull(was).pid
 
     fun start(): String {
         val fees = MakerTakerFeeRates(makerFeeRate = FeeRate(10_000), takerFeeRate = FeeRate(20_000))
@@ -113,6 +116,63 @@ internal class GtcRestartCluster(
             checkNotNull(reply.control)
         }
 
+    fun fundsState(): JsonNode = checkNotNull(fundsResultControl).fundsState(funds.pid, ::progress)
+
+    fun allowFundsResultsThrough(
+        through: Long,
+        withholdAcknowledgementsFrom: Long? = null,
+    ) = checkNotNull(fundsResultControl).configure(through, withholdAcknowledgementsFrom)
+
+    fun awaitWithheldFundsAcknowledgement(through: Long): Long {
+        val position = checkNotNull(fundsResultControl).awaitWithheldAcknowledgement(through)
+        recoveryEvidence.add("매칭에 전달하지 않은 자금 확인 순번 $through, 자금 적용 위치 $position")
+        return position
+    }
+
+    fun awaitMatchingResultState(
+        issued: Long,
+        fundsSettledThrough: Long,
+    ) {
+        checkNotNull(fundsResultControl).awaitMatchingResultState(issued, fundsSettledThrough)
+        recoveryEvidence.add("매칭 결과 확정 순번 $issued, 정산 확인 순번 $fundsSettledThrough")
+    }
+
+    fun crashAndRecoverFunds() {
+        val originalPid = funds.pid
+        val unaffectedPids = listOf(matching.pid, wasPid)
+        val snapshot = snapshots[TradingServiceRole.FUNDS]
+        val before = funds.logBoundary()
+        val businessPosition = minOf(before.committed, before.applied, before.recorded)
+        check(businessPosition > 0) { "복원할 자금 로그가 없습니다: $before" }
+
+        val exitCode = funds.kill()
+        recoveryEvidence.add("자금 PID $originalPid 강제 종료, 종료 코드 $exitCode, 자금 로그 $before")
+        check(exitCode == 137) { "자금 JVM이 SIGKILL로 종료되지 않았습니다" }
+        funds.awaitInactiveRuntime()
+        funds.start(recover = true)
+
+        val restored = funds.logBoundary()
+        recoveryEvidence.add("자금 PID ${funds.pid} 복원, 자금 로그 $restored, 유지된 매칭·WAS PID $unaffectedPids")
+        check(funds.pid != originalPid)
+        check(unaffectedPids.all { ProcessHandle.of(it).map(ProcessHandle::isAlive).orElse(false) }) {
+            "자금 복구 동안 매칭과 WAS가 유지되지 않았습니다"
+        }
+        val originalLogRestored = restored.recordingId == before.recordingId
+        val restoredPosition = minOf(restored.committed, restored.applied, restored.recorded)
+        check(originalLogRestored && restoredPosition >= businessPosition) {
+            "자금 Archive가 원래 확정 위치를 복원하지 않았습니다: $before → $restored"
+        }
+        if (snapshot != null) check(funds.latestSnapshot() == snapshot) { "자금 스냅샷 원본이 바뀌었습니다" }
+        println(recoveryEvidence.takeLast(2).joinToString("\n"))
+    }
+
+    fun assertWasRemainedRunning(originalPid: Long) {
+        check(wasPid == originalPid && ProcessHandle.of(originalPid).map(ProcessHandle::isAlive).orElse(false)) {
+            "후속 HTTP 요청을 처리한 WAS PID가 바뀌었습니다. 최초 $originalPid, 현재 $wasPid"
+        }
+        println("자금 복구와 후속 HTTP 요청 완료 뒤 같은 WAS PID $originalPid 유지")
+    }
+
     fun restart(expectedThrough: Long): String {
         val firstWas = checkNotNull(was)
         val oldPids = nodes.map { it.pid } + firstWas.pid
@@ -154,7 +214,7 @@ internal class GtcRestartCluster(
         val wasPid = checkNotNull(was).pid
         val paused = matching.awaitCrashMarker(recover = false, orderId = orderId)
         val position = paused.path("position").longValue()
-        val boundary = matching.matchingLogBoundary()
+        val boundary = matching.logBoundary()
         recoveryEvidence.add("매칭 적용 직전 $paused, 스냅샷 $snapshot, 로그 $boundary")
         check(snapshot.position < position && boundary.applied < position) { "대상 주문은 스냅샷 뒤 미적용 상태여야 합니다" }
         check(boundary.committed >= position && boundary.recorded >= position) { "대상 주문이 매칭 로그에 확정·기록되지 않았습니다" }
@@ -166,7 +226,7 @@ internal class GtcRestartCluster(
         matching.start(recover = true)
 
         val replayed = matching.awaitCrashMarker(recover = true, orderId = orderId)
-        val restored = matching.matchingLogBoundary()
+        val restored = matching.logBoundary()
         recoveryEvidence.add("매칭 복원 $replayed, 로그 $restored, 유지된 자금 PID $fundsPid·WAS PID $wasPid")
         check(matching.pid != originalPid)
         check(listOf(fundsPid, wasPid).all { ProcessHandle.of(it).map(ProcessHandle::isAlive).orElse(false) }) {
@@ -264,7 +324,7 @@ internal class GtcRestartCluster(
         val applied: Long,
     )
 
-    private data class MatchingLogBoundary(
+    private data class LogBoundary(
         val committed: Long,
         val applied: Long,
         val recordingId: Long,
@@ -274,21 +334,29 @@ internal class GtcRestartCluster(
     private inner class Node(
         val role: TradingServiceRole,
     ) {
-        val environment = testSettings.settingsEnvironment(manifest, role, basePort, archiveQuery = true)
+        val environment =
+            testSettings.settingsEnvironment(manifest, role, basePort, archiveQuery = true) +
+                if (fundsResultControl != null) mapOf("SPLIT_TRANSFER_BATCH_ENABLED" to "false") else emptyMap()
         val settings by lazy { splitTradingSettings(environment) }
         private var process: Process? = null
         private lateinit var log: Path
         private var crashArmed = false
+        private var generation = 0
         val pid: Long get() = checkNotNull(process).pid()
 
         fun start(recover: Boolean) {
-            log = directory.resolve("${role.name.lowercase()}-recover-$recover.log")
+            log = directory.resolve("${role.name.lowercase()}-${generation++}-recover-$recover.log")
             val command =
                 if (role == TradingServiceRole.MATCHING && matchingCrashDispatch != null) {
                     tradingProcessCommand(
                         "com.exchange.core.api.trading.infrastructure.aeron.MatchingCommitCrashNodeKt",
                         classpathProperty = "fundingVerificationRuntimeClasspath",
                     ) + listOf(crashMarker(recover).toString(), matchingCrashDispatch.toString())
+                } else if (fundsResultControl != null) {
+                    tradingProcessCommand(
+                        "com.exchange.core.api.trading.infrastructure.aeron.GtcFundsRecoveryNodeKt",
+                        classpathProperty = "fundingVerificationRuntimeClasspath",
+                    ) + directory.toString()
                 } else {
                     tradingProcessCommand("com.exchange.core.api.trading.infrastructure.aeron.DevelopmentSplitTradingMainKt")
                 }
@@ -394,9 +462,9 @@ internal class GtcRestartCluster(
 
         fun kill(): Int {
             val running = checkNotNull(process)
-            check(running.isAlive) { "강제 종료 요청 전에 매칭 JVM이 종료됐습니다" }
+            check(running.isAlive) { "강제 종료 요청 전에 $role JVM이 종료됐습니다" }
             running.destroyForcibly()
-            check(running.waitFor(5, TimeUnit.SECONDS)) { "강제 종료한 매칭 JVM을 회수하지 못했습니다" }
+            check(running.waitFor(5, TimeUnit.SECONDS)) { "강제 종료한 $role JVM을 회수하지 못했습니다" }
             return running.exitValue()
         }
 
@@ -428,7 +496,7 @@ internal class GtcRestartCluster(
             val timeoutMs = maxOf(driverTimeoutMs, clusterTimeoutMs, archiveTimeoutMs)
             val deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(timeoutMs * 2)
             while (System.currentTimeMillis() <= marksExpireAt || CommonContext.isDriverActive(driver, driverTimeoutMs) {}) {
-                check(System.nanoTime() < deadline) { "강제 종료한 매칭 노드의 heartbeat가 만료되지 않았습니다" }
+                check(System.nanoTime() < deadline) { "강제 종료한 $role 노드의 heartbeat가 만료되지 않았습니다" }
                 Thread.sleep(50)
             }
         }
@@ -463,24 +531,24 @@ internal class GtcRestartCluster(
             }
         }
 
-        fun matchingLogBoundary(): MatchingLogBoundary {
+        fun logBoundary(): LogBoundary {
             val transport = settings.transport
             val context = transport.archiveClient().messageTimeoutNs(TimeUnit.SECONDS.toNanos(3))
             return AeronArchive.connect(context).use { archive ->
                 val reader = archive.context().aeron().countersReader()
                 val termId = ClusterCounters.find(reader, AeronCounters.CLUSTER_LEADERSHIP_TERM_ID_TYPE_ID, settings.clusterId)
-                check(termId != CountersReader.NULL_COUNTER_ID) { "매칭 임기를 읽을 수 없습니다" }
+                check(termId != CountersReader.NULL_COUNTER_ID) { "$role 임기를 읽을 수 없습니다" }
                 val term = reader.getCounterValue(termId)
                 val recordingId =
                     RecordingLog(transport.clusterDirectory.toFile(), false).use { log ->
                         log.getTermEntry(term).recordingId
                     }
                 val recordingCounter = RecordingPos.findCounterIdByRecording(reader, recordingId, settings.clusterId.toLong())
-                check(RecordingPos.isActive(reader, recordingCounter, recordingId)) { "매칭 임기의 Archive 기록이 활성 상태가 아닙니다" }
+                check(RecordingPos.isActive(reader, recordingCounter, recordingId)) { "$role 임기의 Archive 기록이 활성 상태가 아닙니다" }
                 val recorded = minOf(reader.getCounterValue(recordingCounter), archive.getMaxRecordedPosition(recordingId))
                 val positions = logPositions(reader)
-                check(reader.getCounterValue(termId) == term) { "매칭 로그 위치를 읽는 동안 임기가 바뀌었습니다" }
-                MatchingLogBoundary(positions.committed, positions.applied, recordingId, recorded)
+                check(reader.getCounterValue(termId) == term) { "$role 로그 위치를 읽는 동안 임기가 바뀌었습니다" }
+                LogBoundary(positions.committed, positions.applied, recordingId, recorded)
             }
         }
 
@@ -502,13 +570,14 @@ internal class GtcRestartCluster(
     }
 }
 
-internal fun verifyGtcRestart(
+internal fun <T> verifyGtcRestart(
     directory: Path,
     matchingCrashDispatch: Long? = null,
-    verify: (OrderQueryTestDatabase, GtcRestartCluster, HttpClient) -> Unit,
-) {
+    controlFundsResults: Boolean = false,
+    verify: (OrderQueryTestDatabase, GtcRestartCluster, HttpClient) -> T,
+): T =
     OrderQueryTestDatabase(socketTimeoutSeconds = 2).use { database ->
-        GtcRestartCluster(directory, database, matchingCrashDispatch).use { cluster ->
+        GtcRestartCluster(directory, database, matchingCrashDispatch, controlFundsResults).use { cluster ->
             HttpClient.newHttpClient().use { client ->
                 try {
                     verify(database, cluster, client)
@@ -520,4 +589,3 @@ internal fun verifyGtcRestart(
             }
         }
     }
-}

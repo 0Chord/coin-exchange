@@ -61,6 +61,7 @@ internal class SplitTradingHttpTestSettings(
     fun manifest(
         feeRates: MakerTakerFeeRates,
         maxFundingAccounts: Int,
+        market: MarketDefinition? = null,
     ): TradingClusterManifest =
         TradingClusterManifest(
             lineage,
@@ -70,7 +71,7 @@ internal class SplitTradingHttpTestSettings(
             1,
             listOf(
                 TradingMarketContext(
-                    MarketDefinition(MarketId("BTC-USDT"), AssetId("BTC"), AssetId("USDT"), 0),
+                    market ?: MarketDefinition(MarketId("BTC-USDT"), AssetId("BTC"), AssetId("USDT"), 0),
                     TradingFeePolicySnapshot(FeeProductType.SPOT, FeeTier.NORMAL, 1, feeRates),
                     0,
                 ),
