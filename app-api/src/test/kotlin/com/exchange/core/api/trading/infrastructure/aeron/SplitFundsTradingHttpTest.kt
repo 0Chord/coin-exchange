@@ -45,6 +45,7 @@ import com.exchange.core.ledger.ReconciliationItem
 import com.exchange.core.ledger.ReconciliationStatus
 import com.exchange.core.ledger.ReservationHold
 import com.exchange.core.matching.TradeExecuted
+import com.exchange.core.order.MarketDefinition
 import com.exchange.core.order.OrderType
 import com.exchange.core.order.Side
 import com.exchange.core.order.TimeInForce
@@ -298,6 +299,106 @@ class SplitFundsTradingHttpTest {
                         ),
                         transactions.map { it.transactionType },
                     )
+                }
+            }
+        }
+    }
+
+    @Test
+    fun `실제 HTTP 주문 단위 위반은 매수와 매도 모두 예약 전에 거절한다`() {
+        val market =
+            MarketDefinition(MarketId("BTC-USDT"), AssetId("BTC"), AssetId("USDT"), baseAssetScale = 2, priceTick = 25, quantityStep = 4)
+        withTradingNodes(archiveQuery = true, market = market, sellerOpeningAmount = 200) { harness ->
+            HttpClient.newHttpClient().use { http ->
+                archiveBalanceWas(harness, run = 0, orderBookEnabled = true).use { was ->
+                    val url = wasUrl(was)
+                    val orderPath = "/markets/BTC-USDT/orders"
+                    val jdbc = harness.database.jdbc()
+                    awaitBalance(http, url, "USDT", sequence = 2, available = 1_000, reserved = 0, userId = "buyer")
+                    awaitBalance(http, url, "BTC", sequence = 2, available = 200, reserved = 0, userId = "seller")
+                    awaitOrderBook(http, url, through = 0)
+                    val openingBalances = checkNotNull(harness.fundsSnapshot.get()).financial.balances
+                    val openingLedger = storedLedgerRows(jdbc)
+                    assertEquals(listOf(1L, 2L), openingLedger.map { it.getValue("sequence") })
+
+                    val invalidOrders =
+                        listOf(
+                            101L to 100L, // 가격이 tick에 맞지 않는다.
+                            150L to 2L, // 전체 대금은 정수지만 수량이 step에 맞지 않는다.
+                            9_223_372_036_854_775_800L to 200L, // tick·step은 맞지만 대금이 Long 범위를 넘는다.
+                        )
+                    for ((user, side) in listOf("buyer" to "BUY", "seller" to "SELL")) {
+                        val epoch = post(http, url, "/channels/0/epoch", """{"userId":"$user","expectedEpoch":0}""")
+                        assertEquals(200, epoch.statusCode(), epoch.body())
+                        for ((index, invalidOrder) in invalidOrders.withIndex()) {
+                            val (price, quantity) = invalidOrder
+                            val request = orderBody(user, side, quantity = quantity, price = price, sequence = index + 1L)
+                            val response = post(http, url, orderPath, request)
+                            val description = "$side $price × $quantity: ${response.body()}"
+                            assertEquals(422, response.statusCode(), description)
+                            val refusal = json.readTree(response.body())
+                            assertEquals("REJECTED", refusal.path("status").asString(), description)
+                            assertEquals("UNREPRESENTABLE_RESERVATION", refusal.path("reason").asString(), description)
+                            assertFalse(refusal.hasNonNull("orderId"), description)
+                            assertFalse(refusal.hasNonNull("admissionSequence"), description)
+                            assertFalse(refusal.hasNonNull("marketAdmissionSequence"), description)
+                        }
+                    }
+
+                    await("양쪽 사용자의 주문 단위 거절 여섯 건이 자금 엔진에 기록됨") {
+                        val inbox =
+                            harness.fundsSnapshot
+                                .get()
+                                ?.financial
+                                ?.inbox
+                        val channels = inbox?.channels.orEmpty()
+                        channels.size == 2 && channels.all { it.processedThrough == invalidOrders.size.toLong() }
+                    }
+                    val afterRejections = checkNotNull(harness.fundsSnapshot.get())
+                    val financial = afterRejections.financial
+                    assertEquals(openingBalances, financial.balances)
+                    assertTrue(financial.liveOrders.isEmpty())
+                    assertEquals(0L, financial.lastAdmissionSequence)
+                    assertEquals(
+                        0L,
+                        afterRejections.dispatch.streams
+                            .single()
+                            .issued,
+                    )
+                    awaitOrderBook(http, url, through = 0)
+                    assertEquals(openingLedger, storedLedgerRows(jdbc))
+                    assertTrue(jdbc.queryForList("select order_id from order_query.order_record").isEmpty())
+
+                    val validBuy = orderBody("buyer", "BUY", quantity = 4, price = 100, sequence = 4)
+                    val response = post(http, url, orderPath, validBuy)
+                    assertEquals(202, response.statusCode(), response.body())
+                    val receipt = json.readTree(response.body())
+                    assertEquals("ACCEPTED", receipt.path("status").asString())
+                    assertEquals(1L, receipt.path("admissionSequence").longValue())
+                    assertEquals(1L, receipt.path("marketAdmissionSequence").longValue())
+                    val orderId = receipt.path("orderId").asString()
+                    assertTrue(orderId.isNotBlank(), response.body())
+                    awaitQuery(harness, http, url, orderId, "RESTING", filled = 0, remaining = 4, cancelled = 0)
+                    awaitOrderBook(http, url, through = 1, bidQuantity = 4)
+                    awaitBalance(http, url, "USDT", sequence = 3, available = 996, reserved = 4, userId = "buyer")
+                    awaitBalance(http, url, "BTC", sequence = 3, available = 200, reserved = 0, userId = "seller")
+                    val reservation =
+                        checkNotNull(harness.fundsSnapshot.get())
+                            .financial.liveOrders
+                            .single()
+                            .reservation
+                    assertEquals(orderId, reservation.orderId.value)
+                    assertEquals(Amount(4), reservation.remainingAmount)
+
+                    val rows = archiveProjectionRows(jdbc)
+                    assertEquals(listOf(1L), rows.admissions)
+                    assertEquals(listOf(1L), rows.matches)
+                    assertTrue(rows.settlements.isEmpty())
+                    assertEquals(openingLedger, rows.ledger.dropLast(1))
+                    val reserve = readRecoveryTransactions(rows.ledger.last().getValue("transactions") as String).single()
+                    assertEquals(LedgerTransactionType.RESERVE, reserve.transactionType)
+                    assertEquals(listOf(Amount(4), Amount(4)), reserve.postings.map { it.amount })
+                    assertEquals(listOf(mapOf("order_id" to orderId)), jdbc.queryForList("select order_id from order_query.order_record"))
                 }
             }
         }
@@ -4362,12 +4463,14 @@ class SplitFundsTradingHttpTest {
         persistSettlements: Boolean = false,
         maxFundingAccounts: Int = 8,
         archiveQuery: Boolean = false,
+        market: MarketDefinition? = null,
+        sellerOpeningAmount: Long = 3,
         decorateFunds: (ClusteredService) -> ClusteredService = { it },
         verify: (TradingHarness) -> Unit,
     ) {
         val basePort = testSettings.availablePorts()
         val feeRates = MakerTakerFeeRates(makerFeeRate = feeRate, takerFeeRate = takerFeeRate)
-        val manifest = testSettings.manifest(feeRates, maxFundingAccounts)
+        val manifest = testSettings.manifest(feeRates, maxFundingAccounts, market)
         val manifestFile = directory.resolve("manifest.bin").also { Files.write(it, BoundedTradingStateCodec().encodeManifest(manifest)) }
         val fundsSettings = settings(manifestFile, TradingServiceRole.FUNDS, basePort, consumerId, persistSettlements, archiveQuery)
         val matchingSettings = settings(manifestFile, TradingServiceRole.MATCHING, basePort, consumerId, persistSettlements, archiveQuery)
@@ -4427,7 +4530,7 @@ class SplitFundsTradingHttpTest {
                                         val openingInputs =
                                             listOf(
                                                 Triple("buyer", "USDT", 1_000L),
-                                                Triple("seller", "BTC", 3L),
+                                                Triple("seller", "BTC", sellerOpeningAmount),
                                             ).map { (user, asset, amount) ->
                                                 val opening =
                                                     OpeningBalance("http-opening-$user", UserId(user), AssetId(asset), Amount(amount))
