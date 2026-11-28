@@ -52,14 +52,17 @@ internal class OrderRecoveryWas private constructor(
     }
 }
 
-internal fun tradingProcessCommand(mainClass: String): List<String> =
+internal fun tradingProcessCommand(
+    mainClass: String,
+    classpathProperty: String = "developmentFundingRuntimeClasspath",
+): List<String> =
     listOf(
         Path.of(System.getProperty("java.home"), "bin", "java").toString(),
         "-XX:ActiveProcessorCount=2",
         "--add-opens=java.base/jdk.internal.misc=ALL-UNNAMED",
         "--add-opens=java.base/java.util.zip=ALL-UNNAMED",
         "-cp",
-        checkNotNull(System.getProperty("developmentFundingRuntimeClasspath")),
+        checkNotNull(System.getProperty(classpathProperty)),
         mainClass,
     )
 
